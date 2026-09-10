@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
-import type { SeriesPoint } from "../derive";
+import type { EquityPoint } from "../derive";
 import { clock, fmtSigned, fmtPct } from "../format";
 import { useWidth } from "./useSize";
 
 const H = 96;
 const M = { top: 10, right: 76, bottom: 6, left: 14 };
 
-export function EquitySpark({ points }: { points: SeriesPoint[] }) {
+export function EquitySpark({ points }: { points: EquityPoint[] }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hi, setHi] = useState<number | null>(null);
   const W = Math.max(320, width || 640);

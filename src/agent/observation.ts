@@ -1,6 +1,27 @@
 import type { PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
 import type { PoolAnalytics } from "../tools/lpagent";
 
+export interface ScreenContext {
+  rank: number;
+  rankedPools: number;
+  score: number;
+  feeToTvl24hPct: number | null;
+  volume24hUsd: number | null;
+  tvlUsd: number | null;
+  ageHours: number | null;
+  priceChange24hPct: number | null;
+  flags: string[];
+  generatedAt: string;
+  alternatives: { name: string; score: number; feeToTvl24hPct: number | null; tvlUsd: number | null }[];
+}
+
+export interface PortfolioContext {
+  activePools: string[];
+  poolsWithBands: number;
+  maxActivePools: number;
+  otherExposureSol: number;
+}
+
 export interface JournalGlimpse {
   ts: string;
   action: string;
@@ -21,6 +42,8 @@ export interface Observation {
   analytics: PoolAnalytics | null;
   state: { actionsToday: number; lastActionAt: number | null; lastPrice: number | null; killSwitch: boolean };
   recent: JournalGlimpse[];
+  screen: ScreenContext | null;
+  portfolio: PortfolioContext;
 }
 
 const r = (n: number | null | undefined, digits = 4) =>

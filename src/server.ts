@@ -16,6 +16,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { config, riskLimits } from "./config";
 import { dataDir, readRecent } from "./journal";
+import { loadScreen } from "./screener";
 
 export function buildApp(): Hono {
   const app = new Hono();
@@ -32,6 +33,11 @@ export function buildApp(): Hono {
   });
 
   app.get("/api/limits", (c) => c.json(riskLimits));
+
+  app.get("/api/screen", (c) => {
+    const screen = loadScreen();
+    return screen ? c.json(screen) : c.json({ error: "no screen yet; run `npm run screen`" }, 404);
+  });
 
   app.get("/api/feed.md", (c) => {
     try {

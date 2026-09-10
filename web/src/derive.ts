@@ -32,9 +32,26 @@ export interface ClosedBand {
   action: Action;
 }
 
+export interface PoolView {
+  address: string;
+  label: string;
+  /** newest first */
+  entries: JournalEntry[];
+  /** oldest first */
+  series: SeriesPoint[];
+  latest: JournalEntry;
+}
+
+export interface EquityPoint {
+  t: number;
+  equity: number;
+}
+
 export interface AgentSummary {
   id: string;
   name: string;
+  pools: PoolView[];
+  equitySeries: EquityPoint[];
   closed: ClosedBand[];
   wins: number;
   realizedPnlSol: number;
@@ -79,12 +96,39 @@ export function toSeries(newestFirst: JournalEntry[]): SeriesPoint[] {
   }));
 }
 
+/** Equity per loop iteration across every pool the agent observed in it. */
+export function equitySeriesOf(newestFirst: JournalEntry[]): EquityPoint[] {
+  const byCycle = new Map<number, JournalEntry[]>();
+  for (const e of newestFirst) byCycle.set(e.cycle, [...(byCycle.get(e.cycle) ?? []), e]);
+  const out: EquityPoint[] = [];
+  for (const group of byCycle.values()) {
+    const sorted = [...group].sort((a, b) => a.ts.localeCompare(b.ts));
+    const first = sorted[0];
+    const tokens = new Map<string, number>();
+    let bands = 0;
+    for (const e of sorted) {
+      const base = e.pool.solSide === "X" ? e.pool.tokenY.symbol : e.pool.tokenX.symbol;
+      tokens.set(base, e.wallet.token * e.pool.tokenPriceInSol);
+      bands += e.positions.reduce((s, p) => s + p.valueInSol + POSITION_RENT_SOL, 0);
+    }
+    out.push({ t: new Date(first.ts).getTime(), equity: first.wallet.sol + [...tokens.values()].reduce((s, v) => s + v, 0) + bands });
+  }
+  return out.sort((a, b) => a.t - b.t);
+}
+
 export function summarize(id: string, name: string, newestFirst: JournalEntry[]): AgentSummary {
   const latest = newestFirst[0];
   const first = newestFirst[newestFirst.length - 1];
-  const series = toSeries(newestFirst);
-  const equitySol = equityOf(latest);
-  const startEquity = equityOf(first);
+  const byPool = new Map<string, JournalEntry[]>();
+  for (const e of newestFirst) byPool.set(e.pool.address, [...(byPool.get(e.pool.address) ?? []), e]);
+  const pools: PoolView[] = [...byPool.entries()]
+    .map(([address, es]) => ({ address, label: es[0].pool.label, entries: es, series: toSeries(es), latest: es[0] }))
+    .sort((a, b) => b.latest.positions.length - a.latest.positions.length || b.latest.ts.localeCompare(a.latest.ts));
+  const series = pools[0]?.series ?? [];
+  const equitySeries = equitySeriesOf(newestFirst);
+  const equitySol = equitySeries[equitySeries.length - 1]?.equity ?? equityOf(latest);
+  const startEquity = equitySeries[0]?.equity ?? equityOf(first);
+  const latestPositions = pools.flatMap((p) => p.latest.positions.map((pos) => ({ pos, e: p.latest })));
   let feesRealizedSol = 0;
   for (const e of newestFirst) {
     if (!executedAction(e)) continue;
@@ -93,7 +137,7 @@ export function summarize(id: string, name: string, newestFirst: JournalEntry[])
     const targets = e.decision.positionAddress ? e.positions.filter((p) => p.address === e.decision.positionAddress) : e.positions;
     feesRealizedSol += targets.reduce((s, p) => s + feesInSol(p, e), 0);
   }
-  const feesUnclaimedSol = latest.positions.reduce((s, p) => s + feesInSol(p, latest), 0);
+  const feesUnclaimedSol = latestPositions.reduce((s, { pos, e }) => s + feesInSol(pos, e), 0);
   const closed: ClosedBand[] = [];
   const claimedByBand = new Map<string, number>();
   for (const e of [...newestFirst].reverse()) {
@@ -113,6 +157,8 @@ export function summarize(id: string, name: string, newestFirst: JournalEntry[])
   return {
     id,
     name,
+    pools,
+    equitySeries,
     closed,
     wins: closed.filter((c) => (c.pnlSol ?? 0) > 0).length,
     realizedPnlSol: closed.reduce((s, c) => s + (c.pnlSol ?? 0), 0),
@@ -125,8 +171,8 @@ export function summarize(id: string, name: string, newestFirst: JournalEntry[])
     pnlPct: startEquity > 0 ? ((equitySol - startEquity) / startEquity) * 100 : 0,
     feesRealizedSol,
     feesUnclaimedSol,
-    bandsOpen: latest.positions.length,
-    bandsInRange: latest.positions.filter((p) => p.inRange).length,
+    bandsOpen: latestPositions.length,
+    bandsInRange: latestPositions.filter(({ pos }) => pos.inRange).length,
     decisions: newestFirst.length,
     executed: newestFirst.filter(executedAction).length,
     blocked: newestFirst.filter((e) => !e.allowed).length,

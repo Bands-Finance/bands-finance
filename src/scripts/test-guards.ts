@@ -52,6 +52,9 @@ const ctx = (over: Partial<GuardContext> = {}): GuardContext => ({
   walletToken: 0,
   state: freshState(),
   killSwitch: false,
+  otherExposureSol: 0,
+  poolsWithBands: 0,
+  maxActivePools: 3,
   ...over,
 });
 
@@ -190,4 +193,18 @@ test("HOLD always passes", () => {
   assert.equal(evaluate(hold, ctx({ killSwitch: true }), limits).allowed, true);
 });
 
-console.log(`\n${n} guard tests passed`);
+test("exposure in other pools counts toward the total cap", () => {
+  const v = evaluate(open({ amountSol: 0.3 }), ctx({ otherExposureSol: 0.8, walletSol: 2 }), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /total exposure/);
+});
+
+test("pool cap blocks a band in a new pool but not a rebalance in a held one", () => {
+  const v = evaluate(open(), ctx({ poolsWithBands: 3, maxActivePools: 3 }), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /already working/);
+  const rebalance: Decision = { ...open(), action: "REBALANCE", positionAddress: "pos1" };
+  assert.equal(evaluate(rebalance, ctx({ poolsWithBands: 3, maxActivePools: 3, positions: [position] }), limits).allowed, true);
+});
+
+console.log(`${n} guard tests passed (with portfolio checks)`);

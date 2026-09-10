@@ -51,6 +51,7 @@ export interface JournalEntry {
   emergency: boolean;
   execution: ExecutionResult;
   headline: string;
+  screen?: { rank: number; rankedPools: number; score: number; feeToTvl24hPct: number | null } | null;
 }
 
 export function toJournalPool(s: PoolSnapshot): JournalPool {

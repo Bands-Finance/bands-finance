@@ -19,6 +19,11 @@ export interface GuardContext {
   walletToken: number;
   state: RiskState;
   killSwitch: boolean;
+  /** SOL-equivalent value of bands in OTHER pools */
+  otherExposureSol: number;
+  /** pools (excluding this one) that currently hold a band */
+  poolsWithBands: number;
+  maxActivePools: number;
 }
 
 export interface Verdict {
@@ -133,7 +138,7 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
       const solIsX = s.solSide === "X";
       const sizeSol = o.amountSol + o.amountToken * s.tokenPriceInSol;
       const currentExposure = ctx.positions.reduce((sum, p) => sum + p.valueInSol, 0);
-      const exposureAfter = currentExposure - (closing?.valueInSol ?? 0) + sizeSol;
+      const exposureAfter = ctx.otherExposureSol + currentExposure - (closing?.valueInSol ?? 0) + sizeSol;
       const walletSolAfterClose = ctx.walletSol + (closing?.solInPosition ?? 0);
       const walletSolAfter = walletSolAfterClose - o.amountSol - OPEN_COST_ESTIMATE_SOL;
       const width = o.binsBelowActive + o.binsAboveActive + 1;
@@ -153,6 +158,9 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
         violations.push("bin counts must be non-negative integers");
       }
       if (width > limits.maxBinWidth) violations.push(`band width ${width} bins > max ${limits.maxBinWidth}`);
+      if (ctx.positions.length === 0 && !closing && ctx.poolsWithBands >= ctx.maxActivePools) {
+        violations.push(`already working ${ctx.poolsWithBands} pools (max ${ctx.maxActivePools})`);
+      }
 
       // Geometry: SOL sits below active when SOL is Y, above when SOL is X. Token is the opposite.
       const solBelow = !solIsX;

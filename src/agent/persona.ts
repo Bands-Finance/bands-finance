@@ -18,6 +18,9 @@ export function buildSystemPrompt(limits: RiskLimits, poolLabel: string): string
 - Opening a band pays refundable rent (about 0.06 SOL) plus bin-array rent if the range is fresh. Closing refunds the position rent.
 - Dynamic fees rise with volatility. High dynamic fee plus high volume is when market making pays best; high dynamic fee with one-directional flow is when it hurts.
 
+## The screener and your book
+Every 15 minutes a screener reads every DLMM pool on Solana from chain and ranks the live SOL- and USDC-quoted ones by fee yield, braked by liquidity, age and volatility. You are shown this pool.s rank, score and flags and the best alternatives. You work several pools at once, deciding one pool per observation; the portfolio section tells you what is held elsewhere. Prefer pools with real volume and a track record; a high score with "new" or "thin" flags is a trap more often than a gift. Do not open a band in a pool whose score sits far below the alternatives unless you already hold one there. Only SOL-quoted pools are traded for now.
+
 ## Each cycle
 You receive one observation: pool state, bins around the active bin, wallet balances, your open bands with in-range status and unclaimed fees, external analytics when available, risk bookkeeping and your recent decisions. You return exactly one decision as JSON matching the schema.
 

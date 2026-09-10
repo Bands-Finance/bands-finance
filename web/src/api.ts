@@ -1,8 +1,8 @@
-import type { JournalEntry, RiskLimits } from "./types";
+import type { JournalEntry, RiskLimits, ScreenResult } from "./types";
 
 declare global {
   interface Window {
-    __BANDS_DATA__?: { entries: JournalEntry[]; limits?: RiskLimits; demo?: boolean };
+    __BANDS_DATA__?: { entries: JournalEntry[]; limits?: RiskLimits; screen?: ScreenResult | null; demo?: boolean };
   }
 }
 
@@ -63,3 +63,21 @@ export async function loadLimits(): Promise<RiskLimits | null> {
 
 /** True when every entry came from the demo seeder, so the page can say so. */
 export const isDemoJournal = (entries: JournalEntry[]) => entries.length > 0 && entries.every((e) => e.id.startsWith("demo-"));
+
+let screenSource: string | null = null;
+export async function loadScreen(): Promise<ScreenResult | null> {
+  if (window.__BANDS_DATA__?.entries) return window.__BANDS_DATA__.screen ?? null;
+  const candidates = screenSource ? [screenSource] : [env.VITE_SCREEN_URL, `${base}/api/screen`, `${base}/screen.json`].filter((u): u is string => Boolean(u));
+  for (const url of candidates) {
+    try {
+      const json = (await fetchJson(url)) as ScreenResult;
+      if (json && Array.isArray(json.pools)) {
+        screenSource = url;
+        return json;
+      }
+    } catch {
+      /* next */
+    }
+  }
+  return null;
+}

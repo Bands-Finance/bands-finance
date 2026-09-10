@@ -8,11 +8,16 @@ import { getPoolSnapshot, getUserPositions, loadPool } from "../tools/dlmm";
 import { Wallet } from "../tools/wallet";
 
 async function main(): Promise<void> {
+  const address = process.argv[2] ?? config.pinnedPools[0];
+  if (!address) {
+    console.error("usage: npm run read-pool -- <pool address>   (or set POOL_ADDRESS)");
+    process.exit(1);
+  }
   console.log(`RPC   ${config.rpcUrl}`);
-  console.log(`pool  ${config.poolAddress}`);
+  console.log(`pool  ${address}`);
   const connection = new Connection(config.rpcUrl, "confirmed");
   const t0 = Date.now();
-  const dlmm = await loadPool(connection, config.poolAddress);
+  const dlmm = await loadPool(connection, address);
   const s = await getPoolSnapshot(dlmm, 5);
   console.log(`loaded in ${Date.now() - t0}ms\n`);
 

@@ -9,13 +9,14 @@ function StatusChip({ e }: { e: JournalEntry }) {
   return null;
 }
 
-function Item({ e, now }: { e: JournalEntry; now: number }) {
+function Item({ e, now, showPool }: { e: JournalEntry; now: number; showPool: boolean }) {
   const proposedDiffers = e.proposal.action !== e.decision.action || e.proposal.headline !== e.decision.headline;
   return (
     <article className="feed-item">
       <div className="feed-head">
         <time dateTime={e.ts} title={new Date(e.ts).toLocaleString()}>{clock(e.ts)}</time>
         <span>{ago(e.ts, now)}</span>
+        {showPool && <span className="chip">{e.pool.label}</span>}
         <span className="chip action">{ACTION_LABEL[e.decision.action]}</span>
         <StatusChip e={e} />
         {e.llm.source === "fallback" && <span className="chip">no model</span>}
@@ -69,7 +70,7 @@ function Item({ e, now }: { e: JournalEntry; now: number }) {
   );
 }
 
-export function Feed({ entries, now }: { entries: JournalEntry[]; now: number }) {
+export function Feed({ entries, now, showPool = false }: { entries: JournalEntry[]; now: number; showPool?: boolean }) {
   const [shown, setShown] = useState(20);
   const visible = entries.slice(0, shown);
   return (
@@ -79,7 +80,7 @@ export function Feed({ entries, now }: { entries: JournalEntry[]; now: number })
         <span className="panel-meta">{entries.length} cycles · newest first</span>
       </div>
       {visible.map((e) => (
-        <Item key={e.id} e={e} now={now} />
+        <Item key={e.id} e={e} now={now} showPool={showPool} />
       ))}
       {shown < entries.length && (
         <button type="button" className="more" onClick={() => setShown((n) => n + 20)}>

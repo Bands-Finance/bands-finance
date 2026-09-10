@@ -3,16 +3,16 @@ import { feesInSol } from "../derive";
 import { ACTION_LABEL, duration, fmtPct, fmtPrice, fmtSigned, short } from "../format";
 
 export function Bands({ s, now }: { s: AgentSummary; now: number }) {
-  const e = s.latest;
+  const views = s.pools.filter((p) => p.latest.positions.length > 0);
   const lastExit = s.closed[s.closed.length - 1];
   const lastExitEntry = lastExit ? s.entries.find((x) => x.ts === lastExit.ts) : undefined;
   return (
     <section className="panel area-bands" aria-label="Bands on the book">
       <div className="panel-head">
         <h2 className="panel-title">Bands on the book</h2>
-        <div className="panel-meta">{e.positions.length === 0 ? "flat" : `${s.bandsInRange}/${s.bandsOpen} in range`}</div>
+        <div className="panel-meta">{s.bandsOpen === 0 ? "flat" : `${s.bandsInRange}/${s.bandsOpen} in range`}</div>
       </div>
-      {e.positions.length === 0 ? (
+      {s.bandsOpen === 0 ? (
         <div className="empty">
           No band on the book.
           {lastExit && lastExitEntry && (
@@ -22,7 +22,7 @@ export function Bands({ s, now }: { s: AgentSummary; now: number }) {
           )}
         </div>
       ) : (
-        e.positions.map((p) => {
+        views.flatMap((v) => v.latest.positions.map((p) => ({ p, e: v.latest, label: v.label }))).map(({ p, e, label }) => {
           const lo = Math.min(p.lowerPrice, e.pool.price) * 0.995;
           const hi = Math.max(p.upperPrice, e.pool.price) * 1.005;
           const pct = (v: number) => `${(((v - lo) / (hi - lo)) * 100).toFixed(2)}%`;
@@ -32,7 +32,7 @@ export function Bands({ s, now }: { s: AgentSummary; now: number }) {
           return (
             <div className="band" key={p.address}>
               <div className="band-head">
-                <span className="addr" title={p.address}>band {short(p.address)}</span>
+                <span className="addr" title={p.address}>{s.pools.length > 1 ? ` · ` : ""}band {short(p.address)}</span>
                 <span className={`chip ${p.inRange ? "inrange" : "outrange"}`}>
                   {p.inRange ? "in range" : `out by ${Math.abs(p.binsFromRange)} bins`}
                 </span>

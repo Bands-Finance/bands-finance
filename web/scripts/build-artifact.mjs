@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const [jsonl, limitsFile, out] = process.argv.slice(2);
+const [jsonl, limitsFile, out, screenFile] = process.argv.slice(2);
 const dist = path.resolve("dist");
 let html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
 
@@ -16,7 +16,8 @@ html = html.replace(/<link rel="modulepreload"[^>]*>/g, "");
 
 const entries = fs.readFileSync(jsonl, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).reverse();
 const limits = limitsFile && fs.existsSync(limitsFile) ? JSON.parse(fs.readFileSync(limitsFile, "utf8")) : null;
-const data = JSON.stringify({ entries, limits, demo: true }).replace(/<\//g, "<\\/");
+const screen = screenFile && fs.existsSync(screenFile) ? JSON.parse(fs.readFileSync(screenFile, "utf8")) : null;
+const data = JSON.stringify({ entries, limits, screen, demo: true }).replace(/<\//g, "<\\/");
 html = html.replace("<div id=\"root\"></div>", `<script>window.__BANDS_DATA__=${data};</script>\n<div id="root"></div>`);
 
 // The artifact host supplies the document skeleton; keep title, fonts, styles, body content.

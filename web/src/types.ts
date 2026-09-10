@@ -124,3 +124,46 @@ export interface RiskLimits {
   maxSlippagePct: number;
   maxPriceMovePctPerCycle: number;
 }
+
+export interface ScreenedPool {
+  address: string;
+  name: string;
+  baseSymbol: string;
+  quoteSymbol: "SOL" | "USDC";
+  baseMint: string;
+  quoteMint: string;
+  binStep: number;
+  baseFeePct: number;
+  dynamicFeePct: number;
+  activeBinId: number;
+  price: number;
+  tvlQuote: number;
+  quoteShare: number;
+  lastTradeAt: number | null;
+  tvlUsd: number | null;
+  volume24hUsd: number | null;
+  fees24hUsd: number | null;
+  feesSource: "onchain" | "estimate" | null;
+  feesWindowHours: number | null;
+  feeToTvl24hPct: number | null;
+  turnover24h: number | null;
+  priceChange24hPct: number | null;
+  binRangePct: number | null;
+  txns24h: number | null;
+  mcapUsd: number | null;
+  ageHours: number | null;
+  priceUsd: number | null;
+  score: number;
+  flags: string[];
+  rank: number;
+}
+
+export interface ScreenResult {
+  generatedAt: string;
+  scanMs: number;
+  scannedPools: number;
+  livePools: number;
+  rankedPools: number;
+  solPriceUsd: number | null;
+  pools: ScreenedPool[];
+}

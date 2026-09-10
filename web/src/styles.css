@@ -218,3 +218,50 @@ h2.section { font-size: 13px; font-weight: 600; margin: 0; }
 .band-pnl.down { color: var(--crit); }
 .band-foot { padding: 10px 14px; border-top: 1px solid var(--line); font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); display: flex; gap: 14px; flex-wrap: wrap; }
 .band-foot b { color: var(--ink); font-weight: 500; }
+
+/* ---- tabs ---- */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-top: -8px; }
+.tabs a { padding: 10px 14px; text-decoration: none; color: var(--ink-2); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; }
+.tabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tabs a:hover { color: var(--ink); }
+
+/* ---- pools ---- */
+.pools { display: flex; flex-direction: column; gap: 14px; }
+.pools-filters { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+.fld { display: flex; flex-direction: column; gap: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.fld.grow { flex: 1 1 240px; }
+.fld.chk { flex-direction: row; align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--ink-2); padding-bottom: 8px; }
+.fld select, .fld input[type="search"] { font: 13px var(--font-ui); color: var(--ink); background: var(--surface-2); border: 1px solid var(--line-2); border-radius: 4px; padding: 7px 10px; min-height: 34px; }
+.fld input[type="search"] { width: 100%; }
+.fld input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; }
+.pools-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); }
+.pools-head b { color: var(--ink); font-weight: 500; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.pools-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 1100px; }
+.pools-table th, .pools-table td { padding: 10px 12px; border-top: 1px solid var(--line); text-align: left; vertical-align: middle; white-space: nowrap; }
+.pools-table th { font-family: var(--font-mono); font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; border-top: 0; font-weight: 500; }
+.pools-table th.sortable { cursor: pointer; user-select: none; }
+.pools-table th.sortable:hover { color: var(--ink); }
+.pools-table .num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.pools-table td b { font-weight: 500; color: var(--ink); }
+.pools-table tr:hover td { background: var(--surface-2); }
+.pools-table .muted { color: var(--muted); }
+.pools-table .pos { color: var(--good); }
+.pools-table .neg { color: var(--crit); }
+.pools-table .onchain { color: var(--accent); margin-left: 2px; }
+.pools-table .empty { text-align: center; color: var(--muted); padding: 30px; }
+.pool-name { display: flex; align-items: center; gap: 6px; font-weight: 500; }
+.pool-name a { text-decoration: none; }
+.pool-name a:hover { text-decoration: underline; }
+.pool-sub { display: flex; gap: 6px; align-items: center; font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-top: 3px; }
+.chip.tiny { padding: 1px 5px; font-size: 10px; }
+.flag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 5px; border-radius: 3px; background: var(--surface-3); color: var(--ink-2); }
+.flag.hot { color: var(--accent); background: var(--accent-soft); }
+.flag.volatile, .flag.new { color: var(--warn); background: var(--warn-soft); }
+.flag.thin, .flag.one-sided { color: var(--muted); }
+.score { display: inline-flex; align-items: center; gap: 8px; }
+.score-bar { display: inline-block; width: 56px; height: 6px; background: var(--line-2); border-radius: 0 3px 3px 0; overflow: hidden; }
+.score-bar span { display: block; height: 100%; background: var(--accent); }
+.pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); }
+.pager .seg button { min-width: 32px; }
+.pager .seg button:disabled { color: var(--muted); cursor: default; }

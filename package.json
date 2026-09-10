@@ -15,7 +15,8 @@
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
     "web:snapshot": "tsx src/scripts/snapshot.ts",
-    "web:deploy": "npm run web:snapshot && cd web && vercel deploy --prod --yes"
+    "web:deploy": "npm run web:snapshot && cd web && vercel deploy --prod --yes",
+    "screen": "tsx src/scripts/screen.ts"
   },
   "keywords": [],
   "author": "",

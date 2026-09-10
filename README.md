@@ -20,6 +20,23 @@ src/
   scripts/        read-pool.ts (milestone 1)
 ```
 
+## How Mr Bands picks pools
+
+`src/screener` reads every DLMM LbPair on Solana straight from the program accounts (about 157k pools,
+12s on a public RPC), keeps the live SOL- and USDC-quoted ones, fetches their reserves so liquidity is measured
+from chain, enriches the top 300 with 24h volume, prices, market cap and age from GeckoTerminal, and scores them:
+fee yield first, braked by liquidity, age, volatility and one-sidedness. Once two scans exist, fees come from
+on-chain protocol-fee counter deltas rather than volume estimates. Results go to `data/screen.json` and the
+Pools page.
+
+```bash
+npm run screen             # scan + rank once, print the board
+```
+
+Each loop iteration refreshes the screen when stale, then works the pinned pools, every pool holding a band,
+and the best SOL-quoted picks up to `MAX_ACTIVE_POOLS`. Mr Bands decides one pool at a time with the
+screener.s view and the rest of the book in front of him; the guards cap exposure across all pools.
+
 ## Setup
 
 ```bash
@@ -31,7 +48,7 @@ cp .env.example .env     # then fill in RPC_URL, WALLET_SECRET_KEY, ANTHROPIC_AP
 
 ## Milestones
 
-1. **Read-only.** `npm run read-pool` loads the ANSEM/SOL pool and prints the active bin, price, fees and nearby bins. Works with the public RPC and no wallet.
+1. **Read-only.** `npm run read-pool -- <pool>` loads a pool (ANSEM/SOL is 6e7V9eegCHw997T72MxgwwJipZ6GJyZF8NvjkzT1rvpN) and prints the active bin, price, fees and nearby bins. Works with the public RPC and no wallet.
 2. **Dry run.** `npm run once` runs a full cycle with `DRY_RUN=true`: Mr Bands decides, guards check, transactions are built and simulated (if a wallet key is set) but never sent. Read `data/feed.md`.
 3. **Live, small.** Set `DRY_RUN=false`, keep `MAX_POSITION_SOL` small, run `npm start`.
 
