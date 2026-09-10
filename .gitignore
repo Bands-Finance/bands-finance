@@ -12,3 +12,4 @@ STOP
 
 *.log
 .DS_Store
+web/artifact/

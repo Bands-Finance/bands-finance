@@ -46,3 +46,27 @@ A file named `STOP` in the project root blocks all new exposure immediately.
 
 `data/decisions.jsonl` is the full record. `data/latest.json` (newest first, 100 entries)
 and `data/feed.md` are the feed for bands.finance.
+
+## The site (bands.finance)
+
+`web/` is a Vite + React dashboard over the journal: bin ladder with Mr Bands' bands highlighted,
+price chart with band shading and action markers, equity, bands on the book with P&L vs entry,
+the decision feed, and the guard limits. `src/server.ts` serves the JSON API and the built site.
+
+```bash
+npm run seed-demo          # five hours of realistic demo decisions into data/ (refuses to overwrite without --force)
+npm run web:build          # build web/dist
+npm run serve              # API + site on http://localhost:3000 (or SERVE_PORT=3000 npm start to co-host with the agent)
+npm run web:dev            # Vite dev server on :5173, proxies /api to :3000
+```
+
+API: `GET /api/journal?limit=500&agent=mr-bands`, `GET /api/limits`, `GET /api/health`, `GET /api/feed.md`.
+Several agents can write to one journal with different `AGENT_ID`s; the site groups by agent.
+To host the static site elsewhere, build with `VITE_API_URL=https://your-api` and put CORS in front.
+
+`web/scripts/build-artifact.mjs` inlines the build plus a journal into one HTML file for a standalone preview.
+
+## Analytics: LP Agent
+
+With `LPAGENT_API_KEY` set, pool stats come from LP Agent's open API (`GET /pools/{pool}/info`,
+header `x-api-key`; see https://docs.lpagent.io). Without a key, GeckoTerminal's public API is used.

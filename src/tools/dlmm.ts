@@ -84,6 +84,8 @@ export interface PositionSnapshot {
   /** SOL-side tokens in the position incl. SOL fees (what returns as SOL on close, before rent) */
   solInPosition: number;
   lastUpdatedAt: number;
+  /** value in SOL when the band was opened (or first seen); set by the loop from risk state */
+  entryValueSol?: number;
 }
 
 /** DLMM bin price: (1 + binStep/10000)^binId per lamport, scaled to UI decimals. */

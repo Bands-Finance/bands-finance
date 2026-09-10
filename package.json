@@ -9,7 +9,11 @@
     "once": "tsx src/index.ts --once",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "build": "tsc"
+    "build": "tsc",
+    "serve": "tsx src/server.ts",
+    "seed-demo": "tsx src/scripts/seed-demo.ts",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build"
   },
   "keywords": [],
   "author": "",
@@ -17,10 +21,12 @@
   "type": "commonjs",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",
+    "@hono/node-server": "^2.1.1",
     "@meteora-ag/dlmm": "^1.9.14",
     "@solana/web3.js": "^1.99.0",
     "bn.js": "^5.2.5",
     "dotenv": "^17.4.2",
+    "hono": "^4.13.7",
     "zod": "^4.6.1"
   },
   "devDependencies": {

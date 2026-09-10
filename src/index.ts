@@ -12,7 +12,8 @@ import { evaluate } from "./risk/guards";
 import { describeLimits } from "./risk/limits";
 import { killSwitchActive, loadState, saveState, RiskState } from "./risk/state";
 import { execute, ExecutionResult } from "./executor";
-import { appendJournal, JournalEntry, readRecent } from "./journal";
+import { appendJournal, JournalEntry, readRecent, toJournalPool } from "./journal";
+import { startServer } from "./server";
 import { getPoolSnapshot, getUserPositions, loadPool, PoolSnapshot, PositionSnapshot } from "./tools/dlmm";
 import { fetchPoolAnalytics } from "./tools/lpagent";
 import { Wallet } from "./tools/wallet";
@@ -72,6 +73,7 @@ async function runCycle(app: App): Promise<JournalEntry> {
   ]);
   const state = loadState();
   const killSwitch = killSwitchActive();
+  for (const p of positions) p.entryValueSol = state.entryValueSol[p.address];
   const observation: Observation = {
     ts,
     cycle: app.cycle,
@@ -111,15 +113,8 @@ async function runCycle(app: App): Promise<JournalEntry> {
     ts,
     cycle: app.cycle,
     mode,
-    pool: {
-      address: snapshot.address,
-      label: snapshot.label,
-      activeBinId: snapshot.activeBinId,
-      price: snapshot.activePrice,
-      priceLabel: snapshot.priceLabel,
-      binStep: snapshot.binStep,
-      dynamicFeePct: snapshot.dynamicFeePct,
-    },
+    agent: { id: config.agentId, name: config.agentName },
+    pool: toJournalPool(snapshot),
     wallet: observation.wallet,
     positions,
     analytics,
@@ -160,6 +155,7 @@ async function main(): Promise<void> {
   const dlmm = await loadPool(connection, config.poolAddress);
   const app: App = { connection, wallet, dlmm, cycle: 0 };
   banner(app);
+  if (config.servePort > 0) startServer(config.servePort);
 
   let stopping = false;
   process.on("SIGINT", () => {

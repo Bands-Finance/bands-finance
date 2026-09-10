@@ -1,13 +1,15 @@
 /**
- * External pool analytics ("LP Agent"-style stats: volume, TVL, fees, price in USD).
+ * External pool analytics: volume, TVL, fees, USD price.
  *
  * Source order:
- *   1. LPAGENT_API_URL if configured: GET {url}/pool/{address}, expected to return a JSON
- *      object with any of: priceUsd, volume24hUsd, tvlUsd, fees24hUsd, priceChange24hPct.
- *      Adapt `fromLpAgent` to the real payload once you have access.
- *   2. GeckoTerminal public API (no key). Fees are estimated as volume * base fee.
+ *   1. LP Agent open API (docs.lpagent.io) when LPAGENT_API_KEY is set:
+ *      GET {LPAGENT_API_URL}/pools/{pool}/info with header x-api-key.
+ *      Returns tokenInfo (usdPrice), feeInfo, poolStats (TVL / fees / volumes) and
+ *      liquidityViz (activeBin, bins). poolStats field names are not documented, so
+ *      they are read defensively; the raw object is kept for the journal.
+ *   2. GeckoTerminal public API (no key). Fees estimated as volume x base fee.
  *
- * Analytics are advisory. The loop must keep working when this returns null.
+ * Analytics are advisory. The loop keeps working when this returns null.
  */
 import { config } from "../config";
 import type { PoolSnapshot } from "./dlmm";
@@ -25,9 +27,9 @@ export interface PoolAnalytics {
   note: string;
 }
 
-async function getJson(url: string, timeoutMs = 8000): Promise<unknown> {
+async function getJson(url: string, headers: Record<string, string> = {}, timeoutMs = 8000): Promise<unknown> {
   const res = await fetch(url, {
-    headers: { accept: "application/json" },
+    headers: { accept: "application/json", ...headers },
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
@@ -40,30 +42,49 @@ function num(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function fromLpAgent(payload: unknown): PoolAnalytics {
-  const p = (payload ?? {}) as Record<string, unknown>;
-  const tvl = num(p.tvlUsd);
-  const fees = num(p.fees24hUsd);
+type Obj = Record<string, unknown>;
+const obj = (v: unknown): Obj => (v && typeof v === "object" ? (v as Obj) : {});
+
+/** First finite value among candidate keys (LP Agent's poolStats keys are undocumented). */
+function pick(o: Obj, keys: string[]): number | null {
+  for (const k of keys) {
+    const n = num(o[k]);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+function fromLpAgent(payload: unknown, snapshot?: PoolSnapshot): PoolAnalytics {
+  const d = obj(obj(payload).data);
+  const tokens = (Array.isArray(d.tokenInfo) ? d.tokenInfo : [])
+    .map((t) => (Array.isArray(obj(t).data) ? obj((obj(t).data as unknown[])[0]) : obj(t)))
+    .filter((t) => Object.keys(t).length > 0);
+  const base = tokens.find((t) => t.symbol !== "SOL" && (!snapshot || t.id === snapshot.baseToken.mint)) ?? tokens[0];
+  const ps = obj(d.poolStats);
+  const volume = pick(ps, ["volume24h", "volume_24h", "trade_volume_24h", "volume24hUsd", "volume"]);
+  const tvl = pick(ps, ["tvl", "tvlUsd", "liquidity", "tvl_usd"]);
+  const feesDirect = pick(ps, ["fees24h", "fees_24h", "fee24h", "fees24hUsd"]);
+  const baseFeePct = num(obj(d.feeInfo).baseFeeRatePercentage) ?? snapshot?.baseFeePct ?? null;
+  const fees = feesDirect ?? (volume !== null && baseFeePct !== null ? volume * (baseFeePct / 100) : null);
   return {
     source: "lpagent",
-    priceUsd: num(p.priceUsd),
-    volume24hUsd: num(p.volume24hUsd),
+    priceUsd: base ? num(base.usdPrice) : null,
+    volume24hUsd: volume,
     tvlUsd: tvl,
     fees24hUsd: fees,
     feeToTvl24hPct: tvl && fees ? (fees / tvl) * 100 : null,
-    priceChange24hPct: num(p.priceChange24hPct),
-    txns24h: num(p.txns24h),
-    note: "LP Agent endpoint",
+    priceChange24hPct: pick(ps, ["priceChange24h", "price_change_24h"]),
+    txns24h: pick(ps, ["txns24h", "trades24h", "swaps24h"]),
+    note: feesDirect === null ? "fees24h estimated as volume x base fee" : "LP Agent pool stats",
   };
 }
 
 function fromGecko(payload: unknown, snapshot?: PoolSnapshot): PoolAnalytics {
-  const attrs = ((payload as { data?: { attributes?: Record<string, unknown> } })?.data?.attributes ?? {}) as Record<string, unknown>;
-  const volume = num((attrs.volume_usd as Record<string, unknown> | undefined)?.h24);
+  const attrs = obj(obj(obj(payload).data).attributes);
+  const volume = num(obj(attrs.volume_usd).h24);
   const tvl = num(attrs.reserve_in_usd);
-  const h24 = (attrs.transactions as Record<string, Record<string, unknown>> | undefined)?.h24;
-  const txns = h24 ? (num(h24.buys) ?? 0) + (num(h24.sells) ?? 0) : null;
-  // Estimate fees from volume and the pool's base fee. Dynamic fees make the real number higher.
+  const h24 = obj(obj(attrs.transactions).h24);
+  const txns = Object.keys(h24).length ? (num(h24.buys) ?? 0) + (num(h24.sells) ?? 0) : null;
   const fees = volume !== null && snapshot ? volume * (snapshot.baseFeePct / 100) : null;
   const solIsQuote = snapshot?.solSide === "Y";
   return {
@@ -73,17 +94,17 @@ function fromGecko(payload: unknown, snapshot?: PoolSnapshot): PoolAnalytics {
     tvlUsd: tvl,
     fees24hUsd: fees,
     feeToTvl24hPct: tvl && fees ? (fees / tvl) * 100 : null,
-    priceChange24hPct: num((attrs.price_change_percentage as Record<string, unknown> | undefined)?.h24),
+    priceChange24hPct: num(obj(attrs.price_change_percentage).h24),
     txns24h: txns,
     note: "fees24h estimated as volume x base fee",
   };
 }
 
 export async function fetchPoolAnalytics(poolAddress: string, snapshot?: PoolSnapshot): Promise<PoolAnalytics | null> {
-  if (config.lpagentApiUrl) {
+  if (config.lpagentApiKey) {
     try {
       const base = config.lpagentApiUrl.replace(/\/$/, "");
-      return fromLpAgent(await getJson(`${base}/pool/${poolAddress}`));
+      return fromLpAgent(await getJson(`${base}/pools/${poolAddress}/info`, { "x-api-key": config.lpagentApiKey }), snapshot);
     } catch (err) {
       console.warn(`[lpagent] ${(err as Error).message}; falling back to GeckoTerminal`);
     }

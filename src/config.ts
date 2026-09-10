@@ -16,7 +16,11 @@ const Raw = z.object({
   POOL_ADDRESS: z.string().default("6e7V9eegCHw997T72MxgwwJipZ6GJyZF8NvjkzT1rvpN"),
   CYCLE_INTERVAL_SEC: z.coerce.number().default(300),
   DATA_DIR: z.string().default("data"),
-  LPAGENT_API_URL: z.string().default(""),
+  LPAGENT_API_URL: z.string().default("https://api.lpagent.io/open-api/v1"),
+  LPAGENT_API_KEY: z.string().default(""),
+  AGENT_ID: z.string().default("mr-bands"),
+  AGENT_NAME: z.string().default("Mr Bands"),
+  SERVE_PORT: z.coerce.number().default(0),
 
   MAX_POSITION_SOL: z.coerce.number().default(0.5),
   MAX_TOTAL_EXPOSURE_SOL: z.coerce.number().default(1),
@@ -42,6 +46,11 @@ export const config = {
   cycleIntervalSec: raw.CYCLE_INTERVAL_SEC,
   dataDir: raw.DATA_DIR,
   lpagentApiUrl: raw.LPAGENT_API_URL,
+  lpagentApiKey: raw.LPAGENT_API_KEY,
+  agentId: raw.AGENT_ID,
+  agentName: raw.AGENT_NAME,
+  /** when > 0, `npm start` also serves the bands.finance API + site on this port */
+  servePort: raw.SERVE_PORT,
 } as const;
 
 export const riskLimits: RiskLimits = {
