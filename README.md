@@ -1,0 +1,48 @@
+# Mr Bands
+
+An LLM-driven liquidity provider for Meteora DLMM on Solana. Mr Bands watches a pool,
+proposes what to do with its "bands" (bin ranges), and a set of hard-coded risk guards
+decide whether the proposal is allowed. Every decision is journaled for bands.finance.
+
+**The LLM proposes. The guards decide. The wallet refuses to broadcast in dry-run.**
+
+## Layout
+
+```
+src/
+  index.ts        scheduler: observe -> propose -> guard -> execute -> journal
+  config.ts       .env loading, typed config, risk limits
+  executor.ts     builds/simulates/sends transactions for an allowed verdict
+  agent/          Mr Bands: persona (system prompt), decision schema, LLM call, observation formatting
+  tools/          dlmm.ts (pool + positions + tx builders), wallet.ts (keys, balances, send), lpagent.ts (analytics)
+  risk/           limits.ts, guards.ts (pure checks), state.ts (daily counters, entry values, kill switch)
+  journal/        decisions.jsonl + latest.json + feed.md under data/
+  scripts/        read-pool.ts (milestone 1)
+```
+
+## Setup
+
+```bash
+npm install
+cp .env.example .env     # then fill in RPC_URL, WALLET_SECRET_KEY, ANTHROPIC_API_KEY
+```
+
+`.env` is git-ignored. Use a dedicated hot wallet with a small amount of SOL. Keep the treasury elsewhere.
+
+## Milestones
+
+1. **Read-only.** `npm run read-pool` loads the ANSEM/SOL pool and prints the active bin, price, fees and nearby bins. Works with the public RPC and no wallet.
+2. **Dry run.** `npm run once` runs a full cycle with `DRY_RUN=true`: Mr Bands decides, guards check, transactions are built and simulated (if a wallet key is set) but never sent. Read `data/feed.md`.
+3. **Live, small.** Set `DRY_RUN=false`, keep `MAX_POSITION_SOL` small, run `npm start`.
+
+## Risk guards (src/risk)
+
+All limits come from `.env` and are enforced in code before any transaction is built:
+max band size, max total exposure, gas reserve, stop-loss (guards force a close), max band
+width, daily action cap, cooldown, deposit slippage, and a price-move sanity check.
+A file named `STOP` in the project root blocks all new exposure immediately.
+
+## Journal
+
+`data/decisions.jsonl` is the full record. `data/latest.json` (newest first, 100 entries)
+and `data/feed.md` are the feed for bands.finance.

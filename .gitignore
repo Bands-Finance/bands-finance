@@ -1,0 +1,14 @@
+node_modules/
+dist/
+
+# secrets: never commit
+.env
+.env.*
+!.env.example
+
+# runtime state + journal data
+/data/
+STOP
+
+*.log
+.DS_Store

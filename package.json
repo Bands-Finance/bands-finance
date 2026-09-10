@@ -1,0 +1,33 @@
+{
+  "name": "mr-bands",
+  "version": "1.0.0",
+  "description": "Mr Bands: an LLM-driven Meteora DLMM liquidity agent with hard risk guards",
+  "main": "index.js",
+  "scripts": {
+    "test": "tsx src/scripts/test-guards.ts",
+    "read-pool": "tsx src/scripts/read-pool.ts",
+    "once": "tsx src/index.ts --once",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
+    "@meteora-ag/dlmm": "^1.9.14",
+    "@solana/web3.js": "^1.99.0",
+    "bn.js": "^5.2.5",
+    "dotenv": "^17.4.2",
+    "zod": "^4.6.1"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.2.0",
+    "@types/node": "^22.20.2",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  },
+  "private": "true"
+}
