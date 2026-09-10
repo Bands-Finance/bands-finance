@@ -13,7 +13,9 @@
     "serve": "tsx src/server.ts",
     "seed-demo": "tsx src/scripts/seed-demo.ts",
     "web:dev": "npm --prefix web run dev",
-    "web:build": "npm --prefix web run build"
+    "web:build": "npm --prefix web run build",
+    "web:snapshot": "tsx src/scripts/snapshot.ts",
+    "web:deploy": "npm run web:snapshot && cd web && vercel deploy --prod --yes"
   },
   "keywords": [],
   "author": "",

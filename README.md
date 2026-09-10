@@ -70,3 +70,19 @@ To host the static site elsewhere, build with `VITE_API_URL=https://your-api` an
 
 With `LPAGENT_API_KEY` set, pool stats come from LP Agent's open API (`GET /pools/{pool}/info`,
 header `x-api-key`; see https://docs.lpagent.io). Without a key, GeckoTerminal's public API is used.
+
+## Deploying to bands.finance (Vercel)
+
+The site is a static Vite build on Vercel (project `bands-finance`, domains bands.finance and www).
+Vercel has no home for the agent's API, so the site reads sources in order: `VITE_JOURNAL_URL`
+(a JSON file the agent can push anywhere), then `/api/journal` (the agent's own server), then
+`/journal.json` (a snapshot bundled with the site). Snapshot data is labelled "demo data" on the page
+when every entry came from the seeder.
+
+```bash
+npm run web:deploy     # snapshot data/ into web/public, then `vercel deploy --prod` from web/
+```
+
+To make the public site live rather than a snapshot, either run `npm run serve` somewhere public and
+build the site with `VITE_API_URL=https://that-host`, or have the agent write `journal.json` to a
+public bucket and build with `VITE_JOURNAL_URL`.

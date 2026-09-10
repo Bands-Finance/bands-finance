@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "headers": [
+    {
+      "source": "/(journal|limits).json",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, s-maxage=30, stale-while-revalidate=300" }]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "www.bands.finance" }],
+      "destination": "https://bands.finance/$1",
+      "permanent": true
+    }
+  ]
+}

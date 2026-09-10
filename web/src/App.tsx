@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { isEmbedded, loadJournal, loadLimits } from "./api";
+import { isDemoJournal, isEmbedded, loadJournal, loadLimits } from "./api";
 import { groupAgents, inRange, RANGE_LABEL, RangeKey } from "./derive";
 import type { JournalEntry, RiskLimits } from "./types";
 import { Masthead } from "./components/Masthead";
@@ -58,7 +58,7 @@ export default function App() {
 
   return (
     <div className={`page ${fetching && entries ? "refetching" : ""}`}>
-      <Masthead agents={agents} selected={selected} onSelect={setSelectedId} lastFetched={lastFetched} now={now} demo={embedded} />
+      <Masthead agents={agents} selected={selected} onSelect={setSelectedId} lastFetched={lastFetched} now={now} demo={embedded || (entries ? isDemoJournal(entries) : false)} />
       {error && !entries && (
         <div className="error">
           Could not load the journal: <code>{error}</code>. Start the API with <code>npm run serve</code> (or set <code>VITE_API_URL</code>).

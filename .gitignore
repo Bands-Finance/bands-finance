@@ -13,3 +13,5 @@ STOP
 *.log
 .DS_Store
 web/artifact/
+.vercel/
+web/.vercel/
