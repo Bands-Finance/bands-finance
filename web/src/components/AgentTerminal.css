@@ -1,0 +1,279 @@
+.term {
+  border: 1px solid var(--bands-border-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--panel-shadow), var(--glow-accent);
+  background: var(--bands-terminal);
+}
+
+/* --- window chrome --- */
+.term__chrome {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  background: linear-gradient(180deg, rgba(28, 36, 74, 0.9), rgba(16, 22, 48, 0.9));
+  border-bottom: 1px solid var(--bands-border);
+}
+
+.term__dots { display: inline-flex; gap: 7px; }
+.term__dots i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #3a332c;
+}
+.term__dots i:nth-child(1) { background: #ff5f57; }
+.term__dots i:nth-child(2) { background: #febc2e; }
+.term__dots i:nth-child(3) { background: #28c840; }
+
+.term__title {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--bands-text-dim);
+  letter-spacing: 0.02em;
+}
+
+.term__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--bands-text-faint);
+}
+.term__status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.term__status--live { color: var(--bands-positive); }
+.term__status--live .term__status-dot {
+  /* Static glow + compositable pulse: animating box-shadow forces a repaint
+     every frame forever, which is paint work the whole section pays for. */
+  box-shadow: 0 0 0 3px rgba(79, 203, 138, 0.18), 0 0 10px rgba(79, 203, 138, 0.8);
+  animation: term-pulse 1.8s ease-in-out infinite;
+  will-change: opacity, transform;
+}
+.term__status--connecting { color: var(--bands-gold); }
+.term__status--offline { color: var(--bands-danger); }
+
+@keyframes term-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(1.3); }
+}
+
+/* --- scrollback body --- */
+.term__body {
+  height: 420px;
+  overflow-y: auto;
+  padding: 18px 20px 22px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+  scroll-behavior: smooth;
+}
+.term__body::-webkit-scrollbar { width: 8px; }
+.term__body::-webkit-scrollbar-thumb {
+  background: var(--bands-border-strong);
+  border-radius: 8px;
+}
+
+.term__boot {
+  color: var(--bands-peri-dim);
+  margin: 0 0 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed var(--bands-border);
+}
+
+.term__block { margin-bottom: 18px; }
+
+.term__prompt { margin: 0 0 4px; color: var(--bands-text); }
+.term__time { color: var(--bands-text-faint); }
+.term__user { color: var(--bands-positive); }
+.term__path { color: var(--bands-peri); }
+.term__cmd { color: var(--bands-cyan); }
+
+.term__line {
+  margin: 0;
+  color: var(--bands-text-dim);
+  padding-left: 6px;
+}
+.term__line--dim { color: var(--bands-text-faint); }
+.term__caret { color: var(--bands-peri-dim); margin-right: 4px; }
+
+.term__decision {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+}
+.term__decision--trade {
+  color: var(--bands-positive);
+  background: rgba(79, 203, 138, 0.08);
+  border-left: 2px solid var(--bands-positive);
+}
+.term__decision--hold {
+  color: var(--bands-text-faint);
+  background: rgba(150, 170, 255, 0.04);
+  border-left: 2px solid var(--bands-border-strong);
+}
+.term__decision--failed {
+  color: var(--bands-danger);
+  background: rgba(255, 107, 125, 0.08);
+  border-left: 2px solid var(--bands-danger);
+}
+.term__decision--proposed {
+  color: var(--bands-gold);
+  background: rgba(230, 193, 90, 0.07);
+  border-left: 2px solid var(--bands-gold-dim);
+}
+.term__pair { color: var(--bands-cyan); font-weight: 600; }
+.term__why { color: var(--bands-text-dim); }
+.term__tx {
+  color: var(--bands-cyan);
+  text-decoration: none;
+  border-bottom: 1px dotted currentColor;
+}
+.term__tx:hover { color: var(--bands-positive); }
+
+/* --- blinking cursor --- */
+.term__cursor-line { margin: 4px 0 0; color: var(--bands-text); }
+.term__cursor {
+  display: inline-block;
+  width: 8px;
+  height: 15px;
+  vertical-align: text-bottom;
+  background: var(--bands-cyan);
+  box-shadow: var(--glow-accent);
+  animation: term-blink 1.1s step-end infinite;
+}
+@keyframes term-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .term__body { scroll-behavior: auto; }
+  .term__cursor { animation: none; }
+  .term__status--live .term__status-dot { animation: none; }
+}
+
+/* ---- interactive console (guest commands) ---- */
+.term__user--guest { color: var(--bands-gold); }
+
+.term__hint {
+  font-size: 11.5px;
+  color: var(--bands-text-faint);
+  margin: 14px 0 4px;
+}
+
+.term__input-row {
+  display: flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding: 4px 0 2px;
+  cursor: text;
+}
+
+.term__input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--bands-text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  caret-color: var(--bands-lime);
+  padding: 2px 4px;
+}
+.term__input::placeholder { color: var(--bands-text-faint); }
+
+/* ======================================================================
+   bands.finance additions (Desk.tsx). Everything above is Meridian's,
+   verbatim; everything below is what the desk needs on top of it.
+   ====================================================================== */
+
+/* global.css uses `.term` for a glossed word (dotted underline, cursor: help)
+   and the terminal root shares the name. text-decoration propagates to every
+   in-flow descendant, so left alone the whole scrollback would be underlined
+   and a gloss inside the boot line would grow the terminal's border. Keep
+   the two apart with one extra class on the root. */
+.term.term--desk { text-decoration: none; cursor: auto; }
+.term--desk .term {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  overflow: visible;
+}
+
+/* Long unbroken tokens (pool labels, tx labels, an address in a guard
+   message) must wrap on a 400px screen, never widen the page. */
+.term--desk .term__body { overflow-wrap: anywhere; }
+.term--desk .term__title { white-space: normal; line-height: 1.4; }
+
+/* --- status light: what the feed is doing right now --- */
+.term__status--rehearsal { color: var(--bands-gold); }
+.term__status--demo { color: var(--bands-accent-soft); }
+.term__status--standby { color: var(--bands-danger); }
+
+/* --- verdict pills: one per way a cycle can end --- */
+.term__decision--placed {
+  color: var(--bands-positive);
+  background: rgba(79, 203, 138, 0.08);
+  border-left: 2px solid var(--bands-positive);
+}
+.term__decision--simulated {
+  color: var(--bands-gold);
+  background: rgba(217, 205, 184, 0.07);
+  border-left: 2px solid var(--bands-gold-dim);
+}
+.term__decision--blocked {
+  color: var(--bands-danger);
+  background: rgba(255, 93, 93, 0.08);
+  border-left: 2px solid var(--bands-danger);
+}
+.term__decision--override {
+  color: var(--bands-accent);
+  background: rgba(255, 122, 26, 0.09);
+  border-left: 2px solid var(--bands-accent);
+}
+
+/* --- his headline, in his voice: cream, italic, still mono --- */
+.term__quote {
+  margin: 4px 0 0;
+  padding-left: 6px;
+  color: var(--bands-text);
+  font-style: italic;
+}
+
+/* --- the fold: a run of identical holds reads as patience, not a loop --- */
+.term__fold {
+  color: var(--bands-text-faint);
+  font-style: italic;
+}
+.term__fold .term__caret { color: var(--bands-gold-dim); }
+
+/* --- head copy: the one word the sub tells the reader to type --- */
+.app__desk-sub code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--bands-accent-soft);
+  background: rgba(255, 122, 26, 0.1);
+  border: 1px solid var(--bands-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+@media (max-width: 480px) {
+  .term--desk .term__chrome { flex-wrap: wrap; row-gap: 6px; padding: 10px 14px; }
+  .term--desk .term__title { flex-basis: 100%; order: 3; text-align: left; }
+  .term--desk .term__body { padding: 14px 14px 18px; font-size: 12.5px; }
+}

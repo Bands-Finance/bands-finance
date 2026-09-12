@@ -1,0 +1,97 @@
+.census {
+  position: relative;
+  z-index: 1;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px 32px 48px;
+}
+
+.census__head {
+  max-width: 620px;
+  margin-bottom: 28px;
+}
+.census__title {
+  font-family: var(--font-display);
+  font-size: clamp(26px, 3.6vw, 38px);
+  font-weight: 400;
+  line-height: 1.1;
+  margin: 12px 0 12px;
+  color: var(--bands-text);
+}
+.census__sub {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--bands-text-dim);
+  margin: 0;
+}
+
+.census__stats {
+  display: flex;
+  gap: 40px;
+  flex-wrap: wrap;
+  margin-bottom: 26px;
+  padding: 18px 0;
+  border-top: 1px solid var(--bands-border);
+  border-bottom: 1px solid var(--bands-border);
+}
+.census__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.census__stat-value {
+  font-family: var(--font-display);
+  font-size: 30px;
+  color: var(--bands-lime);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.census__stat-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bands-text-faint);
+}
+
+/* Light chip row instead of a card wall — names with a subtle confidence dot. */
+.census__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.census__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bands-panel);
+  border: 1px solid var(--bands-border);
+  border-radius: 999px;
+  padding: 7px 13px;
+  font-size: 12.5px;
+  color: var(--bands-text-dim);
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+.census__chip:hover {
+  border-color: var(--bands-border-strong);
+  color: var(--bands-text);
+}
+.census__chip--more {
+  color: var(--bands-text-faint);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.census__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--bands-text-faint);
+}
+.census__dot--high { background: var(--bands-positive); box-shadow: 0 0 6px rgba(79, 203, 138, 0.6); }
+.census__dot--medium { background: var(--bands-gold); }
+.census__dot--low { background: var(--bands-text-faint); }
+
+@media (max-width: 620px) {
+  .census__stats { gap: 26px; }
+}

@@ -1,0 +1,69 @@
+/* ModeBanner: the one honest sentence about what the numbers on the page are.
+   A quiet full-width strip on the panel tone with one orange rule at the
+   left of the content column. It should read, not shout. */
+.modebanner {
+  position: relative;
+  z-index: 1;
+  background: var(--bands-panel);
+  border-top: 1px solid var(--bands-border);
+  border-bottom: 1px solid var(--bands-border);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+}
+
+.modebanner__inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 14px 32px;
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+}
+
+/* The rule belongs to the content column, not the viewport edge, so it lines
+   up with the hero copy above it. */
+.modebanner__inner::before {
+  content: "";
+  align-self: stretch;
+  width: 3px;
+  flex: 0 0 3px;
+  border-radius: 2px;
+  background: var(--bands-accent);
+  box-shadow: var(--glow-accent);
+}
+
+.modebanner__eyebrow {
+  --eyebrow-size: 11px;
+  --eyebrow-tracking: 0.14em;
+  --eyebrow-color: var(--bands-text-faint);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.modebanner__sep { color: var(--bands-text-faint); }
+.modebanner__mode { color: var(--bands-accent); }
+.modebanner__mode--live { color: var(--bands-positive); }
+
+.modebanner__sentence {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--bands-text-dim);
+  max-width: 78ch;
+}
+
+@media (max-width: 640px) {
+  .modebanner__inner {
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 20px 12px 16px;
+  }
+  /* A column layout cannot stretch a pseudo-rule down the side; the border
+     takes over so the orange cue survives at phone width. */
+  .modebanner__inner::before { display: none; }
+  .modebanner__inner { border-left: 3px solid var(--bands-accent); }
+  .modebanner__sentence { font-size: 14px; }
+}

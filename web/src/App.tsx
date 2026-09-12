@@ -1,74 +1,93 @@
 import { useEffect, useMemo, useState } from "react";
 import { isDemoJournal, isEmbedded, loadJournal, loadLimits, loadScreen } from "./api";
-import { groupAgents, inRange, RANGE_LABEL, RangeKey } from "./derive";
+import { groupAgents } from "./derive";
+import { bookOf, recordOf, statusOf } from "./model";
+import { useScrollFx } from "./hooks/useScrollFx";
 import type { JournalEntry, RiskLimits, ScreenResult } from "./types";
-import { Masthead } from "./components/Masthead";
-import { Stats } from "./components/Stats";
+import { Header } from "./components/Header";
+import { Hero } from "./components/Hero";
+import { ModeBanner } from "./components/ModeBanner";
+import { Desk } from "./components/Desk";
+import { Record } from "./components/Record";
+import { Book } from "./components/Book";
+import { Guards } from "./components/Guards";
+import { Learn } from "./components/Learn";
+import { TryIt } from "./components/TryIt";
+import { PoolsHead } from "./components/PoolsHead";
+import { Pools, PoolStatus } from "./components/Pools";
+import { PublishHere } from "./components/PublishHere";
+import { Footer } from "./components/Footer";
 import { BinLadder } from "./components/BinLadder";
 import { PriceChart } from "./components/PriceChart";
-import { EquitySpark } from "./components/EquitySpark";
-import { Bands } from "./components/Bands";
-import { Feed } from "./components/Feed";
-import { Guards } from "./components/Guards";
-import { Pools, PoolStatus } from "./components/Pools";
 
 const POLL_MS = 20_000;
-const RANGES: RangeKey[] = ["6h", "24h", "7d", "all"];
-type Route = "pools" | "agents";
+export type Route = "home" | "pools" | "learn" | "agents";
 
 function routeFromHash(h: string): Route {
-  return h.startsWith("#/agents") || h.startsWith("#/@") ? "agents" : "pools";
+  if (h.startsWith("#/pools")) return "pools";
+  if (h.startsWith("#/learn")) return "learn";
+  if (h.startsWith("#/agents") || h.startsWith("#/@")) return "agents";
+  return "home";
 }
+
+const TITLES: Record<Route, string> = {
+  home: "bands.finance · Mr Bands, an agent that makes markets on Solana",
+  pools: "Every pool on the chain, ranked · bands.finance",
+  learn: "How it works · bands.finance",
+  agents: "Agents · bands.finance",
+};
 
 function useRoute(): Route {
   const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
   useEffect(() => {
-    const f = () => setRoute(routeFromHash(window.location.hash));
+    const f = () => {
+      const r = routeFromHash(window.location.hash);
+      setRoute(r);
+      if (window.location.hash === "" || window.location.hash.startsWith("#/")) window.scrollTo({ top: 0 });
+    };
     window.addEventListener("hashchange", f);
     return () => window.removeEventListener("hashchange", f);
   }, []);
+  useEffect(() => {
+    document.title = TITLES[route];
+  }, [route]);
   return route;
 }
 
 export default function App() {
+  useScrollFx();
   const route = useRoute();
   const [entries, setEntries] = useState<JournalEntry[] | null>(null);
   const [screen, setScreen] = useState<ScreenResult | null>(null);
   const [limits, setLimits] = useState<RiskLimits | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [lastFetched, setLastFetched] = useState<number | null>(null);
-  const [fetching, setFetching] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [range, setRange] = useState<RangeKey>("24h");
   const [poolAddr, setPoolAddr] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const embedded = isEmbedded();
 
   useEffect(() => {
     let alive = true;
+    let last = "";
     const tick = async () => {
-      setFetching(true);
-      try {
-        const [j, l, s] = await Promise.all([loadJournal().catch((e: Error) => { throw e; }), loadLimits(), loadScreen()]);
-        if (!alive) return;
-        setEntries(j);
-        setLimits(l);
-        setScreen(s);
+      const [j, l, s] = await Promise.all([loadJournal().catch((e: Error) => ({ error: e })), loadLimits(), loadScreen()]);
+      if (!alive) return;
+      if (Array.isArray(j)) {
+        const sig = j.length ? `${j.length}:${j[0].id}` : "0";
+        if (sig !== last) {
+          last = sig;
+          setEntries(j);
+        }
         setError(null);
-        setLastFetched(Date.now());
-      } catch (err) {
-        if (!alive) return;
-        setError((err as Error).message);
-        // The screen can still load when the journal cannot.
-        const s = await loadScreen();
-        if (alive) setScreen(s);
-      } finally {
-        if (alive) setFetching(false);
+      } else {
+        setError((j as { error: Error }).error.message);
       }
+      setLimits(l);
+      setScreen((prev) => (s && s.generatedAt !== prev?.generatedAt ? s : prev ?? s));
     };
     void tick();
     const id = embedded ? undefined : window.setInterval(() => void tick(), POLL_MS);
-    const clock = window.setInterval(() => setNow(Date.now()), 10_000);
+    const clock = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => {
       alive = false;
       if (id) window.clearInterval(id);
@@ -76,12 +95,21 @@ export default function App() {
     };
   }, [embedded]);
 
-  const scoped = useMemo(() => (entries ? inRange(entries, range, now) : null), [entries, range, now]);
-  const agents = useMemo(() => (scoped ? groupAgents(scoped) : []), [scoped]);
+  const agents = useMemo(() => (entries ? groupAgents(entries) : []), [entries]);
   const selected = agents.find((a) => a.id === selectedId) ?? agents[0] ?? null;
-  const poolView = selected ? (selected.pools.find((p) => p.address === poolAddr) ?? selected.pools[0] ?? null) : null;
-
-  /** What the agents are doing per pool, for the Pools table. */
+  const agentEntries = selected?.entries ?? [];
+  const demo = embedded || (entries ? isDemoJournal(entries) : false);
+  const status = useMemo(() => statusOf(agentEntries, now, demo), [agentEntries, now, demo]);
+  const record = useMemo(() => recordOf(agentEntries), [agentEntries]);
+  const book = useMemo(() => bookOf(agentEntries), [agentEntries]);
+  const agentName = selected?.name ?? "Mr Bands";
+  const workingNow = useMemo(() => {
+    const seen = new Map<string, boolean>();
+    for (const e of agentEntries) if (!seen.has(e.pool.address)) seen.set(e.pool.address, e.positions.length > 0);
+    const withBands = agentEntries.filter((e) => seen.get(e.pool.address)).map((e) => e.pool.label);
+    const labels = [...new Set(withBands.length ? withBands : agentEntries.slice(0, 3).map((e) => e.pool.label))];
+    return labels.slice(0, 4);
+  }, [agentEntries]);
   const poolStatus = useMemo(() => {
     const m = new Map<string, PoolStatus>();
     if (!entries) return m;
@@ -95,74 +123,86 @@ export default function App() {
     }
     return m;
   }, [entries, now]);
+  const poolView = selected ? (selected.pools.find((p) => p.address === poolAddr) ?? selected.pools[0] ?? null) : null;
 
-  const demo = embedded || (entries ? isDemoJournal(entries) : false);
-  const subtitle =
-    route === "pools" ? (
-      <>Every DLMM pool on Solana, read from chain and ranked for market making. <b>Mr Bands</b> works the ones worth working.</>
-    ) : selected ? (
-      <><b>{selected.name}</b> makes markets in <b>{selected.pools.map((p) => p.label).join(", ")}</b> on Meteora DLMM. Every decision, every guard verdict, in the open.</>
-    ) : (
-      <>Autonomous liquidity agents on Meteora DLMM. Every decision, every guard verdict, in the open.</>
-    );
+  const deskStack = (id: string) => (
+    <>
+      <Desk id={id} entries={agentEntries} status={status} limits={limits} screen={screen} agentName={agentName} />
+      {record && <Record record={record} solPriceUsd={screen?.solPriceUsd ?? null} status={status} agentName={agentName} />}
+      <Book book={book} status={status} agentName={agentName} />
+      <Guards limits={limits} record={record} />
+    </>
+  );
 
   return (
-    <div className={`page ${fetching && entries ? "refetching" : ""}`}>
-      <Masthead subtitle={subtitle} agents={agents} selected={selected} onSelect={setSelectedId} showAgents={route === "agents"} lastFetched={lastFetched} now={now} demo={demo} />
-      <nav className="tabs" aria-label="Sections">
-        <a href="#/pools" aria-current={route === "pools" ? "page" : undefined}>Pools</a>
-        <a href="#/agents" aria-current={route === "agents" ? "page" : undefined}>Agents</a>
-      </nav>
+    <div className="app">
+      <Header route={route} />
 
-      {route === "pools" && <Pools screen={screen} status={poolStatus} now={now} />}
+      {route === "home" && (
+        <>
+          <Hero record={record} screen={screen} status={status} workingNow={workingNow} agentName={agentName} />
+          {entries && <ModeBanner status={status} />}
+          {error && !entries && <div className="error">Could not load the journal: <code>{error}</code>.</div>}
+          {entries && deskStack("desk")}
+        </>
+      )}
+
+      {route === "pools" && (
+        <main className="app__tabview">
+          <PoolsHead screen={screen} maxActivePools={3} />
+          <Pools screen={screen} status={poolStatus} now={now} />
+        </main>
+      )}
+
+      {route === "learn" && (
+        <main className="app__tabview">
+          <Learn />
+          <TryIt />
+          <Guards limits={limits} record={record} />
+        </main>
+      )}
 
       {route === "agents" && (
-        <>
-          {error && !entries && (
-            <div className="error">
-              Could not load the journal: <code>{error}</code>. Start the API with <code>npm run serve</code> (or set <code>VITE_API_URL</code>).
+        <main className="app__tabview">
+          {agents.length > 1 && (
+            <div className="filters" style={{ maxWidth: 1100, margin: "0 auto 16px", paddingInline: 32 }}>
+              <span>Agent</span>
+              <div className="seg" role="group" aria-label="Agent">
+                {agents.map((a) => (
+                  <button key={a.id} type="button" aria-pressed={a.id === selected?.id} onClick={() => setSelectedId(a.id)}>{a.name}</button>
+                ))}
+              </div>
             </div>
           )}
-          {!entries && !error && <div className="loading">loading the ledger…</div>}
-          {entries && !selected && <div className="loading">No decisions yet. Run <code>npm run once</code> or <code>npm run seed-demo</code>.</div>}
-          {selected && scoped && (
-            <>
-              <div className="filters">
-                <span>Showing</span>
-                <div className="seg" role="group" aria-label="Time range">
-                  {RANGES.map((k) => (
-                    <button key={k} type="button" aria-pressed={range === k} onClick={() => setRange(k)}>
-                      {k}
-                    </button>
-                  ))}
-                </div>
-                <span>{selected.decisions} cycles · {RANGE_LABEL[range]}</span>
+          {entries && <ModeBanner status={status} />}
+          {entries && selected && deskStack("agent-desk")}
+          {selected && poolView && (
+            <section className="app__desk" aria-label="What he sees">
+              <div className="app__desk-head">
+                <h2 className="app__desk-title">What he sees</h2>
+                <p className="app__desk-sub">The pool as it looked at his last check: money parked at each price step, and the price with his band drawn on it.</p>
               </div>
-              <Stats s={selected} rangeLabel={RANGE_LABEL[range]} />
               {selected.pools.length > 1 && (
                 <div className="filters">
                   <span>Pool</span>
                   <div className="seg" role="group" aria-label="Pool">
                     {selected.pools.map((p) => (
-                      <button key={p.address} type="button" aria-pressed={p.address === poolView?.address} onClick={() => setPoolAddr(p.address)}>
-                        {p.label} {p.latest.pool.binStep}bps{p.latest.positions.length ? " ●" : ""}
-                      </button>
+                      <button key={p.address} type="button" aria-pressed={p.address === poolView.address} onClick={() => setPoolAddr(p.address)}>{p.label} {p.latest.pool.binStep}bps</button>
                     ))}
                   </div>
                 </div>
               )}
-              <main className="grid">
-                {poolView && <BinLadder entry={poolView.latest} />}
-                {poolView && <PriceChart points={poolView.series} pool={poolView.latest.pool} />}
-                <EquitySpark points={selected.equitySeries} />
-                <Bands s={selected} now={now} />
-                <Feed entries={poolView ? poolView.entries : selected.entries} now={now} showPool={selected.pools.length > 1} />
-                <Guards limits={limits} s={selected} />
-              </main>
-            </>
+              <div className="grid" style={{ gridTemplateAreas: '"ladder chart"', gridTemplateColumns: "400px minmax(0,1fr)" }}>
+                <BinLadder entry={poolView.latest} />
+                <PriceChart points={poolView.series} pool={poolView.latest.pool} />
+              </div>
+            </section>
           )}
-        </>
+          <PublishHere />
+        </main>
       )}
+
+      <Footer />
     </div>
   );
 }

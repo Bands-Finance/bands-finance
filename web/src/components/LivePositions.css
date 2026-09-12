@@ -1,0 +1,247 @@
+/* The live book strip: sits directly under the research desk on the landing,
+   so it borrows the desk's quiet dark language rather than the marketing
+   cards'. One accent only: green/red on net-vs-hold, because that is the one
+   number that is a verdict rather than a description. */
+.livepos {
+  max-width: 1060px;
+  margin: 26px auto 0;
+  padding: 0 24px;
+}
+
+.livepos__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.livepos__title {
+  margin: 0;
+  font-family: var(--font-display, serif);
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--bands-text);
+}
+
+.livepos__pulse {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bands-positive);
+}
+.livepos__pulse::before {
+  content: "●";
+  margin-right: 5px;
+}
+.livepos__pulse--stale {
+  color: var(--bands-text-dim);
+}
+
+.livepos__flat {
+  margin: 10px 0 0;
+  max-width: 640px;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--bands-text-dim);
+}
+
+/* One-line plain-language explainer under the section title. */
+.livepos__gloss {
+  margin: 6px 0 14px;
+  max-width: 640px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--bands-text-dim);
+}
+
+.livepos__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.livepos__card {
+  border: 1px solid var(--bands-border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  background: rgba(13, 15, 18, 0.55);
+}
+
+.livepos__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.livepos__sym {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 14px;
+  color: var(--bands-text);
+}
+
+.livepos__badge {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+.livepos__badge--up {
+  color: var(--bands-positive);
+  background: rgba(79, 203, 138, 0.1);
+}
+.livepos__badge--down {
+  color: var(--bands-danger);
+  background: rgba(255, 107, 125, 0.1);
+}
+.livepos__badge--dim {
+  color: var(--bands-text-dim);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.livepos__stats {
+  display: flex;
+  gap: 22px;
+  margin: 14px 0 0;
+}
+.livepos__stats dt {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--bands-text-dim);
+}
+.livepos__stats dd {
+  margin: 3px 0 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 15px;
+  color: var(--bands-text);
+}
+
+.livepos__foot {
+  margin: 12px 0 0;
+  max-width: 720px;
+  font-size: 13px;
+  color: var(--bands-text-dim);
+}
+.livepos__foot a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+
+.livepos__card--link { display: block; text-decoration: none; color: inherit; transition: border-color 0.15s ease, transform 0.15s ease; }
+.livepos__card--link:hover { border-color: rgba(79, 203, 138, 0.45); transform: translateY(-2px); }
+.livepos__verify { display: inline-block; margin-top: 12px; font-size: 12px; color: var(--bands-positive); text-decoration: underline; text-underline-offset: 3px; }
+
+/* A USDG position renders as a full-width STRIP, not a tile: three cells —
+   identity, verdict, range — so the row fills the section instead of leaving
+   a half-empty grid line. One glance, left to right: what it is, what it's
+   worth, where price sits in the band. */
+.livepos__strip {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(170px, 0.8fr) minmax(230px, 1fr) minmax(260px, 1.3fr);
+  gap: 28px;
+  align-items: center;
+}
+@media (max-width: 760px) {
+  .livepos__strip { grid-template-columns: 1fr; gap: 16px; }
+}
+.livepos__badge { white-space: nowrap; }
+.livepos__cell { min-width: 0; }
+.livepos__meta {
+  display: block;
+  margin-top: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--bands-text-dim);
+}
+
+/* The ledger: four rows, two forces. Numbers right-aligned in mono so the
+   eye adds the column the way the math does. */
+.livepos__ledger { margin: 0; font-family: var(--font-mono, ui-monospace, monospace); font-size: 13px; }
+.livepos__ledger > div { display: flex; justify-content: space-between; gap: 18px; padding: 2px 0; }
+.livepos__ledger dt { color: var(--bands-text-dim); font-size: 12px; letter-spacing: 0.04em; }
+.livepos__ledger dd { margin: 0; color: var(--bands-text); white-space: nowrap; }
+.livepos__led--up { color: var(--bands-positive); }
+.livepos__led--down { color: var(--bands-danger); }
+.livepos__led-pace { color: var(--bands-text-dim); font-size: 12px; }
+.livepos__led-total { border-top: 1px solid var(--bands-border); margin-top: 4px; padding-top: 5px !important; }
+/* The split verdict line is longer than the old single net; keep the label
+   on one line and let the figures wrap instead. */
+.livepos__led-total dt { white-space: nowrap; }
+.livepos__led-total dd { white-space: normal; text-align: right; }
+.livepos__led-total dd { font-weight: 600; }
+.livepos__led-net { font-weight: 500; font-size: 12px; }
+
+.livepos__rangebar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.livepos__rangedot {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--bands-positive);
+  box-shadow: 0 0 8px rgba(79, 203, 138, 0.6);
+}
+.livepos__rangecap { display: block; margin-top: 8px; font-size: 12px; color: var(--bands-text-dim); }
+
+/* Venue strips: same three-cell rhythm as the position strip, with the band
+   list folded behind a disclosure instead of sprawling into the grid. */
+.livepos__strip--venue { align-items: start; }
+.livepos__bands summary {
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bands-text-dim);
+  list-style: none;
+}
+.livepos__bands summary::before { content: "▸ "; }
+.livepos__bands[open] summary::before { content: "▾ "; }
+.livepos__bands summary::-webkit-details-marker { display: none; }
+.livepos__bands ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--bands-text-dim);
+  max-height: 180px;
+  overflow-y: auto;
+}
+.livepos__bands li { padding: 2px 0; white-space: nowrap; }
+.livepos__bands a { color: var(--bands-positive); text-decoration: underline; text-underline-offset: 2px; }
+
+/* --- bands.finance: the Book (src/components/Book.tsx) --- */
+/* The gloss line reads as a comment: mono and dim. */
+.livepos__gloss { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12.5px; color: var(--bands-text-dim); }
+.livepos__asof { margin-left: auto; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; color: var(--bands-text-faint); white-space: nowrap; }
+/* The pulse says which kind of run this is: live is green, a rehearsal is the warm neutral, a demo is dim. */
+.livepos__pulse--rehearsal { color: var(--bands-gold); }
+.livepos__pulse--demo { color: var(--bands-text-dim); }
+/* Phones: the pool label and a "waiting · price 12 bins below" badge do not fit one line; let the row wrap. */
+.livepos__row { flex-wrap: wrap; }
+.livepos__sym { overflow-wrap: anywhere; }
+.livepos__links { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+.livepos__links a { color: var(--bands-accent-soft); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+/* Ledger figures wrap instead of pushing the strip wider than a phone; the pace takes its own line. */
+.livepos__ledger dd { white-space: normal; text-align: right; overflow-wrap: anywhere; }
+.livepos__led-pace { display: block; }
+/* Out of range: the dot goes dim and pins to the edge, an arrow says which way the price left. */
+.livepos__rangedot--out { background: var(--bands-text-dim); box-shadow: none; }
+.livepos__rangearrow { position: absolute; top: 50%; transform: translateY(-50%); font-size: 12px; line-height: 1; color: var(--bands-text-dim); }
+.livepos__rangearrow--left { right: 100%; margin-right: 6px; }
+.livepos__rangearrow--right { left: 100%; margin-left: 6px; }
+.livepos__rangeends { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; color: var(--bands-text-faint); }
+.livepos__rangeends span { min-width: 0; overflow-wrap: anywhere; }
+.livepos__rangeends span:last-child { text-align: right; }

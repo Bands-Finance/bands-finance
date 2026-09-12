@@ -1,53 +1,27 @@
-/* bands.finance — a ledger at night. Single, deliberate dark theme. */
+/* Legacy component styles (pools table, ladder, price chart, chips, panels).
+   Tokens alias onto the brand tokens in styles/tokens.css; no fonts or body rules here. */
 :root {
-  color-scheme: dark;
-  --bg: #0c1310;
-  --surface: #121b16;
-  --surface-2: #18231d;
-  --surface-3: #1f2c25;
-  --line: #243129;
-  --line-2: #2e3d34;
-  --ink: #eef2ea;
-  --ink-2: #a9b5ac;
-  --muted: #6f7d74;
-  --accent: #e9c45c;
-  --accent-soft: rgba(233, 196, 92, 0.14);
-  --accent-line: rgba(233, 196, 92, 0.5);
-  --good: #2ebb63;
-  --good-soft: rgba(46, 187, 99, 0.12);
-  --warn: #ec835a;
-  --warn-soft: rgba(236, 131, 90, 0.12);
-  --crit: #e05252;
-  --crit-soft: rgba(224, 82, 82, 0.12);
-  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --font-display: "Newsreader", Georgia, "Times New Roman", serif;
+  --bg: var(--bands-void);
+  --surface: var(--bands-panel-solid);
+  --surface-2: var(--bands-ink-2);
+  --surface-3: #221e1a;
+  --line: rgba(255, 122, 26, 0.12);
+  --line-2: rgba(255, 122, 26, 0.24);
+  --ink: var(--bands-text);
+  --ink-2: var(--bands-text-dim);
+  --muted: var(--bands-text-faint);
+  --accent: var(--bands-accent);
+  --accent-soft: rgba(255, 122, 26, 0.14);
+  --accent-line: rgba(255, 122, 26, 0.5);
+  --good: var(--bands-positive);
+  --good-soft: rgba(79, 203, 138, 0.12);
+  --warn: #e9a23b;
+  --warn-soft: rgba(233, 162, 59, 0.12);
+  --crit: var(--bands-danger);
+  --crit-soft: rgba(255, 93, 93, 0.12);
+  --font-ui: var(--font-body);
 }
-
-* { box-sizing: border-box; }
-html, body { margin: 0; }
-body {
-  background: var(--bg);
-  color: var(--ink);
-  font-family: var(--font-ui);
-  font-size: 14px;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-}
-a { color: inherit; text-decoration-color: var(--muted); text-underline-offset: 2px; }
-a:hover { text-decoration-color: var(--ink); }
-button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
-
-.page {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding-block: 20px 56px;
-  padding-inline: clamp(16px, 3vw, 32px);
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
+.page { max-width: 1280px; margin: 0 auto; padding-block: 20px 56px; padding-inline: clamp(16px, 3vw, 32px); display: flex; flex-direction: column; gap: 20px; }
 
 /* ---- masthead ---- */
 .mast { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
@@ -265,3 +239,29 @@ h2.section { font-size: 13px; font-weight: 600; margin: 0; }
 .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); }
 .pager .seg button { min-width: 32px; }
 .pager .seg button:disabled { color: var(--muted); cursor: default; }
+
+/* pools v2 */
+/* The pools page has no .page wrapper any more; the table sits in the same
+   1080px column as the screener head above it. */
+.pools { max-width: 1080px; margin: 0 auto; padding: 0 32px 64px; }
+/* Mr Bands' status lives under the pool name, not in a trailing column. */
+.pool-status { margin-top: 5px; }
+.pool-status .chip { text-transform: none; letter-spacing: 0; font-size: 11px; }
+.chip.dim { color: var(--muted); background: transparent; box-shadow: inset 0 0 0 1px var(--line-2); }
+.pools-table tr.is-inband td.col-rank { box-shadow: inset 2px 0 0 var(--good); }
+/* Quote filter note: plain words next to the select, not shouting. */
+.fld-note { align-self: flex-end; padding-bottom: 9px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); max-width: 22ch; line-height: 1.35; }
+/* Flag glossary under the screener head. */
+.pools-gloss { max-width: 1080px; margin: 18px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--bands-text-faint, var(--muted)); }
+.pools-gloss b { color: var(--bands-text-dim, var(--ink-2)); font-weight: 500; }
+/* Sticky rank and pool columns: the table still scrolls sideways, but the
+   name stays put so a row never becomes a line of unlabelled numbers. Only
+   has an effect while the table is wider than its box (phones, narrow windows). */
+.pools-table th.col-rank, .pools-table td.col-rank { position: sticky; left: 0; z-index: 2; width: 52px; min-width: 52px; background: var(--surface); }
+.pools-table th.col-pool, .pools-table td.col-pool { position: sticky; left: 52px; z-index: 2; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
+.pools-table tr:hover td.col-rank, .pools-table tr:hover td.col-pool { background: var(--surface-2); }
+@media (max-width: 620px) {
+  .pools { padding-inline: 20px; }
+  .pools-filters { gap: 10px; }
+  .fld-note { max-width: none; padding-bottom: 0; }
+}

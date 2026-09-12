@@ -1,0 +1,281 @@
+.hero {
+  position: relative;
+  overflow: hidden;
+  padding: 88px 32px 72px;
+  border-bottom: 1px solid var(--bands-border);
+}
+
+/* --- ambient system telemetry (mirrored corner readouts) --- */
+.hero__telemetry {
+  position: absolute;
+  top: 24px;
+  left: 32px;
+  right: 32px;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  line-height: 1.7;
+  color: var(--bands-text-faint);
+  opacity: 0.75;
+}
+
+.hero__telemetry-block {
+  display: flex;
+  flex-direction: column;
+}
+
+.hero__telemetry-block--right { text-align: right; }
+
+/* Same dim tone as the rest of the block, not the headline's glowing accent:
+   this is ambient texture, and glowing lime here competed with the one place
+   that glow should mean something: "runs its own desk" in the headline. */
+.hero__telemetry-tag {
+  color: var(--bands-text-faint);
+}
+
+@media (max-width: 720px) {
+  .hero__telemetry { display: none; }
+}
+
+/* --- the celestial arc artwork --- */
+.hero__arc {
+  position: absolute;
+  inset: -6% -4% auto -4%;
+  width: 108%;
+  height: 118%;
+  opacity: 0.9;
+  pointer-events: none;
+  -webkit-mask-image: radial-gradient(120% 90% at 50% 30%, #000 40%, transparent 78%);
+  mask-image: radial-gradient(120% 90% at 50% 30%, #000 40%, transparent 78%);
+}
+
+.hero__sphere {
+  fill: rgba(255, 122, 26, 0.03);
+  stroke: rgba(255, 162, 77, 0.18);
+  stroke-width: 1;
+}
+
+.hero__meridian {
+  fill: none;
+  stroke: rgba(255, 162, 77, 0.22);
+  stroke-width: 1;
+}
+.hero__meridian--inner { stroke: rgba(255, 122, 26, 0.22); }
+.hero__meridian--equator { stroke: rgba(255, 162, 77, 0.16); }
+
+.hero__sweep {
+  fill: none;
+  stroke: rgba(255, 122, 26, 0.5);
+  stroke-width: 2.5;
+}
+.hero__sweep--core {
+  stroke: #f2ffcf;
+  stroke-width: 1;
+  filter: none;
+}
+
+.hero__orb {
+  filter: drop-shadow(0 0 10px rgba(255, 122, 26, 0.9));
+}
+
+/* --- copy --- */
+.hero__content {
+  position: relative;
+  z-index: 1;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+/* The one eyebrow that's also a pill badge: same shared label underneath
+   (global.css), plus its own chrome. */
+.hero__eyebrow {
+  --eyebrow-tracking: 0.18em;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 15px;
+  border: 1px solid var(--bands-border-strong);
+  border-radius: 999px;
+  background: rgba(255, 122, 26, 0.06);
+  box-shadow: var(--glow-accent);
+}
+
+.hero__eyebrow-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bands-lime);
+  box-shadow: 0 0 8px rgba(255, 122, 26, 0.9);
+  animation: hero-eyebrow-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes hero-eyebrow-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* --- rotating ticker chips (the agent's rotation, one highlighted at a time) --- */
+.hero__tickers {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 30px 0 0;
+}
+
+.hero__tickers-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bands-text-faint);
+  margin-right: 4px;
+}
+
+.hero__ticker {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--bands-text-dim);
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--bands-border);
+  /* color snaps rather than fades: a fading background under slowly-fading
+     dark text leaves the label invisible mid-transition on the dark canvas */
+  transition: background 0.35s ease, border-color 0.35s ease, box-shadow 0.35s ease;
+}
+
+.hero__ticker.is-active {
+  color: var(--bands-on-accent);
+  background: var(--bands-lime);
+  border-color: var(--bands-lime);
+  box-shadow: var(--glow-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero__eyebrow-dot { animation: none; }
+}
+
+.hero__title {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(38px, 6vw, 76px);
+  line-height: 1.03;
+  letter-spacing: -0.02em;
+  margin: 22px 0 0;
+  text-wrap: balance;
+}
+
+.hero__title em {
+  font-style: italic;
+  color: var(--bands-cyan);
+  text-shadow: var(--glow-accent);
+}
+
+.hero__lede {
+  max-width: 620px;
+  margin: 22px 0 0;
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--bands-text-dim);
+}
+
+.hero__cta {
+  display: flex;
+  gap: 14px;
+  margin-top: 30px;
+  flex-wrap: wrap;
+}
+
+.hero__btn {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 13px 26px;
+  font-size: 15px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+.hero__btn:hover { transform: translateY(-1px); }
+
+.hero__btn--primary {
+  border: none;
+  color: var(--bands-on-accent);
+  background: linear-gradient(135deg, var(--bands-accent-light), var(--bands-accent) 45%, var(--bands-accent-soft));
+  box-shadow: var(--glow-accent);
+}
+.hero__btn--primary:hover { box-shadow: 0 0 34px rgba(255, 122, 26, 0.6); }
+
+.hero__btn--ghost {
+  background: transparent;
+  border: 1px solid var(--bands-border-strong);
+  color: var(--bands-text);
+}
+.hero__btn--ghost:hover { background: rgba(255, 162, 77, 0.08); }
+
+.hero__btn--primary { display: inline-flex; align-items: center; gap: 9px; }
+.hero__btn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bands-on-accent);
+  box-shadow: 0 0 0 3px rgba(11, 15, 5, 0.25);
+}
+
+.hero__note {
+  max-width: 560px;
+  margin: 18px 0 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+  color: var(--bands-text-faint);
+}
+
+/* --- stats strip --- */
+.hero__stats {
+  display: flex;
+  gap: 48px;
+  flex-wrap: wrap;
+  margin: 52px 0 0;
+  padding-top: 28px;
+  border-top: 1px solid var(--bands-border);
+}
+
+.hero__stat { margin: 0; }
+
+.hero__stat-value {
+  font-family: var(--font-display);
+  font-size: 30px;
+  color: var(--bands-text);
+}
+
+.hero__stat-label {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bands-text-faint);
+}
+
+@media (max-width: 720px) {
+  .hero { padding: 60px 20px 48px; }
+  .hero__stats { gap: 28px; }
+}
+
+/* Demoted secondary action: a quiet text link, never a competing button. */
+.hero__watch {
+  font-size: 14px;
+  color: var(--bands-text-dim);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--bands-border-strong);
+  padding-bottom: 1px;
+  align-self: center;
+}
+.hero__watch:hover { color: var(--bands-lime); border-bottom-color: var(--bands-lime); }

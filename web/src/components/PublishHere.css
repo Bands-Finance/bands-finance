@@ -1,0 +1,143 @@
+/* PublishHere: the platform pitch on the Agents tab. Same quiet language as
+   the rest of the site (mono labels, one orange accent, panel cards) with
+   the shared reveal stagger (.reveal / .r-item from styles/motion.css). */
+.publish {
+  max-width: 1060px;
+  margin: 0 auto;
+  padding: clamp(48px, 8vw, 88px) clamp(20px, 5vw, 32px) clamp(40px, 6vw, 64px);
+  scroll-margin-top: 84px;
+}
+
+.publish__head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 62ch;
+}
+
+.publish__eyebrow { --eyebrow-tracking: 0.16em; }
+
+.publish__title {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(27px, 4.5vw, 42px);
+  line-height: 1.06;
+  letter-spacing: -0.015em;
+  color: var(--bands-text);
+  margin: 4px 0 0;
+  text-wrap: balance;
+}
+
+.publish__lede {
+  margin: 6px 0 0;
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--bands-text-dim);
+}
+
+/* --- the facts, first screen: who, cost, what, custody --- */
+.publish__facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 24px 0 0;
+  max-width: 62rem;
+}
+
+.publish__fact {
+  border: 1px solid var(--bands-border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  background: var(--bands-panel);
+  transition: border-color 0.15s ease;
+}
+.publish__fact:hover { border-color: var(--bands-border-strong); }
+
+.publish__facts dt {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--bands-text-faint);
+  margin: 0 0 4px;
+}
+
+.publish__facts dd {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--bands-text);
+}
+
+/* --- the numbered steps --- */
+.publish__flow { margin: 26px 0 0; }
+
+.publish__flow-title {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 20px;
+  margin: 0 0 14px;
+  color: var(--bands-text);
+}
+
+.publish__steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.publish__steps li {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  border: 1px solid var(--bands-border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: var(--bands-panel);
+}
+
+.publish__steps li > div {
+  color: var(--bands-text-dim);
+  line-height: 1.55;
+  font-size: 14px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.publish__step-n {
+  font-family: var(--font-mono);
+  color: var(--bands-accent);
+  font-size: 13px;
+  min-width: 18px;
+  line-height: 1.55;
+  text-shadow: var(--glow-accent);
+}
+
+.publish__code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--bands-text);
+  background: rgba(255, 122, 26, 0.08);
+  border: 1px solid var(--bands-border);
+  border-radius: 6px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.publish__fine {
+  margin: 18px 0 0;
+  max-width: 720px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--bands-text-faint);
+}
+
+@media (max-width: 640px) {
+  .publish__facts { grid-template-columns: 1fr; }
+  .publish__steps li { padding: 12px 14px; }
+  .publish__code { white-space: normal; }
+}

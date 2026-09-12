@@ -111,6 +111,7 @@ export interface JournalEntry {
   emergency: boolean;
   execution: Execution;
   headline: string;
+  screen?: { rank: number; rankedPools: number; score: number; feeToTvl24hPct: number | null } | null;
 }
 
 export interface RiskLimits {

@@ -1,0 +1,116 @@
+.pnl { max-width: 1060px; margin: 18px auto 0; padding: 18px 24px; display: flex; align-items: center; gap: 26px; flex-wrap: wrap;
+  border: 1px solid var(--bands-border); border-radius: 16px; background: rgba(13,15,18,0.55); }
+.pnl__num { display: flex; flex-direction: column; gap: 4px; }
+.pnl__label { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--bands-text-dim); }
+.pnl__value { font-family: var(--font-mono, ui-monospace, monospace); font-size: 34px; font-weight: 600; }
+.pnl__value--up { color: var(--bands-positive); } .pnl__value--down { color: var(--bands-danger); }
+.pnl__sub { font-size: 13.5px; color: var(--bands-text-dim); max-width: 68ch; line-height: 1.5; }
+.pnl__how { font-size: 13px; color: var(--bands-text-dim); max-width: 68ch; margin-top: 4px; }
+.pnl__how summary { cursor: pointer; color: var(--bands-text); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+.pnl__how p { margin: 8px 0 0; line-height: 1.5; }
+/* The newcomer's one-liner: how the money is actually made. Slightly brighter
+   than the accounting fine print around it because it is the sentence a first
+   visit needs, boxed by a left rule so it reads as the section's key. */
+.pnl__sub--flow {
+  margin-top: 8px;
+  padding-left: 12px;
+  border-left: 2px solid var(--bands-positive);
+  color: var(--bands-text);
+  max-width: 860px;
+  line-height: 1.55;
+}
+.pnl__spark { flex: 1; min-width: 200px; height: 56px; }
+
+.pnl__links { display: flex; gap: 14px; align-items: center; margin-top: 6px; font-size: 13px; color: var(--bands-text-dim); flex-wrap: wrap; }
+.pnl__links a { display: inline-block; padding: 8px 2px; }
+.pnl__links a { color: var(--bands-positive); text-decoration: underline; text-underline-offset: 3px; }
+
+/* The 24h event chart: pings of collected fees over a quiet equity line. */
+.pnl__chart { display: flex; flex-direction: column; gap: 4px; min-width: 280px; }
+.pnl__chart-label {
+  font-size: 13px;
+  color: var(--bands-text-dim);
+  max-width: 68ch;
+  line-height: 1.5;
+}
+
+/* --- the 24h desk-activity chart, full-width beneath the headline row --- */
+.pnl__chart { flex-basis: 100%; min-width: 0; display: flex; flex-direction: column; gap: 6px; margin-top: 6px;
+  border-top: 1px solid var(--bands-border); padding-top: 14px; }
+.pnl__chart-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+.pnl__chart-eyebrow { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--bands-text-dim); }
+.pnl__chart-stat { font-family: var(--font-mono, ui-monospace, monospace); font-size: 18px; font-weight: 600; color: var(--bands-positive); }
+.pnl__chart-substat { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--bands-text-dim); }
+.pnl__bigchart { display: block; width: 100%; color: var(--bands-text); }
+.pnl__axis { font-family: var(--font-mono, ui-monospace, monospace); font-size: 10px; fill: var(--bands-text-dim); }
+.pnl__ping-label { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; font-weight: 600; fill: var(--bands-positive); }
+.pnl__ping-label--red { fill: var(--bands-danger); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; }
+.pnl__ping--latest { animation: pnl-breathe 2.4s ease-in-out infinite; will-change: opacity; }
+@keyframes pnl-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .pnl__ping--latest { animation: none; } }
+.pnl__board { display: flex; flex-direction: column; gap: 6px; margin-top: 18px; flex-basis: 100%; min-width: 0; }
+.pnl__board-scroll { overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; }
+/* Phones: the table is wider than the screen, so say so instead of clipping
+   Stops and Collects into the void with no cue. */
+@media (max-width: 640px) {
+  .pnl__board-scroll { mask-image: linear-gradient(90deg, #000 88%, transparent); -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); padding-bottom: 6px; }
+  .pnl__board-scroll::after { content: "← swipe for stops and collects"; display: block; font-size: 11px; color: var(--bands-text-dim); text-align: left; padding-top: 6px; }
+}
+.pnl__board-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+.pnl__board-table th { text-align: left; font-weight: 500; color: var(--bands-text-dim); padding: 6px 14px 6px 0; border-bottom: 1px solid rgba(255,255,255,0.08); text-transform: uppercase; font-size: 10px; letter-spacing: 0.1em; }
+.pnl__board-table td { padding: 7px 14px 7px 0; border-bottom: 1px solid rgba(255,255,255,0.05); color: var(--bands-text); }
+.pnl__board-fees { color: var(--bands-positive); font-weight: 600; }
+.pnl__bigchart--clickable { cursor: pointer; }
+.pnl__chart-toggle { margin-left: auto; background: none; border: 1px solid rgba(255,255,255,0.14); color: var(--bands-text-dim); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; padding: 8px 12px; min-height: 36px; border-radius: 6px; cursor: pointer; }
+.pnl__chart-toggle:hover { color: var(--bands-text); border-color: rgba(255,255,255,0.3); }
+/* The chart feels alive because real things keep happening: the line draws
+   itself on arrival, dots land in sequence, the tip pings like a radar, and
+   the clock ticks. Motion is tied to data, never decoration for its own sake. */
+.pnl__line-in { stroke-dasharray: 1; stroke-dashoffset: 1; animation: pnl-draw 1.3s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+@keyframes pnl-draw { to { stroke-dashoffset: 0; } }
+.pnl__area-in { opacity: 0; animation: pnl-fade 0.8s ease 0.9s forwards; }
+@keyframes pnl-fade { to { opacity: 1; } }
+.pnl__dot-in { opacity: 0; animation: pnl-dot 0.4s ease forwards; }
+@keyframes pnl-dot { from { opacity: 0; } to { opacity: 0.85; } }
+.pnl__radar { transform-box: fill-box; transform-origin: center; animation: pnl-radar 2.4s ease-out infinite; pointer-events: none; }
+@keyframes pnl-radar { 0% { transform: scale(1); opacity: 0.8; } 70% { transform: scale(3.2); opacity: 0; } 100% { opacity: 0; } }
+.pnl__chart-live { color: var(--bands-positive); }
+@media (prefers-reduced-motion: reduce) {
+  .pnl__line-in, .pnl__area-in, .pnl__dot-in, .pnl__radar { animation: none; opacity: 1; stroke-dashoffset: 0; }
+}
+.pnl__skeleton { display: flex; flex-direction: column; gap: 12px; width: 100%; }
+.pnl__skeleton-bar { height: 16px; width: 40%; border-radius: 6px; background: rgba(255,255,255,0.06); animation: pnl-skel 1.4s ease-in-out infinite; }
+.pnl__skeleton-bar--wide { height: 40px; width: 60%; }
+.pnl__skeleton-chart { height: 180px; width: 100%; border-radius: 10px; background: rgba(255,255,255,0.04); animation: pnl-skel 1.4s ease-in-out infinite; }
+@keyframes pnl-skel { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .pnl__skeleton-bar, .pnl__skeleton-chart { animation: none; } }
+.pnl__allocation {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-left: 2px solid var(--bands-positive);
+  background: rgba(79, 203, 138, 0.05);
+  border-radius: 0 8px 8px 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--bands-text-dim);
+}
+.pnl__allocation strong { color: var(--bands-text); }
+
+/* --- bands.finance: the Record (src/components/Record.tsx) --- */
+/* The USD shadow beside the SOL headline: smaller, dimmer, never the number itself. */
+.pnl__value-usd { font-size: 15px; font-weight: 500; color: var(--bands-text-dim); margin-left: 8px; white-space: nowrap; }
+/* Chart ink through classes so the SVG takes the token, not a literal. */
+.pnl__ink-stroke { stroke: var(--bands-positive); }
+.pnl__ink-fill { fill: var(--bands-positive); }
+.pnl__ink-stop { stop-color: var(--bands-positive); }
+/* A simulated claim is drawn hollow: built and simulated, never sent. */
+.pnl__dot--sim { fill-opacity: 0.3; stroke: var(--bands-positive); stroke-width: 1.2; }
+.pnl__dot--hover { stroke: var(--bands-ink); stroke-width: 1.5; fill-opacity: 1; }
+/* The daily record: red as plainly as green. */
+.pnl__board-up { color: var(--bands-positive); }
+.pnl__board-down { color: var(--bands-danger); }
+.pnl__board-dim { color: var(--bands-text-dim); }
+.pnl__board-table th, .pnl__board-table td { white-space: nowrap; }
+@media (max-width: 640px) {
+  .pnl__board-scroll::after { content: "← swipe for moves, vetoes, overrides and holds"; }
+}

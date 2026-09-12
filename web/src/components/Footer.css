@@ -1,0 +1,160 @@
+/* Global site footer — quiet, legal-first, shown on every tab. */
+.footer {
+  position: relative;
+  z-index: 1;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 40px 32px 56px;
+  border-top: 1px solid var(--bands-border);
+  margin-top: 48px;
+}
+
+.footer__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.footer__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+.footer__mark {
+  opacity: 0.9;
+}
+.footer__word {
+  font-family: var(--font-display);
+  font-size: 16px;
+  color: var(--bands-text);
+  letter-spacing: 0.01em;
+}
+
+.footer__links {
+  display: inline-flex;
+  align-items: center;
+  gap: 22px;
+}
+.footer__link {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  color: var(--bands-text-dim);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+.footer__link:hover {
+  color: var(--bands-text);
+}
+
+.footer__legal {
+  margin: 0;
+  max-width: 720px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--bands-text-faint, var(--bands-text-dim));
+}
+
+@media (max-width: 560px) {
+  .footer__bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+/* Ecosystem logo row — the platforms Meridian is built on and around. Each
+   mark sits on a uniform light chip so transparent/dark logos stay legible on
+   the dark footer; muted at rest, full-strength on hover. */
+.footer__eco {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-bottom: 26px;
+}
+.footer__eco-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bands-text-faint, var(--bands-text-dim));
+}
+.footer__eco-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.footer__eco-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 12px 4px 4px;
+  border-radius: 10px;
+  background: transparent;
+  border: 1px solid var(--bands-border);
+  color: var(--bands-text-dim);
+  text-decoration: none;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  /* Full opacity: at 0.82 on the dark footer the darker marks (The Index,
+     PONS) read as muddy blobs. Legibility beats subtlety here. */
+  opacity: 1;
+  transition: opacity 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+}
+.footer__eco-item:hover {
+  transform: translateY(-2px);
+  border-color: var(--bands-border-strong);
+}
+.footer__eco-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: #f4f4f0;
+}
+.footer__eco-item img,
+.footer__eco-item svg {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+.footer__eco-name { white-space: nowrap; }
+/* Single-color marks (GitHub) render in the chip's ink, not brand color. */
+.footer__eco-item--mark svg {
+  fill: #191918;
+  border-radius: 0;
+}
+
+
+/* ---- bands.finance additions ----
+   The ecosystem row is text chips here (no partner artwork), so the padding
+   that made room for a 30px logo chip comes off and a small orange dot stands
+   in as the mark. The brand is a link now: keep the global underline off it. */
+.footer__eco-item--text {
+  padding: 4px 12px;
+  min-height: 34px;
+  gap: 7px;
+}
+.footer__eco-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bands-accent);
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+}
+.footer__eco-item--text:hover .footer__eco-dot { opacity: 1; box-shadow: 0 0 8px rgba(255, 122, 26, 0.7); }
+.footer__brand,
+.footer__brand:hover { text-decoration: none; }
+.footer__link:hover { text-decoration: none; }
+@media (max-width: 560px) {
+  .footer__links { flex-wrap: wrap; gap: 14px 18px; }
+}

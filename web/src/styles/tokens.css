@@ -1,0 +1,53 @@
+:root {
+  /* bands.finance — black ground, cream bills, orange straps. From the mark: three bands of cash. */
+  --bands-void: #060606;
+  --bands-ink: #0d0c0b;
+  --bands-ink-2: #131110;
+  --bands-panel: rgba(28, 25, 22, 0.62);
+  --bands-panel-solid: #171513;
+  --bands-panel-alt: rgba(40, 36, 32, 0.6);
+  --bands-border: rgba(255, 122, 26, 0.12);
+  --bands-border-strong: rgba(255, 122, 26, 0.3);
+
+  /* Signature — strap orange is primary. The Meridian names are kept so ported CSS re-themes at once. */
+  --bands-accent: #ff7a1a;
+  --bands-accent-soft: #ffa24d;
+  --bands-accent-light: #ffd2a8;
+  --bands-on-accent: #0d0c0b;
+  --bands-lime: var(--bands-accent);
+  --bands-cyan: var(--bands-accent);
+  --bands-peri: var(--bands-accent-soft);
+  --bands-peri-dim: #b8642a;
+  --bands-gold: #d9cdb8;       /* warm neutral: simulated / proposed / connecting */
+  --bands-gold-dim: #8f8677;
+  --bands-danger: #ff5d5d;
+  --bands-positive: #4fcb8a;   /* earning / placed / live */
+  --bands-terminal: #0a0908;
+
+  --bands-brass: var(--bands-gold);
+  --bands-teal: var(--bands-accent);
+
+  /* Text — cream, like the bills */
+  --bands-text: #f4eee3;
+  --bands-text-dim: #b8b0a3;
+  --bands-text-faint: #8c857a;
+
+  /* Type — a chunky grotesque for titles (the mark is chunky), a clean grotesque for reading, mono for data */
+  --font-display: "Bricolage Grotesque", "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --radius: 14px;
+  --radius-sm: 10px;
+  --radius-pill: 100px;
+  --bands-line-width: 2px;
+
+  --glow-accent: 0 0 24px rgba(255, 122, 26, 0.32);
+  --glow-accent-soft: 0 0 20px rgba(255, 162, 77, 0.26);
+  --glow-cyan: var(--glow-accent);
+  --glow-lime: var(--glow-accent);
+  --glow-peri: var(--glow-accent-soft);
+  --glow-gold: 0 0 18px rgba(217, 205, 184, 0.3);
+  --panel-shadow: 0 20px 60px -20px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --blur: blur(14px);
+}

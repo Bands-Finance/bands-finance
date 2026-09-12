@@ -1,0 +1,248 @@
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 40px;
+  padding: 14px 32px;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--bands-border) calc(40% + 60% * var(--nav-solid, 0)), transparent);
+  background: color-mix(in srgb, var(--bands-ink) calc(55% + 33% * var(--nav-solid, 0)), transparent);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  transition: border-color 0.3s ease;
+}
+
+.header__brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.header__mark {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  /* the mark ships on its own lime field — just round and glow it */
+  box-shadow: var(--glow-accent);
+}
+
+.header__wordmark {
+  font-family: var(--font-display);
+  font-size: 21px;
+  letter-spacing: 0.01em;
+}
+
+.header__nav {
+  display: flex;
+  gap: 26px;
+  flex: 1;
+}
+
+.header__link {
+  font-size: 14px;
+  color: var(--bands-text-dim);
+  text-decoration: none;
+  padding-bottom: 4px;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s ease;
+}
+.header__link:hover { color: var(--bands-text); }
+
+.header__link--active {
+  color: var(--bands-text);
+  border-bottom-color: var(--bands-cyan);
+}
+
+.header__connect {
+  background: transparent;
+  border: 1px solid var(--bands-border-strong);
+  color: var(--bands-text);
+  border-radius: 999px;
+  padding: 9px 18px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.2s ease;
+}
+
+.header__connect:hover {
+  background: rgba(255, 122, 26, 0.08);
+  box-shadow: var(--glow-accent);
+}
+
+.header__connect--connected {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  border-color: rgba(79, 203, 138, 0.35);
+}
+
+.header__connect-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bands-positive);
+  box-shadow: 0 0 8px rgba(79, 203, 138, 0.7);
+}
+
+.header__connect--warn {
+  border-color: rgba(255, 212, 121, 0.4);
+  color: var(--bands-gold);
+}
+.header__connect--warn:hover {
+  background: rgba(255, 212, 121, 0.08);
+  box-shadow: var(--glow-gold);
+}
+
+@media (max-width: 720px) {
+  .header { gap: 14px; padding: 14px 20px; }
+  .header__nav { display: none; }
+}
+
+/* ---- mobile nav (hamburger) ---- */
+.header__burger {
+  display: none; /* shown only <=720px */
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  width: 38px;
+  height: 34px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid var(--bands-border);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.header__burger span {
+  display: block;
+  height: 2px;
+  width: 100%;
+  background: var(--bands-text);
+  border-radius: 2px;
+}
+.header__mnav-scrim { position: fixed; inset: 0; z-index: 40; }
+.header__mnav {
+  position: absolute;
+  right: 20px;
+  top: calc(100% + 8px);
+  z-index: 41;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--bands-panel-solid, #16181d);
+  border: 1px solid var(--bands-border-strong);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+.header__mnav-link {
+  background: none;
+  border: none;
+  text-align: left;
+  font: inherit;
+  font-size: 15px;
+  color: var(--bands-text-dim);
+  padding: 11px 14px;
+  border-radius: 9px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.header__mnav-link:hover { background: var(--bands-panel); color: var(--bands-text); }
+.header__mnav-link[aria-current="page"] { color: var(--bands-cyan); }
+
+/* ---- wallet-as-account zone ---- */
+/* margin-left:auto pins the account zone (and the burger after it) to the right
+   edge. On desktop the flex:1 nav already does this; on mobile the nav is hidden,
+   so without this the wallet button and burger bunch at the left. */
+.header__account { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.header__acct-wrap { position: relative; }
+.header__connect--sign {
+  background: linear-gradient(135deg, var(--bands-accent-light), var(--bands-accent) 55%, var(--bands-accent-soft));
+  color: var(--bands-on-accent);
+  box-shadow: var(--glow-accent);
+}
+.header__connect--sign:disabled { opacity: 0.7; cursor: default; }
+.header__caret { margin-left: 7px; font-size: 10px; opacity: 0.7; }
+
+.header__acct-scrim { position: fixed; inset: 0; z-index: 40; }
+.header__acct-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 10px);
+  z-index: 41;
+  min-width: 258px;
+  background: var(--bands-panel-solid, #16181d);
+  border: 1px solid var(--bands-border-strong);
+  border-radius: 14px;
+  padding: 6px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+.header__acct-head,
+.header__acct-section { padding: 12px 12px 10px; }
+.header__acct-head { border-bottom: 1px solid var(--bands-border); display: flex; flex-direction: column; gap: 4px; }
+.header__acct-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--bands-text-faint);
+}
+.header__acct-addr {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--bands-lime);
+  text-decoration: none;
+}
+.header__acct-section { display: flex; flex-direction: column; gap: 8px; }
+.header__acct-empty {
+  font-size: 13px;
+  color: var(--bands-text-dim);
+  text-decoration: none;
+}
+.header__acct-empty:hover { color: var(--bands-lime); }
+.header__acct-profile { display: flex; flex-direction: column; gap: 2px; }
+.header__acct-callsign { font-family: var(--font-mono); font-size: 13px; color: var(--bands-text); }
+.header__acct-meta { font-size: 11.5px; color: var(--bands-text-faint); }
+.header__acct-signout {
+  width: 100%;
+  margin-top: 2px;
+  padding: 10px;
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--bands-border);
+  color: var(--bands-text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 0 0 10px 10px;
+}
+.header__acct-signout:hover { color: var(--bands-danger); background: rgba(255, 107, 125, 0.06); }
+.header__acct-err { font-size: 11.5px; color: var(--bands-danger); max-width: 160px; }
+
+/* Social icon links (GitHub / X) at the end of the nav. */
+.header__icon {
+  display: inline-flex;
+  align-items: center;
+}
+.header__icon svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+/* The burger's show-rule must come AFTER its base display:none in source
+   order, or the cascade keeps it hidden at every width, which is exactly the
+   bug that left phone visitors with no way to switch tabs. */
+@media (max-width: 720px) {
+  .header__burger { display: inline-flex; }
+}
+
+/* ---- bands.finance additions ----
+   No wallet zone here (it carried the margin-left:auto that pinned the burger
+   to the right edge on phones), so the burger pins itself. The brand is a link
+   now: keep the global a:hover underline off the wordmark. */
+.header__burger { margin-left: auto; }
+.header__brand,
+.header__brand:hover { text-decoration: none; }
