@@ -3,7 +3,7 @@
  *   npm test
  */
 import assert from "node:assert/strict";
-import { evaluate, GuardContext } from "../risk/guards";
+import { EngineGuardContext, evaluate, GuardContext, NO_ENGINE } from "../risk/guards";
 import type { RiskLimits } from "../risk/limits";
 import type { RiskState } from "../risk/state";
 import type { Decision } from "../agent/schema";
@@ -42,7 +42,18 @@ const snapshot: PoolSnapshot = {
   fetchedAt: new Date().toISOString(),
 };
 
-const freshState = (): RiskState => ({ day: "2026-09-10", actionsToday: 0, lastActionAt: null, lastPrice: null, entryValueSol: {} });
+const freshState = (): RiskState => ({
+  day: "2026-09-10",
+  actionsToday: 0,
+  lastActionAt: null,
+  lastPrice: null,
+  entryValueSol: {},
+  stops: {},
+  outOfRangeSince: {},
+  feesPendingSince: {},
+  priceHistory: {},
+});
+const engine = (over: Partial<EngineGuardContext> = {}): EngineGuardContext => ({ ...NO_ENGINE, outOfRangeSince: {}, stops: {}, ...over });
 
 const ctx = (over: Partial<GuardContext> = {}): GuardContext => ({
   now: Date.now(),
@@ -55,6 +66,7 @@ const ctx = (over: Partial<GuardContext> = {}): GuardContext => ({
   otherExposureSol: 0,
   poolsWithBands: 0,
   maxActivePools: 3,
+  engine: engine(),
   ...over,
 });
 
@@ -207,4 +219,139 @@ test("pool cap blocks a band in a new pool but not a rebalance in a held one", (
   assert.equal(evaluate(rebalance, ctx({ poolsWithBands: 3, maxActivePools: 3, positions: [position] }), limits).allowed, true);
 });
 
-console.log(`${n} guard tests passed (with portfolio checks)`);
+// ---- engine context ----
+
+const closeOf = (addr: string): Decision => ({ ...open(), action: "CLOSE_POSITION", open: null, positionAddress: addr });
+const NOW = Date.now();
+
+test("circuit-breaker halt blocks opens, never a close", () => {
+  const e = engine({ haltedUntil: NOW + 3600_000 });
+  const v = evaluate(open(), ctx({ engine: e }), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /circuit breaker: opens halted/);
+  assert.equal(evaluate(closeOf("pos1"), ctx({ engine: e, positions: [position] }), limits).allowed, true);
+  const rebalance: Decision = { ...open(), action: "REBALANCE", positionAddress: "pos1" };
+  assert.equal(evaluate(rebalance, ctx({ engine: e, positions: [position], state: { ...freshState(), outOfRangeSince: { pos1: NOW - 900_000 } } }), limits).allowed, false);
+});
+
+test("stand-down blocks opens, never a close", () => {
+  const e = engine({ standDownUntil: NOW + 3600_000 });
+  const v = evaluate(open(), ctx({ engine: e }), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /stand-down/);
+  assert.equal(evaluate(closeOf("pos1"), ctx({ engine: e, positions: [position] }), limits).allowed, true);
+});
+
+test("an expired halt or stand-down no longer blocks", () => {
+  const e = engine({ haltedUntil: NOW - 1, standDownUntil: NOW - 1 });
+  assert.equal(evaluate(open(), ctx({ engine: e }), limits).allowed, true);
+});
+
+test("benched pool blocks opens with the bench reason", () => {
+  const e = engine({ benched: true, benchReason: "benched: 3 stop-loss closes in the last 6h (the oldest ages out on its own)", sizeMultiplier: 0 });
+  const v = evaluate(open(), ctx({ engine: e }), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /benched: 3 stop-loss closes/);
+});
+
+test("regime 0 blocks opens; regime 0.5 caps the band at half the limit", () => {
+  const off = engine({ sizeMultiplier: 0, regimeReason: "regime: board median -18.0% over 24h across 3 pools: opens off" });
+  assert.match(evaluate(open(), ctx({ engine: off }), limits).violations.join(), /regime: board median/);
+  const half = engine({ sizeMultiplier: 0.5, regimeReason: "regime: board median -8.0% over 24h across 3 pools: size x0.5" });
+  const v = evaluate(open({ amountSol: 0.3 }), ctx({ engine: half }), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /band size 0.3000 SOL > max 0.2500 \(0.5 x limit after bench\/regime\)/);
+  assert.equal(evaluate(open({ amountSol: 0.25 }), ctx({ engine: half }), limits).allowed, true);
+  // above the hard limit the plain message wins, whatever the multiplier
+  const big = evaluate(open({ amountSol: 0.75 }), ctx({ engine: half }), limits).violations.join(";");
+  assert.match(big, /band size 0.7500 SOL > max 0.5(;|$)/);
+  assert.doesNotMatch(big, /after bench\/regime/);
+});
+
+test("knife blocks opens in that pool", () => {
+  const e = engine({ knife: "knife: -24.0% in 30 min (limit 20%)" });
+  const v = evaluate(open(), ctx({ engine: e }), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /knife: -24.0%/);
+  assert.equal(evaluate(closeOf("pos1"), ctx({ engine: e, positions: [position] }), limits).allowed, true);
+});
+
+test("anti-churn: the LLM may not move a band that has not sat out of range for the minimum", () => {
+  const oor = { ...position, inRange: false, binsFromRange: -3 };
+  const soon = ctx({ positions: [oor], engine: engine({ outOfRangeSince: { pos1: NOW - 100_000 } }) });
+  const v = evaluate(closeOf("pos1"), soon, limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /anti-churn: pos1 is out of range for 100s, minimum 600s/);
+  const rebalance: Decision = { ...open(), action: "REBALANCE", positionAddress: "pos1" };
+  assert.equal(evaluate(rebalance, soon, limits).allowed, false);
+  const late = ctx({ positions: [oor], engine: engine({ outOfRangeSince: { pos1: NOW - 700_000 } }) });
+  assert.equal(evaluate(closeOf("pos1"), late, limits).allowed, true);
+  // an in-range band is not judged by anti-churn
+  assert.equal(evaluate(closeOf("pos1"), ctx({ positions: [position] }), limits).allowed, true);
+});
+
+test("anti-churn yields when the band is down at least half its stop", () => {
+  const hurt = { ...position, inRange: false, binsFromRange: -3, valueInSol: 0.27 }; // -10% vs 0.3, stop 15 -> half is 7.5
+  const state = { ...freshState(), entryValueSol: { pos1: 0.3 } };
+  const v = evaluate(closeOf("pos1"), ctx({ positions: [hurt], state, engine: engine({ outOfRangeSince: { pos1: NOW - 60_000 } }) }), limits);
+  assert.equal(v.allowed, true, v.violations.join("; "));
+  assert.equal(v.emergency, false);
+});
+
+test("an engine close is an emergency: no anti-churn, no cooldown, no cap, no kill switch, no halt, no stand-down", () => {
+  const state = { ...freshState(), actionsToday: 24, lastActionAt: NOW - 10_000 };
+  const e = engine({ haltedUntil: NOW + 3600_000, standDownUntil: NOW + 3600_000, benched: true, knife: "knife: -30% in 30 min (limit 20%)" });
+  const v = evaluate(closeOf("pos1"), ctx({ positions: [position], state, killSwitch: true, engine: e, source: "engine" }), limits);
+  assert.equal(v.allowed, true, v.violations.join("; "));
+  assert.equal(v.emergency, true);
+  assert.equal(v.decision.action, "CLOSE_POSITION");
+});
+
+test("the only thing that stops an engine close is a position that is not ours", () => {
+  const v = evaluate(closeOf("nope"), ctx({ positions: [position], source: "engine" }), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /not one of ours/);
+});
+
+test("CLOSE_POSITION from the LLM is exempt from cooldown and the daily cap", () => {
+  const state = { ...freshState(), actionsToday: 24, lastActionAt: NOW - 10_000, outOfRangeSince: { pos1: NOW - 900_000 } };
+  const oor = { ...position, inRange: false, binsFromRange: -3 };
+  const v = evaluate(closeOf("pos1"), ctx({ positions: [oor], state, engine: engine({ outOfRangeSince: { pos1: NOW - 900_000 } }) }), limits);
+  assert.equal(v.allowed, true, v.violations.join("; "));
+  assert.equal(v.emergency, false);
+  // a claim is not an exit: the cap still applies
+  const claim: Decision = { ...open(), action: "CLAIM_FEES", open: null, positionAddress: null };
+  assert.match(evaluate(claim, ctx({ positions: [position], state }), limits).violations.join(), /daily action cap/);
+});
+
+test("an engine COLLECT is not an exit: the guards still rate-limit it", () => {
+  const claim: Decision = { ...open(), action: "CLAIM_FEES", open: null, positionAddress: "pos1" };
+  const state = { ...freshState(), lastActionAt: NOW - 10_000 };
+  const v = evaluate(claim, ctx({ positions: [position], state, source: "engine" }), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /cooldown/);
+  assert.equal(evaluate(claim, ctx({ positions: [position], source: "engine" }), limits).allowed, true);
+});
+
+test("the per-band stop replaces the global limit when present", () => {
+  const state = { ...freshState(), entryValueSol: { pos1: 0.3 } };
+  const hurt = { ...position, valueInSol: 0.26 }; // -13.3%: inside the 15% limit, past a 12% rolled stop
+  assert.equal(evaluate(open(), ctx({ state, positions: [hurt] }), limits).emergency, false);
+  const v = evaluate(open(), ctx({ state, positions: [hurt], engine: engine({ stops: { pos1: 12 } }) }), limits);
+  assert.equal(v.emergency, true);
+  assert.equal(v.decision.action, "CLOSE_POSITION");
+  assert.match(v.overrides.join(), /stop 12.00%/);
+});
+
+test("an engine STOP that already closes the band at its stop is passed through, not overridden", () => {
+  const state = { ...freshState(), entryValueSol: { pos1: 0.3, pos2: 0.3 } };
+  const hurt1 = { ...position, valueInSol: 0.25 };
+  const hurt2 = { ...position, address: "pos2", valueInSol: 0.2 };
+  const v = evaluate(closeOf("pos2"), ctx({ state, positions: [hurt1, hurt2], source: "engine" }), limits);
+  assert.equal(v.allowed, true);
+  assert.equal(v.decision.positionAddress, "pos2");
+  assert.equal(v.overrides.length, 0);
+  assert.equal(v.emergency, true);
+});
+
+console.log(`${n} guard tests passed (with portfolio and engine checks)`);

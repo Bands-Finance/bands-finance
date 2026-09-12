@@ -52,6 +52,21 @@ export interface JournalEntry {
   execution: ExecutionResult;
   headline: string;
   screen?: { rank: number; rankedPools: number; score: number; feeToTvl24hPct: number | null } | null;
+  /** the engine's view for this pool this cycle (src/engine); absent in entries written before it existed */
+  engine?: JournalEngine;
+}
+
+export interface JournalEngine {
+  directive: string | null;
+  reason: string | null;
+  sizeMultiplier: number;
+  bench: { stops6h: number; multiplier: number; benched: boolean };
+  regime: { medianMove24hPct: number | null; multiplier: number };
+  halt: { until: number; stage: number } | null;
+  standDown: { until: number; reason: string | null } | null;
+  /** per-band stop percent for the bands open in this pool */
+  stops: Record<string, number>;
+  collectsToday: number;
 }
 
 export function toJournalPool(s: PoolSnapshot): JournalPool {
@@ -137,6 +152,7 @@ export function renderFeed(entries: JournalEntry[]): string {
       }
     }
     if (e.llm.source === "fallback") out.push(`\n_LLM fallback: ${e.llm.note}_`);
+    if (e.llm.source === "engine") out.push(`\n_Engine directive: ${e.llm.note}_`);
     out.push("");
   }
   return out.join("\n");

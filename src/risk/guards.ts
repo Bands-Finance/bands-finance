@@ -5,11 +5,51 @@
  * Two kinds of outcomes:
  *   - violations: the proposal is rejected and replaced with HOLD
  *   - overrides:  the guards replace the proposal with something safer (stop-loss close)
+ *
+ * The engine (src/engine) feeds `ctx.engine`: halts, stand-down, bench, regime, knife, per-band
+ * stops and out-of-range timers. Those gate OPENS only. Exits are never blocked by cooldown,
+ * daily cap, kill switch, halts or stand-down; the one check that can stop an exit is "this
+ * position is not ours". The LLM proposes, the guards decide: every limit lives here.
  */
 import { Decision, holdDecision } from "../agent/schema";
+import { antiChurn, bandStopPct, drawdownPct } from "../engine/exit";
 import { OPEN_COST_ESTIMATE_SOL, PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
 import type { RiskLimits } from "./limits";
 import type { RiskState } from "./state";
+
+/** What the engine knows this cycle, as the guards need it. */
+export interface EngineGuardContext {
+  /** circuit breaker: opens halted until this epoch ms (null when not halted) */
+  haltedUntil: number | null;
+  /** portfolio breaker: standing down until this epoch ms (null when not) */
+  standDownUntil: number | null;
+  /** bench x regime; the effective max band size is limits.maxPositionSol x this */
+  sizeMultiplier: number;
+  benched: boolean;
+  benchReason: string | null;
+  regimeReason: string | null;
+  /** the knife reason for this pool, or null */
+  knife: string | null;
+  /** position -> epoch ms first seen out of range */
+  outOfRangeSince: Record<string, number>;
+  /** position -> per-band stop percent rolled at open */
+  stops: Record<string, number>;
+  /** a band must sit out of range this many seconds before the LLM may move it */
+  outOfRangeSec: number;
+}
+
+export const NO_ENGINE: EngineGuardContext = {
+  haltedUntil: null,
+  standDownUntil: null,
+  sizeMultiplier: 1,
+  benched: false,
+  benchReason: null,
+  regimeReason: null,
+  knife: null,
+  outOfRangeSince: {},
+  stops: {},
+  outOfRangeSec: 600,
+};
 
 export interface GuardContext {
   now: number;
@@ -24,10 +64,14 @@ export interface GuardContext {
   /** pools (excluding this one) that currently hold a band */
   poolsWithBands: number;
   maxActivePools: number;
+  /** the engine's view (src/engine); absent means no halts, no bench, full size, no per-band stops */
+  engine?: EngineGuardContext;
+  /** who made the proposal: anti-churn applies to the LLM only; an engine close is an emergency */
+  source?: "llm" | "engine";
 }
 
 export interface Verdict {
-  /** what the LLM proposed */
+  /** what the LLM (or the engine) proposed */
   proposal: Decision;
   /** what will actually be executed (HOLD when blocked) */
   decision: Decision;
@@ -36,35 +80,52 @@ export interface Verdict {
   overrides: string[];
   /** checks that passed, for the journal */
   passed: string[];
-  /** true when the final decision came from a guard, not the LLM */
+  /** true when the final decision came from a guard or an engine directive, not the LLM */
   emergency: boolean;
 }
 
 const isOpening = (d: Decision) => d.action === "OPEN_POSITION" || d.action === "REBALANCE";
 const isClosing = (d: Decision) => d.action === "CLOSE_POSITION" || d.action === "REBALANCE";
 const isInt = (n: number) => Number.isInteger(n);
+const iso = (ms: number) => new Date(ms).toISOString();
 
 export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimits): Verdict {
   const violations: string[] = [];
   const overrides: string[] = [];
   const passed: string[] = [];
   let decision: Decision = proposal;
-  let emergency = false;
+  const source = ctx.source ?? "llm";
+  const engine = ctx.engine ?? NO_ENGINE;
+  // An engine exit (STOP / FLATTEN) is an emergency: it skips every rate limit.
+  let emergency = source === "engine" && proposal.action === "CLOSE_POSITION";
 
-  // 1. Stop-loss override. Guards can force a close regardless of what the model wants.
-  for (const p of ctx.positions) {
+  // 1. Stop-loss override, defense in depth under the engine's STOP directive. Uses the per-band
+  //    stop rolled at open when present, else the configured limit.
+  const atStop = ctx.positions.filter((p) => {
+    const dd = drawdownPct(p, ctx.state.entryValueSol[p.address]);
+    return dd !== null && dd >= bandStopPct(engine.stops, p.address, limits);
+  });
+  const closingAtStop = decision.action === "CLOSE_POSITION" ? atStop.find((p) => p.address === decision.positionAddress) : undefined;
+  if (closingAtStop) {
+    // The proposal already closes a band at its stop (an engine STOP, or the LLM agreeing): let it through as the emergency it is.
+    const dd = drawdownPct(closingAtStop, ctx.state.entryValueSol[closingAtStop.address])!;
+    passed.push(`stop-loss (closing ${closingAtStop.address.slice(0, 6)} at -${dd.toFixed(1)}%)`);
+    emergency = true;
+  }
+  for (const p of closingAtStop ? [] : atStop) {
     const entry = ctx.state.entryValueSol[p.address];
-    if (!entry || entry <= 0) continue;
-    const drawdownPct = (1 - p.valueInSol / entry) * 100;
-    if (drawdownPct >= limits.stopLossPct) {
+    const dd = drawdownPct(p, entry);
+    if (dd === null) continue;
+    const stop = bandStopPct(engine.stops, p.address, limits);
+    if (dd >= stop) {
       overrides.push(
-        `stop-loss: ${p.address.slice(0, 6)} is ${drawdownPct.toFixed(1)}% below entry (${entry.toFixed(4)} -> ${p.valueInSol.toFixed(4)} SOL); forcing CLOSE`,
+        `stop-loss: ${p.address.slice(0, 6)} is ${dd.toFixed(1)}% below entry (${entry.toFixed(4)} -> ${p.valueInSol.toFixed(4)} SOL), stop ${stop.toFixed(2)}%; forcing CLOSE`,
       );
       decision = {
         action: "CLOSE_POSITION",
         open: null,
         positionAddress: p.address,
-        reasoning: `Stop-loss triggered by risk guards at -${drawdownPct.toFixed(1)}% (limit -${limits.stopLossPct}%). Model proposal (${proposal.action}) overridden.`,
+        reasoning: `Stop-loss triggered by risk guards at -${dd.toFixed(1)}% (stop -${stop.toFixed(2)}%, limit -${limits.stopLossPct}%). Model proposal (${proposal.action}) overridden.`,
         confidence: 1,
         headline: "Stop-loss hit. Bands off the table.",
       };
@@ -91,8 +152,8 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
     }
   }
 
-  // 4. Rate limits for anything that costs a transaction. Emergencies skip the cooldown.
-  if (decision.action !== "HOLD" && !emergency) {
+  // 4. Rate limits for anything that costs a transaction. Closes and emergencies are exempt: exits are never blocked.
+  if (decision.action !== "HOLD" && decision.action !== "CLOSE_POSITION" && !emergency) {
     if (ctx.state.actionsToday >= limits.maxTxPerDay) {
       violations.push(`daily action cap reached (${ctx.state.actionsToday}/${limits.maxTxPerDay})`);
     } else {
@@ -128,7 +189,29 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
     }
   }
 
-  // 6. Opening: size, exposure, gas, geometry.
+  // 6. Anti-churn: an LLM move of a band that has not sat out of range for the minimum is blocked
+  //    (unless the band is already down half its stop). Never applied to engine directives or overrides.
+  if (source === "llm" && !emergency && closing) {
+    const churn = antiChurn(decision, ctx.positions, { ...ctx.state, stops: engine.stops, outOfRangeSince: engine.outOfRangeSince }, limits, engine.outOfRangeSec, ctx.now);
+    if (churn) violations.push(churn);
+    else passed.push("anti-churn");
+  }
+
+  // 7. Engine gates on opens: halt, stand-down, bench, regime, knife.
+  if (isOpening(decision)) {
+    if (engine.haltedUntil !== null && ctx.now < engine.haltedUntil) {
+      violations.push(`circuit breaker: opens halted until ${iso(engine.haltedUntil)}`);
+    }
+    if (engine.standDownUntil !== null && ctx.now < engine.standDownUntil) {
+      violations.push(`stand-down: portfolio breaker is standing down until ${iso(engine.standDownUntil)} (operator clears it)`);
+    }
+    if (engine.benched) violations.push(engine.benchReason ?? "benched: repeated stop-loss closes in this pool");
+    if (engine.sizeMultiplier <= 0 && !engine.benched) violations.push(engine.regimeReason ?? "regime: opens off");
+    if (engine.knife) violations.push(engine.knife);
+    if (violations.length === 0) passed.push("engine-gates");
+  }
+
+  // 8. Opening: size, exposure, gas, geometry.
   if (isOpening(decision)) {
     const o = decision.open;
     if (!o) {
@@ -142,9 +225,15 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
       const walletSolAfterClose = ctx.walletSol + (closing?.solInPosition ?? 0);
       const walletSolAfter = walletSolAfterClose - o.amountSol - OPEN_COST_ESTIMATE_SOL;
       const width = o.binsBelowActive + o.binsAboveActive + 1;
+      const mult = Math.min(Math.max(engine.sizeMultiplier, 0), 1);
+      const effectiveMax = limits.maxPositionSol * mult;
 
       if (!(o.amountSol >= 0) || !(o.amountToken >= 0) || sizeSol <= 0) violations.push("deposit amounts must be positive");
-      if (sizeSol > limits.maxPositionSol) violations.push(`band size ${sizeSol.toFixed(4)} SOL > max ${limits.maxPositionSol}`);
+      if (sizeSol > limits.maxPositionSol) {
+        violations.push(`band size ${sizeSol.toFixed(4)} SOL > max ${limits.maxPositionSol}`);
+      } else if (mult > 0 && mult < 1 && sizeSol > effectiveMax) {
+        violations.push(`band size ${sizeSol.toFixed(4)} SOL > max ${effectiveMax.toFixed(4)} (${mult} x limit after bench/regime)`);
+      }
       if (exposureAfter > limits.maxTotalExposureSol) violations.push(`total exposure would be ${exposureAfter.toFixed(4)} SOL > max ${limits.maxTotalExposureSol}`);
       if (walletSolAfter < limits.gasReserveSol) {
         violations.push(

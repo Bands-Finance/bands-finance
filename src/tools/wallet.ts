@@ -68,11 +68,24 @@ export class Wallet {
     readonly ephemeral: boolean,
   ) {}
 
+  /**
+   * Load the configured key, or a throwaway one. Signer assertion (port of Meridian's
+   * assertSignerIsHouseWallet): when EXPECTED_WALLET is set and the loaded key derives to a
+   * different pubkey, live mode refuses to start and dry-run warns. A key rotated without
+   * updating EXPECTED_WALLET would otherwise sign from one wallet while the journal and the
+   * lock file explain another.
+   */
   static fromConfig(connection: Connection): Wallet {
-    if (config.walletSecretKey) {
-      return new Wallet(connection, loadKeypair(config.walletSecretKey), false);
+    const wallet = config.walletSecretKey
+      ? new Wallet(connection, loadKeypair(config.walletSecretKey), false)
+      : new Wallet(connection, Keypair.generate(), true);
+    const expected = config.engine.expectedWallet;
+    if (expected && wallet.publicKey.toBase58() !== expected) {
+      const msg = `${wallet.ephemeral ? "the ephemeral wallet" : "WALLET_SECRET_KEY"} derives to ${wallet.publicKey.toBase58()}, but EXPECTED_WALLET is ${expected}`;
+      if (!config.dryRun) throw new Error(`${msg}. Refusing to start live: a key rotation must update EXPECTED_WALLET in the same change.`);
+      console.warn(`[wallet] warning: ${msg} (dry-run continues)`);
     }
-    return new Wallet(connection, Keypair.generate(), true);
+    return wallet;
   }
 
   get publicKey(): PublicKey {
@@ -96,6 +109,26 @@ export class Wallet {
       decimals = Number(ta.decimals);
     }
     return { mint: mint.toBase58(), amount, decimals, ui: Number(amount) / 10 ** decimals };
+  }
+
+  /**
+   * What a confirmed transaction did to this wallet's SOL, from the transaction's own pre/post
+   * balances (the fee payer is account 0): the exact basis for a ledger row. Null when the RPC
+   * has not indexed it after a few tries; the caller falls back to a before/after balance read.
+   */
+  async txCashDelta(signature: string): Promise<{ walletDeltaSol: number; txFeeSol: number } | null> {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const tx = await this.connection.getTransaction(signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+      const meta = tx?.meta;
+      if (meta && meta.preBalances.length > 0 && meta.postBalances.length > 0) {
+        return {
+          walletDeltaSol: (meta.postBalances[0] - meta.preBalances[0]) / LAMPORTS_PER_SOL,
+          txFeeSol: -meta.fee / LAMPORTS_PER_SOL,
+        };
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    return null;
   }
 
   /** Simulate a legacy transaction without broadcasting. Used in DRY_RUN. */

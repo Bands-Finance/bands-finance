@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>bands.finance quickstart: your agent's first paid call</title>
+    <meta
+      name="description"
+      content="Point your agent at bands.finance's MCP endpoint, pay per call in USDC on Solana over x402, and read the screener and pool data Mr Bands trades on. No accounts, no API keys."
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="bands.finance" />
+    <meta property="og:title" content="bands.finance quickstart: your agent's first paid call" />
+    <meta property="og:description" content="Pay per call in USDC on Solana over x402 for the screener and pool data Mr Bands runs on. No accounts, no API keys. About five minutes." />
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <meta name="theme-color" content="#060606" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --void: #060606;
+        --panel: rgba(28, 25, 22, 0.62);
+        --border: rgba(255, 122, 26, 0.12);
+        --border-strong: rgba(255, 122, 26, 0.3);
+        --accent: #ff7a1a;
+        --accent-soft: #ffa24d;
+        --text: #f4eee3;
+        --dim: #b8b0a3;
+        --faint: #8c857a;
+        --positive: #4fcb8a;
+        --mono: "JetBrains Mono", ui-monospace, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--void);
+        color: var(--text);
+        font-family: "Archivo", system-ui, sans-serif;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 860px; margin: 0 auto; padding: 56px 20px 96px; }
+      .crumb { font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; }
+      .crumb a { color: var(--accent); text-decoration: none; }
+      h1 {
+        font-family: "Bricolage Grotesque", "Archivo", sans-serif;
+        font-weight: 500;
+        font-size: clamp(30px, 5vw, 44px);
+        line-height: 1.1;
+        letter-spacing: -0.015em;
+        margin: 14px 0 10px;
+      }
+      .lede { color: var(--dim); font-size: 16.5px; max-width: 62ch; margin: 0 0 12px; }
+      .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0 0; }
+      .chip {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+        border: 1px solid var(--border-strong); border-radius: 999px; padding: 4px 12px; color: var(--dim);
+      }
+      .chip--live { color: var(--positive); border-color: rgba(79, 203, 138, 0.35); }
+      h2 {
+        font-family: "Bricolage Grotesque", "Archivo", sans-serif; font-weight: 500; font-size: 24px;
+        margin: 52px 0 10px;
+      }
+      .step-n { font-family: var(--mono); font-size: 12px; color: var(--accent); letter-spacing: 0.1em; }
+      p { color: var(--dim); font-size: 15px; }
+      p strong { color: var(--text); font-weight: 600; }
+      a { color: var(--accent-soft); }
+      code {
+        font-family: var(--mono); font-size: 0.9em; color: var(--accent-soft);
+        background: rgba(255, 122, 26, 0.07); padding: 1px 6px; border-radius: 5px;
+      }
+      pre {
+        background: #0a0908; border: 1px solid var(--border); border-radius: 12px;
+        padding: 18px 20px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px;
+        line-height: 1.6; color: #e8e2d6;
+      }
+      pre code { background: none; padding: 0; color: inherit; }
+      .c { color: var(--faint); }
+      .k { color: var(--accent); }
+      .s { color: var(--positive); }
+      table { width: 100%; border-collapse: collapse; font-size: 14px; }
+      th {
+        font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+        color: var(--faint); text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
+      }
+      td { padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--dim); }
+      td:first-child { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+      td:last-child { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+      .note {
+        border: 1px solid var(--border); border-left: 3px solid var(--accent);
+        border-radius: 10px; background: var(--panel); padding: 14px 18px; font-size: 14px; color: var(--dim);
+        margin: 18px 0;
+      }
+      .facts { display: grid; grid-template-columns: 170px 1fr; gap: 6px 18px; font-size: 14px; }
+      .facts dt { font-family: var(--mono); font-size: 12px; color: var(--faint); padding-top: 2px; }
+      .facts dd { margin: 0; color: var(--dim); word-break: break-all; }
+      .facts dd code { font-size: 12.5px; }
+      footer { margin-top: 72px; border-top: 1px solid var(--border); padding-top: 22px; font-size: 13.5px; color: var(--faint); }
+      @media (max-width: 560px) {
+        .facts { grid-template-columns: 1fr; }
+        table { display: block; overflow-x: auto; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <p class="crumb"><a href="/">bands.finance</a> / quickstart</p>
+      <h1>Your agent's first paid call.</h1>
+      <p class="lede">
+        bands.finance sells the screener and pool data Mr Bands makes markets on to autonomous agents. There are no
+        accounts, no API keys, and nothing to sign up for: your agent calls a tool, receives a price, pays it in USDC
+        on Solana, proves the payment is its own with one signature, and gets the data. About five minutes, start to
+        first answer.
+      </p>
+      <div class="chips">
+        <span class="chip chip--live">payment is the auth</span>
+        <span class="chip">USDC · Solana mainnet</span>
+        <span class="chip">MCP over HTTP</span>
+        <span class="chip">from $0.01 per call</span>
+      </div>
+
+      <h2><span class="step-n">01</span> What you need</h2>
+      <dl class="facts">
+        <dt>a wallet</dt>
+        <dd>Any Solana keypair your agent controls, holding a few dollars of USDC and a little SOL for fees.</dd>
+        <dt>network</dt>
+        <dd><code>solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp</code> (mainnet-beta, as a CAIP-2 id)</dd>
+        <dt>USDC mint</dt>
+        <dd><code>EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v</code> (6 decimals)</dd>
+        <dt>explorer</dt>
+        <dd><a href="https://solscan.io" rel="noreferrer">solscan.io</a></dd>
+        <dt>endpoint</dt>
+        <dd>the <code>/mcp</code> route of the host running Mr Bands' API. Locally that is <code>http://localhost:3000/mcp</code> after <code>npm run serve</code>; the public host is whatever this site's API is pointed at. <code>GET /integrate.md</code> on that host is the full guide.</dd>
+        <dt>runtime</dt>
+        <dd>Node 18+, <code>npm i @solana/web3.js @solana/spl-token tweetnacl @modelcontextprotocol/sdk</code></dd>
+      </dl>
+
+      <h2><span class="step-n">02</span> How the rail works</h2>
+      <p>
+        Call a priced tool with no payment attached and the server answers <strong>HTTP 402</strong> with formal
+        terms: the price in USDC raw units (6&nbsp;decimals), the treasury's USDC token account, the network, and the
+        exact message to sign as proof:
+      </p>
+      <pre><code>{"x402Version":1,
+ "accepts":[{
+  "scheme":"exact",
+  "network":"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+  "asset":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "maxAmountRequired":"20000",        <span class="c">// $0.02, USDC 6-decimals</span>
+  "resource":"bands_screen",
+  "payTo":"&lt;the treasury's USDC token account&gt;",
+  "description":"bands.finance bands_screen - $0.0200"
+ }],
+ "proof":{
+  "header":"X-PAYMENT",
+  "format":"base64(JSON) or raw JSON: { \"signature\": \"&lt;tx signature&gt;\", \"proofSignature\": \"&lt;base64 or base58 ed25519 signature over signMessage&gt;\" }",
+  "signMessage":"bands.finance x402 payment authorization\nCluster: mainnet-beta\nTreasury: &lt;payTo&gt;\nResource: bands_screen\nTx: &lt;your payment tx signature&gt;",
+  "note":"Sign the message above with the wallet that SENT the USDC ..."
+ }}</code></pre>
+      <p>
+        Your agent pays with an SPL <code>TransferChecked</code> of <code>maxAmountRequired</code> USDC to
+        <code>payTo</code>, then signs <code>signMessage</code> with <code>&lt;your payment tx signature&gt;</code>
+        replaced by the real one, and retries the same call with an <code>X-PAYMENT</code> header:
+        <code>base64({"signature":"…","proofSignature":"…"})</code>. The server fetches the transaction, sums the
+        USDC that reached the treasury, reads who owned the sending token account, and checks the proof against
+        that owner. Three rules: the transfer must cover the price, be confirmed within the last
+        <strong>15 minutes</strong>, and <strong>one transaction buys exactly one call</strong>: signatures are
+        burned after use, replays are rejected. The proof signature is what makes a payment yours; a transaction
+        signature alone is public the moment it lands.
+      </p>
+
+      <h2><span class="step-n">03</span> The whole client, ~60 lines</h2>
+      <pre><code><span class="k">import</span> { Client } <span class="k">from</span> <span class="s">"@modelcontextprotocol/sdk/client/index.js"</span>;
+<span class="k">import</span> { StreamableHTTPClientTransport } <span class="k">from</span> <span class="s">"@modelcontextprotocol/sdk/client/streamableHttp.js"</span>;
+<span class="k">import</span> { Connection, Keypair, PublicKey, Transaction, sendAndConfirmTransaction } <span class="k">from</span> <span class="s">"@solana/web3.js"</span>;
+<span class="k">import</span> { createTransferCheckedInstruction, getAssociatedTokenAddressSync } <span class="k">from</span> <span class="s">"@solana/spl-token"</span>;
+<span class="k">import</span> nacl <span class="k">from</span> <span class="s">"tweetnacl"</span>;
+
+<span class="k">const</span> BANDS = process.env.BANDS_API_URL + <span class="s">"/mcp"</span>;      <span class="c">// the host running Mr Bands' API</span>
+<span class="k">const</span> USDC = <span class="k">new</span> PublicKey(<span class="s">"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"</span>);
+<span class="k">const</span> connection = <span class="k">new</span> Connection(process.env.RPC_URL!, <span class="s">"confirmed"</span>);
+<span class="k">const</span> agent = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(process.env.AGENT_KEY!)));
+
+<span class="k">async function</span> callOnce(tool: <span class="k">string</span>, args: <span class="k">object</span>, payment?: <span class="k">string</span>) {
+  <span class="k">const</span> transport = <span class="k">new</span> StreamableHTTPClientTransport(<span class="k">new</span> URL(BANDS),
+    { requestInit: { headers: payment ? { <span class="s">"X-PAYMENT"</span>: payment } : {} } });
+  <span class="k">const</span> client = <span class="k">new</span> Client({ name: <span class="s">"my-agent"</span>, version: <span class="s">"1.0.0"</span> });
+  <span class="k">await</span> client.connect(transport);
+  <span class="k">try</span> { <span class="k">return await</span> client.callTool({ name: tool, arguments: args }); }
+  <span class="k">finally</span> { <span class="k">await</span> client.close(); }
+}
+
+<span class="k">export async function</span> paidCall(tool: <span class="k">string</span>, args: <span class="k">object</span> = {}) {
+  <span class="k">try</span> { <span class="k">return await</span> callOnce(tool, args); }        <span class="c">// free tools answer here</span>
+  <span class="k">catch</span> (err) {
+    <span class="k">const</span> msg = String((err <span class="k">as</span> Error).message);
+    <span class="k">const</span> at = msg.indexOf(<span class="s">'{"x402Version"'</span>);
+    <span class="k">if</span> (at &lt; <span class="k">0</span>) <span class="k">throw</span> err;                       <span class="c">// not a payment challenge</span>
+    <span class="k">const</span> challenge = JSON.parse(msg.slice(at));
+    <span class="k">const</span> terms = challenge.accepts[<span class="k">0</span>];
+    <span class="k">if</span> (terms.network !== <span class="s">"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"</span> || terms.asset !== USDC.toBase58()) <span class="k">throw</span> err;
+
+    <span class="c">// pay: one USDC TransferChecked for the quoted amount, from your token account to payTo</span>
+    <span class="k">const</span> source = getAssociatedTokenAddressSync(USDC, agent.publicKey);
+    <span class="k">const</span> tx = <span class="k">new</span> Transaction().add(createTransferCheckedInstruction(
+      source, USDC, <span class="k">new</span> PublicKey(terms.payTo), agent.publicKey, BigInt(terms.maxAmountRequired), <span class="k">6</span>));
+    <span class="k">const</span> signature = <span class="k">await</span> sendAndConfirmTransaction(connection, tx, [agent], { commitment: <span class="s">"confirmed"</span> });
+
+    <span class="c">// prove the payment is yours: sign the challenge's message with the real tx signature in it</span>
+    <span class="k">const</span> message = challenge.proof.signMessage.replace(<span class="s">"&lt;your payment tx signature&gt;"</span>, signature);
+    <span class="k">const</span> proofSignature = Buffer.from(
+      nacl.sign.detached(<span class="k">new</span> TextEncoder().encode(message), agent.secretKey)).toString(<span class="s">"base64"</span>);
+
+    <span class="c">// retry with proof</span>
+    <span class="k">const</span> payment = Buffer.from(JSON.stringify({ signature, proofSignature })).toString(<span class="s">"base64"</span>);
+    <span class="k">return await</span> callOnce(tool, args, payment);
+  }
+}
+
+<span class="c">// first paid call: the full ranked board, $0.02</span>
+console.log(<span class="k">await</span> paidCall(<span class="s">"bands_screen"</span>));</code></pre>
+
+      <h2><span class="step-n">04</span> What's on the shelf</h2>
+      <table>
+        <thead><tr><th>tool</th><th>what your agent gets</th><th>price</th></tr></thead>
+        <tbody>
+          <tr><td>bands_pool_score</td><td>one pool's score, flags, fee source and fee/TVL, with the numbers behind them</td><td>$0.05</td></tr>
+          <tr><td>bands_screen</td><td>the full ranked board of every DLMM pool with every measured column</td><td>$0.02</td></tr>
+          <tr><td>bands_pool_snapshot</td><td>one pool live from the chain: active bin, price, fees, the bins around the price</td><td>$0.01</td></tr>
+        </tbody>
+      </table>
+      <p style="margin-top: 10px">
+        Free, no payment needed: <code>bands_list_pools</code> (the top 50 screened pools), <code>bands_limits</code>
+        (the guards' limits), <code>bands_agent_thoughts</code> (Mr Bands' latest decisions and reasoning),
+        <code>bands_propose_band_action</code> (argue for a band on his book; the operator decides).
+      </p>
+
+      <h2><span class="step-n">05</span> Verify everything</h2>
+      <p>
+        Every payment you make is a public transaction, and so is everything Mr Bands does with his own money.
+        <code>GET /api/revenue</code> on the API host shows the treasury account the 402 quotes and what the tools
+        have earned, folded from the ledger. If a payment fails verification you get the reason in plain text:
+        <code>payment tx already used</code>, <code>payment tx too old</code>, <code>insufficient payment</code>,
+        or <code>signature does not match the wallet that sent this payment</code>.
+      </p>
+      <div class="note">
+        Rather run the engine than read it? Signed-in wallets with access get the same band math and guards on their
+        own capital: the API returns an unsigned transaction, your wallet signs it. <code>GET /api/engine/skill</code>
+        on the API host is the guide, and the panel on the main page does it by hand.
+      </div>
+
+      <footer>
+        bands.finance · Mr Bands makes markets on Solana and shows his work ·
+        <a href="/">bands.finance</a> · payment rail: x402 over USDC on Solana · <code>/integrate.md</code> on the API host is the full integration doc.
+      </footer>
+    </div>
+  </body>
+</html>

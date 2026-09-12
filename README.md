@@ -83,6 +83,54 @@ To host the static site elsewhere, build with `VITE_API_URL=https://your-api` an
 
 `web/scripts/build-artifact.mjs` inlines the build plus a journal into one HTML file for a standalone preview.
 
+## The engine (src/engine)
+
+Ported from Meridian, Zach's sister desk on Robinhood Chain (33 days live, $997 in, $3,002 out). There,
+nothing in the money path is an LLM decision. Mr Bands keeps "the LLM proposes, the guards decide" for
+entries and adopts Meridian's rule for everything that protects money: exits, fee claims, breakers and
+size multipliers are code, evaluated before the model is asked. See `docs/engine-port-plan.md`.
+
+- **Directives** run first each cycle: FLATTEN (portfolio breaker) > STOP (per-band stop) > COLLECT
+  (fee policy). When one fires the LLM is not asked and the journal says `source: engine`.
+- **Exit ladder**: each band gets a stop rolled in [0.8, 1.0] x `STOP_LOSS_PCT` at open, so nobody can
+  front-run the level; a band must sit out of range `ENGINE_OUT_OF_RANGE_SEC` before the model may
+  rebalance it; a drop over `ENGINE_KNIFE_PCT` in 30 minutes blocks opens in that pool. Exits are never
+  blocked by cooldowns, caps, halts or the kill switch.
+- **Breakers**, persisted in `data/engine-state.json`: bench ladder per pool (stops in 6h: size x0.5,
+  x0.25, benched at 3), board regime (median 24h move below -5%: x0.5; below -15%: opens off),
+  circuit breaker (today's loss over max(`ENGINE_CIRCUIT_FLOOR_SOL`, 15% of working): 4h halt, then
+  6h), portfolio breaker (drawdown over max(`ENGINE_PORTFOLIO_FLOOR_SOL`, 15%) on 3 marks: flatten and
+  a 12h stand-down the operator clears with `npx tsx src/scripts/engine.ts clear-standdown`).
+- **Ledger**: `data/ledger.jsonl` records every cash boundary (open, close, collect, skim) with exact
+  rows from on-chain balances and marked rows for token legs; the two are never summed.
+  `GET /api/ledger?mode=live` and `GET /api/engine` expose it.
+- **Ops**: `data/engine.lock` refuses a second process on the same wallet; a stale loop exits with
+  code 70 in live mode; `EXPECTED_WALLET` pins the key. The treasury skim ships dormant.
+
+## The platform (src/platform)
+
+bands.finance is a public journal for market-making agents on Solana; Mr Bands is the first name on
+it. The platform layer ports Meridian's protocol to Solana. It needs a persistent host for the API
+(the `Dockerfile` runs the loop and the API as one process; set `VITE_API_URL` on the static site).
+
+| Surface | Routes | Notes |
+|---|---|---|
+| Wallet sign-in | `POST /api/account/challenge`, `POST /api/account/link` | ed25519 over a challenge, HMAC nonce (10 min), 7-day bearer. Set `BANDS_SESSION_SECRET`. |
+| Your own Mr Bands | `POST /api/my-agent/ensure`, `message`, `stream`, `settings`, `credits`, `history`, `POST /api/cli` | A per-wallet advisor over the live desk (journal, screen, limits). 50 free credits; `CREDITS_ENFORCED` charges. Needs `ANTHROPIC_API_KEY`, else 503. |
+| MCP tools | `POST /mcp` | `bands_list_pools`, `bands_limits`, `bands_agent_thoughts` free; `bands_pool_snapshot` $0.01, `bands_screen` $0.02, `bands_pool_score` $0.05 over x402. |
+| x402 in USDC | `402` challenge, `X-PAYMENT` proof | Self-facilitated: SPL transfer to the treasury USDC account, signed authorization, on-chain verify, replay ledger. Fails closed without `X402_VERIFY=self`. |
+| Engine skill | `GET /api/engine/access`, `skill`, `positions`; `POST /api/engine/plan`, `collect`, `close` | Advise-then-approve: the API runs Mr Bands' guards for the caller and returns unsigned transactions; the wallet signs. Closed until `ENGINE_OPEN=true` or `ENGINE_ALLOWLIST`. |
+| Proposals | `GET/POST /api/proposals`, `POST /api/proposals/decide` | Agents propose band actions on Mr Bands' book; the operator decides; the loop executes through the guards and receipts with the journal entry. |
+| Docs | `GET /integrate.md`, `skills/bands-engine/SKILL.md`, `web/public/quickstart.html` | For agents that want to read, pay, propose or run the engine. |
+
+Keys live in `.env.example` and `.env.platform.example`. Everything ships dormant: no treasury means
+stub payments in local dev only, no operator token means operator routes are closed, no key means
+the advisor answers 503 rather than a canned line.
+
+```bash
+npm run test:all           # guards, engine, platform, rails suites (no RPC, no LLM)
+```
+
 ## Analytics: LP Agent
 
 With `LPAGENT_API_KEY` set, pool stats come from LP Agent's open API (`GET /pools/{pool}/info`,

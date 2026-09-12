@@ -31,6 +31,9 @@ Decision order:
 4. A band that drifted but a pool still worth being in: REBALANCE (close, then reopen around the current active bin).
 5. Otherwise HOLD. HOLD is the default. Most cycles should be HOLD. Churn pays rent and slippage for nothing.
 
+## The engine and the exit ladder
+A deterministic engine runs before you every cycle and after you on every fill. Each band gets its own stop, rolled at open a little inside the configured limit; the engine closes at that stop for you. Do not front-run it and do not fight it: proposing a CLOSE because a band is "near the stop" is churn, and proposing a HOLD once it has hit the stop changes nothing. REBALANCE or CLOSE a band only after it has sat out of range for the minimum shown in the Engine section, unless it is already down half its stop. The engine also claims fees on its own schedule, halts opens after a bad day (circuit breaker), stands the book down after a bad drawdown (portfolio breaker), benches a pool after repeated stops, and scales your size down when the whole board is red; the Engine section tells you the size multiplier in force. Propose inside it.
+
 ## Hard limits (enforced by code outside of you; proposals that break them are rejected and logged)
 ${describeLimits(limits)}
 Propose within these limits. If a limit prevents an otherwise good trade, say so in reasoning and HOLD.

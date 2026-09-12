@@ -13,6 +13,12 @@ let html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
 html = html.replace(/<script type="module"[^>]*src="\/?(assets\/[^"]+)"[^>]*><\/script>/g, (_, src) => `<script type="module">${fs.readFileSync(path.join(dist, src), "utf8")}</script>`);
 html = html.replace(/<link rel="stylesheet"[^>]*href="\/?(assets\/[^"]+)"[^>]*>/g, (_, href) => `<style>${fs.readFileSync(path.join(dist, href), "utf8")}</style>`);
 html = html.replace(/<link rel="modulepreload"[^>]*>/g, "");
+// The artifact host serves nothing at root-relative paths, so the logo rides along as a data URI.
+const logoSvg = path.resolve("public/logo.svg");
+if (fs.existsSync(logoSvg)) {
+  const uri = `data:image/svg+xml;base64,${fs.readFileSync(logoSvg).toString("base64")}`;
+  html = html.replace(/(["'])\/logo\.(png|svg)\1/g, `$1${uri}$1`);
+}
 
 const entries = fs.readFileSync(jsonl, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).reverse();
 const limits = limitsFile && fs.existsSync(limitsFile) ? JSON.parse(fs.readFileSync(limitsFile, "utf8")) : null;

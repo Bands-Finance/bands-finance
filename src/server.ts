@@ -3,6 +3,10 @@
  *   GET /api/health
  *   GET /api/journal?limit=500&agent=mr-bands   entries, newest first
  *   GET /api/limits                             the hard risk limits in force
+ *   GET /api/ledger?mode=live|dry-run           cash-boundary attribution rows + summary
+ *   GET /api/engine                             breakers, bench, regime, watchdog
+ *   POST /api/account/challenge|link             wallet sign-in (src/platform/accounts.ts)
+ *   /api/my-agent/*, /api/cli                     your own Mr Bands (src/platform/routes.ts)
  *   GET /api/feed.md                            the markdown feed
  *   /                                           web/dist (built dashboard), SPA fallback
  *
@@ -17,10 +21,26 @@ import { cors } from "hono/cors";
 import { config, riskLimits } from "./config";
 import { dataDir, readRecent } from "./journal";
 import { loadScreen } from "./screener";
+import { engineRoutes } from "./engine/routes";
+import { platformRoutes } from "./platform/routes";
 
 export function buildApp(): Hono {
   const app = new Hono();
-  app.use("/api/*", cors());
+  // Wallet sessions send Authorization; x402 payers send X-Payment. Both must be allowed
+  // or the first real payment is stranded (Meridian lost $5 this way).
+  const corsPolicy = cors({
+    origin: "*",
+    allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Authorization", "X-Payment", "Mcp-Session-Id"],
+    exposeHeaders: ["Mcp-Session-Id", "X-Bands-Skill-Version"],
+  });
+  app.use("/api/*", corsPolicy);
+  app.use("/mcp", corsPolicy);
+  app.use("/integrate.md", corsPolicy);
+
+  // The platform: security headers + rate buckets on /api/*, wallet sign-in, "your own Mr Bands"
+  // (src/platform/routes.ts). Registered first so its middleware covers every route below.
+  platformRoutes(app);
 
   app.get("/api/health", (c) => c.json({ ok: true, now: new Date().toISOString(), mode: config.dryRun ? "dry-run" : "live" }));
 
@@ -38,6 +58,9 @@ export function buildApp(): Hono {
     const screen = loadScreen();
     return screen ? c.json(screen) : c.json({ error: "no screen yet; run `npm run screen`" }, 404);
   });
+
+  // The engine: cash-boundary ledger and breaker state (src/engine/routes.ts).
+  engineRoutes(app);
 
   app.get("/api/feed.md", (c) => {
     try {

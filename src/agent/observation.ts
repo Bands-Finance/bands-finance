@@ -30,6 +30,24 @@ export interface JournalGlimpse {
   violations: string[];
 }
 
+/** What the engine (src/engine) has decided about this pool this cycle, as the LLM should see it. */
+export interface EngineObservation {
+  halt: { until: number; stage: number | null; reason: string | null } | null;
+  standDown: { until: number; reason: string | null } | null;
+  bench: { stops6h: number; multiplier: number; benched: boolean; reason: string | null };
+  regime: { medianMove24hPct: number | null; multiplier: number; reason: string | null };
+  sizeMultiplier: number;
+  effectiveMaxPositionSol: number;
+  /** position -> stop percent for this band */
+  stops: Record<string, number>;
+  /** position -> seconds out of range so far */
+  outOfRangeSec: Record<string, number>;
+  minOutOfRangeSec: number;
+  knife: string | null;
+  collectsToday: number;
+  collectMaxPerDay: number;
+}
+
 /** Everything Mr Bands gets to see for one decision. */
 export interface Observation {
   ts: string;
@@ -44,6 +62,7 @@ export interface Observation {
   recent: JournalGlimpse[];
   screen: ScreenContext | null;
   portfolio: PortfolioContext;
+  engine: EngineObservation | null;
 }
 
 const r = (n: number | null | undefined, digits = 4) =>
@@ -101,6 +120,27 @@ export function formatObservation(o: Observation): string {
   lines.push(`- actions today: ${o.state.actionsToday}`);
   lines.push(`- last action: ${o.state.lastActionAt ? `${Math.round((Date.now() - o.state.lastActionAt) / 60000)} min ago` : "never"}`);
   lines.push(`- kill switch: ${o.state.killSwitch ? "ACTIVE (no new exposure)" : "off"}`);
+  lines.push("");
+  lines.push("## Engine");
+  const e = o.engine;
+  if (!e) {
+    lines.push("- no engine view this cycle");
+  } else {
+    const mins = (ms: number) => Math.max(0, Math.round((ms - Date.now()) / 60000));
+    lines.push(`- circuit breaker: ${e.halt ? `HALTED (stage ${e.halt.stage ?? "?"}), opens blocked for ${mins(e.halt.until)} more min: ${e.halt.reason ?? ""}` : "clear"}`);
+    lines.push(`- portfolio breaker: ${e.standDown ? `STANDING DOWN for ${mins(e.standDown.until)} more min, every band is being closed: ${e.standDown.reason ?? ""}` : "clear"}`);
+    lines.push(`- bench: ${e.bench.benched ? "BENCHED, no opens in this pool" : e.bench.stops6h === 0 ? "clear" : `${e.bench.stops6h} stop(s) in 6h, size x${e.bench.multiplier}`}`);
+    lines.push(`- board regime: median 24h move ${e.regime.medianMove24hPct === null ? "n/a" : `${r(e.regime.medianMove24hPct, 2)}%`}, size x${e.regime.multiplier}${e.regime.multiplier === 0 ? " (opens off)" : ""}`);
+    lines.push(`- size multiplier in force: x${e.sizeMultiplier} -> max band ${r(e.effectiveMaxPositionSol, 4)} SOL`);
+    lines.push(`- knife: ${e.knife ?? "clear"}`);
+    lines.push(`- fee claims today: ${e.collectsToday}/${e.collectMaxPerDay} (the engine claims on its own schedule)`);
+    lines.push(`- minimum out-of-range time before you may REBALANCE/CLOSE an out-of-range band: ${e.minOutOfRangeSec}s`);
+    for (const p of o.positions) {
+      const stop = e.stops[p.address];
+      const oor = e.outOfRangeSec[p.address] ?? 0;
+      lines.push(`- band ${p.address.slice(0, 6)}: stop ${stop === undefined ? "n/a" : `-${r(stop, 2)}%`} (the engine closes it there) | out of range ${p.inRange ? "0s" : `${Math.round(oor)}s`}${!p.inRange && oor < e.minOutOfRangeSec ? " (below the minimum: moving it now is churn)" : ""}`);
+    }
+  }
   lines.push("");
   lines.push("## Your recent decisions (newest first)");
   if (o.recent.length === 0) lines.push("- none yet");

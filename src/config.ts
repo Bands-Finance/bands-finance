@@ -38,9 +38,48 @@ const Raw = z.object({
   MIN_SECONDS_BETWEEN_ACTIONS: z.coerce.number().default(600),
   MAX_SLIPPAGE_PCT: z.coerce.number().default(1),
   MAX_PRICE_MOVE_PCT_PER_CYCLE: z.coerce.number().default(40),
+
+  // ---- the engine (src/engine): exit ladder, breakers, collect and skim policies ----
+  ENGINE_OUT_OF_RANGE_SEC: z.coerce.number().default(600),
+  ENGINE_KNIFE_PCT: z.coerce.number().default(20),
+  ENGINE_CIRCUIT_FLOOR_SOL: z.coerce.number().default(0.05),
+  ENGINE_PORTFOLIO_FLOOR_SOL: z.coerce.number().default(0.15),
+  ENGINE_COLLECT_MIN_SOL: z.coerce.number().default(0.005),
+  ENGINE_COLLECT_FLOOR_SOL: z.coerce.number().default(0.001),
+  ENGINE_COLLECT_MAX_PER_DAY: z.coerce.number().default(30),
+  ENGINE_SKIM: z.string().default("false"),
+  ENGINE_FLOAT_TARGET_SOL: z.coerce.number().default(1),
+  TREASURY_ADDRESS: z.string().default(""),
+  EXPECTED_WALLET: z.string().default(""),
 });
 
 const raw = Raw.parse(env);
+
+/** Engine settings (src/engine). Dormant by default: the skim is off until ENGINE_SKIM=true and a treasury is set. */
+export interface EngineConfig {
+  /** a band must sit out of range this long before the LLM may rebalance or close it (anti-churn) */
+  outOfRangeSec: number;
+  /** a drop larger than this over the trailing 30 min blocks opens in that pool */
+  knifePct: number;
+  /** circuit breaker: today's loss limit is max(this, 15% of working SOL) */
+  circuitFloorSol: number;
+  /** portfolio breaker: equity drawdown limit is max(this, 15% of the day's high-water equity) */
+  portfolioFloorSol: number;
+  /** claim when unclaimed fees on a band reach this many SOL-equivalent */
+  collectMinSol: number;
+  /** fees above this start the 2h pending clock */
+  collectFloorSol: number;
+  /** max fee claims per UTC day, counted from the ledger */
+  collectMaxPerDay: number;
+  /** only the literal "true" turns the treasury skim on */
+  skim: boolean;
+  /** wallet SOL kept as working float; only the excess above float + gas reserve is skimmable */
+  floatTargetSol: number;
+  /** skim destination; "" means unset (skim stays off) */
+  treasuryAddress: string;
+  /** when set, the loaded keypair must derive to this pubkey (live refuses, dry-run warns) */
+  expectedWallet: string;
+}
 
 export const config = {
   rpcUrl: raw.RPC_URL,
@@ -69,6 +108,19 @@ export const config = {
     minTvlSol: raw.SCREEN_MIN_TVL_SOL,
   },
   maxActivePools: raw.MAX_ACTIVE_POOLS,
+  engine: {
+    outOfRangeSec: raw.ENGINE_OUT_OF_RANGE_SEC,
+    knifePct: raw.ENGINE_KNIFE_PCT,
+    circuitFloorSol: raw.ENGINE_CIRCUIT_FLOOR_SOL,
+    portfolioFloorSol: raw.ENGINE_PORTFOLIO_FLOOR_SOL,
+    collectMinSol: raw.ENGINE_COLLECT_MIN_SOL,
+    collectFloorSol: raw.ENGINE_COLLECT_FLOOR_SOL,
+    collectMaxPerDay: raw.ENGINE_COLLECT_MAX_PER_DAY,
+    skim: raw.ENGINE_SKIM.trim().toLowerCase() === "true",
+    floatTargetSol: raw.ENGINE_FLOAT_TARGET_SOL,
+    treasuryAddress: raw.TREASURY_ADDRESS.trim(),
+    expectedWallet: raw.EXPECTED_WALLET.trim(),
+  } as EngineConfig,
 } as const;
 
 export const riskLimits: RiskLimits = {

@@ -7,7 +7,9 @@ declare global {
 }
 
 const env = import.meta.env as Record<string, string | undefined>;
-const base = env.VITE_API_URL?.replace(/\/$/, "") ?? "";
+const base = env.VITE_API_URL?.trim().replace(/\/$/, "") ?? "";
+/** Where the API lives: VITE_API_URL without its trailing slash, or "" for same-origin. */
+export const API_BASE = base;
 
 /**
  * Journal sources, in order. The first one that answers is remembered.

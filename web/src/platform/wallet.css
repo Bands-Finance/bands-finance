@@ -1,0 +1,42 @@
+/* The wallet picker (from @solana/wallet-adapter-react-ui), re-themed with the bands tokens:
+   black ground, cream text, orange accent, the site's own faces. Only the modal is used here;
+   the header and the page draw their own buttons. */
+.wallet-adapter-modal-overlay { background: rgba(6, 6, 6, 0.72); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); }
+.wallet-adapter-modal-wrapper {
+  background: var(--bands-panel-solid);
+  border: 1px solid var(--bands-border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--panel-shadow), var(--glow-accent);
+  font-family: var(--font-body);
+  color: var(--bands-text);
+}
+.wallet-adapter-modal-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--bands-text);
+}
+.wallet-adapter-modal-button-close { background: var(--bands-panel-alt); }
+.wallet-adapter-modal-button-close:hover { background: rgba(255, 122, 26, 0.16); }
+.wallet-adapter-modal-button-close svg { fill: var(--bands-text-dim); }
+.wallet-adapter-modal-list .wallet-adapter-button {
+  font-family: var(--font-body);
+  font-weight: 500;
+  color: var(--bands-text);
+  background: transparent;
+  border-radius: var(--radius-sm);
+}
+.wallet-adapter-modal-list .wallet-adapter-button:not([disabled]):hover { background: rgba(255, 122, 26, 0.1); }
+.wallet-adapter-modal-list .wallet-adapter-button span { font-family: var(--font-mono); font-size: 11px; color: var(--bands-text-faint); opacity: 1; }
+.wallet-adapter-modal-list-more { font-family: var(--font-body); color: var(--bands-accent-soft); }
+.wallet-adapter-modal-list-more svg { fill: var(--bands-accent-soft); }
+.wallet-adapter-modal-middle { color: var(--bands-text-dim); font-family: var(--font-body); }
+.wallet-adapter-modal-middle-button,
+.wallet-adapter-button-trigger {
+  font-family: var(--font-body);
+  background: linear-gradient(135deg, var(--bands-accent-light), var(--bands-accent) 55%, var(--bands-accent-soft));
+  color: var(--bands-on-accent);
+  border-radius: var(--radius-pill);
+}
+.wallet-adapter-modal-middle-button:hover,
+.wallet-adapter-button-trigger:not([disabled]):hover { background: var(--bands-accent-soft); }

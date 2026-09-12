@@ -19,14 +19,18 @@ import { PublishHere } from "./components/PublishHere";
 import { Footer } from "./components/Footer";
 import { BinLadder } from "./components/BinLadder";
 import { PriceChart } from "./components/PriceChart";
+import { WalletProviders } from "./platform/WalletProviders";
+import { MePage } from "./platform/MePage";
+import { ToolCatalog } from "./components/ToolCatalog";
 
 const POLL_MS = 20_000;
-export type Route = "home" | "pools" | "learn" | "agents";
+export type Route = "home" | "pools" | "learn" | "agents" | "me";
 
 function routeFromHash(h: string): Route {
   if (h.startsWith("#/pools")) return "pools";
   if (h.startsWith("#/learn")) return "learn";
   if (h.startsWith("#/agents") || h.startsWith("#/@")) return "agents";
+  if (h.startsWith("#/me")) return "me";
   return "home";
 }
 
@@ -35,6 +39,7 @@ const TITLES: Record<Route, string> = {
   pools: "Every pool on the chain, ranked · bands.finance",
   learn: "How it works · bands.finance",
   agents: "Agents · bands.finance",
+  me: "Your Mr Bands · bands.finance",
 };
 
 function useRoute(): Route {
@@ -135,6 +140,7 @@ export default function App() {
   );
 
   return (
+    <WalletProviders>
     <div className="app">
       <Header route={route} />
 
@@ -158,6 +164,7 @@ export default function App() {
         <main className="app__tabview">
           <Learn />
           <TryIt />
+          <ToolCatalog />
           <Guards limits={limits} record={record} />
         </main>
       )}
@@ -202,7 +209,10 @@ export default function App() {
         </main>
       )}
 
+      {route === "me" && <MePage screen={screen} limits={limits} />}
+
       <Footer />
     </div>
+    </WalletProviders>
   );
 }

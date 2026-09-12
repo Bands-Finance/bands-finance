@@ -168,3 +168,50 @@ export interface ScreenResult {
   solPriceUsd: number | null;
   pools: ScreenedPool[];
 }
+
+/* ---------- platform: identity, your own Mr Bands, credits (src/platform on the server) ---------- */
+
+export type RiskLevel = "conservative" | "balanced" | "aggressive";
+export type AgentStyle = "concise" | "balanced" | "deep";
+export type FocusArea = "market-making" | "yield" | "directional" | "research";
+
+export interface AgentSettings {
+  name?: string;
+  riskAppetite?: RiskLevel;
+  focus?: FocusArea[];
+  style?: AgentStyle;
+  goal?: string;
+  voice?: string;
+}
+
+export interface AccountData {
+  address: string;
+  linkedAt: number;
+}
+
+export interface WalletSession {
+  token: string;
+  address: string;
+  expiresAt: number;
+}
+
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+  ts: string;
+}
+
+export interface CreditPack {
+  id: string;
+  usd: number;
+  credits: number;
+  bonusPct?: number;
+}
+
+export interface CreditsInfo {
+  balance: number;
+  freeMessages: number;
+  packs: CreditPack[];
+  /** whether a message is actually being charged for on this host */
+  enforced: boolean;
+}

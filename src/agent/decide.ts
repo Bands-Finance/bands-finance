@@ -14,11 +14,21 @@ export interface LlmUsage {
 
 export interface DecideResult {
   decision: Decision;
-  /** "llm" when the model answered; "fallback" when we substituted a HOLD */
-  source: "llm" | "fallback";
+  /** "llm" when the model answered; "fallback" when we substituted a HOLD; "engine" when a directive replaced the call */
+  source: "llm" | "fallback" | "engine" | "proposal";
   model: string;
   usage?: LlmUsage;
   note?: string;
+}
+
+/** An engine directive stands in for the model this cycle: the LLM is not called. */
+export function engineDecideResult(decision: Decision, note: string): DecideResult {
+  return { decision, source: "engine", model: "engine", note };
+}
+
+/** An approved outside proposal (src/platform/proposals.ts) standing in for the LLM this cycle. The guards still decide. */
+export function proposalDecideResult(decision: Decision, note: string): DecideResult {
+  return { decision, source: "proposal", model: "proposal", note };
 }
 
 let client: Anthropic | null = null;

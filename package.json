@@ -16,7 +16,11 @@
     "web:build": "npm --prefix web run build",
     "web:snapshot": "tsx src/scripts/snapshot.ts",
     "web:deploy": "npm run web:snapshot && cd web && vercel deploy --prod --yes",
-    "screen": "tsx src/scripts/screen.ts"
+    "screen": "tsx src/scripts/screen.ts",
+    "test:platform": "tsx src/scripts/test-platform.ts",
+    "test:engine": "tsx src/scripts/test-engine.ts",
+    "test:all": "npm test && npm run test:engine && npm run test:platform && npm run test:rails",
+    "test:rails": "tsx src/scripts/test-rails.ts"
   },
   "keywords": [],
   "author": "",
@@ -26,10 +30,13 @@
     "@anthropic-ai/sdk": "^0.124.0",
     "@hono/node-server": "^2.1.1",
     "@meteora-ag/dlmm": "^1.9.14",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.99.0",
     "bn.js": "^5.2.5",
     "dotenv": "^17.4.2",
     "hono": "^4.13.7",
+    "tweetnacl": "^1.0.3",
     "zod": "^4.6.1"
   },
   "devDependencies": {
