@@ -17,3 +17,6 @@ web/artifact/
 .vercel/
 web/.vercel/
 data-test/
+hot.json
+data-once/
+data-test*/

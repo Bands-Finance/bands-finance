@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { riskLimits } from "../config";
 import { readRecent } from "../journal";
+import { loadHot } from "../hot";
 import { loadScreen } from "../screener";
 
 const out = path.resolve(process.cwd(), "web/public");
@@ -15,4 +16,6 @@ fs.writeFileSync(path.join(out, "journal.json"), JSON.stringify({ entries, gener
 fs.writeFileSync(path.join(out, "limits.json"), JSON.stringify(riskLimits, null, 2));
 const screen = loadScreen();
 if (screen) fs.writeFileSync(path.join(out, "screen.json"), JSON.stringify(screen));
-console.log(`snapshot: ${entries.length} entries -> web/public/journal.json, limits -> web/public/limits.json, screen -> ${screen ? `${screen.rankedPools} pools` : "none"}`);
+const hot = loadHot();
+if (hot) fs.writeFileSync(path.join(out, "hot.json"), JSON.stringify(hot));
+console.log(`snapshot: ${entries.length} entries -> web/public/journal.json, limits -> web/public/limits.json, screen -> ${screen ? `${screen.rankedPools} pools` : "none"}, hot -> ${hot ? `${hot.rows.length} rows` : "none"}`);

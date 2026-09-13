@@ -1,4 +1,4 @@
-import type { JournalEntry, RiskLimits, ScreenResult } from "./types";
+import type { HotFile, JournalEntry, RiskLimits, ScreenResult } from "./types";
 
 declare global {
   interface Window {
@@ -75,6 +75,27 @@ export async function loadScreen(): Promise<ScreenResult | null> {
       const json = (await fetchJson(url)) as ScreenResult;
       if (json && Array.isArray(json.pools)) {
         screenSource = url;
+        return json;
+      }
+    } catch {
+      /* next */
+    }
+  }
+  return null;
+}
+
+/**
+ * The hot watch, same source order as the screen: VITE_HOT_URL, then /api/hot, then the static
+ * /hot.json snapshot. Not embedded in __BANDS_DATA__: it changes every two minutes.
+ */
+let hotSource: string | null = null;
+export async function loadHot(): Promise<HotFile | null> {
+  const candidates = hotSource ? [hotSource] : [env.VITE_HOT_URL, `${base}/api/hot`, `${base}/hot.json`].filter((u): u is string => Boolean(u));
+  for (const url of candidates) {
+    try {
+      const json = (await fetchJson(url)) as HotFile;
+      if (json && Array.isArray(json.rows)) {
+        hotSource = url;
         return json;
       }
     } catch {

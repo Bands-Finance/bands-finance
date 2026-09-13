@@ -13,6 +13,21 @@ export interface ScreenContext {
   flags: string[];
   generatedAt: string;
   alternatives: { name: string; score: number; feeToTvl24hPct: number | null; tvlUsd: number | null }[];
+  /** the fast watch's surges (src/hot): what printed fees in the last hour, across every venue */
+  hot?: {
+    name: string;
+    venue: string;
+    tradable: boolean;
+    thisPool: boolean;
+    liquidityUsd: number | null;
+    vol1hUsd: number | null;
+    feeToTvlDailyPct: number | null;
+    acceleration: number | null;
+    priceChange1hPct: number | null;
+    heat: number;
+    flags: string[];
+    surge: boolean;
+  }[];
 }
 
 export interface PortfolioContext {
@@ -78,6 +93,8 @@ export interface Observation {
 
 const r = (n: number | null | undefined, digits = 4) =>
   n === null || n === undefined || !Number.isFinite(n) ? "n/a" : Number(n.toFixed(digits)).toString();
+const usdShort = (n: number | null | undefined) =>
+  n === null || n === undefined || !Number.isFinite(n) ? "n/a" : n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(0)}K` : `$${n.toFixed(0)}`;
 const sig = (n: number | null | undefined) =>
   n === null || n === undefined || !Number.isFinite(n) ? "n/a" : n.toPrecision(6);
 
@@ -150,6 +167,16 @@ export function formatObservation(o: Observation): string {
   lines.push(`- last action: ${o.state.lastActionAt ? `${Math.round((Date.now() - o.state.lastActionAt) / 60000)} min ago` : "never"}`);
   lines.push(`- kill switch: ${o.state.killSwitch ? "ACTIVE (no new exposure)" : "off"}`);
   lines.push("");
+  if (o.screen?.hot?.length) {
+    lines.push("## Hot right now (fees in the last hour, from the fast watch)");
+    lines.push("Daily pace = what a dollar in the pool earned in the last hour, times 24. Acceleration = last hour versus the 24h rate.");
+    for (const h of o.screen.hot) {
+      lines.push(
+        `- ${h.thisPool ? "THIS POOL: " : ""}${h.name} on ${h.venue}${h.tradable ? "" : " (not tradable yet)"}: liquidity ${usdShort(h.liquidityUsd)}, vol 1h ${usdShort(h.vol1hUsd)}, daily pace ${r(h.feeToTvlDailyPct, 2)}%, acceleration ${r(h.acceleration, 1)}x, 1h move ${r(h.priceChange1hPct, 1)}%, heat ${r(h.heat, 0)}${h.surge ? ", SURGE" : ""}${h.flags.length ? ` [${h.flags.join(", ")}]` : ""}`,
+      );
+    }
+    lines.push("");
+  }
   lines.push("## Engine");
   const e = o.engine;
   if (!e) {

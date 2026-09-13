@@ -5,6 +5,8 @@
  *   GET /api/limits                             the hard risk limits in force
  *   GET /api/ledger?mode=live|dry-run           cash-boundary attribution rows + summary
  *   GET /api/engine                             breakers, bench, regime, watchdog
+ *   GET /api/basis                              stock pools vs Backpack perps
+ *   GET /api/hot                                pools surging in the last hour
  *   POST /api/account/challenge|link             wallet sign-in (src/platform/accounts.ts)
  *   /api/my-agent/*, /api/cli                     your own Mr Bands (src/platform/routes.ts)
  *   GET /api/feed.md                            the markdown feed
@@ -24,6 +26,7 @@ import { loadScreen } from "./screener";
 import { setSolPriceUsd } from "./tools/dlmm";
 import { engineRoutes } from "./engine/routes";
 import { basisRoutes } from "./basis";
+import { hotRoutes } from "./hot";
 import { platformRoutes } from "./platform/routes";
 
 export function buildApp(): Hono {
@@ -67,6 +70,8 @@ export function buildApp(): Hono {
   engineRoutes(app);
   // Stock pools vs Backpack's perps: basis, session clock, funding (src/basis).
   basisRoutes(app);
+  // The fast watch: pools surging in the last hour (src/hot).
+  hotRoutes(app);
 
   app.get("/api/feed.md", (c) => {
     try {

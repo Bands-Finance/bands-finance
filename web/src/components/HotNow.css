@@ -1,0 +1,215 @@
+/* Hot right now: the hot watch's top ten as cards on the black ground. Tokens from styles/tokens.css. */
+.hot {
+  position: relative;
+  z-index: 1;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px 32px 40px;
+}
+
+.hot__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.hot__title {
+  font-family: var(--font-display);
+  font-size: clamp(24px, 3.2vw, 34px);
+  font-weight: 400;
+  line-height: 1.1;
+  margin: 10px 0 0;
+  color: var(--bands-text);
+}
+.hot__sub {
+  max-width: 460px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--bands-text-dim);
+  margin: 0;
+}
+.hot__sub b {
+  color: var(--bands-accent);
+  font-weight: 500;
+}
+
+.hot__grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(236px, 1fr));
+  gap: 12px;
+}
+
+.hot__card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 14px 12px;
+  background: var(--bands-panel);
+  border: 1px solid var(--bands-border);
+  border-radius: var(--radius-sm);
+  backdrop-filter: var(--blur);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.hot__card:hover {
+  border-color: var(--bands-border-strong);
+}
+.hot__card--surge {
+  border-color: var(--bands-border-strong);
+  box-shadow: var(--glow-accent-soft);
+}
+
+.hot__card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.hot__rank {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--bands-text-faint);
+  min-width: 16px;
+}
+.hot__name {
+  font-family: var(--font-display);
+  font-size: 16px;
+  color: var(--bands-text);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.hot__name:hover {
+  color: var(--bands-accent-light);
+}
+.hot__venue {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bands-text-faint);
+  padding: 2px 7px;
+  border: 1px solid var(--bands-border);
+  border-radius: var(--radius-pill);
+}
+.hot__venue--meteora { color: var(--bands-accent-soft); border-color: var(--bands-border-strong); }
+.hot__venue--raydium { color: var(--bands-text-dim); }
+.hot__venue--orca { color: var(--bands-text-dim); }
+.hot__surge {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+  color: var(--bands-on-accent);
+  background: var(--bands-accent);
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  box-shadow: var(--glow-accent);
+}
+
+.hot__yield {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.hot__yield-value {
+  font-family: var(--font-display);
+  font-size: 30px;
+  line-height: 1;
+  color: var(--bands-accent);
+  font-variant-numeric: tabular-nums;
+}
+.hot__na {
+  font-size: 18px;
+  color: var(--bands-text-faint);
+}
+.hot__yield-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--bands-text-faint);
+}
+.hot__yield-label b {
+  color: var(--bands-text);
+  font-weight: 500;
+}
+
+.hot__stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px 10px;
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--bands-border);
+}
+.hot__stats div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.hot__stats dt {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bands-text-faint);
+}
+.hot__stats dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--bands-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.hot__stats dd.pos { color: var(--bands-positive); }
+.hot__stats dd.neg { color: var(--bands-danger); }
+
+.hot__flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.hot__flag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--bands-gold);
+  border: 1px solid rgba(217, 205, 184, 0.28);
+  border-radius: var(--radius-pill);
+  padding: 2px 7px;
+  cursor: help;
+}
+.hot__flag--dumping, .hot__flag--wild { color: var(--bands-danger); border-color: rgba(255, 93, 93, 0.35); }
+.hot__flag--new, .hot__flag--fading { color: var(--bands-gold); }
+.hot__flag--fee-unknown { color: var(--bands-text-faint); border-color: var(--bands-border); }
+
+.hot__gloss {
+  max-width: 1080px;
+  margin: 18px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--bands-text-faint);
+}
+.hot__gloss b {
+  color: var(--bands-text-dim);
+  font-weight: 500;
+}
+
+@media (max-width: 620px) {
+  .hot { padding: 24px 16px 32px; }
+  .hot__head { gap: 12px; }
+  .hot__grid { grid-template-columns: 1fr; }
+  .hot__yield-value { font-size: 26px; }
+}

@@ -20,11 +20,13 @@
     "test:screener": "tsx src/scripts/test-screener.ts",
     "test:platform": "tsx src/scripts/test-platform.ts",
     "test:engine": "tsx src/scripts/test-engine.ts",
-    "test:all": "npm test && npm run test:engine && npm run test:platform && npm run test:rails && npm run test:screener && npm run test:backpack",
+    "test:all": "npm test && npm run test:engine && npm run test:platform && npm run test:rails && npm run test:screener && npm run test:backpack && npm run test:hot",
     "test:rails": "tsx src/scripts/test-rails.ts",
     "paper": "tsx src/scripts/paper.ts",
     "basis": "tsx src/scripts/basis.ts",
-    "test:backpack": "tsx src/scripts/test-backpack.ts"
+    "test:backpack": "tsx src/scripts/test-backpack.ts",
+    "hot": "tsx src/scripts/hot.ts",
+    "test:hot": "tsx src/scripts/test-hot.ts"
   },
   "keywords": [],
   "author": "",

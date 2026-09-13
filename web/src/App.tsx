@@ -22,6 +22,7 @@ import { PriceChart } from "./components/PriceChart";
 import { WalletProviders } from "./platform/WalletProviders";
 import { MePage } from "./platform/MePage";
 import { ToolCatalog } from "./components/ToolCatalog";
+import { HotNow } from "./components/HotNow";
 
 const POLL_MS = 20_000;
 export type Route = "home" | "pools" | "learn" | "agents" | "me";
@@ -149,12 +150,14 @@ export default function App() {
           <Hero record={record} screen={screen} status={status} workingNow={workingNow} agentName={agentName} />
           {entries && <ModeBanner status={status} />}
           {error && !entries && <div className="error">Could not load the journal: <code>{error}</code>.</div>}
+          <HotNow />
           {entries && deskStack("desk")}
         </>
       )}
 
       {route === "pools" && (
         <main className="app__tabview">
+          <HotNow />
           <PoolsHead screen={screen} maxActivePools={3} />
           <Pools screen={screen} status={poolStatus} now={now} />
         </main>

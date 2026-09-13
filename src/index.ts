@@ -29,6 +29,7 @@ import { fetchPoolAnalytics } from "./tools/lpagent";
 import { Wallet } from "./tools/wallet";
 import { startServer } from "./server";
 import { basisForPool, basisVerdict, refreshBasis, sessionClock, sessionWidthMultiplier } from "./basis";
+import { hotPicks, HotRow, loadHot, runHotTick, startHotWatch } from "./hot";
 import {
   circuitLossSol,
   circuitVerdict,
@@ -162,9 +163,23 @@ async function ensureScreen(app: App): Promise<void> {
  * SOL-quoted pools always qualify; USDC-quoted ones only when the screen carries a SOL price
  * (the guards' limits are in SOL, so a USDC seat needs the conversion). Every stock pool is USDC-quoted.
  */
+/** The hot watch's tradable rows: Meteora, quoted in SOL (or USDC when priced), best heat first. */
+function hotRows(app: App, max = config.maxActivePools): HotRow[] {
+  const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0;
+  return hotPicks(loadHot(), {
+    tradable: (r) => r.venue === "meteora-dlmm" && (r.quoteSymbol === "SOL" || (r.quoteSymbol === "USDC" && usdcOk)),
+    max,
+  });
+}
+
 function pickPools(app: App, withPositions: string[]): string[] {
   const set = new Set<string>([...config.pinnedPools, ...withPositions]);
   const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0;
+  // Surges first: what the fast watch found in the last hour, already filtered for liquidity, age and dumping.
+  for (const r of hotRows(app)) {
+    if (set.size >= config.maxActivePools) break;
+    set.add(r.address);
+  }
   const candidates = (app.screen?.pools ?? []).filter(
     (p) =>
       tradableVenue(p) &&
@@ -209,6 +224,20 @@ function screenContext(app: App, address: string): ScreenContext | null {
       .filter((x) => x.address !== address && tradableVenue(x) && (x.quoteSymbol === "SOL" || (x.quoteSymbol === "USDC" && solPriceOf(app) !== null)))
       .slice(0, 5)
       .map((x) => ({ name: x.name, score: x.score, feeToTvl24hPct: x.feeToTvl24hPct, tvlUsd: x.tvlUsd })),
+    hot: hotPicks(loadHot(), { tradable: () => true, max: 8 }).map((r) => ({
+      name: r.name,
+      venue: r.venue,
+      tradable: r.venue === "meteora-dlmm" && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC"),
+      thisPool: r.address === address,
+      liquidityUsd: r.liquidityUsd,
+      vol1hUsd: r.vol1hUsd,
+      feeToTvlDailyPct: r.feeToTvlDailyPct,
+      acceleration: r.acceleration,
+      priceChange1hPct: r.priceChange1hPct,
+      heat: r.heat,
+      flags: r.flags,
+      surge: r.surge,
+    })),
   };
 }
 
@@ -598,6 +627,16 @@ async function main(): Promise<void> {
   banner(app);
   if (config.servePort > 0) startServer(config.servePort);
   if (!once) startWatchdog({ cycleIntervalSec: config.cycleIntervalSec, live: !config.dryRun });
+  // The fast watch runs beside the loop; a single run takes one tick first so the picker has fresh surges.
+  const hotWatch = once ? null : startHotWatch({ log: console.log });
+  if (once) {
+    try {
+      const h = await runHotTick({ log: console.log });
+      console.log(`[hot] ${h.rows.length} rows, ${h.rows.filter((r) => r.surge).length} surging`);
+    } catch (err) {
+      console.error(`[hot] tick failed: ${(err as Error).message}`);
+    }
+  }
 
   let stopping = false;
   process.on("SIGINT", () => {
@@ -617,6 +656,7 @@ async function main(): Promise<void> {
     if (once || stopping) break;
     await sleepInterruptible(config.cycleIntervalSec * 1000);
   }
+  hotWatch?.stop();
   releaseLock();
 }
 

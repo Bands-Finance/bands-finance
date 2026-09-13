@@ -251,3 +251,59 @@ export interface CreditsInfo {
   /** whether a message is actually being charged for on this host */
   enforced: boolean;
 }
+
+/* ---------- the hot watch: 2-minute surge loop (src/hot on the server) ---------- */
+
+/** One pool as the hot watch sees it. Venue is one of the screener's names or the source's dex id verbatim. */
+export interface HotRow {
+  address: string;
+  name: string;
+  venue: string;
+  baseMint: string;
+  baseSymbol: string;
+  quoteMint: string;
+  /** "SOL" | "USDC" | the quote's own symbol */
+  quoteSymbol: string;
+  onBoard: boolean;
+  screenRank: number | null;
+  stock: StockTag | null;
+  vol1hUsd: number | null;
+  vol5mUsd: number | null;
+  vol24hUsd: number | null;
+  liquidityUsd: number | null;
+  /** the fee traders pay, in percent; null when nobody reported it */
+  feePct: number | null;
+  feeSource: "board" | "onchain" | null;
+  fees1hUsd: number | null;
+  /** what a dollar in the pool earned in the last 60 minutes, in percent */
+  feeToTvl1hPct: number | null;
+  /** feeToTvl1hPct x 24 */
+  feeToTvlDailyPct: number | null;
+  turnover1h: number | null;
+  /** last hour vs the day's hourly pace: 1 = steady, 3 = three times */
+  acceleration: number | null;
+  buys1h: number | null;
+  sells1h: number | null;
+  buys5m: number | null;
+  sells5m: number | null;
+  sellShare1h: number | null;
+  sellShare5m: number | null;
+  priceChange5mPct: number | null;
+  priceChange1hPct: number | null;
+  priceChange24hPct: number | null;
+  ageHours: number | null;
+  /** 0..100 */
+  heat: number;
+  flags: string[];
+  surge: boolean;
+  surgeAt: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface HotFile {
+  generatedAt: string;
+  tickMs: number;
+  sources: { trending: number; dexscreener: number; onchainReads: number; errors: string[] };
+  rows: HotRow[];
+}

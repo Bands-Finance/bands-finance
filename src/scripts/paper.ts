@@ -14,6 +14,7 @@ import { Connection } from "@solana/web3.js";
 import { config, riskLimits } from "../config";
 import type { Decision } from "../agent/schema";
 import { loadScreen, tradableVenue } from "../screener";
+import { hotPicks, loadHot } from "../hot";
 import type { ScreenedPool } from "../screener/types";
 import { evaluate, EngineGuardContext } from "../risk/guards";
 import type { RiskLimits } from "../risk/limits";
@@ -205,11 +206,16 @@ async function main(): Promise<void> {
   // Only venues the desk can execute on today (Meteora); Raydium and Orca rows are shown, not seated.
   const tradable = screen.pools.filter((p) => tradableVenue(p) && (p.quoteSymbol === "SOL" || p.quoteSymbol === "USDC"));
   const skipped: string[] = [];
-  const candidates = tradable.filter((p) => {
+  const qualified = tradable.filter((p) => {
     const why = qualifies(p);
     if (why) skipped.push(`${p.name} (${why})`);
     return !why;
   });
+  // Surges first: the fast watch's tradable rows (last-hour fee yield), then the board by score.
+  const hot = hotPicks(loadHot(), { tradable: (r) => r.venue === "meteora-dlmm" && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC"), max: POOLS * 2 });
+  const heat = new Map(hot.map((r) => [r.address, r.heat]));
+  const candidates = [...qualified].sort((a, b) => (heat.get(b.address) ?? -1) - (heat.get(a.address) ?? -1) || b.score - a.score);
+  if (hot.length) console.log(`  hot right now (fast watch): ${hot.map((r) => `${r.name} ${r.feeToTvlDailyPct === null ? "n/a" : `${r.feeToTvlDailyPct.toFixed(1)}%/day`}${r.surge ? " SURGE" : ""}`).join("; ")}`);
 
   const engine = loadEngineState();
   const now = Date.now();
