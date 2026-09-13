@@ -20,7 +20,8 @@
     "test:platform": "tsx src/scripts/test-platform.ts",
     "test:engine": "tsx src/scripts/test-engine.ts",
     "test:all": "npm test && npm run test:engine && npm run test:platform && npm run test:rails",
-    "test:rails": "tsx src/scripts/test-rails.ts"
+    "test:rails": "tsx src/scripts/test-rails.ts",
+    "paper": "tsx src/scripts/paper.ts"
   },
   "keywords": [],
   "author": "",
