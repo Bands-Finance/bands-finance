@@ -25,7 +25,8 @@ const Raw = z.object({
   SCREEN_INTERVAL_SEC: z.coerce.number().default(900),
   SCREEN_ACTIVE_HOURS: z.coerce.number().default(24),
   SCREEN_MAX_LIVE: z.coerce.number().default(1500),
-  SCREEN_MAX_POOLS: z.coerce.number().default(300),
+  // the ranked board is shared across Meteora, Raydium and Orca; 400 keeps enough Meteora rows to trade
+  SCREEN_MAX_POOLS: z.coerce.number().default(400),
   SCREEN_MIN_TVL_SOL: z.coerce.number().default(20),
   MAX_ACTIVE_POOLS: z.coerce.number().default(3),
 

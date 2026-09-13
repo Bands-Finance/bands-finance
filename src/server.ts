@@ -23,6 +23,7 @@ import { dataDir, readRecent } from "./journal";
 import { loadScreen } from "./screener";
 import { setSolPriceUsd } from "./tools/dlmm";
 import { engineRoutes } from "./engine/routes";
+import { basisRoutes } from "./basis";
 import { platformRoutes } from "./platform/routes";
 
 export function buildApp(): Hono {
@@ -64,6 +65,8 @@ export function buildApp(): Hono {
 
   // The engine: cash-boundary ledger and breaker state (src/engine/routes.ts).
   engineRoutes(app);
+  // Stock pools vs Backpack's perps: basis, session clock, funding (src/basis).
+  basisRoutes(app);
 
   app.get("/api/feed.md", (c) => {
     try {

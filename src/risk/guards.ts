@@ -36,6 +36,8 @@ export interface EngineGuardContext {
   stops: Record<string, number>;
   /** a band must sit out of range this many seconds before the LLM may move it */
   outOfRangeSec: number;
+  /** stock pools: why the basis/session rules refuse opens right now (src/basis), or null */
+  basisReason?: string | null;
 }
 
 export const NO_ENGINE: EngineGuardContext = {
@@ -211,6 +213,7 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
     if (engine.benched) violations.push(engine.benchReason ?? "benched: repeated stop-loss closes in this pool");
     if (engine.sizeMultiplier <= 0 && !engine.benched) violations.push(engine.regimeReason ?? "regime: opens off");
     if (engine.knife) violations.push(engine.knife);
+    if (engine.basisReason) violations.push(engine.basisReason);
     if (violations.length === 0) passed.push("engine-gates");
   }
 

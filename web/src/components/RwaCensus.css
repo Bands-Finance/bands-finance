@@ -95,3 +95,24 @@
 @media (max-width: 620px) {
   .census__stats { gap: 26px; }
 }
+
+/* Per-venue breakdown under a stat, and the venue tag on a chip. */
+.census__stat-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--bands-text-faint);
+  line-height: 1.4;
+}
+.census__chip-venue {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bands-text-faint);
+  padding-left: 7px;
+  border-left: 1px solid var(--bands-border);
+}
+@media (max-width: 620px) {
+  .census__stat-sub { font-size: 10px; }
+}

@@ -22,12 +22,13 @@ import { describeLimits } from "./risk/limits";
 import { killSwitchActive, loadState, saveState, RiskState, todayUtc } from "./risk/state";
 import { execute, executeSkim, ExecutionResult } from "./executor";
 import { appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool } from "./journal";
-import { loadScreen, runScreen } from "./screener";
+import { loadScreen, runScreen, tradableVenue } from "./screener";
 import type { ScreenResult } from "./screener/types";
 import { getPoolSnapshot, getUserPositions, KNOWN_TOKENS, loadPool, PoolSnapshot, PositionSnapshot, quoteOf, QuotePriceUnknownError, setSolPriceUsd, UnsupportedQuoteError } from "./tools/dlmm";
 import { fetchPoolAnalytics } from "./tools/lpagent";
 import { Wallet } from "./tools/wallet";
 import { startServer } from "./server";
+import { basisForPool, basisVerdict, refreshBasis, sessionClock, sessionWidthMultiplier } from "./basis";
 import {
   circuitLossSol,
   circuitVerdict,
@@ -140,6 +141,10 @@ async function ensureScreen(app: App): Promise<void> {
     app.screen = await runScreen(app.connection, (s) => console.log(s));
     app.screenAt = Date.now();
     registerTokens(app.screen);
+    // Stock pools: refresh the basis to Backpack's perps in the background; the loop reads the file.
+    refreshBasis()
+      .then((b) => console.log(`[basis] ${b.rows.length} stock pools priced against Backpack; US session ${b.session}`))
+      .catch((err) => console.error(`[basis] failed: ${(err as Error).message}`));
     setSolPriceUsd(solPriceOf(app));
     if (config.autoDeploy) deploySnapshot();
   } catch (err) {
@@ -162,6 +167,7 @@ function pickPools(app: App, withPositions: string[]): string[] {
   const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0;
   const candidates = (app.screen?.pools ?? []).filter(
     (p) =>
+      tradableVenue(p) &&
       (p.quoteSymbol === "SOL" || (p.quoteSymbol === "USDC" && usdcOk)) &&
       p.score > 0 &&
       !p.flags.includes("thin") &&
@@ -200,7 +206,7 @@ function screenContext(app: App, address: string): ScreenContext | null {
     flags: p.flags,
     generatedAt: s.generatedAt,
     alternatives: s.pools
-      .filter((x) => x.address !== address && (x.quoteSymbol === "SOL" || (x.quoteSymbol === "USDC" && solPriceOf(app) !== null)))
+      .filter((x) => x.address !== address && tradableVenue(x) && (x.quoteSymbol === "SOL" || (x.quoteSymbol === "USDC" && solPriceOf(app) !== null)))
       .slice(0, 5)
       .map((x) => ({ name: x.name, score: x.score, feeToTvl24hPct: x.feeToTvl24hPct, tvlUsd: x.tvlUsd })),
   };
@@ -278,6 +284,21 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     if (p.address in stateStops) stops[p.address] = stateStops[p.address];
     oorSec[p.address] = outOfRangeSec(state.outOfRangeSince, p.address, now);
   }
+  // Stock pools carry a basis row (src/basis): the US session clock and the gap to Backpack's perp.
+  const basisRow = basisForPool(o.address);
+  const clock = sessionClock();
+  const basisCheck = basisRow ? basisVerdict(basisRow.basisPct ?? null, clock) : null;
+  const basisObs: EngineObservation["basis"] = basisRow
+    ? {
+        session: clock.session,
+        minutesToOpen: clock.minutesToOpen,
+        basisPct: basisRow.basisPct ?? null,
+        perpSymbol: basisRow.perpSymbol ?? null,
+        perpMid: basisRow.perpMid ?? null,
+        widthMultiplier: sessionWidthMultiplier(clock),
+        reason: basisCheck && !basisCheck.ok ? basisCheck.reason : null,
+      }
+    : undefined;
   const engineObs: EngineObservation = {
     halt: view.haltedUntil !== null ? { until: view.haltedUntil, stage: view.haltStage, reason: view.haltReason } : null,
     standDown: view.standDownUntil !== null ? { until: view.standDownUntil, reason: view.standDownReason } : null,
@@ -291,6 +312,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     knife,
     collectsToday,
     collectMaxPerDay: cfg.collectMaxPerDay,
+    basis: basisObs,
   };
 
   const observation: Observation = {
@@ -338,6 +360,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     outOfRangeSince: state.outOfRangeSince ?? {},
     stops: stateStops,
     outOfRangeSec: cfg.outOfRangeSec,
+    basisReason: basisObs?.reason ?? null,
   };
   const verdict = evaluate(
     llm.decision,
@@ -375,6 +398,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     standDown: view.standDownUntil !== null ? { until: view.standDownUntil, reason: view.standDownReason } : null,
     stops,
     collectsToday,
+    basis: basisObs ? { session: basisObs.session, minutesToOpen: basisObs.minutesToOpen, basisPct: basisObs.basisPct, perpSymbol: basisObs.perpSymbol, widthMultiplier: basisObs.widthMultiplier, reason: basisObs.reason } : undefined,
   };
 
   const { decision: _d, ...llmMeta } = llm;

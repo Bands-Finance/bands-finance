@@ -96,6 +96,8 @@ export interface JournalEngine {
   /** per-band stop percent for the bands open in this pool */
   stops: Record<string, number>;
   collectsToday: number;
+  /** stock pools: the US session, the basis to Backpack's perp, and the rule that applied */
+  basis?: { session: string; minutesToOpen: number; basisPct: number | null; perpSymbol: string | null; widthMultiplier: number; reason: string | null };
 }
 
 export function toJournalPool(s: PoolSnapshot): JournalPool {

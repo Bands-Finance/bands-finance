@@ -482,4 +482,13 @@ test("USDC pool: the stop-loss reads valueInSol like any other pool", () => {
   assert.equal(v.decision.positionAddress, "posu");
 });
 
-console.log(`${n} guard tests passed (with portfolio, engine and USDC-quote checks)`);
+test("basis rule refuses opens in a stock pool, exits still pass", () => {
+  const e = engine({ basisReason: "basis: pool is +1.40% over the NVDA perp (limit 1.00%): arbitrage flow will sell into the band" });
+  const v = evaluate(open(), ctx({ engine: e }), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /basis: pool is \+1\.40%/);
+  const close: Decision = { ...open(), action: "CLOSE_POSITION", open: null, positionAddress: position.address };
+  assert.equal(evaluate(close, ctx({ engine: e, positions: [position] }), limits).allowed, true);
+});
+
+console.log(`${n} guard tests passed (with portfolio, engine, USDC-quote and basis checks)`);

@@ -20,6 +20,32 @@ src/
   scripts/        read-pool.ts (milestone 1)
 ```
 
+## Venues
+
+The screener reads three venues into one ranked board: Meteora DLMM from chain (every pool, then the
+live ones), plus Raydium CLMM and Orca Whirlpools through their public pool APIs. Every row carries
+its venue and, for tokenized stocks, the ticker and issuer (xStocks by Backed, whose mints start with
+"Xs", or Backpack Securities). Mr Bands trades Meteora today; Raydium and Orca rows are ranked and
+shown but not traded until each venue has its own position math and transaction builders. The stock
+liquidity lives on Raydium and Orca (NVDAx/USDC and TSLAx/USDC on Raydium hold about $2M each), which
+is why the venue layer is the next execution step.
+
+## Tokenized stocks and Backpack
+
+Every stock pool is quoted in USDC, so pools carry a quote (SOL or USDC) and a USDC deposit converts
+at the SOL price for the guards' SOL limits. Backpack Exchange lists 24/7 perpetual futures on US
+stocks (NVDA, TSLA, AAPL, SPY, ...) and defines the US market sessions, so src/basis prices every stock
+pool against the matching perp and writes data/basis.json (`npm run basis`, `GET /api/basis`). The
+loop refuses new stock bands when the pool sits more than `BASIS_MAX_PCT` off the perp or inside the
+window around the US open, and tells the model to widen bands when the reference market is shut.
+src/engine/hedge.ts computes the perp short that keeps a band's inventory delta-neutral; the signed
+Backpack client ships dormant and refuses to trade without keys, `HEDGE_LIVE=true` and `DRY_RUN=false`.
+
+```bash
+npm run paper -- --usd 10000 --pools 4   # size a budget across the board and run each band through the guards
+npm run basis                            # stock pools vs Backpack perps: basis, session clock, funding
+```
+
 ## How Mr Bands picks pools
 
 `src/screener` reads every DLMM LbPair on Solana straight from the program accounts (about 157k pools,

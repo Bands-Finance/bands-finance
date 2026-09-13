@@ -13,7 +13,7 @@
 import { Connection } from "@solana/web3.js";
 import { config, riskLimits } from "../config";
 import type { Decision } from "../agent/schema";
-import { loadScreen } from "../screener";
+import { loadScreen, tradableVenue } from "../screener";
 import type { ScreenedPool } from "../screener/types";
 import { evaluate, EngineGuardContext } from "../risk/guards";
 import type { RiskLimits } from "../risk/limits";
@@ -92,8 +92,12 @@ function planSeat(desk: Desk, p: ScreenedPool, snapshot: PoolSnapshot, book: { e
   const bins = binsFor(p.binStep);
   const bench = benchView(engine, p.address, now);
   const sizeMultiplier = bench.multiplier * regime.multiplier;
-  const seatSol = Math.min(limits.maxPositionSol * sizeMultiplier, Math.max(0, limits.maxTotalExposureSol - book.exposureSol));
-  const seatQuote = seatSol / q.priceInSol;
+  // The deposit is rounded DOWN to what the quote token can express (2 decimals of USDC, 4 of SOL) and the
+  // SOL-equivalent is recomputed from it, so a seat sized at the cap never lands a hair above it.
+  const seatSolRaw = Math.min(limits.maxPositionSol * sizeMultiplier, Math.max(0, limits.maxTotalExposureSol - book.exposureSol));
+  const quoteDecimals = q.symbol === "SOL" ? 4 : 2;
+  const seatQuote = Math.floor((seatSolRaw / q.priceInSol) * 10 ** quoteDecimals) / 10 ** quoteDecimals;
+  const seatSol = seatQuote * q.priceInSol;
   const seatUsd = seatSol * solPrice;
   // Depth on the quote side of the active bin (the bid when the quote is Y), scaled to the band we plan.
   const observedSide = snapshot.bins.filter((b) => (quoteBelow ? b.binId < snapshot.activeBinId : b.binId > snapshot.activeBinId)).length || 1;
@@ -110,7 +114,7 @@ function planSeat(desk: Desk, p: ScreenedPool, snapshot: PoolSnapshot, book: { e
     action: "OPEN_POSITION",
     open: {
       side: "SOL_ONLY",
-      amountSol: Number(seatQuote.toFixed(4)),
+      amountSol: seatQuote,
       amountToken: 0,
       binsBelowActive: quoteBelow ? bins : 0,
       binsAboveActive: quoteBelow ? 0 : bins,
@@ -198,7 +202,8 @@ async function main(): Promise<void> {
   console.log("=".repeat(96));
 
   // Candidates: SOL- or USDC-quoted, qualified, best score first.
-  const tradable = screen.pools.filter((p) => p.quoteSymbol === "SOL" || p.quoteSymbol === "USDC");
+  // Only venues the desk can execute on today (Meteora); Raydium and Orca rows are shown, not seated.
+  const tradable = screen.pools.filter((p) => tradableVenue(p) && (p.quoteSymbol === "SOL" || p.quoteSymbol === "USDC"));
   const skipped: string[] = [];
   const candidates = tradable.filter((p) => {
     const why = qualifies(p);
@@ -240,15 +245,18 @@ async function main(): Promise<void> {
 
   // Tokenized stocks: what the screen sees, and what the guards say about each one. Every xStock pool is
   // USDC-quoted; a qualifying one is seated above like any other pool, the rest show why the desk passes.
-  const stocks = screen.pools.filter((p) => isTokenizedStock(p) === "xstock").sort((a, b) => a.rank - b.rank);
+  const stocks = screen.pools.filter((p) => (p.stock && p.stock.issuer !== "unknown") || isTokenizedStock(p) === "xstock").sort((a, b) => a.rank - b.rank);
   const stockSeatUsd = (USD * (1 - RESERVE_SHARE)) / POOLS;
-  console.log(`\nTOKENIZED STOCKS on the board (${stocks.length}): all USDC-quoted, now tradable through the same guards as every other seat`);
-  console.log(`  ${pad("rank", 5)} ${pad("pool", 16)} ${rpad("TVL", 10)} ${rpad("vol 24h", 10)} ${rpad("fees 24h", 9)} ${rpad("fee/TVL", 8)} ${rpad("24h", 7)} ${rpad("score", 6)}  ${pad("flags", 14)}  guard verdict for a ${fmtUsd(stockSeatUsd)} USDC seat`);
+  const venueLabel = (v: string | undefined) => (v === "raydium-clmm" ? "Raydium" : v === "orca-whirlpool" ? "Orca" : "Meteora");
+  console.log(`\nTOKENIZED STOCKS on the board (${stocks.length}): Meteora rows go through the guards; Raydium and Orca rows are listed, not tradable yet`);
+  console.log(`  ${pad("rank", 5)} ${pad("pool", 16)} ${pad("venue", 8)} ${rpad("TVL", 10)} ${rpad("vol 24h", 10)} ${rpad("fees 24h", 9)} ${rpad("fee/TVL", 8)} ${rpad("24h", 7)} ${rpad("score", 6)}  ${pad("flags", 14)}  guard verdict for a ${fmtUsd(stockSeatUsd)} USDC seat`);
   for (const p of stocks) {
     let verdict: string;
     const seated = seats.find((s) => s.pool.address === p.address);
     const why = qualifies(p);
-    if (seated) {
+    if (!tradableVenue(p)) {
+      verdict = `on ${venueLabel(p.venue)}: venue not tradable yet`;
+    } else if (seated) {
       verdict = seated.verdict.allowed ? `OPEN ${seated.seatQuote.toFixed(0)} USDC (guards passed)` : `HOLD: ${seated.verdict.violations.join("; ")}`;
     } else if (why) {
       verdict = `not a candidate: ${why}`;
@@ -261,7 +269,7 @@ async function main(): Promise<void> {
         verdict = `could not read the pool live (${(err as Error).message.slice(0, 60)})`;
       }
     }
-    console.log(`  ${pad(`#${p.rank}`, 5)} ${pad(p.name, 16)} ${rpad(fmtUsd(p.tvlUsd), 10)} ${rpad(fmtUsd(p.volume24hUsd), 10)} ${rpad(fmtUsd(p.fees24hUsd), 9)} ${rpad(fmtPct(p.feeToTvl24hPct), 8)} ${rpad(fmtPct(p.priceChange24hPct, 1), 7)} ${rpad(p.score.toFixed(1), 6)}  ${pad(p.flags.join(",") || "-", 14)}  ${verdict}`);
+    console.log(`  ${pad(`#${p.rank}`, 5)} ${pad(p.name, 16)} ${pad(venueLabel(p.venue), 8)} ${rpad(fmtUsd(p.tvlUsd), 10)} ${rpad(fmtUsd(p.volume24hUsd), 10)} ${rpad(fmtUsd(p.fees24hUsd), 9)} ${rpad(fmtPct(p.feeToTvl24hPct), 8)} ${rpad(fmtPct(p.priceChange24hPct, 1), 7)} ${rpad(p.score.toFixed(1), 6)}  ${pad(p.flags.join(",") || "-", 14)}  ${verdict}`);
   }
   console.log(`  at each pool's own fee/TVL a ${fmtUsd(stockSeatUsd)} seat would earn:`);
   for (const p of stocks.filter((x) => x.feeToTvl24hPct !== null && (x.tvlUsd ?? 0) > 0)) {

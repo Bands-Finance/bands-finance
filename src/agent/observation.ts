@@ -46,6 +46,16 @@ export interface EngineObservation {
   knife: string | null;
   collectsToday: number;
   collectMaxPerDay: number;
+  /** stock pools only: the US session clock and the gap between the pool and Backpack's perp */
+  basis?: {
+    session: "closed" | "pre" | "regular" | "after";
+    minutesToOpen: number;
+    basisPct: number | null;
+    perpSymbol: string | null;
+    perpMid: number | null;
+    widthMultiplier: number;
+    reason: string | null;
+  };
 }
 
 /** Everything Mr Bands gets to see for one decision. */
@@ -154,6 +164,12 @@ export function formatObservation(o: Observation): string {
     lines.push(`- knife: ${e.knife ?? "clear"}`);
     lines.push(`- fee claims today: ${e.collectsToday}/${e.collectMaxPerDay} (the engine claims on its own schedule)`);
     lines.push(`- minimum out-of-range time before you may REBALANCE/CLOSE an out-of-range band: ${e.minOutOfRangeSec}s`);
+    if (e.basis) {
+      const b = e.basis;
+      lines.push(`- tokenized stock: US market ${b.session}${b.session === "closed" || b.session === "pre" ? ` (${b.minutesToOpen} min to the open)` : ""}; use x${b.widthMultiplier} the band width you would use in regular hours`);
+      lines.push(`- basis vs Backpack ${b.perpSymbol ?? "(no perp listed)"}: ${b.basisPct === null ? "n/a" : `${b.basisPct >= 0 ? "+" : ""}${r(b.basisPct, 2)}% (pool above the perp means arbitrage flow will sell into a bid band)`}${b.perpMid !== null ? `, perp mid ${b.perpMid}` : ""}`);
+      if (b.reason) lines.push(`- basis rule: ${b.reason} (opens are refused this cycle)`);
+    }
     for (const p of o.positions) {
       const stop = e.stops[p.address];
       const oor = e.outOfRangeSec[p.address] ?? 0;

@@ -265,3 +265,39 @@ h2.section { font-size: 13px; font-weight: 600; margin: 0; }
   .pools-filters { gap: 10px; }
   .fld-note { max-width: none; padding-bottom: 0; }
 }
+
+/* pools v3: venues and stocks */
+/* Venue chips above the table: a segmented All / Meteora / Raydium / Orca, a Stocks toggle, and a plain-words note. */
+.venue-chips { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.venue-chips .seg { flex-wrap: wrap; }
+.venue-chips .seg button { display: inline-flex; align-items: center; gap: 6px; }
+.venue-chip-count { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.venue-chips .seg button[aria-pressed="true"] .venue-chip-count, .toggle-chip[aria-pressed="true"] .venue-chip-count { color: inherit; opacity: 0.8; }
+.toggle-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border: 1px solid var(--line-2); border-radius: 999px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); }
+.toggle-chip:hover { color: var(--ink); border-color: var(--accent-line); }
+.toggle-chip[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+.venue-note { flex: 1 1 100%; font-size: 11px; color: var(--muted); line-height: 1.4; }
+@media (min-width: 900px) { .venue-note { flex: 1 1 auto; text-align: right; max-width: 48ch; } }
+/* The venue column: a label with a small mark, one shape per venue so it reads without colour. */
+.pools-table th.col-venue, .pools-table td.col-venue { white-space: nowrap; }
+.venue-tag { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
+.venue-tag::before { content: ""; width: 7px; height: 7px; flex: none; border-radius: 50%; background: currentColor; }
+.venue-tag.venue-meteora { color: var(--accent); }
+.venue-tag.venue-raydium { color: var(--bands-gold, #d9cdb8); }
+.venue-tag.venue-raydium::before { background: transparent; box-shadow: inset 0 0 0 1.5px currentColor; }
+.venue-tag.venue-orca { color: var(--ink-2); }
+.venue-tag.venue-orca::before { border-radius: 1px; }
+/* The stock badge in the pool cell: ticker, then the issuer in plain words. Lookalikes are muted. */
+.pool-name { flex-wrap: wrap; row-gap: 4px; }
+.stock-badge { display: inline-flex; align-items: center; gap: 5px; padding: 1px 6px; border-radius: 3px; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink); background: var(--accent-soft); border: 1px solid var(--accent-line); white-space: nowrap; }
+.stock-badge .issuer { color: var(--ink-2); text-transform: none; letter-spacing: 0; font-size: 10px; }
+.stock-badge.unknown { color: var(--muted); background: transparent; border-color: var(--line-2); }
+.stock-badge.unknown .issuer { color: var(--muted); }
+/* The API fee marker, next to the on-chain one. */
+.pools-table .api { color: var(--ink-2); margin-left: 2px; }
+.pools-table .fine b, .pools .fine b { color: var(--ink); font-weight: 500; }
+@media (max-width: 620px) {
+  .venue-chips { gap: 8px 10px; }
+  .venue-chips .seg button { padding: 5px 9px; }
+  .venue-note { font-size: 10.5px; }
+}

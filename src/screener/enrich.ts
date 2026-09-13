@@ -1,11 +1,15 @@
 /**
  * Off-chain enrichment for the shortlist: 24h volume, USD prices, market cap, pool age.
  * GeckoTerminal's public bulk endpoint, 30 pools per call, paced under its rate limit.
+ * Works by pool address for every venue (Meteora, Raydium CLMM, Orca).
  */
 export interface Enrichment {
   name: string | null;
   baseSymbol: string | null;
   quoteSymbol: string | null;
+  /** how GeckoTerminal oriented the pair; when its quote is our base the USD prices are the other way round */
+  baseMint: string | null;
+  quoteMint: string | null;
   priceUsd: number | null;
   quotePriceUsd: number | null;
   reserveUsd: number | null;
@@ -58,6 +62,8 @@ export async function enrichPools(addresses: string[], { pauseMs = 2200, log = (
           name: at.name ? String(at.name) : null,
           baseSymbol: tokens.get(baseId)?.symbol ? String(tokens.get(baseId)!.symbol) : null,
           quoteSymbol: tokens.get(quoteId)?.symbol ? String(tokens.get(quoteId)!.symbol) : null,
+          baseMint: baseId || null,
+          quoteMint: quoteId || null,
           priceUsd: num(at.base_token_price_usd),
           quotePriceUsd: num(at.quote_token_price_usd),
           reserveUsd: num(at.reserve_in_usd),

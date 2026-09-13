@@ -1,12 +1,17 @@
 /**
  * Mr Bands' pool score, 0..100. Explainable on purpose: fee yield is the engine,
- * liquidity, age and volatility are the brakes. Flags say why.
+ * liquidity, age and volatility are the brakes. Flags say why. One scorer for every venue.
  */
 import type { ScreenedPool } from "./types";
 
 const clamp = (n: number, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, n));
 
-export function scorePool(p: Omit<ScreenedPool, "score" | "flags" | "rank">): { score: number; flags: string[] } {
+export interface ScoreExtras {
+  /** the venue charges a variable fee on top of the base (Orca adaptive fee, Raydium dynamic fee) */
+  adaptiveFee?: boolean;
+}
+
+export function scorePool(p: Omit<ScreenedPool, "score" | "flags" | "rank">, extras: ScoreExtras = {}): { score: number; flags: string[] } {
   const flags: string[] = [];
   const liq = p.tvlUsd ?? 0;
   const feeToTvl = p.feeToTvl24hPct;
@@ -30,6 +35,7 @@ export function scorePool(p: Omit<ScreenedPool, "score" | "flags" | "rank">): { 
   if (feeToTvl > 20) flags.push("hot");
   if (sBalance < 1) flags.push("one-sided");
   if (p.feesSource === "onchain") flags.push("onchain-fees");
+  if (extras.adaptiveFee) flags.push("adaptive-fee");
 
   const score = 100 * sFee * (0.5 + 0.5 * sLiq) * sAge * sVol * sBalance;
   return { score: Math.round(score * 10) / 10, flags };

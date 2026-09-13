@@ -89,6 +89,14 @@ export interface JournalPool {
   baseFeePct: number;
   dynamicFeePct: number;
   bins: BinRow[];
+  /** the quote token; absent on older entries, which are SOL-quoted */
+  quoteSymbol?: "SOL" | "USDC";
+  quoteMint?: string;
+  quoteSide?: "X" | "Y";
+  /** SOL per one quote unit (1 for SOL) */
+  quotePriceInSol?: number;
+  /** quote per base token */
+  tokenPriceInQuote?: number;
 }
 
 export interface JournalEntry {
@@ -126,8 +134,29 @@ export interface RiskLimits {
   maxPriceMovePctPerCycle: number;
 }
 
+/** Where a pool lives. Snapshots from before venues carry no venue field: treat them as Meteora. */
+export type Venue = "meteora-dlmm" | "raydium-clmm" | "orca-whirlpool";
+export type StockIssuer = "xstocks" | "backpack" | "unknown";
+/** A tokenized stock on the base side of a pool; issuer "unknown" is a stock-shaped symbol on a mint no known issuer owns. */
+export interface StockTag {
+  ticker: string;
+  issuer: StockIssuer;
+}
+export interface VenueCount {
+  venue: Venue;
+  scanned: number;
+  live: number;
+  ranked: number;
+}
+
 export interface ScreenedPool {
   address: string;
+  /** missing on old snapshots: defaults to "meteora-dlmm" */
+  venue?: Venue;
+  /** venue-neutral price step in bps (Meteora bin step, Raydium/Orca tick spacing); missing on old snapshots: use binStep */
+  stepBps?: number;
+  /** tokenized stock on the base side; missing on old snapshots */
+  stock?: StockTag | null;
   name: string;
   baseSymbol: string;
   quoteSymbol: "SOL" | "USDC";
@@ -144,7 +173,8 @@ export interface ScreenedPool {
   tvlUsd: number | null;
   volume24hUsd: number | null;
   fees24hUsd: number | null;
-  feesSource: "onchain" | "estimate" | null;
+  /** onchain: Meteora fee counters; estimate: volume x base fee; api: the venue's own 24h figure */
+  feesSource: "onchain" | "estimate" | "api" | null;
   feesWindowHours: number | null;
   feeToTvl24hPct: number | null;
   turnover24h: number | null;
@@ -152,6 +182,7 @@ export interface ScreenedPool {
   binRangePct: number | null;
   txns24h: number | null;
   mcapUsd: number | null;
+  fdvUsd?: number | null;
   ageHours: number | null;
   priceUsd: number | null;
   score: number;
@@ -162,11 +193,16 @@ export interface ScreenedPool {
 export interface ScreenResult {
   generatedAt: string;
   scanMs: number;
+  /** Meteora pools read on-chain; venues[] carries every venue when present */
   scannedPools: number;
   livePools: number;
   rankedPools: number;
   solPriceUsd: number | null;
   pools: ScreenedPool[];
+  /** per-venue counts; missing on old snapshots */
+  venues?: VenueCount[];
+  /** pools whose base is a tokenized stock from a known issuer; missing on old snapshots */
+  stocks?: number;
 }
 
 /* ---------- platform: identity, your own Mr Bands, credits (src/platform on the server) ---------- */
