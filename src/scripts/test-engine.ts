@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import type { EngineConfig } from "../config";
 import type { RiskLimits } from "../risk/limits";
 import type { RiskState } from "../risk/state";
-import type { PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
+import { quoteMath, quoteOf, toQuote, toSol, USDC_MINT, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
+import { entryValueOf, toOpenPlan } from "../executor";
 import {
   collectsOnDay,
   dailyClose,
@@ -15,6 +16,7 @@ import {
   inventory,
   LedgerRow,
   netCashSol,
+  quoteOfRow,
   realizedOnDaySol,
   summary,
   workingSol,
@@ -37,7 +39,7 @@ import {
   standingDown,
   stopsInWindow,
 } from "../engine/breakers";
-import { collectDirective, skimPlan, trackFeesPending, unclaimedFeesSol } from "../engine/collect";
+import { collectDirective, skimPlan, trackFeesPending, unclaimedFeesQuote, unclaimedFeesSol } from "../engine/collect";
 import { engineDirective } from "../engine/directives";
 import { lockBlocks, loopStale, staleWindowMs } from "../engine/watchdog";
 
@@ -552,4 +554,104 @@ test("watchdog: the stale window and the one-key rule", () => {
   assert.equal(loopStale({ startedAt: T0 - 16 * M, lastIterationAt: null }, T0, 900_000), true, "never completed: judged from the start");
 });
 
-console.log(`${n} engine tests passed`);
+// ---- USDC-quoted pools ------------------------------------------------------------------------------
+// NVDAx/USDC at $180 with SOL at $102: 1 USDC = 1/102 SOL.
+
+const SOL_USD = 102;
+const NVDAX = { mint: "nvdax", symbol: "NVDAx", decimals: 8, reserve: 10_000 };
+const USDC = { mint: USDC_MINT, symbol: "USDC", decimals: 6, reserve: 1_500_000 };
+const usdcSnapshot: PoolSnapshot = {
+  address: "pool-usdc",
+  label: "NVDAx/USDC",
+  tokenX: NVDAX,
+  tokenY: USDC,
+  solSide: null,
+  baseToken: NVDAX,
+  binStep: 10,
+  activeBinId: 4200,
+  activePrice: 180,
+  priceLabel: "USDC per NVDAx",
+  tokenPriceInSol: 180 / SOL_USD,
+  quoteSide: "Y",
+  quoteToken: USDC,
+  quoteSymbol: "USDC",
+  quotePriceInSol: 1 / SOL_USD,
+  tokenPriceInQuote: 180,
+  solPriceUsd: SOL_USD,
+  baseFeePct: 0.1,
+  maxFeePct: 5,
+  dynamicFeePct: 0.12,
+  bins: [],
+  liquidityBelowY: 250_000,
+  liquidityAboveX: 1_200,
+  fetchedAt: new Date().toISOString(),
+};
+const usdcXSnapshot: PoolSnapshot = { ...usdcSnapshot, address: "pool-usdc-x", label: "USDC/NVDAx", tokenX: USDC, tokenY: NVDAX, activePrice: 1 / 180, quoteSide: "X" };
+
+test("quote: a snapshot without quote fields reads as SOL-quoted; a USDC snapshot converts at the SOL price", () => {
+  const legacy = quoteOf(snapshot);
+  assert.deepEqual([legacy.side, legacy.symbol, legacy.priceInSol, legacy.tokenPriceInQuote, legacy.token.symbol], ["Y", "SOL", 1, 0.002, "SOL"]);
+  assert.deepEqual(quoteMath({ solSide: "X", tokenPriceInSol: 0.002 }), { side: "X", priceInSol: 1, tokenPriceInQuote: 0.002 });
+  const u = quoteOf(usdcSnapshot);
+  assert.deepEqual([u.side, u.symbol, u.token.mint], ["Y", "USDC", USDC_MINT]);
+  near(u.priceInSol, 1 / SOL_USD);
+  near(u.tokenPriceInQuote, 180);
+  near(usdcSnapshot.tokenPriceInSol, u.tokenPriceInQuote * u.priceInSol, "tokenPriceInSol = tokenPriceInQuote x quotePriceInSol");
+  // valuation: 1 NVDAx + 100 USDC = 280 USDC = 280/102 SOL; the SOL pool is unchanged
+  near(toQuote(1, 100, usdcSnapshot), 280);
+  near(toSol(1, 100, usdcSnapshot), 280 / SOL_USD);
+  near(toSol(100, 1, usdcXSnapshot), 280 / SOL_USD, "quote on the X side");
+  near(toSol(10, 0.25, snapshot), 0.27);
+});
+
+test("quote: the executor maps amountSol onto the quote side and values the entry in SOL", () => {
+  const o = { side: "SOL_ONLY" as const, amountSol: 40, amountToken: 0, binsBelowActive: 19, binsAboveActive: 0, strategy: "Spot" as const };
+  const y = toOpenPlan(o, usdcSnapshot);
+  assert.equal(y.amountY.toString(), "40000000", "40 USDC on Y, 6 decimals");
+  assert.equal(y.amountX.toString(), "0");
+  const x = toOpenPlan(o, usdcXSnapshot);
+  assert.equal(x.amountX.toString(), "40000000", "the quote sits on X here");
+  assert.equal(x.amountY.toString(), "0");
+  near(entryValueOf(o, usdcSnapshot), 40 / SOL_USD);
+  near(entryValueOf({ ...o, side: "BOTH", amountToken: 1 }, usdcSnapshot), 220 / SOL_USD);
+  const sol = toOpenPlan({ ...o, amountSol: 0.25 }, snapshot);
+  assert.equal(sol.amountY.toString(), "250000000", "SOL pool: unchanged mapping");
+  near(entryValueOf({ ...o, amountSol: 0.25 }, snapshot), 0.25);
+});
+
+test("collect: fees in a USDC pool are valued through quotePriceInSol", () => {
+  const p = position({ feeX: 1, feeY: 20 }); // 1 NVDAx + 20 USDC = 200 USDC
+  near(unclaimedFeesQuote(p, usdcSnapshot), 200);
+  near(unclaimedFeesSol(p, usdcSnapshot), 200 / SOL_USD);
+  near(unclaimedFeesSol(position({ feeX: 20, feeY: 1 }), usdcXSnapshot), 200 / SOL_USD);
+  // 0.6 USDC of fees = 0.00588 SOL: over the 0.005 SOL collect threshold
+  const plan = collectDirective([position({ feeY: 0.6 })], usdcSnapshot, freshState(), T0, cfg, 0)!;
+  assert.equal(plan.positionAddress, "pos1");
+  assert.match(plan.reason, /collect: 0.00588 SOL unclaimed/);
+  assert.equal(collectDirective([position({ feeY: 0.4 })], usdcSnapshot, freshState(), T0, cfg, 0), null, "0.4 USDC = 0.0039 SOL is under the threshold");
+  const state = freshState();
+  trackFeesPending(state, [position({ feeY: 0.15 })], usdcSnapshot, T0, cfg.collectFloorSol); // 0.00147 SOL > 0.001 floor
+  assert.equal(state.feesPendingSince!.pos1, T0);
+});
+
+test("ledger: quote fields default to SOL on old rows and fold in SOL on USDC rows", () => {
+  const old = quoteOfRow(row({ solDelta: -0.25 }));
+  assert.deepEqual(old, { quoteMint: "So11111111111111111111111111111111111111112", quoteDelta: -0.25, markQuoteInSol: 1 });
+  const usdcOpen = row({ mech: "open", solDelta: -40 / SOL_USD, quoteDelta: -40, quoteMint: USDC_MINT, markQuoteInSol: 1 / SOL_USD, markTokenInSol: 180 / SOL_USD, tokenMint: "nvdax", rentSol: -0.0574 });
+  const usdcClose = row({ ts: T0 + H, mech: "close", solDelta: 30 / SOL_USD, quoteDelta: 30, quoteMint: USDC_MINT, markQuoteInSol: 1 / SOL_USD, tokenDelta: 0.06, markTokenInSol: 180 / SOL_USD, tokenMint: "nvdax", rentSol: 0.0574, feeSol: 0.5 / SOL_USD, entryValueSol: 40 / SOL_USD });
+  const q = quoteOfRow(usdcClose);
+  near(q.quoteDelta, 30);
+  near(q.quoteDelta * q.markQuoteInSol, usdcClose.solDelta, "solDelta is the quote leg at the row's mark");
+  const mixed = [...rows, usdcOpen, usdcClose];
+  const r6 = (n: number) => Math.round(n * 1e6) / 1e6; // the folds round to 6 decimals
+  near(netCashSol(mixed, "live"), r6(netCashSol(rows, "live") + (-40 / SOL_USD - 0.0574 - 0.00001) + (30 / SOL_USD + 0.0574 - 0.00001)));
+  near(feesRealizedSol(mixed, "live"), r6(0.007 + 0.5 / SOL_USD));
+  const inv = inventory(mixed, "live").find((l) => l.mint === "nvdax")!;
+  near(inv.units, 0.06);
+  near(inv.markedSol, r6(0.06 * (180 / SOL_USD)));
+  // realized today: the close gives back 30 USDC + 0.06 NVDAx at mark against a 40 USDC entry
+  const closeBack = 30 / SOL_USD + 0.06 * (180 / SOL_USD);
+  near(realizedOnDaySol(mixed, "live", DAY), r6(realizedOnDaySol(rows, "live", DAY) + (closeBack - 0.00001 - 40 / SOL_USD) - 0.00001));
+});
+
+console.log(`${n} engine tests passed (with USDC-quote checks)`);

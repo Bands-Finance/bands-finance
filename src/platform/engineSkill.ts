@@ -33,6 +33,8 @@ import {
   toPositionSnapshot,
   type PoolSnapshot,
   type PositionSnapshot,
+  quoteOf,
+  USDC_MINT,
 } from "../tools/dlmm";
 import { isAddress } from "./accounts";
 import { SOLANA_MAINNET_CAIP2 } from "./payments/PaymentGate";
@@ -132,7 +134,7 @@ export function planDecision(o: OpenParams): Decision {
  * today, no last price), no kill switch, no exposure elsewhere: the guards judge THIS
  * wallet's band against the desk's limits, with the caller's own positions in this pool.
  */
-export function callerGuardContext(params: { snapshot: PoolSnapshot; positions: PositionSnapshot[]; walletSol: number; walletToken: number; now?: number }): GuardContext {
+export function callerGuardContext(params: { snapshot: PoolSnapshot; positions: PositionSnapshot[]; walletSol: number; walletToken: number; walletQuote?: number; now?: number }): GuardContext {
   const state: RiskState = { day: new Date().toISOString().slice(0, 10), actionsToday: 0, lastActionAt: null, lastPrice: null, entryValueSol: {} };
   return {
     now: params.now ?? Date.now(),
@@ -140,6 +142,8 @@ export function callerGuardContext(params: { snapshot: PoolSnapshot; positions: 
     positions: params.positions,
     walletSol: params.walletSol,
     walletToken: params.walletToken,
+    // the quote balance: SOL in a SOL pool, USDC in a USDC pool (the guards convert at the SOL price)
+    walletQuote: params.walletQuote ?? params.walletSol,
     state,
     killSwitch: false,
     otherExposureSol: 0,
@@ -180,17 +184,25 @@ export function serializeUnsigned(tx: Transaction, feePayer: PublicKey, recent: 
   return tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
 }
 
-async function walletBalances(connection: Connection, owner: PublicKey, mint: string): Promise<{ sol: number; token: number }> {
-  const [lamports, accounts] = await Promise.all([
-    connection.getBalance(owner, "confirmed"),
-    connection.getParsedTokenAccountsByOwner(owner, { mint: new PublicKey(mint) }),
-  ]);
-  let token = 0;
+async function tokenUiBalance(connection: Connection, owner: PublicKey, mint: string): Promise<number> {
+  const accounts = await connection.getParsedTokenAccountsByOwner(owner, { mint: new PublicKey(mint) });
+  let total = 0;
   for (const { account } of accounts.value) {
     const ui = account.data.parsed?.info?.tokenAmount?.uiAmount;
-    if (typeof ui === "number") token += ui;
+    if (typeof ui === "number") total += ui;
   }
-  return { sol: lamports / LAMPORTS_PER_SOL, token };
+  return total;
+}
+
+/** SOL, the pool's base token, and the quote token (USDC when the pool is USDC-quoted; else the SOL figure). */
+async function walletBalances(connection: Connection, owner: PublicKey, mint: string, quoteMint: string | null): Promise<{ sol: number; token: number; quote: number }> {
+  const [lamports, token, usdc] = await Promise.all([
+    connection.getBalance(owner, "confirmed"),
+    tokenUiBalance(connection, owner, mint),
+    quoteMint === USDC_MINT ? tokenUiBalance(connection, owner, USDC_MINT) : Promise.resolve(null),
+  ]);
+  const sol = lamports / LAMPORTS_PER_SOL;
+  return { sol, token, quote: usdc ?? sol };
 }
 
 /**
@@ -201,10 +213,11 @@ async function walletBalances(connection: Connection, owner: PublicKey, mint: st
 export async function planOpenSteps(connection: Connection, caller: PublicKey, input: PlanInput): Promise<EnginePlan | { ok: false; verdict: VerdictView }> {
   const dlmm = await loadPool(connection, input.pool);
   const snapshot = await getPoolSnapshot(dlmm);
-  if (!snapshot.solSide) throw new Error(`${snapshot.label} is not a SOL pair; the guards are SOL-denominated`);
-  const [{ positions }, balances] = await Promise.all([getUserPositions(dlmm, caller, snapshot), walletBalances(connection, caller, snapshot.baseToken.mint)]);
+  // getPoolSnapshot already refused pools quoted in neither SOL nor USDC, and USDC pools with no SOL price.
+  const quote = quoteOf(snapshot);
+  const [{ positions }, balances] = await Promise.all([getUserPositions(dlmm, caller, snapshot), walletBalances(connection, caller, snapshot.baseToken.mint, quote.symbol === "USDC" ? USDC_MINT : null)]);
   const { pool: _pool, ...open } = input;
-  const verdict = evaluate(planDecision(open), callerGuardContext({ snapshot, positions, walletSol: balances.sol, walletToken: balances.token }), riskLimits);
+  const verdict = evaluate(planDecision(open), callerGuardContext({ snapshot, positions, walletSol: balances.sol, walletToken: balances.token, walletQuote: balances.quote }), riskLimits);
   if (!verdict.allowed) return { ok: false, verdict: verdictView(verdict) };
 
   const plan = toOpenPlan(open, snapshot);
@@ -235,11 +248,12 @@ export interface EnginePosition extends PositionSnapshot {
 
 function advice(p: PositionSnapshot, s: PoolSnapshot): string {
   if (p.inRange) return "in range and earning; collect anytime";
-  const solBelow = s.solSide !== "X";
+  const quote = quoteOf(s);
+  const quoteBelow = quote.side !== "X";
   const priceBelowBand = p.binsFromRange < 0;
-  const holdingSol = solBelow ? !priceBelowBand : priceBelowBand;
-  return holdingSol
-    ? "out of range, parked in SOL; re-enters if price comes back, or close and reopen"
+  const holdingQuote = quoteBelow ? !priceBelowBand : priceBelowBand;
+  return holdingQuote
+    ? `out of range, parked in ${quote.symbol}; re-enters if price comes back, or close and reopen`
     : `out of range, holding ${s.baseToken.symbol}; wait for recovery or close`;
 }
 

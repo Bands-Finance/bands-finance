@@ -97,6 +97,11 @@ export class Wallet {
     return lamports / LAMPORTS_PER_SOL;
   }
 
+  /** The wallet's USDC (config USDC_MINT): the quote balance for USDC-quoted pools. */
+  async usdcBalance(): Promise<TokenBalance> {
+    return this.tokenBalance(new PublicKey(config.usdcMint));
+  }
+
   async tokenBalance(mint: PublicKey): Promise<TokenBalance> {
     const res = await this.connection.getParsedTokenAccountsByOwner(this.publicKey, { mint });
     let amount = 0n;
@@ -125,6 +130,33 @@ export class Wallet {
           walletDeltaSol: (meta.postBalances[0] - meta.preBalances[0]) / LAMPORTS_PER_SOL,
           txFeeSol: -meta.fee / LAMPORTS_PER_SOL,
         };
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    return null;
+  }
+
+  /**
+   * What a confirmed transaction did to this wallet's balance of one SPL token (UI units,
+   * positive into the wallet), from the transaction's own pre/post token balances: the exact
+   * quote leg of a ledger row in a USDC-quoted pool. Null when the RPC has not indexed it, or
+   * when the transaction carries no token-balance meta; the caller falls back to a balance
+   * read before and after, and past that marks the row.
+   */
+  async txTokenDelta(signature: string, mint: string): Promise<number | null> {
+    const owner = this.publicKey.toBase58();
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const tx = await this.connection.getTransaction(signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+      const meta = tx?.meta;
+      if (meta) {
+        const sum = (rows: typeof meta.preTokenBalances) =>
+          (rows ?? [])
+            .filter((b) => b.mint === mint && b.owner === owner)
+            .reduce((acc, b) => acc + (b.uiTokenAmount.uiAmount ?? Number(b.uiTokenAmount.uiAmountString ?? 0)), 0);
+        const pre = meta.preTokenBalances ?? [];
+        const post = meta.postTokenBalances ?? [];
+        if (pre.length === 0 && post.length === 0) return null;
+        return sum(post) - sum(pre);
       }
       await new Promise((r) => setTimeout(r, 1500));
     }

@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import { buildSystemPrompt } from "../agent/persona";
 import { config, riskLimits } from "../config";
-import { readRecent, type JournalEntry } from "../journal";
+import { readRecent, type JournalEntry, journalQuote } from "../journal";
 import { appendLedger, dataPath, readLedger } from "../lib/ledger";
 import { describeLimits } from "../risk/limits";
 import { loadScreen } from "../screener";
@@ -173,10 +173,13 @@ function verdictOf(e: JournalEntry): string {
   return "hold";
 }
 
-/** Unclaimed fees on a band, in SOL, using the pool's own price of the token in SOL. */
+/** Unclaimed fees on a band, in SOL: the quote leg plus the base leg at the pool's price, converted at the quote's SOL price. */
 function feesInSol(e: JournalEntry, p: JournalEntry["positions"][number]): number {
-  const tokenPx = Number.isFinite(e.pool.tokenPriceInSol) ? e.pool.tokenPriceInSol : 0;
-  return e.pool.solSide === "X" ? p.feeX + p.feeY * tokenPx : p.feeY + p.feeX * tokenPx;
+  const q = journalQuote(e.pool);
+  const feeQuote = q.quoteSide === "X" ? p.feeX : p.feeY;
+  const feeBase = q.quoteSide === "X" ? p.feeY : p.feeX;
+  const tokenPx = Number.isFinite(q.tokenPriceInQuote) ? q.tokenPriceInQuote : 0;
+  return (feeQuote + feeBase * tokenPx) * q.quotePriceInSol;
 }
 
 /** The newest entry per pool, newest first. */

@@ -7,6 +7,15 @@
  * collect = +fees, skim = -amount. Live rows are exact when the wallet's SOL delta and fee come
  * from the confirmed transaction (or a balance read before and after the broadcast), marked when
  * they had to come from the position snapshot. Dry-run rows are written too, tagged "dry-run".
+ *
+ * Quotes: `open.amountSol` is an amount of the pool's QUOTE token (SOL in a SOL pool, USDC in a
+ * USDC pool); toOpenPlan maps it onto X/Y by the quote side. A row's quote leg (quoteDelta, in the
+ * quote token's units) is what crossed the boundary; solDelta is its SOL-equivalent at the row's
+ * markQuoteInSol so every fold stays in SOL. In a USDC pool the SOL balance only moves for rent
+ * and fees, so an "exact" USDC row takes quoteDelta from the wallet's USDC token-balance delta
+ * (the transaction's pre/post token balances, else a balance read before and after); when that
+ * cannot be measured the row is "marked" from the position snapshot.
+ *
  * The treasury skim runs in its own failure domain (executeSkim): a failed skim never blocks trading.
  */
 import DLMM, { LbPosition } from "@meteora-ag/dlmm";
@@ -24,6 +33,9 @@ import {
   PoolSnapshot,
   POSITION_RENT_SOL,
   PositionSnapshot,
+  quoteOf,
+  QuoteView,
+  SOL_MINT,
   STRATEGY_BY_NAME,
   toRawBN,
 } from "./tools/dlmm";
@@ -58,22 +70,31 @@ export interface ExecutionContext {
   positions: PositionSnapshot[];
 }
 
+/** amountSol is the QUOTE deposit (SOL or USDC), amountToken the base: mapped onto X/Y by the quote side, not by where SOL sits. */
 export function toOpenPlan(o: OpenParams, s: PoolSnapshot): OpenPlan {
-  const solIsX = s.solSide === "X";
+  const quoteIsX = quoteOf(s).side === "X";
   return {
     minBinId: s.activeBinId - o.binsBelowActive,
     maxBinId: s.activeBinId + o.binsAboveActive,
-    amountX: toRawBN(solIsX ? o.amountSol : o.amountToken, s.tokenX.decimals),
-    amountY: toRawBN(solIsX ? o.amountToken : o.amountSol, s.tokenY.decimals),
+    amountX: toRawBN(quoteIsX ? o.amountSol : o.amountToken, s.tokenX.decimals),
+    amountY: toRawBN(quoteIsX ? o.amountToken : o.amountSol, s.tokenY.decimals),
     strategyType: STRATEGY_BY_NAME[o.strategy],
     slippagePct: riskLimits.maxSlippagePct,
   };
 }
 
-/** What one broadcast did to the wallet's SOL, when it could be measured. */
+/** SOL-equivalent of a band deposit at the snapshot's marks: the entry value the risk state keeps. */
+export function entryValueOf(o: OpenParams, s: PoolSnapshot): number {
+  const q = quoteOf(s);
+  return (o.amountSol + o.amountToken * q.tokenPriceInQuote) * q.priceInSol;
+}
+
+/** What one broadcast did to the wallet, when it could be measured. */
 interface Cash {
   walletDeltaSol: number;
   txFeeSol: number;
+  /** the wallet's delta of the quote token in UI units; null for a SOL pool (the SOL delta is the quote delta) or when it could not be measured */
+  quoteDelta: number | null;
 }
 
 interface TxOutcome {
@@ -86,7 +107,11 @@ interface TxOutcome {
 /** marked network fee for a dry-run row: one signature */
 const MARKED_TX_FEE_SOL = 0.000005;
 
-async function runTx(wallet: Wallet, label: string, tx: Transaction, signers: Keypair[], txs: TxReport[]): Promise<TxOutcome> {
+/**
+ * Build/simulate/broadcast one transaction. `quoteMint` is the pool's quote mint: for a non-SOL
+ * quote the wallet's balance of it is measured around the broadcast so the row's quote leg is exact.
+ */
+async function runTx(wallet: Wallet, label: string, tx: Transaction, signers: Keypair[], txs: TxReport[], quoteMint: string = SOL_MINT): Promise<TxOutcome> {
   if (config.dryRun) {
     if (wallet.ephemeral) {
       txs.push({ label, ok: true, skipped: "dry-run with ephemeral wallet: built, not simulated" });
@@ -107,22 +132,38 @@ async function runTx(wallet: Wallet, label: string, tx: Transaction, signers: Ke
       return { ok: false, signature: null, cash: null };
     }
   }
+  const measureQuote = quoteMint !== SOL_MINT;
   let before: number | null = null;
+  let quoteBefore: number | null = null;
   try {
     before = await wallet.solBalance();
+    if (measureQuote) quoteBefore = (await wallet.tokenBalance(new PublicKey(quoteMint))).ui;
   } catch {
     before = null;
+    quoteBefore = null;
   }
   try {
     const signature = await wallet.signAndSend(tx, signers);
     txs.push({ label, ok: true, signature });
     let cash: Cash | null = null;
     try {
-      cash = await wallet.txCashDelta(signature);
-      if (!cash && before !== null) {
+      const sol = await wallet.txCashDelta(signature);
+      let solLeg: Omit<Cash, "quoteDelta"> | null = sol;
+      if (!solLeg && before !== null) {
         const after = await wallet.solBalance();
         // a balance pair cannot separate the fee; count one signature's worth and keep the total exact
-        cash = { walletDeltaSol: after - before, txFeeSol: -MARKED_TX_FEE_SOL * Math.max(1, signers.length + 1) };
+        solLeg = { walletDeltaSol: after - before, txFeeSol: -MARKED_TX_FEE_SOL * Math.max(1, signers.length + 1) };
+      }
+      if (solLeg) {
+        let quoteDelta: number | null = null;
+        if (measureQuote) {
+          quoteDelta = await wallet.txTokenDelta(signature, quoteMint);
+          if (quoteDelta === null && quoteBefore !== null) {
+            const quoteAfter = (await wallet.tokenBalance(new PublicKey(quoteMint))).ui;
+            quoteDelta = quoteAfter - quoteBefore;
+          }
+        }
+        cash = { ...solLeg, quoteDelta };
       }
     } catch {
       cash = null;
@@ -134,23 +175,43 @@ async function runTx(wallet: Wallet, label: string, tx: Transaction, signers: Ke
   }
 }
 
-/** Sum the cash of several broadcasts; exact only when every one of them was measured. */
-function sumCash(outcomes: TxOutcome[]): Cash | null {
+/**
+ * Sum the cash of several broadcasts; exact only when every one of them was measured. For a
+ * non-SOL quote the quote leg must have been measured on every broadcast too, else the operation
+ * cannot claim an exact quote delta and the caller marks the row.
+ */
+function sumCash(outcomes: TxOutcome[], q: QuoteView): Cash | null {
   if (outcomes.length === 0 || outcomes.some((o) => !o.cash)) return null;
-  return outcomes.reduce((acc, o) => ({ walletDeltaSol: acc.walletDeltaSol + o.cash!.walletDeltaSol, txFeeSol: acc.txFeeSol + o.cash!.txFeeSol }), { walletDeltaSol: 0, txFeeSol: 0 });
+  const measureQuote = q.symbol !== "SOL";
+  if (measureQuote && outcomes.some((o) => o.cash!.quoteDelta === null)) return null;
+  return outcomes.reduce<Cash>(
+    (acc, o) => ({
+      walletDeltaSol: acc.walletDeltaSol + o.cash!.walletDeltaSol,
+      txFeeSol: acc.txFeeSol + o.cash!.txFeeSol,
+      quoteDelta: measureQuote ? (acc.quoteDelta ?? 0) + o.cash!.quoteDelta! : null,
+    }),
+    { walletDeltaSol: 0, txFeeSol: 0, quoteDelta: measureQuote ? 0 : null },
+  );
 }
 
 const lastSig = (outcomes: TxOutcome[]): string | null => outcomes.map((o) => o.signature).filter((s): s is string => !!s).pop() ?? null;
 
-/** Fee leg of a position in base token units and in SOL-equivalent at the snapshot's mark. */
-function feeLegs(p: PositionSnapshot, s: PoolSnapshot): { feeToken: number; feeSolSide: number; feeSol: number } {
-  const solIsX = s.solSide === "X";
-  const feeToken = solIsX ? p.feeY : p.feeX;
-  const feeSolSide = solIsX ? p.feeX : p.feeY;
-  return { feeToken, feeSolSide, feeSol: feeSolSide + feeToken * s.tokenPriceInSol };
+/** Fee leg of a position: base token units, quote-side units, and the SOL-equivalent at the snapshot's marks. */
+function feeLegs(p: PositionSnapshot, s: PoolSnapshot): { feeToken: number; feeQuoteSide: number; feeSol: number } {
+  const q = quoteOf(s);
+  const quoteIsX = q.side === "X";
+  const feeToken = quoteIsX ? p.feeY : p.feeX;
+  const feeQuoteSide = quoteIsX ? p.feeX : p.feeY;
+  return { feeToken, feeQuoteSide, feeSol: (feeQuoteSide + feeToken * q.tokenPriceInQuote) * q.priceInSol };
 }
 
-function baseRow(ctx: ExecutionContext, mech: LedgerRow["mech"], sig: string | null, position: string | null): Omit<LedgerRow, "solDelta" | "tokenDelta" | "rentSol" | "txFeeSol" | "basis" | "note"> {
+/** Quote units of a position incl. quote fees (a snapshot written before the field existed is SOL-quoted). */
+const quoteInPosition = (p: PositionSnapshot, q: QuoteView): number => p.quoteInPosition ?? p.solInPosition / q.priceInSol;
+
+type RowBase = Omit<LedgerRow, "solDelta" | "quoteDelta" | "tokenDelta" | "rentSol" | "txFeeSol" | "basis" | "note">;
+
+function baseRow(ctx: ExecutionContext, mech: LedgerRow["mech"], sig: string | null, position: string | null): RowBase {
+  const q = quoteOf(ctx.snapshot);
   return {
     ts: Date.now(),
     mode: config.dryRun ? "dry-run" : "live",
@@ -160,65 +221,94 @@ function baseRow(ctx: ExecutionContext, mech: LedgerRow["mech"], sig: string | n
     mech,
     tokenMint: ctx.snapshot.baseToken.mint,
     markTokenInSol: ctx.snapshot.tokenPriceInSol,
+    quoteMint: q.token.mint,
+    markQuoteInSol: q.priceInSol,
   };
 }
 
+/** A row's quote leg and its SOL-equivalent, from the quote units. */
+const quoteLeg = (quoteDelta: number, q: QuoteView): Pick<LedgerRow, "quoteDelta" | "solDelta"> => ({ quoteDelta, solDelta: quoteDelta * q.priceInSol });
+
 function openRow(ctx: ExecutionContext, o: OpenParams, position: string, outcomes: TxOutcome[]): LedgerRow {
-  const cash = sumCash(outcomes);
-  const solDelta = -o.amountSol;
-  const row: LedgerRow = cash
-    ? {
-        ...baseRow(ctx, "open", lastSig(outcomes), position),
-        solDelta,
-        tokenDelta: -o.amountToken,
-        // whatever the wallet paid beyond the deposit and the fee is rent (position + any fresh bin arrays)
-        rentSol: cash.walletDeltaSol - cash.txFeeSol - solDelta,
-        txFeeSol: cash.txFeeSol,
-        basis: "exact",
-        note: `open ${o.side} band, ${outcomes.length} tx`,
-      }
-    : {
-        ...baseRow(ctx, "open", lastSig(outcomes), position),
-        solDelta,
-        tokenDelta: -o.amountToken,
-        rentSol: -POSITION_RENT_SOL,
-        txFeeSol: -MARKED_TX_FEE_SOL * 2,
-        basis: "marked",
-        note: `open ${o.side} band; rent marked at the position rent (bin-array rent unknown)`,
-      };
-  return row;
+  const q = quoteOf(ctx.snapshot);
+  const cash = sumCash(outcomes, q);
+  const base = baseRow(ctx, "open", lastSig(outcomes), position);
+  if (cash) {
+    const quoteDelta = q.symbol === "SOL" ? -o.amountSol : cash.quoteDelta!;
+    // whatever the wallet paid in SOL beyond the SOL deposit and the fee is rent (position + any fresh bin arrays)
+    const solDeposit = q.symbol === "SOL" ? quoteDelta : 0;
+    return {
+      ...base,
+      ...quoteLeg(quoteDelta, q),
+      tokenDelta: -o.amountToken,
+      rentSol: cash.walletDeltaSol - cash.txFeeSol - solDeposit,
+      txFeeSol: cash.txFeeSol,
+      basis: "exact",
+      note: `open ${o.side} band, ${outcomes.length} tx${q.symbol === "SOL" ? "" : `; ${q.symbol} leg from the wallet's token balance`}`,
+    };
+  }
+  return {
+    ...base,
+    ...quoteLeg(-o.amountSol, q),
+    tokenDelta: -o.amountToken,
+    rentSol: -POSITION_RENT_SOL,
+    txFeeSol: -MARKED_TX_FEE_SOL * 2,
+    basis: "marked",
+    note: `open ${o.side} band; rent marked at the position rent (bin-array rent unknown)`,
+  };
 }
 
 function closeRow(ctx: ExecutionContext, p: PositionSnapshot, outcomes: TxOutcome[]): LedgerRow {
   const s = ctx.snapshot;
-  const cash = sumCash(outcomes);
-  const solIsX = s.solSide === "X";
+  const q = quoteOf(s);
+  const cash = sumCash(outcomes, q);
   const { feeToken, feeSol } = feeLegs(p, s);
-  const tokenDelta = (solIsX ? p.amountY : p.amountX) + feeToken;
+  const tokenDelta = (q.side === "X" ? p.amountY : p.amountX) + feeToken;
   const rentSol = POSITION_RENT_SOL;
   const common = { ...baseRow(ctx, "close", lastSig(outcomes), p.address), tokenDelta, feeSol, entryValueSol: p.entryValueSol };
-  return cash
-    ? { ...common, solDelta: cash.walletDeltaSol - cash.txFeeSol - rentSol, rentSol, txFeeSol: cash.txFeeSol, basis: "exact", note: `close band, ${outcomes.length} tx` }
-    : { ...common, solDelta: p.solInPosition, rentSol, txFeeSol: -MARKED_TX_FEE_SOL * Math.max(1, outcomes.length), basis: "marked", note: "close band; SOL side taken from the position snapshot" };
+  if (cash) {
+    // SOL pool: the SOL that came back beyond the rent refund is the quote leg. USDC pool: the SOL
+    // that came back IS the rent refund (measured) and the quote leg is the USDC delta.
+    const quoteDelta = q.symbol === "SOL" ? cash.walletDeltaSol - cash.txFeeSol - rentSol : cash.quoteDelta!;
+    const rent = q.symbol === "SOL" ? rentSol : cash.walletDeltaSol - cash.txFeeSol;
+    return { ...common, ...quoteLeg(quoteDelta, q), rentSol: rent, txFeeSol: cash.txFeeSol, basis: "exact", note: `close band, ${outcomes.length} tx` };
+  }
+  return {
+    ...common,
+    ...quoteLeg(quoteInPosition(p, q), q),
+    rentSol,
+    txFeeSol: -MARKED_TX_FEE_SOL * Math.max(1, outcomes.length),
+    basis: "marked",
+    note: `close band; ${q.symbol} side taken from the position snapshot`,
+  };
 }
 
 function collectRow(ctx: ExecutionContext, targets: PositionSnapshot[], outcomes: TxOutcome[]): LedgerRow {
   const s = ctx.snapshot;
-  const cash = sumCash(outcomes);
+  const q = quoteOf(s);
+  const cash = sumCash(outcomes, q);
   let tokenDelta = 0;
-  let solSide = 0;
+  let quoteSide = 0;
   let feeSol = 0;
   for (const p of targets) {
     const f = feeLegs(p, s);
     tokenDelta += f.feeToken;
-    solSide += f.feeSolSide;
+    quoteSide += f.feeQuoteSide;
     feeSol += f.feeSol;
   }
   const position = targets.length === 1 ? targets[0].address : null;
   const common = { ...baseRow(ctx, "collect", lastSig(outcomes), position), tokenDelta, rentSol: 0, feeSol };
-  return cash
-    ? { ...common, solDelta: cash.walletDeltaSol - cash.txFeeSol, txFeeSol: cash.txFeeSol, basis: "exact", note: `claim fees on ${targets.length} band(s), ${outcomes.length} tx` }
-    : { ...common, solDelta: solSide, txFeeSol: -MARKED_TX_FEE_SOL * Math.max(1, outcomes.length), basis: "marked", note: `claim fees on ${targets.length} band(s); SOL side taken from the position snapshot` };
+  if (cash) {
+    const quoteDelta = q.symbol === "SOL" ? cash.walletDeltaSol - cash.txFeeSol : cash.quoteDelta!;
+    return { ...common, ...quoteLeg(quoteDelta, q), txFeeSol: cash.txFeeSol, basis: "exact", note: `claim fees on ${targets.length} band(s), ${outcomes.length} tx` };
+  }
+  return {
+    ...common,
+    ...quoteLeg(quoteSide, q),
+    txFeeSol: -MARKED_TX_FEE_SOL * Math.max(1, outcomes.length),
+    basis: "marked",
+    note: `claim fees on ${targets.length} band(s); ${q.symbol} side taken from the position snapshot`,
+  };
 }
 
 export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<ExecutionResult> {
@@ -228,6 +318,7 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
 
   const result: ExecutionResult = { mode: config.dryRun ? "dry-run" : "live", ok: true, txs: [], notes: [], ledger: [] };
   const owner = ctx.wallet.publicKey;
+  const quoteMint = quoteOf(ctx.snapshot).token.mint;
   const findRaw = (addr: string | null) => ctx.rawPositions.find((p) => p.publicKey.toBase58() === addr);
   const findSnap = (addr: string | null) => ctx.positions.find((p) => p.address === addr);
   const ledger = (row: LedgerRow) => {
@@ -243,7 +334,7 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       if (built.length === 0) result.notes.push("nothing to claim");
       const outcomes: TxOutcome[] = [];
       for (const [i, tx] of built.entries()) {
-        const out = await runTx(ctx.wallet, `claim fees ${i + 1}/${built.length}`, tx, [], result.txs);
+        const out = await runTx(ctx.wallet, `claim fees ${i + 1}/${built.length}`, tx, [], result.txs, quoteMint);
         outcomes.push(out);
         if (!out.ok) {
           result.ok = false;
@@ -263,7 +354,7 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       const built = await buildClosePositionTxs(ctx.dlmm, owner, raw);
       const outcomes: TxOutcome[] = [];
       for (const [i, tx] of built.entries()) {
-        const out = await runTx(ctx.wallet, `close band ${d.positionAddress!.slice(0, 6)} ${i + 1}/${built.length}`, tx, [], result.txs);
+        const out = await runTx(ctx.wallet, `close band ${d.positionAddress!.slice(0, 6)} ${i + 1}/${built.length}`, tx, [], result.txs, quoteMint);
         outcomes.push(out);
         if (!out.ok) {
           result.ok = false;
@@ -287,14 +378,12 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
         tx,
         [positionKeypair],
         result.txs,
+        quoteMint,
       );
       result.ok = result.ok && out.ok;
       if (out.ok) {
         const address = positionKeypair.publicKey.toBase58();
-        result.opened = {
-          address,
-          entryValueSol: d.open.amountSol + d.open.amountToken * ctx.snapshot.tokenPriceInSol,
-        };
+        result.opened = { address, entryValueSol: entryValueOf(d.open, ctx.snapshot) };
         ledger(openRow(ctx, d.open, address, [out]));
       }
     }
@@ -318,6 +407,7 @@ export async function executeSkim(wallet: Wallet, plan: SkimPlan, pool = "wallet
     const out = await runTx(wallet, `skim ${plan.amountSol.toFixed(6)} SOL to treasury`, tx, [], result.txs);
     result.ok = out.ok;
     if (out.ok) {
+      const solDelta = out.cash ? out.cash.walletDeltaSol - out.cash.txFeeSol : -plan.amountSol;
       const row: LedgerRow = {
         ts: Date.now(),
         mode: config.dryRun ? "dry-run" : "live",
@@ -325,7 +415,10 @@ export async function executeSkim(wallet: Wallet, plan: SkimPlan, pool = "wallet
         pool,
         position: null,
         mech: "skim",
-        solDelta: out.cash ? out.cash.walletDeltaSol - out.cash.txFeeSol : -plan.amountSol,
+        solDelta,
+        quoteDelta: solDelta,
+        quoteMint: SOL_MINT,
+        markQuoteInSol: 1,
         tokenDelta: 0,
         tokenMint: "",
         markTokenInSol: 0,

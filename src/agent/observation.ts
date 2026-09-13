@@ -1,4 +1,4 @@
-import type { PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
+import { quoteOf, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
 import type { PoolAnalytics } from "../tools/lpagent";
 
 export interface ScreenContext {
@@ -56,7 +56,8 @@ export interface Observation {
   poolLabel: string;
   snapshot: PoolSnapshot;
   positions: PositionSnapshot[];
-  wallet: { address: string; sol: number; token: number; tokenSymbol: string };
+  /** quote / quoteSymbol: the wallet's balance of the pool's quote token (absent or = sol for a SOL pool) */
+  wallet: { address: string; sol: number; token: number; tokenSymbol: string; quote?: number; quoteSymbol?: string };
   analytics: PoolAnalytics | null;
   state: { actionsToday: number; lastActionAt: number | null; lastPrice: number | null; killSwitch: boolean };
   recent: JournalGlimpse[];
@@ -72,6 +73,10 @@ const sig = (n: number | null | undefined) =>
 
 export function formatObservation(o: Observation): string {
   const s = o.snapshot;
+  const q = quoteOf(s);
+  const quoteIsSol = q.symbol === "SOL";
+  /** a SOL-equivalent figure with its quote figure beside it in a USDC pool; the plain SOL figure in a SOL pool */
+  const solAndQuote = (sol: number, digits = 4) => (quoteIsSol ? `${r(sol, digits)} SOL` : `${r(sol, digits)} SOL (${r(sol / q.priceInSol, 2)} ${q.symbol})`);
   const lines: string[] = [];
   lines.push(`# Observation ${o.ts} (cycle ${o.cycle}, mode ${o.mode})`);
   lines.push("");
@@ -79,6 +84,15 @@ export function formatObservation(o: Observation): string {
   lines.push(`- token X: ${s.tokenX.symbol} (${s.tokenX.decimals} dec), reserve ${r(s.tokenX.reserve, 2)}`);
   lines.push(`- token Y: ${s.tokenY.symbol} (${s.tokenY.decimals} dec), reserve ${r(s.tokenY.reserve, 2)}`);
   lines.push(`- SOL is token ${s.solSide ?? "neither"}; base token is ${s.baseToken.symbol}`);
+  lines.push(
+    `- QUOTE token is ${q.symbol} (token ${q.side}): in this pool SOL_ONLY means ${q.symbol}-only and amountSol is an amount of ${q.symbol}. ` +
+      `A ${q.symbol}-only band sits ${q.side === "Y" ? "at/below" : "at/above"} the active bin; a ${s.baseToken.symbol}-only band ${q.side === "Y" ? "at/above" : "at/below"} it.`,
+  );
+  if (!quoteIsSol) {
+    lines.push(`- SOL price: ${s.solPriceUsd ? `$${r(s.solPriceUsd, 2)}` : "n/a"} -> 1 ${q.symbol} = ${r(q.priceInSol, 6)} SOL; ${s.baseToken.symbol} = ${sig(q.tokenPriceInQuote)} ${q.symbol} = ${sig(s.tokenPriceInSol)} SOL`);
+  } else if (s.solPriceUsd) {
+    lines.push(`- SOL price: $${r(s.solPriceUsd, 2)}`);
+  }
   lines.push(`- bin step: ${s.binStep} bps | active bin: ${s.activeBinId} | price: ${sig(s.activePrice)} ${s.priceLabel}`);
   lines.push(`- fees: base ${r(s.baseFeePct, 3)}% | dynamic now ${r(s.dynamicFeePct, 3)}% | max ${r(s.maxFeePct, 2)}%`);
   lines.push(`- observed depth: ${r(s.liquidityBelowY, 3)} ${s.tokenY.symbol} below active, ${r(s.liquidityAboveX, 2)} ${s.tokenX.symbol} above`);
@@ -104,7 +118,12 @@ export function formatObservation(o: Observation): string {
   }
   lines.push("");
   lines.push(`## Wallet ${o.wallet.address}`);
-  lines.push(`- ${r(o.wallet.sol, 4)} SOL | ${r(o.wallet.token, 2)} ${o.wallet.tokenSymbol}`);
+  const walletQuote = o.wallet.quote ?? (quoteIsSol ? o.wallet.sol : undefined);
+  lines.push(
+    `- ${r(o.wallet.sol, 4)} SOL${quoteIsSol ? " (the quote; rent and fees come out of it too)" : " (rent and fees only)"}` +
+      (quoteIsSol ? "" : ` | ${r(walletQuote, 2)} ${q.symbol} (the quote: what a SOL_ONLY band deposits here${walletQuote !== undefined ? `, = ${r(walletQuote * q.priceInSol, 4)} SOL` : ""})`) +
+      ` | ${r(o.wallet.token, 2)} ${o.wallet.tokenSymbol}`,
+  );
   lines.push("");
   lines.push(`## Open bands (${o.positions.length})`);
   if (o.positions.length === 0) lines.push("- none");
@@ -112,7 +131,7 @@ export function formatObservation(o: Observation): string {
     lines.push(
       `- ${p.address}: bins [${p.lowerBinId}, ${p.upperBinId}] (${p.widthBins} wide) price [${sig(p.lowerPrice)}, ${sig(p.upperPrice)}] ` +
         `${p.inRange ? "IN RANGE" : `OUT OF RANGE by ${Math.abs(p.binsFromRange)} bins (${p.binsFromRange < 0 ? "price below band" : "price above band"})`} | ` +
-        `holds ${r(p.amountX, 2)} ${s.tokenX.symbol} + ${r(p.amountY, 4)} ${s.tokenY.symbol} | unclaimed fees ${r(p.feeX, 2)} ${s.tokenX.symbol} + ${r(p.feeY, 5)} ${s.tokenY.symbol} | value ${r(p.valueInSol, 4)} SOL`,
+        `holds ${r(p.amountX, 2)} ${s.tokenX.symbol} + ${r(p.amountY, 4)} ${s.tokenY.symbol} | unclaimed fees ${r(p.feeX, 2)} ${s.tokenX.symbol} + ${r(p.feeY, 5)} ${s.tokenY.symbol} | value ${solAndQuote(p.valueInSol)}`,
     );
   }
   lines.push("");
@@ -131,7 +150,7 @@ export function formatObservation(o: Observation): string {
     lines.push(`- portfolio breaker: ${e.standDown ? `STANDING DOWN for ${mins(e.standDown.until)} more min, every band is being closed: ${e.standDown.reason ?? ""}` : "clear"}`);
     lines.push(`- bench: ${e.bench.benched ? "BENCHED, no opens in this pool" : e.bench.stops6h === 0 ? "clear" : `${e.bench.stops6h} stop(s) in 6h, size x${e.bench.multiplier}`}`);
     lines.push(`- board regime: median 24h move ${e.regime.medianMove24hPct === null ? "n/a" : `${r(e.regime.medianMove24hPct, 2)}%`}, size x${e.regime.multiplier}${e.regime.multiplier === 0 ? " (opens off)" : ""}`);
-    lines.push(`- size multiplier in force: x${e.sizeMultiplier} -> max band ${r(e.effectiveMaxPositionSol, 4)} SOL`);
+    lines.push(`- size multiplier in force: x${e.sizeMultiplier} -> max band ${solAndQuote(e.effectiveMaxPositionSol)}`);
     lines.push(`- knife: ${e.knife ?? "clear"}`);
     lines.push(`- fee claims today: ${e.collectsToday}/${e.collectMaxPerDay} (the engine claims on its own schedule)`);
     lines.push(`- minimum out-of-range time before you may REBALANCE/CLOSE an out-of-range band: ${e.minOutOfRangeSec}s`);

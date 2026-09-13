@@ -7,7 +7,7 @@ import { EngineGuardContext, evaluate, GuardContext, NO_ENGINE } from "../risk/g
 import type { RiskLimits } from "../risk/limits";
 import type { RiskState } from "../risk/state";
 import type { Decision } from "../agent/schema";
-import type { PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
+import { USDC_MINT, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
 
 const limits: RiskLimits = {
   maxPositionSol: 0.5,
@@ -354,4 +354,132 @@ test("an engine STOP that already closes the band at its stop is passed through,
   assert.equal(v.emergency, true);
 });
 
-console.log(`${n} guard tests passed (with portfolio and engine checks)`);
+// ---- USDC-quoted pools ----
+// NVDAx/USDC at $180, SOL at $102: 1 USDC = 1/102 SOL. The limits above are SOL (0.5 per band = 51 USDC).
+
+const SOL_USD = 102;
+const NVDAX = { mint: "nvdax", symbol: "NVDAx", decimals: 8, reserve: 10_000 };
+const USDC = { mint: USDC_MINT, symbol: "USDC", decimals: 6, reserve: 1_500_000 };
+const usdcSnapshot: PoolSnapshot = {
+  address: "pool-usdc",
+  label: "NVDAx/USDC",
+  tokenX: NVDAX,
+  tokenY: USDC,
+  solSide: null,
+  baseToken: NVDAX,
+  binStep: 10,
+  activeBinId: 4200,
+  activePrice: 180,
+  priceLabel: "USDC per NVDAx",
+  tokenPriceInSol: 180 / SOL_USD,
+  quoteSide: "Y",
+  quoteToken: USDC,
+  quoteSymbol: "USDC",
+  quotePriceInSol: 1 / SOL_USD,
+  tokenPriceInQuote: 180,
+  solPriceUsd: SOL_USD,
+  baseFeePct: 0.1,
+  maxFeePct: 5,
+  dynamicFeePct: 0.12,
+  bins: [],
+  liquidityBelowY: 250_000,
+  liquidityAboveX: 1_200,
+  fetchedAt: new Date().toISOString(),
+};
+/** the same pool with USDC as token X: the quote-only band then sits at/above the active bin */
+const usdcXSnapshot: PoolSnapshot = {
+  ...usdcSnapshot,
+  address: "pool-usdc-x",
+  label: "USDC/NVDAx",
+  tokenX: USDC,
+  tokenY: NVDAX,
+  activePrice: 1 / 180,
+  priceLabel: "NVDAx per USDC",
+  quoteSide: "X",
+  liquidityBelowY: 1_200,
+  liquidityAboveX: 250_000,
+};
+const uctx = (over: Partial<GuardContext> = {}): GuardContext => ctx({ snapshot: usdcSnapshot, walletSol: 1, walletQuote: 100, ...over });
+/** a 40 USDC quote-only band, 19 bins under the active bin */
+const uopen = (over: Partial<NonNullable<Decision["open"]>> = {}): Decision => open({ amountSol: 40, ...over });
+
+test("USDC pool: a quote-only band passes, sized in SOL at the SOL price", () => {
+  const v = evaluate(uopen(), uctx(), limits);
+  assert.equal(v.allowed, true, v.violations.join("; "));
+  assert.equal(v.decision.action, "OPEN_POSITION");
+  assert.match(v.passed.join(), /open size 0\.3922 SOL \(40\.00 USDC\)/);
+});
+
+test("USDC pool: the deposit is checked against the USDC balance, not the SOL balance", () => {
+  const short = evaluate(uopen(), uctx({ walletQuote: 30 }), limits);
+  assert.equal(short.allowed, false);
+  assert.match(short.violations.join(), /not enough USDC: want 40, have 30/);
+  // walletQuote defaults to walletSol: a caller that never learned about quotes is judged as a SOL wallet, i.e. short of USDC
+  const legacy = evaluate(uopen(), ctx({ snapshot: usdcSnapshot, walletSol: 1 }), limits);
+  assert.equal(legacy.allowed, false);
+  assert.match(legacy.violations.join(), /not enough USDC: want 40, have 1/);
+});
+
+test("USDC pool: the gas reserve is checked against real SOL minus rent only, whatever the USDC balance", () => {
+  const v = evaluate(uopen(), uctx({ walletSol: 0.25, walletQuote: 10_000 }), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /wallet would hold 0\.0496 SOL after ~0\.200 rent \(the USDC deposit spends no SOL\), below gas reserve 0\.1/);
+  // 0.31 SOL covers rent + reserve even though 40 USDC is worth more than the wallet's SOL
+  assert.equal(evaluate(uopen(), uctx({ walletSol: 0.31, walletQuote: 10_000 }), limits).allowed, true);
+});
+
+test("USDC pool: band size and total exposure count in SOL", () => {
+  const big = evaluate(uopen({ amountSol: 60 }), uctx(), limits); // 60 USDC = 0.588 SOL > 0.5
+  assert.equal(big.allowed, false);
+  assert.match(big.violations.join(), /band size 0\.5882 SOL \(60\.00 USDC\) > max 0\.5/);
+  const held = { ...position, address: "posu", amountY: 45, feeY: 0.9, valueInSol: 0.9, solInPosition: 0.9, quoteInPosition: 91.8 };
+  const over = evaluate(uopen({ amountSol: 20 }), uctx({ positions: [held], walletSol: 2 }), limits); // 0.9 + 0.196 > 1
+  assert.equal(over.allowed, false);
+  assert.match(over.violations.join(), /total exposure would be 1\.0961 SOL > max 1/);
+  const elsewhere = evaluate(uopen({ amountSol: 20 }), uctx({ otherExposureSol: 0.85 }), limits);
+  assert.match(elsewhere.violations.join(), /total exposure/);
+});
+
+test("USDC pool: geometry when the quote is Y (USDC-only at/below, base-only at/above)", () => {
+  const v = evaluate(uopen({ binsAboveActive: 5 }), uctx(), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /SOL_ONLY \(USDC-only\) band must sit at\/below the active bin/);
+  const t = evaluate(uopen({ side: "TOKEN_ONLY", amountSol: 0, amountToken: 1, binsBelowActive: 3, binsAboveActive: 10 }), uctx({ walletToken: 5 }), limits);
+  assert.equal(t.allowed, false);
+  assert.match(t.violations.join(), /TOKEN_ONLY band must sit at\/above the active bin/);
+  const tokenWithUsdc = evaluate(uopen({ side: "TOKEN_ONLY", amountSol: 5, amountToken: 1, binsBelowActive: 0, binsAboveActive: 10 }), uctx({ walletToken: 5 }), limits);
+  assert.match(tokenWithUsdc.violations.join(), /TOKEN_ONLY band must not deposit USDC/);
+  assert.equal(evaluate(uopen({ side: "TOKEN_ONLY", amountSol: 0, amountToken: 0.2, binsBelowActive: 0, binsAboveActive: 10 }), uctx({ walletToken: 5 }), limits).allowed, true);
+});
+
+test("USDC pool: geometry when the quote is X (USDC-only at/above, base-only at/below)", () => {
+  const xctx = uctx({ snapshot: usdcXSnapshot });
+  const below = evaluate(uopen(), xctx, limits); // 19 bins below: wrong side for a quote-X pool
+  assert.equal(below.allowed, false);
+  assert.match(below.violations.join(), /SOL_ONLY \(USDC-only\) band must sit at\/above the active bin/);
+  const above = evaluate(uopen({ binsBelowActive: 0, binsAboveActive: 19 }), xctx, limits);
+  assert.equal(above.allowed, true, above.violations.join("; "));
+  assert.match(above.passed.join(), /open size 0\.3922 SOL \(40\.00 USDC\)/);
+  const t = evaluate(uopen({ side: "TOKEN_ONLY", amountSol: 0, amountToken: 0.2, binsBelowActive: 0, binsAboveActive: 10 }), uctx({ snapshot: usdcXSnapshot, walletToken: 5 }), limits);
+  assert.match(t.violations.join(), /TOKEN_ONLY band must sit at\/below the active bin/);
+});
+
+test("USDC pool: a REBALANCE frees the closing band's USDC and its SOL exposure", () => {
+  const held = { ...position, address: "posu", amountY: 45, feeY: 0.9, valueInSol: 0.45, solInPosition: 0.45, quoteInPosition: 45.9 };
+  const rebalance: Decision = { ...uopen({ amountSol: 45 }), action: "REBALANCE", positionAddress: "posu" };
+  const v = evaluate(rebalance, uctx({ positions: [held], walletQuote: 0, walletSol: 0.5 }), limits);
+  assert.equal(v.allowed, true, v.violations.join("; "));
+  const tooMuch: Decision = { ...uopen({ amountSol: 50 }), action: "REBALANCE", positionAddress: "posu" };
+  assert.match(evaluate(tooMuch, uctx({ positions: [held], walletQuote: 0, walletSol: 0.5 }), limits).violations.join(), /not enough USDC: want 50, have 0 \+ 45\.9000 back/);
+});
+
+test("USDC pool: the stop-loss reads valueInSol like any other pool", () => {
+  const state = { ...freshState(), entryValueSol: { posu: 0.5 } };
+  const hurt = { ...position, address: "posu", valueInSol: 0.42, solInPosition: 0.1, quoteInPosition: 10.2 }; // -16%
+  const v = evaluate(uopen(), uctx({ state, positions: [hurt] }), limits);
+  assert.equal(v.emergency, true);
+  assert.equal(v.decision.action, "CLOSE_POSITION");
+  assert.equal(v.decision.positionAddress, "posu");
+});
+
+console.log(`${n} guard tests passed (with portfolio, engine and USDC-quote checks)`);

@@ -4,11 +4,11 @@
  * within them, but it cannot change them.
  */
 export interface RiskLimits {
-  /** max SOL-equivalent deposited into a single new band */
+  /** max SOL-equivalent deposited into a single new band (a USDC deposit converts at the SOL price) */
   maxPositionSol: number;
-  /** max SOL-equivalent across all open bands after the proposed action */
+  /** max SOL-equivalent across all open bands after the proposed action, SOL- and USDC-quoted pools together */
   maxTotalExposureSol: number;
-  /** wallet SOL that must remain untouched for fees and rent */
+  /** wallet SOL that must remain untouched for fees and rent (paid in SOL whatever the quote) */
   gasReserveSol: number;
   /** force-close a band once its value drops this % below entry */
   stopLossPct: number;
@@ -26,9 +26,9 @@ export interface RiskLimits {
 
 export function describeLimits(l: RiskLimits): string {
   return [
-    `- Max per band: ${l.maxPositionSol} SOL-equivalent`,
-    `- Max total exposure across bands: ${l.maxTotalExposureSol} SOL-equivalent`,
-    `- Gas reserve that must stay in the wallet: ${l.gasReserveSol} SOL`,
+    `- Max per band: ${l.maxPositionSol} SOL-equivalent (a USDC deposit counts at the SOL price shown in the observation)`,
+    `- Max total exposure across bands: ${l.maxTotalExposureSol} SOL-equivalent, across SOL- and USDC-quoted pools alike`,
+    `- Gas reserve that must stay in the wallet: ${l.gasReserveSol} SOL (rent and fees are paid in SOL even when the deposit is USDC)`,
     `- Stop-loss: a band is force-closed at -${l.stopLossPct}% from entry (guards do this, not you)`,
     `- Max band width: ${l.maxBinWidth} bins`,
     `- Max ${l.maxTxPerDay} executed actions per day, at least ${l.minSecondsBetweenActions}s apart`,

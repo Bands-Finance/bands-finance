@@ -86,7 +86,8 @@ function fromGecko(payload: unknown, snapshot?: PoolSnapshot): PoolAnalytics {
   const h24 = obj(obj(attrs.transactions).h24);
   const txns = Object.keys(h24).length ? (num(h24.buys) ?? 0) + (num(h24.sells) ?? 0) : null;
   const fees = volume !== null && snapshot ? volume * (snapshot.baseFeePct / 100) : null;
-  const solIsQuote = snapshot?.solSide === "Y";
+  // GeckoTerminal calls the pair base/quote in its own order; ours is "the quote sits on side Y" for SOL and USDC pools alike.
+  const solIsQuote = snapshot ? (snapshot.quoteSide ?? snapshot.solSide ?? "Y") === "Y" : false;
   return {
     source: "geckoterminal",
     priceUsd: num(solIsQuote ? attrs.base_token_price_usd : attrs.quote_token_price_usd),

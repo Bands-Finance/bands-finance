@@ -16,9 +16,17 @@
  * when they were taken from the position snapshot. Dry-run rows are always marked. The exactness
  * claim covers the SOL columns only: tokenDelta always comes from the position snapshot.
  *
+ * Quotes: a row also carries the quote leg in the quote token's own units (quoteMint, quoteDelta,
+ * markQuoteInSol). For a SOL pool quoteDelta = solDelta and markQuoteInSol = 1. For a USDC pool
+ * quoteDelta is the USDC that crossed the boundary and solDelta = quoteDelta x markQuoteInSol, so
+ * every fold below stays in SOL without a special case; a live USDC row is "exact" when quoteDelta
+ * came from the wallet's USDC balance delta, never from the SOL balance. Rows written before the
+ * quote fields existed lack them; quoteOfRow() reads them with the SOL defaults.
+ *
  * Every write is best-effort: attribution must never break a trading path.
  */
 import { appendLedger, ledgerView, readLedger } from "../lib/ledger";
+import { SOL_MINT } from "../tools/dlmm";
 
 export const LEDGER_FILE = "ledger.jsonl";
 
@@ -52,6 +60,22 @@ export interface LedgerRow {
   feeSol?: number;
   /** close rows: the band's SOL value at entry, so realized P&L per band folds from the ledger alone */
   entryValueSol?: number;
+  /** the pool's quote mint (SOL or USDC); absent on rows written before USDC pools (then SOL) */
+  quoteMint?: string;
+  /** quote-token units that crossed the wallet boundary, positive into the wallet; = solDelta for SOL pools */
+  quoteDelta?: number;
+  /** one quote token in SOL at the time of the row (1 for SOL pools): solDelta = quoteDelta x this */
+  markQuoteInSol?: number;
+}
+
+/** The quote leg of a row with the SOL defaults for rows written before the quote fields existed. */
+export function quoteOfRow(r: Pick<LedgerRow, "solDelta" | "quoteMint" | "quoteDelta" | "markQuoteInSol">): { quoteMint: string; quoteDelta: number; markQuoteInSol: number } {
+  const markQuoteInSol = typeof r.markQuoteInSol === "number" && r.markQuoteInSol > 0 ? r.markQuoteInSol : 1;
+  return {
+    quoteMint: r.quoteMint ?? SOL_MINT,
+    quoteDelta: typeof r.quoteDelta === "number" ? r.quoteDelta : r.solDelta / markQuoteInSol,
+    markQuoteInSol,
+  };
 }
 
 const r6 = (n: number) => Math.round(n * 1e6) / 1e6;

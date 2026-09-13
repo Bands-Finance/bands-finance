@@ -24,7 +24,7 @@ import { execute, executeSkim, ExecutionResult } from "./executor";
 import { appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool } from "./journal";
 import { loadScreen, runScreen } from "./screener";
 import type { ScreenResult } from "./screener/types";
-import { getPoolSnapshot, getUserPositions, KNOWN_TOKENS, loadPool, PoolSnapshot, PositionSnapshot } from "./tools/dlmm";
+import { getPoolSnapshot, getUserPositions, KNOWN_TOKENS, loadPool, PoolSnapshot, PositionSnapshot, quoteOf, QuotePriceUnknownError, setSolPriceUsd, UnsupportedQuoteError } from "./tools/dlmm";
 import { fetchPoolAnalytics } from "./tools/lpagent";
 import { Wallet } from "./tools/wallet";
 import { startServer } from "./server";
@@ -99,6 +99,7 @@ function banner(app: App): void {
   console.log("=".repeat(72));
   console.log(`${config.agentName}  |  ${mode}`);
   console.log(`pools     ${config.pinnedPools.length ? `pinned ${config.pinnedPools.join(", ")} + ` : ""}screener top picks, max ${config.maxActivePools} at once`);
+  console.log(`quotes    SOL and USDC (a USDC pool is valued at the screen's SOL price: ${app.screen?.solPriceUsd ? `$${app.screen.solPriceUsd.toFixed(2)}` : "none yet, USDC pools skipped until a screen lands"})`);
   console.log(`wallet    ${app.wallet.publicKey.toBase58()}${app.wallet.ephemeral ? "  (ephemeral, no key configured)" : ""}${cfg.expectedWallet ? `  expected ${cfg.expectedWallet}` : ""}`);
   console.log(`model     ${config.model}`);
   console.log(`interval  ${config.cycleIntervalSec}s cycles, screen every ${config.screen.intervalSec}s`);
@@ -128,28 +129,43 @@ function registerTokens(screen: ScreenResult | null): void {
   }
 }
 
+/** The SOL price every USDC-quoted snapshot converts at: the screen's. Null keeps USDC pools untradable. */
+const solPriceOf = (app: App): number | null => (app.screen?.solPriceUsd && app.screen.solPriceUsd > 0 ? app.screen.solPriceUsd : null);
+
 async function ensureScreen(app: App): Promise<void> {
   registerTokens(app.screen);
+  setSolPriceUsd(solPriceOf(app));
   if (app.screen && Date.now() - app.screenAt < config.screen.intervalSec * 1000) return;
   try {
     app.screen = await runScreen(app.connection, (s) => console.log(s));
     app.screenAt = Date.now();
     registerTokens(app.screen);
+    setSolPriceUsd(solPriceOf(app));
     if (config.autoDeploy) deploySnapshot();
   } catch (err) {
     console.error(`[screen] failed: ${(err as Error).message}`);
     if (!app.screen) {
       app.screen = loadScreen();
       if (app.screen) console.log(`[screen] using saved screen from ${app.screen.generatedAt}`);
+      setSolPriceUsd(solPriceOf(app));
     }
   }
 }
 
-/** Pinned pools, pools we hold bands in, then the screener's best SOL-quoted picks up to the cap. */
+/**
+ * Pinned pools, pools we hold bands in, then the screener's best picks up to the cap.
+ * SOL-quoted pools always qualify; USDC-quoted ones only when the screen carries a SOL price
+ * (the guards' limits are in SOL, so a USDC seat needs the conversion). Every stock pool is USDC-quoted.
+ */
 function pickPools(app: App, withPositions: string[]): string[] {
   const set = new Set<string>([...config.pinnedPools, ...withPositions]);
+  const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0;
   const candidates = (app.screen?.pools ?? []).filter(
-    (p) => p.quoteSymbol === "SOL" && p.score > 0 && !p.flags.includes("thin") && !p.flags.includes("no-24h-data"),
+    (p) =>
+      (p.quoteSymbol === "SOL" || (p.quoteSymbol === "USDC" && usdcOk)) &&
+      p.score > 0 &&
+      !p.flags.includes("thin") &&
+      !p.flags.includes("no-24h-data"),
   );
   for (const p of candidates) {
     if (set.size >= config.maxActivePools) break;
@@ -184,7 +200,7 @@ function screenContext(app: App, address: string): ScreenContext | null {
     flags: p.flags,
     generatedAt: s.generatedAt,
     alternatives: s.pools
-      .filter((x) => x.address !== address && x.quoteSymbol === "SOL")
+      .filter((x) => x.address !== address && (x.quoteSymbol === "SOL" || (x.quoteSymbol === "USDC" && solPriceOf(app) !== null)))
       .slice(0, 5)
       .map((x) => ({ name: x.name, score: x.score, feeToTvl24hPct: x.feeToTvl24hPct, tvlUsd: x.tvlUsd })),
   };
@@ -226,11 +242,16 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   const mode = config.dryRun ? "dry-run" : "live";
   const { snapshot, positions, raw } = o;
   const tag = `[cycle ${app.cycle} ${snapshot.label}]`;
+  const q = quoteOf(snapshot);
+  const quoteIsSol = q.symbol === "SOL";
 
-  const [token, analytics] = await Promise.all([
+  // Balances: SOL always (gas), the base token, and the pool's quote token when it is not SOL.
+  const [token, quoteBal, analytics] = await Promise.all([
     app.wallet.tokenBalance(new PublicKey(snapshot.baseToken.mint)),
+    quoteIsSol ? Promise.resolve(null) : app.wallet.tokenBalance(new PublicKey(q.token.mint)),
     fetchPoolAnalytics(o.address, snapshot),
   ]);
+  const quote = quoteIsSol ? sol : (quoteBal?.ui ?? 0);
   const state = loadState();
   const killSwitch = killSwitchActive();
   for (const p of positions) p.entryValueSol = state.entryValueSol[p.address];
@@ -279,7 +300,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     poolLabel: snapshot.label,
     snapshot,
     positions,
-    wallet: { address: app.wallet.publicKey.toBase58(), sol, token: token.ui, tokenSymbol: snapshot.baseToken.symbol },
+    wallet: { address: app.wallet.publicKey.toBase58(), sol, token: token.ui, tokenSymbol: snapshot.baseToken.symbol, quote, quoteSymbol: q.symbol },
     analytics,
     state: { actionsToday: state.actionsToday, lastActionAt: state.lastActionAt, lastPrice: state.lastPrice, killSwitch },
     recent: readRecent(40)
@@ -291,7 +312,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     engine: engineObs,
   };
   console.log(
-    `${tag} active bin ${snapshot.activeBinId} price ${snapshot.activePrice.toPrecision(6)} ${snapshot.priceLabel} | screen ${screen ? `#${screen.rank} score ${screen.score}` : "n/a"} | wallet ${sol.toFixed(4)} SOL, ${token.ui.toFixed(2)} ${snapshot.baseToken.symbol} | bands ${positions.length} | size x${view.sizeMultiplier}${knife ? ` | ${knife}` : ""}`,
+    `${tag} active bin ${snapshot.activeBinId} price ${snapshot.activePrice.toPrecision(6)} ${snapshot.priceLabel} | quote ${q.symbol}${quoteIsSol ? "" : ` (1 ${q.symbol} = ${q.priceInSol.toFixed(6)} SOL)`} | screen ${screen ? `#${screen.rank} score ${screen.score}` : "n/a"} | wallet ${sol.toFixed(4)} SOL, ${quoteIsSol ? "" : `${quote.toFixed(2)} ${q.symbol}, `}${token.ui.toFixed(2)} ${snapshot.baseToken.symbol} | bands ${positions.length} | size x${view.sizeMultiplier}${knife ? ` | ${knife}` : ""}`,
   );
 
   // The engine decides first. When it has a directive the LLM is not asked this cycle.
@@ -320,7 +341,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   };
   const verdict = evaluate(
     llm.decision,
-    { now, snapshot, positions, walletSol: sol, walletToken: token.ui, state, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm" },
+    { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm" },
     riskLimits,
   );
   if (verdict.overrides.length) console.log(`${tag} guard override: ${verdict.overrides.join("; ")}`);
@@ -331,7 +352,8 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     console.log(`${tag} ${execution.mode} ${t.label}: ${t.signature ?? t.skipped ?? (t.ok ? "simulated ok" : `FAILED ${t.error}`)}`);
   }
   for (const row of execution.ledger ?? []) {
-    console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
+    const quoteLeg = quoteIsSol || typeof row.quoteDelta !== "number" ? "" : ` (${row.quoteDelta.toFixed(4)} ${q.symbol})`;
+    console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)}${quoteLeg} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
   }
   updateState(state, execution, positions, snapshot);
 
@@ -393,7 +415,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
  * The breakers mark the book once per iteration, only on a complete read: a pool that failed to
  * observe would read as vanished capital, and a phantom crater must never trip a breaker.
  */
-function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAtStart: number): void {
+function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAtStart: number, usdcAtStartSol: number): void {
   const now = Date.now();
   const today = todayUtc();
   const mode = config.dryRun ? "dry-run" : "live";
@@ -409,9 +431,9 @@ function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAt
   app.engine.circuit = cv.next;
   if (cv.tripped) console.error(`[cycle ${app.cycle}] CIRCUIT BREAKER: ${cv.reason}`);
 
-  // Portfolio breaker: whole-book equity in SOL (wallet SOL + bands marked incl. unclaimed fees + wallet tokens at mark).
+  // Portfolio breaker: whole-book equity in SOL (wallet SOL + wallet USDC at the SOL price + bands marked incl. unclaimed fees + wallet base tokens at mark).
   const tokensSol = entries.reduce((s, e) => s + e.wallet.token * e.pool.tokenPriceInSol, 0);
-  const equity = solAtStart + observed.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + tokensSol;
+  const equity = solAtStart + usdcAtStartSol + observed.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + tokensSol;
   if (Number.isFinite(equity) && equity > 0) {
     const pv = portfolioVerdict(app.engine.portfolio, equity, today, now, { floorSol: cfg.portfolioFloorSol });
     app.engine.portfolio = pv.next;
@@ -452,15 +474,19 @@ async function runIteration(app: App): Promise<void> {
   }
   console.log(`[cycle ${app.cycle}] working ${pools.length} pools (${withPositions.length} with bands)`);
 
+  const solPriceUsd = solPriceOf(app);
   const observed: Observed[] = [];
   for (const address of pools) {
     try {
       const dlmm = await getDlmm(app, address);
-      const snapshot = await getPoolSnapshot(dlmm, 10);
+      const snapshot = await getPoolSnapshot(dlmm, 10, { solPriceUsd });
       const { raw, positions } = await getUserPositions(dlmm, app.wallet.publicKey, snapshot);
       observed.push({ address, dlmm, snapshot, raw, positions });
     } catch (err) {
-      console.error(`[cycle ${app.cycle}] could not observe ${address}: ${(err as Error).message}`);
+      // A USDC pool without a SOL price, or a pool quoted in neither, is skipped with its reason: it
+      // cannot be valued in SOL, so no guard, breaker or ledger row sees it this cycle.
+      if (err instanceof QuotePriceUnknownError || err instanceof UnsupportedQuoteError) console.log(`[cycle ${app.cycle}] skipping ${address}: ${err.message}`);
+      else console.error(`[cycle ${app.cycle}] could not observe ${address}: ${(err as Error).message}`);
     }
   }
 
@@ -473,6 +499,13 @@ async function runIteration(app: App): Promise<void> {
   if (app.regime.reason) console.log(`[cycle ${app.cycle}] ${app.regime.reason}`);
 
   const solAtStart = await app.wallet.solBalance();
+  // The wallet's USDC is capital too (a closed USDC band returns as USDC): it marks at the SOL price.
+  let usdcAtStart = 0;
+  try {
+    usdcAtStart = (await app.wallet.usdcBalance()).ui;
+  } catch (err) {
+    console.error(`[cycle ${app.cycle}] could not read the wallet's USDC: ${(err as Error).message}`);
+  }
   // Pools holding a band are decided first: closes free capital for opens later in the pass.
   observed.sort((a, b) => b.positions.length - a.positions.length);
   const entries: JournalEntry[] = [];
@@ -485,12 +518,17 @@ async function runIteration(app: App): Promise<void> {
     }
   }
 
-  if (observed.length === pools.length && entries.length === observed.length && observed.length > 0) {
+  // Marks need a complete, consistently valued read: every picked pool observed and decided, and
+  // the wallet's USDC valued whenever it holds any (an unpriced USDC balance would swing equity).
+  const usdcUnpriced = usdcAtStart > 0.01 && solPriceUsd === null;
+  if (observed.length === pools.length && entries.length === observed.length && observed.length > 0 && !usdcUnpriced) {
     try {
-      markBook(app, observed, entries, solAtStart);
+      markBook(app, observed, entries, solAtStart, solPriceUsd ? usdcAtStart / solPriceUsd : 0);
     } catch (err) {
       console.error(`[cycle ${app.cycle}] marks failed:`, err);
     }
+  } else if (usdcUnpriced) {
+    console.log(`[cycle ${app.cycle}] marks skipped: the wallet holds ${usdcAtStart.toFixed(2)} USDC and no SOL price is known to value it`);
   } else {
     console.log(`[cycle ${app.cycle}] marks skipped: ${observed.length}/${pools.length} pools observed, ${entries.length} decided`);
   }
@@ -532,6 +570,7 @@ async function main(): Promise<void> {
     regime: regimeView([]),
   };
   if (app.screen) app.screenAt = new Date(app.screen.generatedAt).getTime();
+  setSolPriceUsd(solPriceOf(app));
   banner(app);
   if (config.servePort > 0) startServer(config.servePort);
   if (!once) startWatchdog({ cycleIntervalSec: config.cycleIntervalSec, live: !config.dryRun });

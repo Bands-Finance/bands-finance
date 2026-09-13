@@ -21,11 +21,14 @@ import { cors } from "hono/cors";
 import { config, riskLimits } from "./config";
 import { dataDir, readRecent } from "./journal";
 import { loadScreen } from "./screener";
+import { setSolPriceUsd } from "./tools/dlmm";
 import { engineRoutes } from "./engine/routes";
 import { platformRoutes } from "./platform/routes";
 
 export function buildApp(): Hono {
   const app = new Hono();
+  // Platform routes snapshot pools for callers; USDC-quoted pools need the SOL price to be valued.
+  setSolPriceUsd(loadScreen()?.solPriceUsd ?? null);
   // Wallet sessions send Authorization; x402 payers send X-Payment. Both must be allowed
   // or the first real payment is stranded (Meridian lost $5 this way).
   const corsPolicy = cors({

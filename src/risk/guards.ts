@@ -13,7 +13,7 @@
  */
 import { Decision, holdDecision } from "../agent/schema";
 import { antiChurn, bandStopPct, drawdownPct } from "../engine/exit";
-import { OPEN_COST_ESTIMATE_SOL, PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
+import { OPEN_COST_ESTIMATE_SOL, PoolSnapshot, PositionSnapshot, quoteOf } from "../tools/dlmm";
 import type { RiskLimits } from "./limits";
 import type { RiskState } from "./state";
 
@@ -55,8 +55,11 @@ export interface GuardContext {
   now: number;
   snapshot: PoolSnapshot;
   positions: PositionSnapshot[];
+  /** the wallet's SOL: the gas reserve is checked against this whatever the pool's quote */
   walletSol: number;
   walletToken: number;
+  /** the wallet's balance of the pool's QUOTE token in UI units (USDC for a USDC pool); defaults to walletSol, which is right for a SOL pool */
+  walletQuote?: number;
   state: RiskState;
   killSwitch: boolean;
   /** SOL-equivalent value of bands in OTHER pools */
@@ -211,33 +214,50 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
     if (violations.length === 0) passed.push("engine-gates");
   }
 
-  // 8. Opening: size, exposure, gas, geometry.
+  // 8. Opening: size, exposure, quote balance, gas, geometry.
+  //    `open.amountSol` is an amount of the pool's QUOTE token (SOL in a SOL pool, USDC in a USDC
+  //    pool). Sizes, exposure and caps are SOL-denominated: a quote figure converts at
+  //    quotePriceInSol (1 for SOL). The deposit is checked against the quote balance; the gas
+  //    reserve against the real SOL balance, which a USDC deposit spends only on rent and fees.
   if (isOpening(decision)) {
     const o = decision.open;
     if (!o) {
       violations.push("OPEN/REBALANCE without `open` parameters");
     } else {
       const s = ctx.snapshot;
-      const solIsX = s.solSide === "X";
-      const sizeSol = o.amountSol + o.amountToken * s.tokenPriceInSol;
+      const q = quoteOf(s);
+      const quoteIsSol = q.symbol === "SOL";
+      const walletQuote = ctx.walletQuote ?? ctx.walletSol;
+      const sizeQuote = o.amountSol + o.amountToken * q.tokenPriceInQuote;
+      const sizeSol = sizeQuote * q.priceInSol;
+      const sizeLabel = quoteIsSol ? `${sizeSol.toFixed(4)} SOL` : `${sizeSol.toFixed(4)} SOL (${sizeQuote.toFixed(2)} ${q.symbol})`;
       const currentExposure = ctx.positions.reduce((sum, p) => sum + p.valueInSol, 0);
       const exposureAfter = ctx.otherExposureSol + currentExposure - (closing?.valueInSol ?? 0) + sizeSol;
-      const walletSolAfterClose = ctx.walletSol + (closing?.solInPosition ?? 0);
-      const walletSolAfter = walletSolAfterClose - o.amountSol - OPEN_COST_ESTIMATE_SOL;
+      // what a closing band (REBALANCE) hands back in quote units before it is re-laid
+      const closingQuote = closing ? (closing.quoteInPosition ?? closing.solInPosition / q.priceInSol) : 0;
+      const walletQuoteAfter = walletQuote + closingQuote - o.amountSol;
+      // SOL: the deposit only when the quote is SOL; rent + fees always
+      const walletSolAfterClose = ctx.walletSol + (quoteIsSol ? (closing?.solInPosition ?? 0) : 0);
+      const walletSolAfter = walletSolAfterClose - (quoteIsSol ? o.amountSol : 0) - OPEN_COST_ESTIMATE_SOL;
       const width = o.binsBelowActive + o.binsAboveActive + 1;
       const mult = Math.min(Math.max(engine.sizeMultiplier, 0), 1);
       const effectiveMax = limits.maxPositionSol * mult;
 
       if (!(o.amountSol >= 0) || !(o.amountToken >= 0) || sizeSol <= 0) violations.push("deposit amounts must be positive");
       if (sizeSol > limits.maxPositionSol) {
-        violations.push(`band size ${sizeSol.toFixed(4)} SOL > max ${limits.maxPositionSol}`);
+        violations.push(`band size ${sizeLabel} > max ${limits.maxPositionSol}`);
       } else if (mult > 0 && mult < 1 && sizeSol > effectiveMax) {
-        violations.push(`band size ${sizeSol.toFixed(4)} SOL > max ${effectiveMax.toFixed(4)} (${mult} x limit after bench/regime)`);
+        violations.push(`band size ${sizeLabel} > max ${effectiveMax.toFixed(4)} (${mult} x limit after bench/regime)`);
       }
       if (exposureAfter > limits.maxTotalExposureSol) violations.push(`total exposure would be ${exposureAfter.toFixed(4)} SOL > max ${limits.maxTotalExposureSol}`);
+      if (walletQuoteAfter < 0) {
+        violations.push(`not enough ${q.symbol}: want ${o.amountSol}, have ${walletQuote}${closing ? ` + ${closingQuote.toFixed(4)} back from the closing band` : ""}`);
+      }
       if (walletSolAfter < limits.gasReserveSol) {
         violations.push(
-          `wallet would hold ${walletSolAfter.toFixed(4)} SOL after deposit + ~${OPEN_COST_ESTIMATE_SOL.toFixed(3)} rent, below gas reserve ${limits.gasReserveSol}`,
+          quoteIsSol
+            ? `wallet would hold ${walletSolAfter.toFixed(4)} SOL after deposit + ~${OPEN_COST_ESTIMATE_SOL.toFixed(3)} rent, below gas reserve ${limits.gasReserveSol}`
+            : `wallet would hold ${walletSolAfter.toFixed(4)} SOL after ~${OPEN_COST_ESTIMATE_SOL.toFixed(3)} rent (the ${q.symbol} deposit spends no SOL), below gas reserve ${limits.gasReserveSol}`,
         );
       }
       if (o.amountToken > ctx.walletToken + (closing ? closing.amountX + closing.amountY : 0)) {
@@ -251,22 +271,24 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
         violations.push(`already working ${ctx.poolsWithBands} pools (max ${ctx.maxActivePools})`);
       }
 
-      // Geometry: SOL sits below active when SOL is Y, above when SOL is X. Token is the opposite.
-      const solBelow = !solIsX;
+      // Geometry: the quote sits below active when the quote is Y, above when the quote is X. The base is the opposite.
+      // SOL_ONLY reads as "quote-only" (SOL in a SOL pool, USDC in a USDC pool); the enum value is kept.
+      const quoteBelow = q.side === "Y";
+      const sideName = quoteIsSol ? "SOL_ONLY" : `SOL_ONLY (${q.symbol}-only)`;
       if (o.side === "SOL_ONLY") {
-        if (o.amountToken !== 0) violations.push("SOL_ONLY band must not deposit token");
-        if (o.amountSol <= 0) violations.push("SOL_ONLY band needs amountSol > 0");
-        if (solBelow ? o.binsAboveActive !== 0 : o.binsBelowActive !== 0) {
-          violations.push(`SOL_ONLY band must sit ${solBelow ? "at/below" : "at/above"} the active bin`);
+        if (o.amountToken !== 0) violations.push(`${sideName} band must not deposit token`);
+        if (o.amountSol <= 0) violations.push(`${sideName} band needs amountSol > 0 (${q.symbol})`);
+        if (quoteBelow ? o.binsAboveActive !== 0 : o.binsBelowActive !== 0) {
+          violations.push(`${sideName} band must sit ${quoteBelow ? "at/below" : "at/above"} the active bin`);
         }
       } else if (o.side === "TOKEN_ONLY") {
-        if (o.amountSol !== 0) violations.push("TOKEN_ONLY band must not deposit SOL");
+        if (o.amountSol !== 0) violations.push(`TOKEN_ONLY band must not deposit ${q.symbol}`);
         if (o.amountToken <= 0) violations.push("TOKEN_ONLY band needs amountToken > 0");
-        if (solBelow ? o.binsBelowActive !== 0 : o.binsAboveActive !== 0) {
-          violations.push(`TOKEN_ONLY band must sit ${solBelow ? "at/above" : "at/below"} the active bin`);
+        if (quoteBelow ? o.binsBelowActive !== 0 : o.binsAboveActive !== 0) {
+          violations.push(`TOKEN_ONLY band must sit ${quoteBelow ? "at/above" : "at/below"} the active bin`);
         }
       }
-      if (violations.length === 0) passed.push(`open size ${sizeSol.toFixed(4)} SOL, width ${width}, exposure after ${exposureAfter.toFixed(4)}`);
+      if (violations.length === 0) passed.push(`open size ${sizeLabel}, width ${width}, exposure after ${exposureAfter.toFixed(4)}`);
     }
   }
 

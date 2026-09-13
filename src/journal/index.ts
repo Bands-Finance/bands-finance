@@ -10,7 +10,7 @@ import { config } from "../config";
 import type { Decision } from "../agent/schema";
 import type { DecideResult } from "../agent/decide";
 import type { ExecutionResult } from "../executor";
-import type { BinRow, PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
+import { quoteOf, SOL_MINT, type BinRow, type PoolSnapshot, type PositionSnapshot, type QuoteSymbol } from "../tools/dlmm";
 import type { PoolAnalytics } from "../tools/lpagent";
 
 export interface JournalPool {
@@ -24,11 +24,39 @@ export interface JournalPool {
   /** Y per X */
   price: number;
   priceLabel: string;
+  /** base token in SOL (for a USDC pool: tokenPriceInQuote x quotePriceInSol) */
   tokenPriceInSol: number;
   baseFeePct: number;
   dynamicFeePct: number;
   /** bins around the active bin at observation time, for the ladder */
   bins: BinRow[];
+  // ---- quote fields, absent on entries written before USDC pools; readers default through journalQuote() (quoteSymbol "SOL")
+  quoteSymbol?: QuoteSymbol;
+  quoteMint?: string;
+  /** which side of the pair is the quote (SOL or USDC); old entries: solSide */
+  quoteSide?: "X" | "Y";
+  /** one quote token in SOL (1 for SOL pools) */
+  quotePriceInSol?: number;
+  /** base token in the quote token, UI units */
+  tokenPriceInQuote?: number;
+}
+
+/** The quote of a journal pool with the defaults an old entry needs: SOL, at 1 SOL per SOL. */
+export function journalQuote(pool: Pick<JournalPool, "solSide" | "tokenPriceInSol" | "quoteSymbol" | "quoteMint" | "quoteSide" | "quotePriceInSol" | "tokenPriceInQuote">): {
+  quoteSymbol: QuoteSymbol;
+  quoteMint: string;
+  quoteSide: "X" | "Y";
+  quotePriceInSol: number;
+  tokenPriceInQuote: number;
+} {
+  const quotePriceInSol = typeof pool.quotePriceInSol === "number" && pool.quotePriceInSol > 0 ? pool.quotePriceInSol : 1;
+  return {
+    quoteSymbol: pool.quoteSymbol ?? "SOL",
+    quoteMint: pool.quoteMint ?? SOL_MINT,
+    quoteSide: pool.quoteSide ?? pool.solSide ?? "Y",
+    quotePriceInSol,
+    tokenPriceInQuote: typeof pool.tokenPriceInQuote === "number" ? pool.tokenPriceInQuote : pool.tokenPriceInSol / quotePriceInSol,
+  };
 }
 
 export interface JournalEntry {
@@ -38,7 +66,8 @@ export interface JournalEntry {
   mode: "dry-run" | "live";
   agent: { id: string; name: string };
   pool: JournalPool;
-  wallet: { address: string; sol: number; token: number; tokenSymbol: string };
+  /** quote / quoteSymbol: the wallet's balance of the pool's quote token; absent on old entries (SOL pools: = sol) */
+  wallet: { address: string; sol: number; token: number; tokenSymbol: string; quote?: number; quoteSymbol?: string };
   positions: PositionSnapshot[];
   analytics: PoolAnalytics | null;
   llm: Omit<DecideResult, "decision">;
@@ -70,6 +99,7 @@ export interface JournalEngine {
 }
 
 export function toJournalPool(s: PoolSnapshot): JournalPool {
+  const q = quoteOf(s);
   return {
     address: s.address,
     label: s.label,
@@ -84,6 +114,11 @@ export function toJournalPool(s: PoolSnapshot): JournalPool {
     baseFeePct: s.baseFeePct,
     dynamicFeePct: s.dynamicFeePct,
     bins: s.bins,
+    quoteSymbol: q.symbol,
+    quoteMint: q.token.mint,
+    quoteSide: q.side,
+    quotePriceInSol: q.priceInSol,
+    tokenPriceInQuote: q.tokenPriceInQuote,
   };
 }
 

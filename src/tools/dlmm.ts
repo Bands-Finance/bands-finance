@@ -1,12 +1,19 @@
 import DLMM, { LbPosition, StrategyType } from "@meteora-ag/dlmm";
 import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import BN from "bn.js";
+import { config } from "../config";
 
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
+/** The USDC mint (config USDC_MINT). USDC is the second quote the desk trades; every xStock pool is USDC-quoted. */
+export const USDC_MINT = config.usdcMint;
+
+/** The quotes the desk can size, guard and ledger. Everything is still accounted in SOL; a USDC figure is converted at the SOL price. */
+export type QuoteSymbol = "SOL" | "USDC";
 
 /** Mint -> symbol. Extend as you add pools. Unknown mints render as a short hash. */
 export const KNOWN_TOKENS: Record<string, string> = {
   [SOL_MINT]: "SOL",
+  [USDC_MINT]: "USDC",
   "9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump": "ANSEM",
 };
 
@@ -43,16 +50,16 @@ export interface PoolSnapshot {
   label: string;
   tokenX: TokenInfo;
   tokenY: TokenInfo;
-  /** which side of the pair is native SOL (null if neither) */
+  /** which side of the pair is native SOL (null if neither, e.g. a USDC-quoted pool) */
   solSide: "X" | "Y" | null;
-  /** the non-SOL token */
+  /** the token being made a market in: the non-quote side */
   baseToken: TokenInfo;
   binStep: number;
   activeBinId: number;
   /** price of one X in Y, UI units */
   activePrice: number;
   priceLabel: string;
-  /** base token priced in SOL */
+  /** base token priced in SOL: tokenPriceInQuote x quotePriceInSol (every SOL-denominated consumer reads this) */
   tokenPriceInSol: number;
   baseFeePct: number;
   maxFeePct: number;
@@ -63,6 +70,75 @@ export interface PoolSnapshot {
   /** X liquidity sitting in the observed bins above active (ask depth) */
   liquidityAboveX: number;
   fetchedAt: string;
+  // ---- the quote abstraction. Optional on the type so a snapshot literal built before it existed
+  //      (tests, callers outside this repo) still types; read them through quoteOf() / quoteMath(),
+  //      which default to the SOL-quoted meaning: quoteSide = solSide ?? "Y", quotePriceInSol = 1.
+  /** which side of the pair is the quote token (SOL or USDC) */
+  quoteSide?: "X" | "Y";
+  quoteToken?: TokenInfo;
+  quoteSymbol?: QuoteSymbol;
+  /** one quote token in SOL: 1 for SOL pools, 1 / solPriceUsd for USDC pools */
+  quotePriceInSol?: number;
+  /** base token priced in the quote token, UI units (what the LLM and the paper desk size in) */
+  tokenPriceInQuote?: number;
+  /** the SOL price the quote conversion used, when one was known (informational for SOL pools) */
+  solPriceUsd?: number | null;
+}
+
+/** The quote side of a snapshot with the SOL-pool defaults filled in. */
+export interface QuoteView {
+  side: "X" | "Y";
+  symbol: QuoteSymbol;
+  token: TokenInfo;
+  /** one quote token in SOL */
+  priceInSol: number;
+  /** base token in quote units */
+  tokenPriceInQuote: number;
+}
+
+type QuoteMathInput = Pick<PoolSnapshot, "solSide" | "tokenPriceInSol"> & Partial<Pick<PoolSnapshot, "quoteSide" | "quotePriceInSol" | "tokenPriceInQuote">>;
+
+/** The numbers of the quote side for a snapshot or any Pick of one: SOL-quoted defaults when the quote fields are absent. */
+export function quoteMath(s: QuoteMathInput): Pick<QuoteView, "side" | "priceInSol" | "tokenPriceInQuote"> {
+  const side: "X" | "Y" = s.quoteSide ?? (s.solSide === "X" ? "X" : "Y");
+  const priceInSol = typeof s.quotePriceInSol === "number" && Number.isFinite(s.quotePriceInSol) && s.quotePriceInSol > 0 ? s.quotePriceInSol : 1;
+  const tokenPriceInQuote = typeof s.tokenPriceInQuote === "number" && Number.isFinite(s.tokenPriceInQuote) ? s.tokenPriceInQuote : s.tokenPriceInSol / priceInSol;
+  return { side, priceInSol, tokenPriceInQuote };
+}
+
+/** The full quote view of a snapshot, token and symbol included. */
+export function quoteOf(s: PoolSnapshot): QuoteView {
+  const m = quoteMath(s);
+  const token = s.quoteToken ?? (m.side === "X" ? s.tokenX : s.tokenY);
+  const symbol: QuoteSymbol = s.quoteSymbol ?? (token.mint === USDC_MINT ? "USDC" : "SOL");
+  return { ...m, token, symbol };
+}
+
+/** Thrown by getPoolSnapshot for a USDC-quoted pool when no SOL price is known: the pool cannot be valued in SOL, so it is not tradable this cycle. */
+export class QuotePriceUnknownError extends Error {
+  constructor(readonly pool: string, label: string) {
+    super(`${label} (${pool}) is USDC-quoted and no SOL price is known: pass solPriceUsd (the screen's) to getPoolSnapshot or call setSolPriceUsd(); skipping it keeps the book valued in SOL`);
+    this.name = "QuotePriceUnknownError";
+  }
+}
+
+/** Thrown by getPoolSnapshot for a pool quoted in neither SOL nor USDC: the guards and the ledger have no unit for it. */
+export class UnsupportedQuoteError extends Error {
+  constructor(readonly pool: string, label: string) {
+    super(`${label} (${pool}) is quoted in neither SOL nor USDC: not tradable by the desk`);
+    this.name = "UnsupportedQuoteError";
+  }
+}
+
+let solPriceUsdDefault: number | null = null;
+
+/** The SOL price getPoolSnapshot falls back to when the caller passes none (the loop sets it from each screen). */
+export function setSolPriceUsd(price: number | null | undefined): void {
+  solPriceUsdDefault = typeof price === "number" && Number.isFinite(price) && price > 0 ? price : null;
+}
+
+export function getSolPriceUsd(): number | null {
+  return solPriceUsdDefault;
 }
 
 export interface PositionSnapshot {
@@ -79,10 +155,12 @@ export interface PositionSnapshot {
   amountY: number;
   feeX: number;
   feeY: number;
-  /** total value incl. unclaimed fees, in SOL */
+  /** total value incl. unclaimed fees, in SOL (a USDC pool is valued through quotePriceInSol) */
   valueInSol: number;
-  /** SOL-side tokens in the position incl. SOL fees (what returns as SOL on close, before rent) */
+  /** quote-side tokens in the position incl. quote fees, in SOL-equivalent (= quoteInPosition x quotePriceInSol; for SOL pools, what returns as SOL on close before rent) */
   solInPosition: number;
+  /** quote-side tokens in the position incl. quote fees, in quote units (what returns as quote on close, before rent); absent on snapshots written before USDC pools existed (then = solInPosition) */
+  quoteInPosition?: number;
   lastUpdatedAt: number;
   /** value in SOL when the band was opened (or first seen); set by the loop from risk state */
   entryValueSol?: number;
@@ -105,17 +183,34 @@ export function toRawBN(amount: number, decimals: number): BN {
   return new BN(raw);
 }
 
-/** Value of (amountX, amountY) expressed in SOL. Falls back to Y as quote if SOL is not in the pool. */
-export function toSol(amountX: number, amountY: number, s: PoolSnapshot): number {
-  if (s.solSide === "X") return amountX + (s.activePrice > 0 ? amountY / s.activePrice : 0);
+/** Value of (amountX, amountY) in the quote token, UI units. */
+export function toQuote(amountX: number, amountY: number, s: PoolSnapshot): number {
+  if (quoteMath(s).side === "X") return amountX + (s.activePrice > 0 ? amountY / s.activePrice : 0);
   return amountY + amountX * s.activePrice;
+}
+
+/** Value of (amountX, amountY) expressed in SOL: the quote value at quotePriceInSol (1 for a SOL pool, so unchanged there). */
+export function toSol(amountX: number, amountY: number, s: PoolSnapshot): number {
+  return toQuote(amountX, amountY, s) * quoteMath(s).priceInSol;
 }
 
 export async function loadPool(connection: Connection, address: string): Promise<DLMM> {
   return DLMM.create(connection, new PublicKey(address));
 }
 
-export async function getPoolSnapshot(dlmm: DLMM, binsEachSide = 10): Promise<PoolSnapshot> {
+export interface SnapshotOptions {
+  /** the SOL price in USD, needed to value a USDC-quoted pool; defaults to setSolPriceUsd()'s value */
+  solPriceUsd?: number | null;
+}
+
+/**
+ * Read a pool. A SOL-quoted pool needs nothing else. A USDC-quoted pool needs a SOL price
+ * (opts.solPriceUsd, else the module default from setSolPriceUsd) and throws
+ * QuotePriceUnknownError without one: a pool the desk cannot value in SOL is not observed,
+ * so no guard, breaker or ledger row ever sees an unconverted USDC figure. A pool quoted in
+ * neither throws UnsupportedQuoteError.
+ */
+export async function getPoolSnapshot(dlmm: DLMM, binsEachSide = 10, opts: SnapshotOptions = {}): Promise<PoolSnapshot> {
   await dlmm.refetchStates();
   const [active, around] = await Promise.all([
     dlmm.getActiveBin(),
@@ -129,11 +224,22 @@ export async function getPoolSnapshot(dlmm: DLMM, binsEachSide = 10): Promise<Po
 
   const tokenX: TokenInfo = { mint: xMint, symbol: symbolFor(xMint), decimals: xDec, reserve: ui(dlmm.tokenX.amount, xDec) };
   const tokenY: TokenInfo = { mint: yMint, symbol: symbolFor(yMint), decimals: yDec, reserve: ui(dlmm.tokenY.amount, yDec) };
+  const address = dlmm.pubkey.toBase58();
+  const label = `${tokenX.symbol}/${tokenY.symbol}`;
   const solSide: PoolSnapshot["solSide"] = xMint === SOL_MINT ? "X" : yMint === SOL_MINT ? "Y" : null;
-  const baseToken = solSide === "X" ? tokenY : tokenX;
+  // The quote: SOL when the pool has it (SOL/USDC itself is a SOL pool), else USDC, else unsupported.
+  const quoteSide: "X" | "Y" | null = solSide ?? (xMint === USDC_MINT ? "X" : yMint === USDC_MINT ? "Y" : null);
+  if (!quoteSide) throw new UnsupportedQuoteError(address, label);
+  const quoteSymbol: QuoteSymbol = solSide ? "SOL" : "USDC";
+  const quoteToken = quoteSide === "X" ? tokenX : tokenY;
+  const baseToken = quoteSide === "X" ? tokenY : tokenX;
+  const solPriceUsd = opts.solPriceUsd !== undefined ? (typeof opts.solPriceUsd === "number" && Number.isFinite(opts.solPriceUsd) && opts.solPriceUsd > 0 ? opts.solPriceUsd : null) : solPriceUsdDefault;
+  if (quoteSymbol === "USDC" && solPriceUsd === null) throw new QuotePriceUnknownError(address, label);
+  const quotePriceInSol = quoteSymbol === "SOL" ? 1 : 1 / solPriceUsd!;
 
   const activePrice = Number(active.pricePerToken);
-  const tokenPriceInSol = solSide === "X" ? (activePrice > 0 ? 1 / activePrice : 0) : activePrice;
+  const tokenPriceInQuote = quoteSide === "X" ? (activePrice > 0 ? 1 / activePrice : 0) : activePrice;
+  const tokenPriceInSol = tokenPriceInQuote * quotePriceInSol;
 
   const fee = dlmm.getFeeInfo();
   const dyn = dlmm.getDynamicFee();
@@ -147,8 +253,8 @@ export async function getPoolSnapshot(dlmm: DLMM, binsEachSide = 10): Promise<Po
   }));
 
   return {
-    address: dlmm.pubkey.toBase58(),
-    label: `${tokenX.symbol}/${tokenY.symbol}`,
+    address,
+    label,
     tokenX,
     tokenY,
     solSide,
@@ -158,6 +264,12 @@ export async function getPoolSnapshot(dlmm: DLMM, binsEachSide = 10): Promise<Po
     activePrice,
     priceLabel: `${tokenY.symbol} per ${tokenX.symbol}`,
     tokenPriceInSol,
+    quoteSide,
+    quoteToken,
+    quoteSymbol,
+    quotePriceInSol,
+    tokenPriceInQuote,
+    solPriceUsd,
     baseFeePct: fee.baseFeeRatePercentage.toNumber(),
     maxFeePct: fee.maxFeeRatePercentage.toNumber(),
     dynamicFeePct: dyn.toNumber(),
@@ -182,7 +294,9 @@ export function toPositionSnapshot(p: LbPosition, s: PoolSnapshot): PositionSnap
     : s.activeBinId < d.lowerBinId
       ? s.activeBinId - d.lowerBinId
       : s.activeBinId - d.upperBinId;
-  const solInPosition = s.solSide === "X" ? amountX + feeX : amountY + feeY;
+  const q = quoteMath(s);
+  const quoteInPosition = q.side === "X" ? amountX + feeX : amountY + feeY;
+  const solInPosition = quoteInPosition * q.priceInSol;
   return {
     address: p.publicKey.toBase58(),
     lowerBinId: d.lowerBinId,
@@ -198,6 +312,7 @@ export function toPositionSnapshot(p: LbPosition, s: PoolSnapshot): PositionSnap
     feeY,
     valueInSol: toSol(amountX + feeX, amountY + feeY, s),
     solInPosition,
+    quoteInPosition,
     lastUpdatedAt: Number(d.lastUpdatedAt.toString()),
   };
 }

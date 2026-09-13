@@ -1,14 +1,26 @@
 import type { Action, JournalEntry, Position } from "./types";
 
+/** Optional quote fields newer journals carry; older entries are SOL-quoted (quote = SOL, price 1). */
+function quoteMath(e: JournalEntry): { side: "X" | "Y"; priceInSol: number } {
+  const q = e.pool as JournalEntry["pool"] & { quoteSide?: "X" | "Y"; quotePriceInSol?: number };
+  return { side: q.quoteSide ?? e.pool.solSide ?? "Y", priceInSol: typeof q.quotePriceInSol === "number" && q.quotePriceInSol > 0 ? q.quotePriceInSol : 1 };
+}
+
+/** Unclaimed fees on a band in SOL: quote leg plus base leg at the pool price, converted at the quote's SOL price. */
 export function feesInSol(p: Position, e: JournalEntry): number {
-  return e.pool.solSide === "X" ? p.feeX + (e.pool.price > 0 ? p.feeY / e.pool.price : 0) : p.feeY + p.feeX * e.pool.price;
+  const q = quoteMath(e);
+  const inQuote = q.side === "X" ? p.feeX + (e.pool.price > 0 ? p.feeY / e.pool.price : 0) : p.feeY + p.feeX * e.pool.price;
+  return inQuote * q.priceInSol;
 }
 
 /** Refundable rent per position account (SDK POSITION_FEE). Leaves the wallet on open, returns on close. */
 export const POSITION_RENT_SOL = 0.0574;
 
 export function equityOf(e: JournalEntry): number {
-  return e.wallet.sol + e.wallet.token * e.pool.tokenPriceInSol + e.positions.reduce((s, p) => s + p.valueInSol + POSITION_RENT_SOL, 0);
+  const w = e.wallet as JournalEntry["wallet"] & { quote?: number; quoteSymbol?: string };
+  const q = quoteMath(e);
+  const quoteSol = typeof w.quote === "number" && w.quoteSymbol && w.quoteSymbol !== "SOL" ? w.quote * q.priceInSol : 0;
+  return e.wallet.sol + quoteSol + e.wallet.token * e.pool.tokenPriceInSol + e.positions.reduce((s, p) => s + p.valueInSol + POSITION_RENT_SOL, 0);
 }
 
 export type MarkerKind = "executed" | "blocked" | "override";

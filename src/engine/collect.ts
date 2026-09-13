@@ -14,7 +14,7 @@
 import { PublicKey } from "@solana/web3.js";
 import type { EngineConfig } from "../config";
 import type { RiskState } from "../risk/state";
-import type { PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
+import { quoteMath, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
 import { feeGainSinceLastSkim, LedgerMode, LedgerRow } from "./ledger";
 
 export const COLLECT_PENDING_MS = 2 * 60 * 60 * 1000;
@@ -22,16 +22,25 @@ export const SKIM_SHARE = 0.75;
 /** below this a skim is dust that costs more attention than it moves */
 export const SKIM_MIN_SOL = 0.001;
 
-/** Unclaimed fees on a band in SOL-equivalent, at the pool's current mark. */
-export function unclaimedFeesSol(p: Pick<PositionSnapshot, "feeX" | "feeY">, s: Pick<PoolSnapshot, "solSide" | "tokenPriceInSol">): number {
-  return s.solSide === "X" ? p.feeX + p.feeY * s.tokenPriceInSol : p.feeY + p.feeX * s.tokenPriceInSol;
+/** The snapshot fields the collect policy reads: the SOL fields, plus the quote fields when the snapshot has them. */
+export type CollectSnapshot = Pick<PoolSnapshot, "solSide" | "tokenPriceInSol"> & Partial<Pick<PoolSnapshot, "quoteSide" | "quotePriceInSol" | "tokenPriceInQuote">>;
+
+/** Unclaimed fees on a band in quote units (SOL or USDC), at the pool's current mark. */
+export function unclaimedFeesQuote(p: Pick<PositionSnapshot, "feeX" | "feeY">, s: CollectSnapshot): number {
+  const q = quoteMath(s);
+  return q.side === "X" ? p.feeX + p.feeY * q.tokenPriceInQuote : p.feeY + p.feeX * q.tokenPriceInQuote;
+}
+
+/** Unclaimed fees on a band in SOL-equivalent, at the pool's current mark (a USDC pool converts at quotePriceInSol). */
+export function unclaimedFeesSol(p: Pick<PositionSnapshot, "feeX" | "feeY">, s: CollectSnapshot): number {
+  return unclaimedFeesQuote(p, s) * quoteMath(s).priceInSol;
 }
 
 /** Keep state.feesPendingSince honest: set when fees first exceed the floor, cleared once they are below it (claimed). */
 export function trackFeesPending(
   state: Pick<RiskState, "feesPendingSince">,
   positions: readonly PositionSnapshot[],
-  snapshot: Pick<PoolSnapshot, "solSide" | "tokenPriceInSol">,
+  snapshot: CollectSnapshot,
   now: number,
   floorSol: number,
 ): void {
@@ -59,7 +68,7 @@ export interface CollectPlan {
  */
 export function collectDirective(
   positions: readonly PositionSnapshot[],
-  snapshot: Pick<PoolSnapshot, "solSide" | "tokenPriceInSol">,
+  snapshot: CollectSnapshot,
   state: Pick<RiskState, "feesPendingSince">,
   now: number,
   cfg: Pick<EngineConfig, "collectMinSol" | "collectFloorSol" | "collectMaxPerDay">,

@@ -26,6 +26,35 @@ export const SIDE_WORDS: Record<string, string> = {
   TOKEN_ONLY: "token just over the price",
   BOTH: "both sides of the price",
 };
+/** Optional quote fields newer journals carry; older entries are SOL-quoted. */
+interface QuoteFields {
+  quoteSymbol?: "SOL" | "USDC";
+  quoteSide?: "X" | "Y";
+  quotePriceInSol?: number;
+  tokenPriceInQuote?: number;
+}
+export interface QuoteView {
+  symbol: "SOL" | "USDC";
+  side: "X" | "Y";
+  priceInSol: number;
+  tokenPriceInQuote: number;
+}
+/** The quote token of a journal pool: SOL for every old entry, USDC for stock pools and the like. */
+export function quoteOf(pool: JournalEntry["pool"]): QuoteView {
+  const q = pool as JournalEntry["pool"] & QuoteFields;
+  const priceInSol = typeof q.quotePriceInSol === "number" && q.quotePriceInSol > 0 ? q.quotePriceInSol : 1;
+  return {
+    symbol: q.quoteSymbol ?? "SOL",
+    side: q.quoteSide ?? pool.solSide ?? "Y",
+    priceInSol,
+    tokenPriceInQuote: typeof q.tokenPriceInQuote === "number" ? q.tokenPriceInQuote : pool.tokenPriceInSol / priceInSol,
+  };
+}
+/** Side words with the pool's own quote token named ("USDC just under the price" in a USDC pool). */
+export function sideWords(side: string, quote: QuoteView): string {
+  const w = SIDE_WORDS[side] ?? side;
+  return quote.symbol === "SOL" ? w : w.replace(/^SOL\b/, quote.symbol);
+}
 export const GLOSS = {
   band: "A band is a slice of price Mr Bands puts SOL into. Every trade that crosses it pays him a fee.",
   inRange: "In range means the current price is inside the band, so it is earning right now.",
@@ -98,8 +127,9 @@ function intentOf(e: JournalEntry, d: JournalEntry["decision"]): string {
   if ((d.action === "OPEN_POSITION" || d.action === "REBALANCE") && o) {
     const width = o.binsBelowActive + o.binsAboveActive + 1;
     const pct = (width * e.pool.binStep) / 100;
-    const amount = o.amountSol > 0 ? fmtSol(o.amountSol, 2) : `${o.amountToken} ${e.wallet.tokenSymbol}`;
-    return `${amount} as ${SIDE_WORDS[o.side] ?? o.side}, ${width} bins wide (about ${pct.toFixed(1)}% of price)`;
+    const q = quoteOf(e.pool);
+    const amount = o.amountSol > 0 ? (q.symbol === "SOL" ? fmtSol(o.amountSol, 2) : `${o.amountSol.toFixed(2)} ${q.symbol}`) : `${o.amountToken} ${e.wallet.tokenSymbol}`;
+    return `${amount} as ${sideWords(o.side, q)}, ${width} bins wide (about ${pct.toFixed(1)}% of price)`;
   }
   if (d.action === "CLOSE_POSITION" || d.action === "CLAIM_FEES") {
     return d.positionAddress ? `band ${d.positionAddress.slice(0, 4)}…${d.positionAddress.slice(-4)}` : "every band";
@@ -261,8 +291,10 @@ export function bookOf(newestFirst: JournalEntry[]): Book {
         worthNow: p.valueInSol,
         pacePerDay: days ? fees / days : null,
         openedAt,
-        holds: solY ? `${p.amountX.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${e.pool.tokenX.symbol} + ${p.amountY.toFixed(4)} SOL` : `${p.amountX.toFixed(4)} SOL + ${p.amountY.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${e.pool.tokenY.symbol}`,
-        side: opened?.decision.open ? SIDE_WORDS[opened.decision.open.side] ?? opened.decision.open.side : p.amountX > 0 && p.amountY > 0 ? SIDE_WORDS.BOTH : solY ? (p.amountY > 0 ? SIDE_WORDS.SOL_ONLY : SIDE_WORDS.TOKEN_ONLY) : "",
+        holds: solY
+          ? `${p.amountX.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${e.pool.tokenX.symbol} + ${p.amountY.toFixed(quoteOf(e.pool).symbol === "SOL" ? 4 : 2)} ${e.pool.tokenY.symbol}`
+          : `${p.amountX.toFixed(quoteOf(e.pool).symbol === "SOL" ? 4 : 2)} ${e.pool.tokenX.symbol} + ${p.amountY.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${e.pool.tokenY.symbol}`,
+        side: opened?.decision.open ? sideWords(opened.decision.open.side, quoteOf(e.pool)) : p.amountX > 0 && p.amountY > 0 ? SIDE_WORDS.BOTH : solY ? sideWords(p.amountY > 0 ? "SOL_ONLY" : "TOKEN_ONLY", quoteOf(e.pool)) : "",
         strategy: opened?.decision.open?.strategy ?? null,
         openTx: opened?.execution.txs.find((t) => t.signature)?.signature ?? null,
       });

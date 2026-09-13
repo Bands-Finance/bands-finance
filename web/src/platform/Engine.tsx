@@ -84,7 +84,8 @@ function ConnectHere() {
 function EnginePanel({ screen, limits, token }: EngineProps) {
   const ref = useReveal<HTMLElement>();
   const e = useEngine(token);
-  const pools = useMemo(() => (screen?.pools ?? []).filter((p) => p.quoteSymbol === "SOL").slice(0, 30), [screen]);
+  // SOL- and USDC-quoted pools alike: the guards convert a USDC deposit at the SOL price the screen carries.
+  const pools = useMemo(() => (screen?.pools ?? []).filter((p) => p.quoteSymbol === "SOL" || (p.quoteSymbol === "USDC" && screen?.solPriceUsd)).slice(0, 30), [screen]);
   const [pool, setPool] = useState("");
   const [customPool, setCustomPool] = useState("");
   const [side, setSide] = useState<Side>("SOL_ONLY");
@@ -96,6 +97,7 @@ function EnginePanel({ screen, limits, token }: EngineProps) {
 
   const chosenPool = customPool.trim() || pool || pools[0]?.address || "";
   const chosen = pools.find((p) => p.address === chosenPool) ?? null;
+  const quote = chosen?.quoteSymbol ?? "SOL";
   const request: PlanRequest = {
     pool: chosenPool,
     side,
@@ -159,7 +161,7 @@ function EnginePanel({ screen, limits, token }: EngineProps) {
               <label className="engine__field">
                 <span>Pool</span>
                 <select value={pool || chosenPool} onChange={(ev) => setPool(ev.target.value)} disabled={pools.length === 0}>
-                  {pools.length === 0 && <option value="">no screened SOL pools yet</option>}
+                  {pools.length === 0 && <option value="">no screened pools yet</option>}
                   {pools.map((p) => (
                     <option key={p.address} value={p.address}>
                       #{p.rank} {p.name} · score {p.score.toFixed(0)}
@@ -180,11 +182,11 @@ function EnginePanel({ screen, limits, token }: EngineProps) {
                     </option>
                   ))}
                 </select>
-                <small>{SIDE_WORDS[side]}</small>
+                <small>{quote === "SOL" ? SIDE_WORDS[side] : SIDE_WORDS[side].replace(/^SOL only/, `${quote} only`)}</small>
               </label>
               <div className="engine__row">
                 <label className="engine__field">
-                  <span>SOL to deposit</span>
+                  <span>{quote} to deposit</span>
                   <input type="number" inputMode="decimal" min="0" step="0.01" value={amountSol} onChange={(ev) => setAmountSol(ev.target.value)} disabled={side === "TOKEN_ONLY"} />
                 </label>
                 <label className="engine__field">

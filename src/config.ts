@@ -51,6 +51,7 @@ const Raw = z.object({
   ENGINE_FLOAT_TARGET_SOL: z.coerce.number().default(1),
   TREASURY_ADDRESS: z.string().default(""),
   EXPECTED_WALLET: z.string().default(""),
+  USDC_MINT: z.string().default("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
 });
 
 const raw = Raw.parse(env);
@@ -108,6 +109,8 @@ export const config = {
     minTvlSol: raw.SCREEN_MIN_TVL_SOL,
   },
   maxActivePools: raw.MAX_ACTIVE_POOLS,
+  /** the USDC mint: the second quote the desk trades (xStocks and most majors are USDC-quoted) */
+  usdcMint: raw.USDC_MINT.trim(),
   engine: {
     outOfRangeSec: raw.ENGINE_OUT_OF_RANGE_SEC,
     knifePct: raw.ENGINE_KNIFE_PCT,
