@@ -192,7 +192,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
       push({
         label: `open ${o.side} band bins [${lowerBinId}, ${upperBinId}]`,
         ok: true,
-        skipped: `paper: opened ${b.address} with ${fmt(o.amountSol, 4)} ${q.symbol}${o.amountToken > 0 ? ` + ${fmt(o.amountToken, 4)} ${s.baseToken.symbol}` : ""} across ${upperBinId - lowerBinId + 1} bins; slippage ${fmt(opened.slippageSol, 6)} SOL, rent ${opened.rentChargedSol.toFixed(4)} SOL charged (${fmt(bandRentRefund(b), 6)} refundable); entry ${fmt(b.entryValueSol, 4)} SOL${b.strategyNote ? `; ${b.strategyNote}` : ""}${geometryNote ? `; ${geometryNote}` : ""}`,
+        skipped: `paper: opened ${b.address} with ${fmt(o.amountSol, 4)} ${q.symbol}${o.amountToken > 0 ? ` + ${fmt(o.amountToken, 4)} ${s.baseToken.symbol}` : ""} across ${upperBinId - lowerBinId + 1} bins; no slippage on a deposit, rent ${opened.rentChargedSol.toFixed(4)} SOL charged (${fmt(bandRentRefund(b), 6)} refundable); entry ${fmt(b.entryValueSol, 4)} SOL${b.strategyNote ? `; ${b.strategyNote}` : ""}${geometryNote ? `; ${geometryNote}` : ""}`,
       });
       result.opened = { address: b.address, entryValueSol: b.entryValueSol };
       if (geometryNote) result.notes.push(geometryNote);
@@ -204,7 +204,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         rentSol: -opened.rentChargedSol,
         txFeeSol: -PAPER_TX_FEE_SOL,
         basis: "marked",
-        note: `paper: open ${o.side} band incl. ${slippagePct}% slippage; rent charged at the open estimate (${ctx.openCost?.note ?? "position + 2 bin arrays"})`,
+        note: `paper: open ${o.side} band (a deposit, no slippage); rent charged at the open estimate (${ctx.openCost?.note ?? "position + 2 bin arrays"})`,
       });
     }
   } catch (err) {

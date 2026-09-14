@@ -139,7 +139,7 @@ async function main(): Promise<void> {
   const book = paper.emptyBook(100, 0, T0);
   const s260 = snapAt(260);
   let bandAddr = "";
-  await test("open: wallet pays deposit + 0.3% slippage + the open rent estimate; the band holds the deposit; entry is all-in", () => {
+  await test("open: wallet pays the deposit + the open rent estimate, no slippage (a deposit is not a swap); the band holds the deposit", () => {
     assert.equal(book.wallet.sol, 100);
     const r = paper.openBand(book, {
       pool: POOL, label: "ANSEM/SOL", quoteSymbol: "SOL", quoteSide: "Y", quoteMint: SOL_MINT, tokenMint: ANSEM, tokenSymbol: "ANSEM", xDecimals: 6, yDecimals: 9, binStep: 20,
@@ -148,11 +148,11 @@ async function main(): Promise<void> {
     });
     bandAddr = r.band.address;
     assert.equal(bandAddr, `paper-${POOL.slice(0, 6)}-1`);
-    near(book.wallet.sol, 100 - 1 - 0.003 - dlmm.OPEN_COST_ESTIMATE_SOL, 1e-9, "wallet sol");
+    near(book.wallet.sol, 100 - 1 - dlmm.OPEN_COST_ESTIMATE_SOL, 1e-9, "wallet sol");
     near(book.rentLockedSol, dlmm.POSITION_RENT_SOL, 1e-9, "rent locked");
     near(book.rentSpentSol, 2 * dlmm.BIN_ARRAY_RENT_SOL, 1e-9, "rent spent");
-    near(book.slippagePaidSol, 0.003, 1e-9, "slippage paid");
-    near(r.band.entryValueSol, 1.003, 1e-9, "entry all-in");
+    near(book.slippagePaidSol, 0, 1e-12, "no slippage on a deposit");
+    near(r.band.entryValueSol, 1, 1e-9, "entry = the deposit at the open mark");
     assert.equal(r.band.quoteDeposit, 1);
     assert.equal(r.band.openedBinId, 260);
     assert.deepEqual([r.band.lowerBinId, r.band.upperBinId], [251, 260]);

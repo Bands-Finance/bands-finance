@@ -4,12 +4,12 @@
  * (src/paper/mark.ts) and the paper executor (src/paper/executor.ts) opens, closes and claims
  * through the operations below, which move value between the wallet and the bands:
  *
- *   open   wallet -= deposit (+ slippage on it) and the open rent estimate; rentLockedSol += the refundable part
+ *   open   wallet -= deposit and the open rent estimate (a deposit is not a swap: no slippage); rentLockedSol += the refundable part
  *   close  wallet += quote + token (less slippage on the token leg) + fees + the rent refund; a PaperClosed row is appended
  *   claim  wallet += the band's accrued fees; feesClaimedSol tallies them
  *
  * Every SOL figure is SOL-equivalent at the mark passed in; a USDC pool's quote converts at
- * quotePriceInSol. The entry value of a band is all-in (deposit + open slippage), and the wallet's
+ * quotePriceInSol. The entry value of a band is the deposit at the open mark, and the wallet's
  * base tokens carry a SOL cost basis from the mark they arrived at (tokenBasisSol), so that
  *   equity now - equity at start = realized + marked bands + marked wallet tokens - rentLockedSol - rentSpentSol
  * holds exactly (rentSpentSol is the non-refundable bin-array rent).
@@ -298,9 +298,12 @@ export interface OpenBandResult {
  * entry value is the deposit plus the slippage, in SOL. Throws when the wallet cannot pay.
  */
 export function openBand(book: PaperBook, i: OpenBandInput): OpenBandResult {
-  const slip = i.slippagePct / 100;
-  const slippageQuote = i.amountQuote * slip;
-  const slippageToken = i.amountToken * slip;
+  // A DLMM/CLMM deposit is not a swap: the tokens are laid into bins, nothing is traded, so there is no
+  // slippage on the way in (the SDK's slippage parameter only guards against the active bin moving before
+  // the transaction lands). The cost of opening is rent plus the network fee. Slippage is charged on the
+  // token leg at close, where the desk would sell inventory. `slippagePct` is kept in the input for that.
+  const slippageQuote = 0;
+  const slippageToken = 0;
   const quoteCost = i.amountQuote + slippageQuote;
   const tokenCost = i.amountToken + slippageToken;
   const rentChargedSol = i.rentChargedSol ?? OPEN_COST_ESTIMATE_SOL;
