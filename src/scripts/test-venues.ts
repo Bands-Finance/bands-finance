@@ -501,7 +501,7 @@ async function main(): Promise<void> {
     near(book.rentLockedSol, raydium.CLMM_POSITION_RENT_SOL, 1e-9);
     near(book.rentSpentSol, raydium.CLMM_PROTOCOL_POSITION_RENT_SOL, 1e-9);
     near(book.wallet.sol, 100 - raydium.CLMM_OPEN_COST_DEFAULT_SOL - paper.PAPER_TX_FEE_SOL, 1e-9);
-    near(book.wallet.usdc, 5000 - 1000 * 1.003, 1e-9);
+    near(book.wallet.usdc, 5000 - 1000, 1e-9, "a deposit is not a swap: no slippage on the USDC");
     assert.match(r.txs[0].skipped!, /active bin is excluded/);
     near(r.ledger![0].rentSol, -raydium.CLMM_OPEN_COST_DEFAULT_SOL, 1e-12);
     near(b.lowerPrice, clmmPrice(ACTIVE - 20), 1e-15);
