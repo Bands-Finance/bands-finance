@@ -13,6 +13,13 @@ export interface ScreenContext {
   flags: string[];
   /** the operator put this token on the watchlist: their judgement stands in for the screener's score */
   watchlisted?: boolean;
+  /**
+   * The LAUNCH LANE admitted this pool (src/screener/launch.ts): too new for the board, the score or
+   * a hand-written list, but already carrying real two-sided flow. Present and ok means the desk may
+   * take it under harsher terms (a capped seat, a tighter stop, a maximum hold, a volume-fade exit);
+   * null or absent means the ordinary rules apply.
+   */
+  launch?: { ok: true; ageHours: number; turnover: number } | null;
   /** how far the price travelled in the last hour, high to low, in percent: what the band must survive */
   recentMovePct?: number | null;
   generatedAt: string;
@@ -173,6 +180,12 @@ export function formatObservation(o: Observation): string {
   lines.push(`- actions today: ${o.state.actionsToday}`);
   lines.push(`- last action: ${o.state.lastActionAt ? `${Math.round((Date.now() - o.state.lastActionAt) / 60000)} min ago` : "never"}; last band move in THIS pool: ${o.state.lastMoveAt ? `${Math.round((Date.now() - o.state.lastMoveAt) / 60000)} min ago (the cooldown is per pool)` : "never"}`);
   lines.push(`- kill switch: ${o.state.killSwitch ? "ACTIVE (no new exposure)" : "off"}`);
+  if (o.screen?.launch?.ok) {
+    lines.push(
+      `- LAUNCH LANE: this pool is ${r(o.screen.launch.ageHours, 1)}h old and turning over ${r(o.screen.launch.turnover, 1)}x its liquidity a day. It is admitted by rule, not by score or watchlist. ` +
+        `A launch seat is capped, stopped tighter, held for a limited time and closed when the volume fades: size it small and do not argue with the exit.`,
+    );
+  }
   lines.push("");
   if (o.screen?.hot?.length) {
     lines.push("## Hot right now (fees in the last hour, from the fast watch)");

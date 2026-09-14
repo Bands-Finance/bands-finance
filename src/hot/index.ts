@@ -14,6 +14,15 @@
  * row when the pool is on it; a trending Meteora DLMM pool off the board is read live once (capped
  * per tick, cached an hour); anything else off the board has no fee and is shown by turnover.
  * Nothing here edits src/config.ts: knobs are HOT_* in the environment (src/hot/env.ts).
+ *
+ * SIBLING POOLS. Trending ranks pools, not tokens, and a token's biggest pool is often one we
+ * cannot quote: WET trended in WET/PTN on Raydium ($2.9M in 24h, a quote the book cannot seat)
+ * while its WET/SOL pools on Meteora, which the desk could have worked, never trended because they
+ * are smaller. So when a token turns up on trending (or high on the board) in a pool we cannot
+ * trade, and that pool is carrying real volume, we ask GeckoTerminal for the token's OTHER pools
+ * (GET /networks/solana/tokens/{mint}/pools, same row shape as trending) and let the tradable ones
+ * into the same pipeline as anything else. Capped at HOT_SIBLING_LOOKUPS calls a tick, most
+ * promising token first, each token's answer cached for HOT_SIBLING_TTL_MIN.
  */
 import { Connection } from "@solana/web3.js";
 import type { Hono } from "hono";
@@ -22,18 +31,38 @@ import { readRecent } from "../journal";
 import { loadScreen } from "../screener";
 import type { ScreenedPool, ScreenResult } from "../screener/types";
 import { getPoolSnapshot, loadPool } from "../tools/dlmm";
+import { launchEnv, launchVerdict, type LaunchEnv } from "../screener/launch";
+import { isTradableVenue } from "../venues/env";
 import { hotEnv, type HotEnv } from "./env";
 import { heatOf, hotMetrics, type HotInputs } from "./score";
-import { fetchDexScreener, fetchTrending, SOL_MINT, type SourceOpts } from "./sources";
+import { fetchDexScreener, fetchTokenPools, fetchTrending, SOL_MINT, USDC_MINT, type SourceOpts } from "./sources";
 import { appendHistory, heldPools, loadHotFile, readHistoryTail, saveHotFile } from "./store";
 import { detectSurges, SURGE_STICKY_MS, SURGE_WINDOW_MS } from "./surge";
 import type { HotFile, HotHistoryRow, HotRow, PoolSample } from "./types";
 
 export { hotEnv, type HotEnv } from "./env";
 export { FADING_MIN_VOL1H, FADING_SHARE, heatOf, hotMetrics, NOMINAL_FEE_PCT, type Heat, type HeatOpts, type HotInputs, type HotMetrics } from "./score";
-export { DEXSCREENER_URL, fetchDexScreener, fetchTrending, parseDexScreener, parseTrending, quoteSymbolOf, splitName, TRENDING_URL, venueOfDex, type SourceOpts, type SourceResult } from "./sources";
+export {
+  DEXSCREENER_URL,
+  fetchDexScreener,
+  fetchTokenPools,
+  fetchTrending,
+  parseDexScreener,
+  parseGeckoPools,
+  parseTokenPools,
+  parseTrending,
+  quoteSymbolOf,
+  splitName,
+  TOKEN_POOLS_URL,
+  TRENDING_URL,
+  venueOfDex,
+  type SiblingResult,
+  type SourceOpts,
+  type SourceResult,
+} from "./sources";
 export { appendHistory, heldPools, HISTORY_FILE, HOT_FILE, loadHotFile, parseHistory, readHistoryTail, saveHotFile } from "./store";
 export { detectSurges, latestByAddress, SURGE_MIN_ACCELERATION, SURGE_STICKY_MS, SURGE_TOP_N, SURGE_WINDOW_MS, topTenSeen, type SurgeCandidate, type SurgeVerdict } from "./surge";
+export { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv, type LaunchVerdict } from "../screener/launch";
 export type { HotFeeSource, HotFile, HotHistoryRow, HotRow, HotSources, PoolSample } from "./types";
 
 /* ---------- the live Meteora fee read, with its cache ---------- */
@@ -134,6 +163,84 @@ export function boardTop(screen: ScreenResult | null, n: number): Map<string, Sc
   return out;
 }
 
+/* ---------- sibling pools: a token that trended somewhere we cannot trade ---------- */
+
+export interface SiblingCacheEntry {
+  samples: PoolSample[];
+  at: number;
+  /** false when the lookup FAILED: the entry is a negative cache and expires on its own, shorter clock */
+  ok?: boolean;
+}
+const defaultSiblingCache = new Map<string, SiblingCacheEntry>();
+
+/**
+ * A FAILED sibling lookup is remembered this long, whatever HOT_SIBLING_TTL_MIN says. Without it a
+ * mint whose lookup errors is re-queried every tick and eats the whole HOT_SIBLING_LOOKUPS budget,
+ * starving every token behind it. Same idea as FEE_FAIL_CACHE_MS above.
+ */
+export const SIBLING_FAIL_TTL_MS = 5 * 60e3;
+
+/** At most this many of one token's pools join the tick. A token can have twenty; six is already generous. */
+export const SIBLINGS_PER_TOKEN = 6;
+
+/** A pool we could actually put a band in: a venue the loop trades, quoted in SOL or USDC. */
+export const isQuotableVenue = (venue: string, quoteMint: string | null, tradable: (v: string) => boolean): boolean =>
+  tradable(venue) && (quoteMint === SOL_MINT || quoteMint === USDC_MINT);
+
+export interface SiblingTarget {
+  mint: string;
+  /** the symbol as the untradable row spelled it, for the log line */
+  symbol: string;
+  /** the 24h volume of the pool that flagged this token: what makes it promising */
+  vol24hUsd: number;
+  /** the untradable pool that flagged it */
+  from: string;
+}
+
+/**
+ * PURE. Which tokens are worth a sibling lookup this tick, most promising first.
+ *
+ * A token qualifies when the rows we already have for it are ALL untradable (wrong venue or a quote
+ * the book cannot seat) and the best of them cleared minVol24hUsd. A token that already has a pool
+ * we could quote needs no lookup: trending found it. Tokens on the mints of the quotes themselves
+ * (SOL, USDC) are skipped; so are tokens whose list is still cached.
+ */
+export function siblingTargets(
+  samples: readonly PoolSample[],
+  o: { minVol24hUsd: number; max: number; tradable: (venue: string) => boolean; cached?: (mint: string) => boolean },
+): SiblingTarget[] {
+  const best = new Map<string, SiblingTarget>();
+  const quotable = new Set<string>();
+  for (const s of samples) {
+    const mint = s.baseMint;
+    if (!mint || mint === SOL_MINT || mint === USDC_MINT) continue;
+    if (isQuotableVenue(s.venue, s.quoteMint, o.tradable)) {
+      quotable.add(mint);
+      continue;
+    }
+    const vol = s.vol24hUsd ?? 0;
+    const prev = best.get(mint);
+    if (!prev || vol > prev.vol24hUsd) best.set(mint, { mint, symbol: s.baseSymbol ?? mint.slice(0, 6), vol24hUsd: vol, from: s.address });
+  }
+  return [...best.values()]
+    .filter((t) => !quotable.has(t.mint) && t.vol24hUsd >= o.minVol24hUsd && !o.cached?.(t.mint))
+    .sort((a, b) => b.vol24hUsd - a.vol24hUsd)
+    .slice(0, Math.max(0, o.max));
+}
+
+/**
+ * PURE. The siblings of one token that are worth carrying into the tick: pools on a venue the loop
+ * trades, quoted in SOL or USDC, biggest 24h volume first, at most SIBLINGS_PER_TOKEN. The liquidity
+ * floor is NOT applied here: heatOf owns that gate, and applying it twice would hide a pool whose
+ * GeckoTerminal reserve is stale but whose DexScreener figure is not.
+ */
+export function usableSiblings(samples: readonly PoolSample[], mint: string, tradable: (venue: string) => boolean, max = SIBLINGS_PER_TOKEN): PoolSample[] {
+  return samples
+    .filter((s) => s.baseMint === mint && isQuotableVenue(s.venue, s.quoteMint, tradable))
+    .sort((a, b) => (b.vol24hUsd ?? 0) - (a.vol24hUsd ?? 0))
+    .slice(0, Math.max(0, max));
+}
+
 /* ---------- the tick ---------- */
 
 export interface HotTickOptions {
@@ -153,6 +260,10 @@ export interface HotTickOptions {
   /** live Meteora fee reader (default: chain through config.rpcUrl) */
   readFee?: (address: string, solPriceUsd: number | null) => Promise<number | null>;
   feeCache?: Map<string, FeeCacheEntry>;
+  /** which venues the loop can actually trade (default TRADABLE_VENUES); decides what counts as a quotable sibling */
+  tradableVenue?: (venue: string) => boolean;
+  /** mint -> the token's pools, cached for HOT_SIBLING_TTL_MIN; module-level by default so a tick does not refetch */
+  siblingCache?: Map<string, SiblingCacheEntry>;
 }
 
 const fmtUsd = (n: number | null) => (n === null ? "n/a" : n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(1)}K` : `$${n.toFixed(0)}`);
@@ -200,6 +311,8 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
   const so: SourceOpts = { fetchImpl: opts.fetchImpl, sleep: opts.sleep, log };
   const readFee = opts.readFee ?? readMeteoraFee;
   const feeCache = opts.feeCache ?? defaultFeeCache;
+  const siblingCache = opts.siblingCache ?? defaultSiblingCache;
+  const tradable = opts.tradableVenue ?? ((v: string) => isTradableVenue(v));
 
   // The board, the held pools, the trending candidates.
   const screen = opts.screen === undefined ? loadScreen() : opts.screen;
@@ -208,12 +321,78 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
   const trending = await fetchTrending(opts.durations ?? ["5m", "1h"], so);
   const trendByAddr = new Map<string, PoolSample>();
   for (const s of trending.samples) if (!trendByAddr.has(s.address)) trendByAddr.set(s.address, s);
+  const errors = [...trending.errors];
+
+  // Sibling pools. A token that trended (or sits high on the board) in a pool we cannot trade gets
+  // its other pools looked up, so the desk sees the WET/SOL it could have quoted and not only the
+  // WET/PTN it could not. Board rows join the search as untradable trending rows would.
+  const siblingSeed: PoolSample[] = [...trending.samples];
+  for (const p of board.values()) {
+    siblingSeed.push({
+      source: "trending",
+      address: p.address,
+      name: p.name,
+      venue: p.venue,
+      baseMint: p.baseMint,
+      quoteMint: p.quoteMint,
+      baseSymbol: p.baseSymbol,
+      quoteSymbol: p.quoteSymbol,
+      priceUsd: p.priceUsd,
+      quotePriceUsd: null,
+      liquidityUsd: p.tvlUsd,
+      vol5mUsd: null,
+      vol1hUsd: null,
+      vol24hUsd: p.volume24hUsd,
+      buys5m: null,
+      sells5m: null,
+      buys1h: null,
+      sells1h: null,
+      priceChange5mPct: null,
+      priceChange1hPct: null,
+      priceChange24hPct: p.priceChange24hPct,
+      createdAt: null,
+    });
+  }
+  const ttlMs = Math.max(0, env.siblingTtlMin) * 60e3;
+  // STRICTLY older than the TTL. An entry stamped this tick is never stale, so HOT_SIBLING_TTL_MIN=0
+  // means "do not reuse the list on the NEXT tick", not "throw away the list this tick just paid for".
+  const stale = (e: SiblingCacheEntry) => now - e.at > (e.ok === false ? SIBLING_FAIL_TTL_MS : ttlMs);
+  const cached = (mint: string) => {
+    const hit = siblingCache.get(mint);
+    return !!hit && !stale(hit);
+  };
+  const targets = siblingTargets(siblingSeed, { minVol24hUsd: env.siblingMinVol24hUsd, max: env.siblingLookups, tradable, cached });
+  let siblingLookups = 0;
+  if (targets.length) {
+    log(`[hot] sibling lookup: ${targets.map((t) => `${t.symbol} ${fmtUsd(t.vol24hUsd)}/24h in ${t.from.slice(0, 6)} (untradable)`).join(" · ")}`);
+    const got = await fetchTokenPools(targets.map((t) => t.mint), so);
+    siblingLookups = got.calls;
+    errors.push(...got.errors);
+    // Every mint we spent a call on is recorded, answered or not: a failure is cached NEGATIVELY so
+    // one broken mint cannot monopolise the budget tick after tick.
+    for (const t of targets) {
+      const rows = got.byMint.get(t.mint);
+      siblingCache.set(t.mint, rows ? { samples: rows, at: now, ok: true } : { samples: [], at: now, ok: false });
+    }
+  }
+  // Everything cached and still fresh, tradable rows only, joins the tick as a trending row would.
+  const siblingByAddr = new Map<string, PoolSample>();
+  for (const [mint, hit] of [...siblingCache]) {
+    if (stale(hit)) {
+      siblingCache.delete(mint); // the cache is the only thing here that would grow forever
+      continue;
+    }
+    for (const s of usableSiblings(hit.samples, mint, tradable)) {
+      if (!trendByAddr.has(s.address) && !board.has(s.address)) siblingByAddr.set(s.address, s);
+    }
+  }
+  for (const [addr, s] of siblingByAddr) trendByAddr.set(addr, s);
 
   // One DexScreener pass over everything we care about.
   const universe = [...new Set([...board.keys(), ...held, ...trendByAddr.keys()])];
   const dex = universe.length ? await fetchDexScreener(universe, so) : { samples: [], calls: 0, errors: [] };
   const dexByAddr = new Map(dex.samples.map((s) => [s.address, s] as const));
-  const errors = [...trending.errors, ...dex.errors];
+  errors.push(...dex.errors);
 
   const solPriceUsd = screen?.solPriceUsd ?? solPriceFromSamples(trending.samples);
   const screenAgeHours = screen ? Math.max(0, (now - Date.parse(screen.generatedAt)) / 3600e3) : 0;
@@ -350,7 +529,7 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
   const file: HotFile = {
     generatedAt: nowIso,
     tickMs: Date.now() - t0,
-    sources: { trending: trending.samples.length, dexscreener: dex.samples.length, onchainReads, errors },
+    sources: { trending: trending.samples.length, dexscreener: dex.samples.length, onchainReads, siblingLookups, siblingRows: rows.filter((r) => siblingByAddr.has(r.address)).length, errors },
     rows,
   };
   saveHotFile(dir, file);
@@ -365,7 +544,8 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
 
   const top = rows[0];
   log(
-    `[hot] ${rows.length} rows · trending ${trending.samples.length} · dexscreener ${dex.samples.length}/${universe.length} · onchain ${onchainReads} · ${surges.length} surge${surges.length === 1 ? "" : "s"}` +
+    `[hot] ${rows.length} rows · trending ${trending.samples.length} · dexscreener ${dex.samples.length}/${universe.length} · onchain ${onchainReads}` +
+      `${siblingByAddr.size ? ` · siblings ${file.sources.siblingRows}/${siblingByAddr.size} from ${siblingLookups} lookup${siblingLookups === 1 ? "" : "s"}` : ""} · ${surges.length} surge${surges.length === 1 ? "" : "s"}` +
       `${errors.length ? ` · ${errors.length} source error${errors.length === 1 ? "" : "s"}` : ""} · ${(file.tickMs / 1000).toFixed(1)}s` +
       (top ? ` · top ${top.name} ${fmtPct(top.feeToTvlDailyPct)}/day` : ""),
   );
@@ -464,24 +644,43 @@ export interface HotPickOptions {
   max?: number;
   /** liquidity floor in USD (default HOT_MIN_LIQUIDITY_USD) */
   minLiquidityUsd?: number;
+  /**
+   * The launch lane (src/screener/launch.ts). When given, a row flagged `new` is kept if the lane
+   * admits it: being new is the whole point of a launch, and the lane's own floors are harsher than
+   * anything this filter applies. `true` reads the lane from the environment. Everything else still
+   * applies: `dumping` and `wild` still drop a row, and so does the liquidity floor.
+   */
+  launch?: LaunchEnv | boolean | null;
 }
 
 /** flags that keep a row off the tradable list */
 export const UNTRADABLE_FLAGS = ["new", "dumping", "wild"];
 
+/** A hot row as the launch lane reads it. The row already carries every figure the lane needs. */
+export const launchRowOf = (r: HotRow) => ({
+  ageHours: r.ageHours,
+  liquidityUsd: r.liquidityUsd,
+  vol24hUsd: r.vol24hUsd,
+  vol1hUsd: r.vol1hUsd,
+  turnover24h: r.vol24hUsd !== null && r.liquidityUsd !== null && r.liquidityUsd > 0 ? r.vol24hUsd / r.liquidityUsd : null,
+  quoteSymbol: r.quoteSymbol,
+  sellShare1h: r.sellShare1h,
+  priceChange1hPct: r.priceChange1hPct,
+  flags: r.flags,
+});
+
 /** Rows the loop may work: tradable venue, SOL or USDC quote, not new/dumping/wild, above the liquidity floor, best heat first. */
 export function hotPicks(hot: HotFile | null, o: HotPickOptions): HotRow[] {
   if (!hot) return [];
   const floor = o.minLiquidityUsd ?? hotEnv().minLiquidityUsd;
+  const lane = o.launch === true ? launchEnv() : o.launch === false || !o.launch ? null : o.launch;
+  const admitted = (r: HotRow) => !!lane && lane.on && launchVerdict(launchRowOf(r), lane).ok;
+  const blocked = (r: HotRow) => {
+    const flags = admitted(r) ? r.flags.filter((f) => f !== "new") : r.flags;
+    return flags.some((f) => UNTRADABLE_FLAGS.includes(f));
+  };
   return hot.rows
-    .filter(
-      (r) =>
-        o.tradable(r) &&
-        (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC") &&
-        !r.flags.some((f) => UNTRADABLE_FLAGS.includes(f)) &&
-        (r.liquidityUsd ?? 0) >= floor &&
-        r.heat > 0,
-    )
+    .filter((r) => o.tradable(r) && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC") && !blocked(r) && (r.liquidityUsd ?? 0) >= floor && r.heat > 0)
     .sort((a, b) => b.heat - a.heat)
     .slice(0, Math.max(0, o.max ?? 3));
 }

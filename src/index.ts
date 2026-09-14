@@ -18,6 +18,13 @@
  * DLMM, Raydium CLMM). TRADABLE_VENUES says which venues the picker may seat; LIVE_VENUES which ones
  * the executor may broadcast on. BOOK=stocks seats tokenized-stock pools first.
  *
+ * The launch lane (src/screener/launch.ts): everything above refuses a brand-new pool on purpose,
+ * so one lane admits the CATEGORY instead. A pool too young for the board, the score and the
+ * watchlist is seated when it clears the lane's own harsher floors (age, liquidity, 24h and 1h
+ * volume, turnover, not being dumped), at most LAUNCH_MAX_SEATS at a time and only after every
+ * other kind of pick has had its chance. It pays for the exemption with a capped seat, a tighter
+ * rolled stop, a maximum hold and a volume-fade exit (the engine's EXPIRE directive).
+ *
  * The stock book: a stock pool's band is a straddle (src/agent/policy.ts) whose token half the hedge
  * desk (src/engine/hedgeDesk.ts) carries short on Backpack's perp after every execution; the perp
  * mids of the symbols in play are refreshed once per cycle, and an engine close in a stock pool
@@ -38,7 +45,8 @@ import { killSwitchActive, loadState, saveState, RiskState, todayUtc } from "./r
 import { execute, executeSkim, ExecutionResult, toOpenPlan } from "./executor";
 import { appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool } from "./journal";
 import { loadScreen, runScreen, tradableVenue } from "./screener";
-import { loadWatchlist, watchlistRefusal } from "./screener/watchlist";
+import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
+import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
 import type { ScreenResult } from "./screener/types";
 import { KNOWN_TOKENS, PoolSnapshot, PositionSnapshot, quoteOf, QuotePriceUnknownError, setSolPriceUsd, UnsupportedQuoteError } from "./tools/dlmm";
 import { bookEnv, isTradableVenue, liveVenues, loadVenuePool, poolsWithPositions, stockBookPools, stockMinLiquidityUsd, tradableVenues, type Venue, type VenueId, type VenuePool } from "./venues";
@@ -46,7 +54,7 @@ import { fetchPoolAnalytics } from "./tools/lpagent";
 import { Wallet } from "./tools/wallet";
 import { startServer } from "./server";
 import { basisForPool, basisVerdict, refreshBasis, sessionClock, sessionWidthMultiplier } from "./basis";
-import { hotPicks, HotRow, loadHot, runHotTick, startHotWatch } from "./hot";
+import { hotPicks, HotRow, launchRowOf, loadHot, runHotTick, startHotWatch } from "./hot";
 import {
   circuitLossSol,
   circuitVerdict,
@@ -209,14 +217,41 @@ async function ensureScreen(app: App): Promise<void> {
  * SOL-quoted pools always qualify; USDC-quoted ones only when the screen carries a SOL price
  * (the guards' limits are in SOL, so a USDC seat needs the conversion). Every stock pool is USDC-quoted.
  */
-/** The hot watch's tradable rows: a tradable venue, quoted in SOL (or USDC when priced), best heat first. */
-function hotRows(app: App, max = config.maxActivePools): HotRow[] {
+/**
+ * The hot watch's tradable rows: a tradable venue, quoted in SOL (or USDC when priced), best heat first.
+ *
+ * `withLaunch` keeps rows the launch lane admits even though they are flagged `new`. It is ON for
+ * the list the desk READS (the observation and the policy's extras, so a launch pool's 1h move and
+ * heat are visible where the decision is made) and OFF for the surge pass of the picker, which must
+ * not seat a launch pool through the ordinary door and skip LAUNCH_MAX_SEATS.
+ */
+function hotRows(app: App, max = config.maxActivePools, withLaunch = false): HotRow[] {
   const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0;
   return hotPicks(loadHot(), {
     tradable: (r) => isTradableVenue(r.venue) && (r.quoteSymbol === "SOL" || (r.quoteSymbol === "USDC" && usdcOk)),
     max,
+    launch: withLaunch ? launchEnv() : null,
   });
 }
+
+/** The fast watch's row for one pool, when it has one. */
+const hotRowOf = (address: string): HotRow | undefined => loadHot()?.rows.find((r) => r.address === address);
+
+/**
+ * The launch lane's verdict on a pool, read from the fast watch's row. The hot watch is the only
+ * source that knows a pool this young: the screener's board is up to 15 minutes old and ranks on a
+ * 24h history a two-hour-old pool does not have. Null when the lane is off, the watch has no row for
+ * the pool, or the row does not clear the lane.
+ */
+function launchOf(row: HotRow | undefined, env: LaunchEnv = launchEnv()): { ok: true; ageHours: number; turnover: number } | null {
+  if (!env.on || !row) return null;
+  const v = launchVerdict(launchRowOf(row), env);
+  return v.ok ? v : null;
+}
+
+/** Every hot row as the launch lane's seating rule wants it. */
+const launchCandidates = (): LaunchCandidate[] =>
+  (loadHot()?.rows ?? []).map((r) => ({ ...launchRowOf(r), address: r.address, baseMint: r.baseMint, baseSymbol: r.baseSymbol, name: r.name, venue: r.venue, heat: r.heat }));
 
 /** Which quotes the wallet can seat at the policy's minimum: SOL above the gas reserve and the rent budget, USDC at the SOL price. */
 function fundableQuotes(app: App, sol: number, usdc: number): Set<"SOL" | "USDC"> {
@@ -283,6 +318,34 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     if (set.size >= config.maxActivePools) break;
     take(p.address, p.baseMint);
   }
+
+  // The launch lane, LAST: every ordinary pick has had its chance at the book first. A pool here is
+  // admitted by rule rather than by name, so the watchlist's ALLOW mode cannot block it (nobody can
+  // list a token that did not exist yesterday) but an explicit DENY still wins.
+  const lenv = launchEnv();
+  if (lenv.on && set.size < config.maxActivePools) {
+    const held = loadState().launchBands ?? {};
+    const heldPools = new Set(Object.values(held).map((b) => b.pool));
+    const seats = launchSeats(launchCandidates(), {
+      env: lenv,
+      freeSeats: config.maxActivePools - set.size,
+      seatsTaken: heldPools.size,
+      tradable: (v) => isTradableVenue(v),
+      quoteOk,
+      denied: (row) => watchlistDenial(row, watch),
+      hasPool: (address) => set.has(address),
+      hasToken: (mint) => takenTokens.has(mint),
+    });
+    for (const seat of seats) {
+      if (!take(seat.row.address, seat.row.baseMint)) continue;
+      console.log(
+        `[cycle ${app.cycle}] launch lane: seating ${seat.row.name} (${seat.row.venue}), ${seat.verdict.ageHours.toFixed(1)}h old, ` +
+          `$${Math.round(seat.row.liquidityUsd ?? 0).toLocaleString("en-US")} liquidity, $${Math.round(seat.row.vol24hUsd ?? 0).toLocaleString("en-US")} in 24h ` +
+          `(turnover ${seat.verdict.turnover.toFixed(1)}x), $${Math.round(seat.row.vol1hUsd ?? 0).toLocaleString("en-US")} in the last hour; ` +
+          `capped at ${((riskLimits.maxTotalExposureSol * lenv.seatPct) / 100).toFixed(4)} SOL, stop ${lenv.stopPct}%, max hold ${lenv.maxHoldMin} min`,
+      );
+    }
+  }
   return [...set];
 }
 
@@ -297,11 +360,57 @@ async function getVenuePool(app: App, address: string): Promise<{ venue: Venue; 
   return vp;
 }
 
+/** The fast watch's hot list as the observation shows it: every venue, launch rows included. */
+const hotContext = (address: string): NonNullable<ScreenContext["hot"]> =>
+  hotPicks(loadHot(), { tradable: () => true, max: 8, launch: launchEnv() }).map((r) => ({
+    name: r.name,
+    venue: r.venue,
+    tradable: isTradableVenue(r.venue) && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC"),
+    thisPool: r.address === address,
+    liquidityUsd: r.liquidityUsd,
+    vol1hUsd: r.vol1hUsd,
+    feeToTvlDailyPct: r.feeToTvlDailyPct,
+    acceleration: r.acceleration,
+    priceChange1hPct: r.priceChange1hPct,
+    heat: r.heat,
+    flags: r.flags,
+    surge: r.surge,
+  }));
+
+/**
+ * The context for a LAUNCH pool the screener's board does not carry: a pool a couple of hours old is
+ * usually too young to rank, so the fast watch's row is the only numbers there are. rank 0 means
+ * "off the board"; the score stays 0 because nothing has scored it, and the launch verdict is what
+ * admits it. feeToTvl24hPct is null, so the policy's yield and payback tests abstain rather than
+ * refuse -- an unknown is not a refusal, as everywhere else on the desk.
+ */
+function launchContext(app: App, address: string, row: HotRow, launch: { ok: true; ageHours: number; turnover: number }, s: ScreenResult, state?: RiskState): ScreenContext {
+  return {
+    rank: 0,
+    rankedPools: s.rankedPools,
+    score: 0,
+    feeToTvl24hPct: null,
+    volume24hUsd: row.vol24hUsd,
+    tvlUsd: row.liquidityUsd,
+    ageHours: row.ageHours,
+    priceChange24hPct: row.priceChange24hPct,
+    flags: row.flags,
+    watchlisted: false,
+    launch,
+    recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
+    generatedAt: s.generatedAt,
+    stock: null,
+    alternatives: [],
+    hot: hotContext(address),
+  };
+}
+
 function screenContext(app: App, address: string, state?: RiskState): ScreenContext | null {
   const s = app.screen;
   if (!s) return null;
+  const launch = launchOf(hotRowOf(address));
   const p = s.pools.find((x) => x.address === address);
-  if (!p) return null;
+  if (!p) return launch ? launchContext(app, address, hotRowOf(address)!, launch, s, state) : null;
   return {
     rank: p.rank,
     rankedPools: s.rankedPools,
@@ -313,6 +422,7 @@ function screenContext(app: App, address: string, state?: RiskState): ScreenCont
     priceChange24hPct: p.priceChange24hPct,
     flags: p.flags,
     watchlisted: watchlistRefusal(p, loadWatchlist()) === null && loadWatchlist().mode === "allow",
+    launch,
     // Measured from our own samples first (the loop records the active price every cycle), then the
     // screener's walk over its sample window. Either is the pool's real movement; the 24h figure is not.
     recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()) ?? p.binRangePct ?? null,
@@ -322,20 +432,7 @@ function screenContext(app: App, address: string, state?: RiskState): ScreenCont
       .filter((x) => x.address !== address && tradableVenue(x) && (x.quoteSymbol === "SOL" || (x.quoteSymbol === "USDC" && solPriceOf(app) !== null)))
       .slice(0, 5)
       .map((x) => ({ name: x.name, score: x.score, feeToTvl24hPct: x.feeToTvl24hPct, tvlUsd: x.tvlUsd })),
-    hot: hotPicks(loadHot(), { tradable: () => true, max: 8 }).map((r) => ({
-      name: r.name,
-      venue: r.venue,
-      tradable: isTradableVenue(r.venue) && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC"),
-      thisPool: r.address === address,
-      liquidityUsd: r.liquidityUsd,
-      vol1hUsd: r.vol1hUsd,
-      feeToTvlDailyPct: r.feeToTvlDailyPct,
-      acceleration: r.acceleration,
-      priceChange1hPct: r.priceChange1hPct,
-      heat: r.heat,
-      flags: r.flags,
-      surge: r.surge,
-    })),
+    hot: hotContext(address),
   };
 }
 
@@ -373,7 +470,13 @@ function paperFeeSource(app: App, address: string): { fees24hUsd: number | null;
   return null;
 }
 
-function updateState(state: RiskState, exec: ExecutionResult, positions: PositionSnapshot[], snapshot: PoolSnapshot): void {
+/**
+ * `launch` marks a band opened through the launch lane: its stop is rolled tighter (LAUNCH_STOP_PCT
+ * in place of STOP_LOSS_PCT, same jitter, same place on disk) and its opening mark is recorded in
+ * state.launchBands, which is what the EXPIRE directive reads for the maximum hold and the
+ * volume-fade exit, and what the picker counts against LAUNCH_MAX_SEATS.
+ */
+function updateState(state: RiskState, exec: ExecutionResult, positions: PositionSnapshot[], snapshot: PoolSnapshot, launch?: { env: LaunchEnv; vol1hUsd: number | null } | null): void {
   state.lastPrice = snapshot.activePrice;
   for (const p of positions) {
     if (!(p.address in state.entryValueSol)) state.entryValueSol[p.address] = p.entryValueSol ?? p.valueInSol;
@@ -386,7 +489,8 @@ function updateState(state: RiskState, exec: ExecutionResult, positions: Positio
   }
   if (exec.ok && exec.opened) {
     state.entryValueSol[exec.opened.address] = exec.opened.entryValueSol;
-    (state.stops ??= {})[exec.opened.address] = rollStop(riskLimits);
+    (state.stops ??= {})[exec.opened.address] = rollStop(riskLimits, Math.random, launch ? launch.env.stopPct : null);
+    if (launch) (state.launchBands ??= {})[exec.opened.address] = { pool: snapshot.address, openedAt: Date.now(), vol1hUsd: launch.vol1hUsd };
   }
   if (exec.ok && exec.closed) forgetBand(state, exec.closed);
   saveState(state);
@@ -433,6 +537,11 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   const screen = screenContext(app, o.address, state);
 
   // The engine's view of this pool: breakers, bench, regime, knife, collects.
+  // The launch lane's view of this pool: its settings and what the last hour is trading right now.
+  // Present whenever the lane is on, because the EXPIRE directive must be able to close a launch
+  // band even in a cycle where the pool no longer clears the lane -- that IS the fade exit.
+  const lenv = launchEnv();
+  const launchWatch = lenv.on ? { env: lenv, vol1hUsd: hotRowOf(o.address)?.vol1hUsd ?? null } : null;
   const ledgerRows = readLedgerRows();
   const collectsToday = collectsOnDay(ledgerRows, mode, dayOf(now));
   const knife = knifeReason(state.priceHistory?.[o.address], now, cfg.knifePct);
@@ -507,7 +616,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   );
 
   // The engine decides first. When it has a directive the LLM is not asked this cycle.
-  const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday });
+  const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined });
   // Then an approved outside proposal, oldest first: "agents propose, the operator decides, the desk
   // executes through its own guards". Otherwise Mr Bands proposes.
   const proposal = directive ? null : (approvedProposals(o.address)[0] ?? null);
@@ -517,7 +626,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     ? engineDecideResult(directiveDecision!, `${directive.kind}: ${directive.reason}`)
     : proposal
       ? proposalDecideResult(proposalDecision(proposal), `proposal ${proposal.id} by ${proposal.proposerName} (${proposal.proposerId})`)
-      : await decide(observation, { hot: hotRows(app, 8), openCostSol: openCostDefault });
+      : await decide(observation, { hot: hotRows(app, 8, true), openCostSol: openCostDefault });
   console.log(`${tag} ${directive ? `engine directive ${directive.kind}` : proposal ? `proposal ${proposal.id}` : `${config.agentName} proposes`} ${llm.decision.action} (${llm.source}): "${llm.decision.headline}"`);
 
   const engineCtx: EngineGuardContext = {
@@ -561,7 +670,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     const quoteLeg = quoteIsSol || typeof row.quoteDelta !== "number" ? "" : ` (${row.quoteDelta.toFixed(4)} ${q.symbol})`;
     console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)}${quoteLeg} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
   }
-  updateState(state, execution, positions, snapshot);
+  updateState(state, execution, positions, snapshot, screen?.launch?.ok ? { env: lenv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null);
 
   // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
   let hedgeJournal: JournalHedge | undefined;
@@ -625,6 +734,9 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     stops,
     collectsToday,
     basis: basisObs ? { session: basisObs.session, minutesToOpen: basisObs.minutesToOpen, basisPct: basisObs.basisPct, perpSymbol: basisObs.perpSymbol, widthMultiplier: basisObs.widthMultiplier, reason: basisObs.reason } : undefined,
+    ...(screen?.launch?.ok
+      ? { launch: { ageHours: screen.launch.ageHours, turnover: screen.launch.turnover, seatCapSol: (riskLimits.maxTotalExposureSol * lenv.seatPct) / 100, stopPct: lenv.stopPct, maxHoldMin: lenv.maxHoldMin } }
+      : {}),
   };
 
   const { decision: _d, ...llmMeta } = llm;

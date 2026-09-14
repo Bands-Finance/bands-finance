@@ -65,7 +65,12 @@ export function splitName(name: string | null): { base: string | null; quote: st
 
 /* ---------- parsers ---------- */
 
-export function parseTrending(json: unknown): PoolSample[] {
+/**
+ * GeckoTerminal's pool list shape, shared by /trending_pools and /tokens/{mint}/pools: the two
+ * endpoints return the same `data[].attributes` and `data[].relationships`, so one parser serves
+ * both and a sibling row is indistinguishable from a trending row downstream.
+ */
+export function parseGeckoPools(json: unknown, source: "trending" | "siblings"): PoolSample[] {
   const out: PoolSample[] = [];
   for (const item of (obj(json).data as unknown[]) ?? []) {
     const d = obj(item);
@@ -85,7 +90,7 @@ export function parseTrending(json: unknown): PoolSample[] {
     const chg = obj(at.price_change_percentage);
     const created = at.pool_created_at ? Date.parse(String(at.pool_created_at)) : NaN;
     out.push({
-      source: "trending",
+      source,
       address,
       name,
       venue: venueOfDex(dexId),
@@ -111,6 +116,10 @@ export function parseTrending(json: unknown): PoolSample[] {
   }
   return out;
 }
+
+export const parseTrending = (json: unknown): PoolSample[] => parseGeckoPools(json, "trending");
+/** GET /networks/solana/tokens/{mint}/pools: up to 20 pools for one token, same shape as trending. */
+export const parseTokenPools = (json: unknown): PoolSample[] => parseGeckoPools(json, "siblings");
 
 export function parseDexScreener(json: unknown): PoolSample[] {
   const out: PoolSample[] = [];
@@ -178,6 +187,7 @@ export interface SourceResult {
 }
 
 export const TRENDING_URL = (duration: string, page = 1) => `https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=${page}&duration=${duration}`;
+export const TOKEN_POOLS_URL = (mint: string, page = 1) => `https://api.geckoterminal.com/api/v2/networks/solana/tokens/${mint}/pools?page=${page}`;
 export const DEXSCREENER_URL = (addresses: string[]) => `https://api.dexscreener.com/latest/dex/pairs/solana/${addresses.join(",")}`;
 
 async function getJson(url: string, o: Required<Pick<SourceOpts, "fetchImpl" | "sleep" | "backoffMs" | "log">>, counter: { calls: number }, retries = 2): Promise<unknown> {
@@ -212,6 +222,39 @@ export async function fetchTrending(durations: string[] = ["5m", "1h"], opts: So
     if (i + 1 < durations.length) await o.sleep(o.paceMs);
   }
   return { samples, calls: counter.calls, errors };
+}
+
+/** A token's sibling pools, keyed by mint. A mint whose lookup failed is absent from `byMint` and named in `errors`. */
+export interface SiblingResult extends SourceResult {
+  byMint: Map<string, PoolSample[]>;
+}
+
+/**
+ * Every pool GeckoTerminal knows for each mint, one call per mint, paced like the trending calls
+ * and sharing their 429 backoff. A failed lookup is named and skipped: the tick never throws for a
+ * sibling. Mints are looked up in the order given, so the caller decides which get the budget.
+ */
+export async function fetchTokenPools(mints: string[], opts: SourceOpts = {}): Promise<SiblingResult> {
+  const o = { fetchImpl: opts.fetchImpl ?? fetch, sleep: opts.sleep ?? defaultSleep, backoffMs: opts.backoffMs ?? 20_000, log: opts.log ?? (() => {}), paceMs: opts.paceMs ?? 2200 };
+  const counter = { calls: 0 };
+  const samples: PoolSample[] = [];
+  const errors: string[] = [];
+  const byMint = new Map<string, PoolSample[]>();
+  const unique = [...new Set(mints.filter(Boolean))];
+  for (let i = 0; i < unique.length; i++) {
+    const mint = unique[i];
+    try {
+      const rows = parseTokenPools(await getJson(TOKEN_POOLS_URL(mint), o, counter));
+      byMint.set(mint, rows);
+      samples.push(...rows);
+    } catch (err) {
+      const msg = `sibling pools ${mint.slice(0, 6)}: ${(err as Error).message}`;
+      errors.push(msg);
+      o.log(`[hot] ${msg}`);
+    }
+    if (i + 1 < unique.length) await o.sleep(o.paceMs);
+  }
+  return { samples, calls: counter.calls, errors, byMint };
 }
 
 /** DexScreener pairs for the addresses given, 30 per call, three calls in flight at a time. A failed batch is reported and skipped. */

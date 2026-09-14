@@ -142,12 +142,14 @@ async function main(): Promise<void> {
   /* ---------- env ---------- */
   await test("hotEnv: defaults, overrides, blanks and junk fall back", () => {
     const d = hotEnv({});
-    assert.deepEqual(d, { intervalSec: 120, minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150, onchainReads: 8 });
-    const e = hotEnv({ HOT_INTERVAL_SEC: "30", HOT_MIN_LIQUIDITY_USD: "", HOT_MAX_ROWS: "abc", HOT_ONCHAIN_READS: "2" });
+    assert.deepEqual(d, { intervalSec: 120, minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150, onchainReads: 8, siblingMinVol24hUsd: 500_000, siblingLookups: 6, siblingTtlMin: 30 });
+    const e = hotEnv({ HOT_INTERVAL_SEC: "30", HOT_MIN_LIQUIDITY_USD: "", HOT_MAX_ROWS: "abc", HOT_ONCHAIN_READS: "2", HOT_SIBLING_LOOKUPS: "0", HOT_SIBLING_TTL_MIN: "junk" });
     assert.equal(e.intervalSec, 30);
     assert.equal(e.minLiquidityUsd, 20_000);
     assert.equal(e.maxRows, 60);
     assert.equal(e.onchainReads, 2);
+    assert.equal(e.siblingLookups, 0);
+    assert.equal(e.siblingTtlMin, 30);
   });
 
   /* ---------- metric math ---------- */
@@ -455,7 +457,8 @@ async function main(): Promise<void> {
 
   /* ---------- a whole tick, twice, on a fake fetch ---------- */
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-bands-hot-"));
-  const env = { minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150, onchainReads: 2 };
+  // siblingLookups 0: these tests pin the tick's exact call budget. Sibling discovery has its own tests (npm run test:launch).
+  const env = { minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150, onchainReads: 2, siblingLookups: 0 };
   const feeCache = new Map<string, FeeCacheEntry>();
   const feeReads: string[] = [];
   const readFee = async (address: string, solPriceUsd: number | null) => {
@@ -474,7 +477,7 @@ async function main(): Promise<void> {
     assert.equal(calls.length, 3, "two trending calls and one DexScreener batch (8 addresses < 30)");
     assert.equal(calls[2], DEXSCREENER_URL([EMBER_SOL, DKNG_USDC, ANSEM_SOL, JUBJUB_ZEC, STONK_SOL, MIZO_SOL, EMBER_USDC, ZEC_ZCAT, SOL_USDC]), "board first, then held, then trending, deduplicated");
     assert.equal(first.generatedAt, new Date(NOW).toISOString());
-    assert.deepEqual(first.sources, { trending: 6, dexscreener: 6, onchainReads: 2, errors: [] });
+    assert.deepEqual(first.sources, { trending: 6, dexscreener: 6, onchainReads: 2, siblingLookups: 0, siblingRows: 0, errors: [] });
     assert.deepEqual(feeReads, [EMBER_USDC, STONK_SOL], "the two highest-turnover Meteora pools off the board; ANSEM waits for the cap");
 
     const names = first.rows.map((r) => r.name);

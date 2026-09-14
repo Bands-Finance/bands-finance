@@ -18,10 +18,18 @@ import type { PositionSnapshot } from "../tools/dlmm";
 export const PRICE_HISTORY_MS = 6 * 60 * 60 * 1000;
 export const KNIFE_WINDOW_MS = 30 * 60 * 1000;
 
-/** A stop percent in [0.8, 1.0] x limits.stopLossPct, two decimals, never above the limit. */
-export function rollStop(limits: Pick<RiskLimits, "stopLossPct">, rng: () => number = Math.random): number {
+/**
+ * A stop percent in [0.8, 1.0] x limits.stopLossPct, two decimals, never above the limit.
+ *
+ * `tighterPct` rolls the jitter around a TIGHTER number instead (the launch lane's LAUNCH_STOP_PCT,
+ * src/screener/launch.ts): same jitter, same shape, same place on disk (state.stops), so the guards
+ * and the engine's STOP directive read it exactly as they read any other band's stop. It can only
+ * tighten: a value at or above the configured limit is ignored, and the result is still capped.
+ */
+export function rollStop(limits: Pick<RiskLimits, "stopLossPct">, rng: () => number = Math.random, tighterPct?: number | null): number {
+  const base = typeof tighterPct === "number" && Number.isFinite(tighterPct) && tighterPct > 0 ? Math.min(tighterPct, limits.stopLossPct) : limits.stopLossPct;
   const u = Math.min(Math.max(rng(), 0), 1);
-  const pct = Math.round(limits.stopLossPct * (0.8 + 0.2 * u) * 100) / 100;
+  const pct = Math.round(base * (0.8 + 0.2 * u) * 100) / 100;
   return Math.min(pct, limits.stopLossPct);
 }
 
@@ -151,4 +159,5 @@ export function forgetBand(state: RiskState, position: string): void {
   if (state.stops) delete state.stops[position];
   if (state.outOfRangeSince) delete state.outOfRangeSince[position];
   if (state.feesPendingSince) delete state.feesPendingSince[position];
+  if (state.launchBands) delete state.launchBands[position];
 }

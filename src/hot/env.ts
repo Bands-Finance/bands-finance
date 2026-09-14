@@ -17,6 +17,12 @@ export interface HotEnv {
   boardTop: number;
   /** cap on live Meteora fee reads per tick for trending pools off the board */
   onchainReads: number;
+  /** a token whose trending pool traded less than this in 24h is not worth a sibling lookup */
+  siblingMinVol24hUsd: number;
+  /** cap on GeckoTerminal token-pool lookups per tick */
+  siblingLookups: number;
+  /** how long a token's sibling list is good for, in minutes */
+  siblingTtlMin: number;
 }
 
 const num = (v: string | undefined, d: number): number => {
@@ -34,5 +40,8 @@ export function hotEnv(env: NodeJS.ProcessEnv = process.env): HotEnv {
     maxRows: num(env.HOT_MAX_ROWS, 60),
     boardTop: num(env.HOT_BOARD_TOP, 150),
     onchainReads: num(env.HOT_ONCHAIN_READS, 8),
+    siblingMinVol24hUsd: num(env.HOT_SIBLING_MIN_VOL_24H_USD, 500_000),
+    siblingLookups: num(env.HOT_SIBLING_LOOKUPS, 6),
+    siblingTtlMin: num(env.HOT_SIBLING_TTL_MIN, 30),
   };
 }

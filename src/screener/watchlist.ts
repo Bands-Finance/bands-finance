@@ -74,6 +74,19 @@ export function watchlistRefusal(pool: Pick<ScreenedPool, "address" | "baseSymbo
   return null;
 }
 
+/**
+ * PURE. Why this pool is DENIED outright, ignoring allow mode: a deny entry on the token, or the
+ * pool on denyPools. Null when nothing denies it.
+ *
+ * This is what the launch lane checks (src/index.ts). A launch pool is admitted by RULE, not by
+ * name: a hand-written allow list cannot contain a token that did not exist yesterday, so an
+ * allow-list miss must not block it. An explicit deny is a different thing entirely -- the operator
+ * saying "not this one" -- and it still wins.
+ */
+export function watchlistDenial(pool: Pick<ScreenedPool, "address" | "baseSymbol" | "baseMint" | "name">, w: Watchlist): string | null {
+  return watchlistRefusal(pool, { ...w, mode: "off" });
+}
+
 /** PURE. The entry for a token, by symbol or mint. */
 export function watchEntry(w: Watchlist, key: string): WatchToken | null {
   return w.tokens.find((t) => norm(t.symbol) === norm(key) || t.mint === key) ?? null;

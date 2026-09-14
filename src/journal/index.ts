@@ -130,6 +130,12 @@ export interface JournalEngine {
   collectsToday: number;
   /** stock pools: the US session, the basis to Backpack's perp, and the rule that applied */
   basis?: { session: string; minutesToOpen: number; basisPct: number | null; perpSymbol: string | null; widthMultiplier: number; reason: string | null };
+  /**
+   * The launch lane admitted this pool this cycle (src/screener/launch.ts), and on what numbers.
+   * Present only on launch-lane pools: it is the journal's record of why a pool too new for the
+   * board, the score and the watchlist was allowed a band at all.
+   */
+  launch?: { ageHours: number; turnover: number; seatCapSol: number; stopPct: number; maxHoldMin: number } | null;
 }
 
 export function toJournalPool(s: PoolSnapshot): JournalPool {

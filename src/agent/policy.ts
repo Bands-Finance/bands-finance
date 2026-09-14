@@ -36,6 +36,18 @@
  *            after the close), else CLOSE with liquidate: true so the book returns to USDC
  * Opens are refused when the basis verdict says so (openGate). On the stock book (BOOK=stocks) a
  * tokenized-stock pool is worth a band without a hot row or a score.
+ *
+ * LAUNCH LANE pools (src/screener/launch.ts; observation.screen.launch) are the one place the desk
+ * takes a pool nothing else would let it near. The lane already applied harsher floors than this
+ * policy could, so here it buys exactly four exemptions and pays for them with a smaller seat:
+ *   - the `new` and `wild` flags no longer block. Being new IS the trade; a launch that does not
+ *     move is not a launch. `thin` and `dumping` still block, and so does every guard.
+ *   - POLICY_MIN_SCORE does not apply: a score is a judgement about a pool with a history.
+ *   - POLICY_MAX_1H_MOVE_PCT does not apply, for the same reason.
+ *   - the seat is capped at LAUNCH_SEAT_PCT of MAX_TOTAL_EXPOSURE_SOL on top of every other cap,
+ *     and the reasoning says so in as many words.
+ * A launch band is always QUOTE-ONLY: the straddle path is for tokenized stocks with a perp to hedge
+ * against, and a two-hour-old memecoin has neither.
  * Venues: the open cost comes from the venue (extras.openCostSol; Meteora's estimate by default).
  * On a CLMM pool a quote-only band rests one bin under the price by construction, so one bin of
  * distance on the quote side is "resting", not idle (non-stock pools).
@@ -45,6 +57,7 @@ import { sessionWidthMultiplier } from "../basis/verdict";
 import type { HotRow } from "../hot/types";
 import { bandDepthQuote, shareOfBand } from "../paper/mark";
 import type { RiskLimits } from "../risk/limits";
+import { launchEnv, launchSeatSol, type LaunchEnv } from "../screener/launch";
 import { OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, quoteOf, type PositionSnapshot, type QuoteView } from "../tools/dlmm";
 import { jupiterEnv } from "../tools/jupiter";
 import { bookEnv, type Book } from "../venues/env";
@@ -121,6 +134,8 @@ export interface PolicyExtras {
   openCostSol?: number;
   /** the refundable part of the open cost (venue rent that comes back on close) */
   openCostRefundableSol?: number;
+  /** the launch lane's settings; defaults to launchEnv(). Only the seat cap is read here. */
+  launch?: LaunchEnv;
 }
 
 export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
@@ -143,6 +158,12 @@ export function binsForCover(binStep: number, coverPct: number, maxBinWidth: num
 
 /** Whether the pool is a tokenized stock: the screen's stock tag, or a basis row (only stock pools carry one). */
 export const isStockPool = (o: Pick<Observation, "screen" | "engine">): boolean => !!o.screen?.stock || !!o.engine?.basis;
+
+/** Whether the launch lane admitted this pool (src/screener/launch.ts). */
+export const isLaunchPool = (o: Pick<Observation, "screen">): boolean => o.screen?.launch?.ok === true;
+
+/** A launch band is quote-only: the straddle is a stock instrument, and a launch is never a stock. */
+const straddlePool = (o: Pick<Observation, "screen" | "engine">): boolean => isStockPool(o) && !isLaunchPool(o);
 
 /** Bins on EACH side of a stock straddle: coverPct of price x the width multiplier, capped so 2 x bins + 1 fits maxBinWidth, at least 1. */
 export function stockBinsPerSide(binStep: number, coverPct: number, maxBinWidth: number, widthMultiplier = 1): number {
@@ -250,6 +271,8 @@ interface Sizing {
   /** which cap bound the size */
   boundBy: string;
   caps: string;
+  /** the launch lane's cap on this seat in SOL, when the lane admitted the pool; null otherwise */
+  launchCapSol: number | null;
   none: string | null;
 }
 
@@ -278,6 +301,12 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
     { name: `half the band's depth (${r(depthQuote, 2)} ${q.symbol})`, quote: depthQuote },
     { name: `exposure room ${r(roomSol)} SOL`, quote: roomSol / q.priceInSol },
   ];
+  // The launch lane's seat cap, on top of everything else. A brand-new pool may be the best-paying
+  // thing on the board and still only get a tenth of the book: the lane admits a category, and a
+  // category cannot be underwritten the way a name can.
+  const lenv = x.launch ?? launchEnv();
+  const launchCapSol = isLaunchPool(o) ? launchSeatSol(limits.maxTotalExposureSol, lenv) : null;
+  if (launchCapSol !== null) caps.push({ name: `launch lane cap ${r(launchCapSol)} SOL (${lenv.seatPct}% of the ${limits.maxTotalExposureSol} SOL book)`, quote: launchCapSol / q.priceInSol });
   // Rent for the seats still to be opened stays in SOL: a SOL-quoted band must not eat the rent of the others.
   const otherSeats = Math.max(0, o.portfolio.maxActivePools - o.portfolio.poolsWithBands - 1);
   const rentBudget = openCost * otherSeats;
@@ -295,7 +324,7 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
   const minSeatSol = Math.max(MIN_BAND_SOL, (limits.maxTotalExposureSol * env.minSeatPct) / 100);
   if (!none && amountSol < minSeatSol) none = `size ${r(amountSol)} SOL (bound by ${bound.name}) is under the minimum seat ${r(minSeatSol)} SOL (${env.minSeatPct}% of the ${limits.maxTotalExposureSol} SOL book)`;
   const sharePct = shareOfBand(amountQuote, depthQuote) * 100;
-  return { amountQuote, amountSol, bins, widthMultiplier, coverage: coveragePct(s.binStep, bins), widthFrom: cover.from, depthQuote, sharePct, boundBy: bound.name, caps: caps.map((c) => c.name).join(", "), none };
+  return { amountQuote, amountSol, bins, widthMultiplier, coverage: coveragePct(s.binStep, bins), widthFrom: cover.from, depthQuote, sharePct, boundBy: bound.name, caps: caps.map((c) => c.name).join(", "), launchCapSol, none };
 }
 
 /** What a seat of this size in this pool is worth, and what it costs to take. */
@@ -452,6 +481,15 @@ const bandBins = (o: Pick<Observation, "snapshot">, bins: number): number => (o.
 /** where the band starts: the active bin on Meteora, the bin next to it on a CLMM */
 const laidFrom = (o: Pick<Observation, "snapshot">, quoteBelow: boolean): string => (o.snapshot.priceModel === "clmm" ? `the bin ${quoteBelow ? "under" : "over"} the active bin` : "the active bin");
 
+/**
+ * "Launch lane: capped at 0.1 SOL ..." -- the sentence that must appear in the reasoning of every
+ * band the launch lane admits, so the journal says out loud what the desk gave up to take it.
+ */
+const launchClause = (sz: Sizing, launch: { ageHours: number; turnover: number } | null, env: LaunchEnv, limits: RiskLimits): string => {
+  if (!launch || sz.launchCapSol === null) return "";
+  return ` Launch lane: capped at ${r(sz.launchCapSol)} SOL (${env.seatPct}% of the ${limits.maxTotalExposureSol} SOL book) because the pool is ${r(launch.ageHours, 1)}h old and has no history to underwrite; stop rolled at ${env.stopPct}% instead of ${limits.stopLossPct}%, closed after ${env.maxHoldMin} min or when the last hour falls under $${env.fadeVolume1hUsd.toLocaleString("en-US")}.`;
+};
+
 /** "x2 for the closed US session" when a stock pool's band was widened, else nothing. */
 const widthClause = (sz: Sizing, o: Observation): string => (sz.widthMultiplier !== 1 ? ` (x${sz.widthMultiplier} for the ${o.engine?.basis?.session ?? "current"} US session)` : "");
 
@@ -495,7 +533,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
 
   // ---- a band is open in this pool -------------------------------------------------------------
   const band = [...o.positions].sort((a, b) => b.valueInSol - a.valueInSol)[0];
-  if (band && isStockPool(o)) return stockBandDecide(o, x, env, q, band, now);
+  if (band && straddlePool(o)) return stockBandDecide(o, x, env, q, band, now);
   if (band) {
     const addr = band.address.slice(0, 6);
     const range = `[${band.lowerBinId}, ${band.upperBinId}]`;
@@ -610,7 +648,13 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       `pool cap ${o.portfolio.poolsWithBands}/${o.portfolio.maxActivePools}`,
     );
   }
-  const flags = [...new Set([...flaggedBy(o.screen?.flags ?? []), ...flaggedBy(hot.flags)])];
+  // The launch lane bought the right to be new and to move: `new` and `wild` are what a launch looks
+  // like, and the lane's own floors (liquidity, 24h and 1h volume, turnover, its own dumping rule)
+  // are harsher than these flags. `thin` and `dumping` still stop it dead.
+  const launch = isLaunchPool(o) ? o.screen!.launch! : null;
+  const blockFlags = launch ? POLICY_BLOCK_FLAGS.filter((f) => f !== "new" && f !== "wild") : POLICY_BLOCK_FLAGS;
+  const flagged = (list: string[]) => list.filter((f) => blockFlags.includes(f));
+  const flags = [...new Set([...flagged(o.screen?.flags ?? []), ...flagged(hot.flags)])];
   if (flags.length) {
     return hold(`No band in ${o.poolLabel} (${priceLine}). The pool is flagged ${flags.join(", ")}; ${poolClause(o, hot)}. Not a market to make.`, `Flagged ${flags.join(", ")}. Not touching it.`, "flagged", `flagged ${flags.join(", ")}`);
   }
@@ -625,7 +669,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
     );
   }
   // Size the seat once, here: the earnings test below needs to know how big it would be.
-  const straddleHere = isStockPool(o);
+  const straddleHere = straddlePool(o);
   const szPreview = straddleHere ? sizeStraddle(o, x, q, env, null, now) : sizeBand(o, x, q, env, null, now);
   const isHotPick = hot.onList;
   const score = o.screen?.score ?? null;
@@ -636,11 +680,12 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   // A listed token does not need a score, but every other gate (volume, yield, payback, flags, the
   // guards, the basis and session rules) still applies to it.
   const listed = o.screen?.watchlisted === true;
-  if (!isHotPick && !scoreOk && !stockBook && !listed) {
+  if (!isHotPick && !scoreOk && !stockBook && !listed && !launch) {
     const why = score === null ? `not on the screen and not on the hot list` : `score ${r(score, 1)} is not above ${env.minScore} and the pool is not on the hot list`;
     return hold(`No band in ${o.poolLabel} (${priceLine}): ${why}. ${poolClause(o, hot)}.`, "Nothing worth a band here. Holding.", "not-worth", why);
   }
-  if (hot.priceChange1hPct !== null && Math.abs(hot.priceChange1hPct) > POLICY_MAX_1H_MOVE_PCT) {
+  // A launch that has not moved in the last hour is not a launch: the lane judges the move itself.
+  if (!launch && hot.priceChange1hPct !== null && Math.abs(hot.priceChange1hPct) > POLICY_MAX_1H_MOVE_PCT) {
     return hold(
       `No band in ${o.poolLabel} (${priceLine}). The last hour moved ${pct(hot.priceChange1hPct)}, outside the +/-${POLICY_MAX_1H_MOVE_PCT}% the policy will lay a band into. ${poolClause(o, hot)}.`,
       `Moved ${pct(hot.priceChange1hPct, 0)} in an hour. Not chasing it.`,
@@ -667,15 +712,17 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       `payback ${r(earn.paybackHours, 1)}h over the ${env.maxPaybackHours}h limit`,
     );
   }
-  const worth = listed && !isHotPick && !scoreOk
+  const worth = launch
+    ? `launch lane: ${r(launch.ageHours, 1)}h old, turning over ${r(launch.turnover, 1)}x its liquidity a day${isHotPick ? `, hot list heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}` : ""}`
+    : listed && !isHotPick && !scoreOk
     ? `on the watchlist${score !== null ? `, screen score ${r(score, 1)}` : ""}`
     : isHotPick
     ? `hot pick (heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}${hot.surge ? ", surge" : ""}${score !== null ? `, screen score ${r(score, 1)}` : ""})`
     : scoreOk
       ? `screen score ${r(score!, 1)} above ${env.minScore}`
       : `stock book: ${o.screen?.stock ? `${o.screen.stock.ticker} (${o.screen.stock.issuer})` : "tokenized stock"}${score !== null ? `, screen score ${r(score, 1)}` : ""}`;
-  // A stock pool gets a straddle, whatever made it worth a band.
-  if (isStockPool(o)) {
+  // A stock pool gets a straddle, whatever made it worth a band. A launch pool never does.
+  if (straddlePool(o)) {
     const sz = szPreview as StraddleSizing;
     if (sz.none) {
       return hold(`No band in ${o.poolLabel} (${priceLine}); ${poolClause(o, hot)}. No size for a straddle: ${sz.none}.`, "No size for a straddle here. Holding.", "no-size", sz.none);
@@ -704,7 +751,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       action: "OPEN_POSITION",
       open: openParams(q, sz),
       positionAddress: null,
-      reasoning: `${o.poolLabel}: ${worth}; ${poolClause(o, hot)}. ${priceLine[0].toUpperCase() + priceLine.slice(1)}; a ${bandBins(o, sz.bins)}-bin ${q.symbol}-only Spot band from ${laidFrom(o, quoteBelow)} ${quoteBelow ? "down" : "up"} (${sz.bins} bins ${quoteBelow ? "under" : "over"} it) covers ${r(sz.coverage, 2)}% of price${widthClause(sz, o)} against ${r(sz.depthQuote, 2)} ${q.symbol} of depth on that side. Size ${r(sz.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} (${r(sz.amountSol)} SOL), bound by ${sz.boundBy}; our share of the band ${r(sz.sharePct, 1)}%.`,
+      reasoning: `${o.poolLabel}: ${worth}; ${poolClause(o, hot)}. ${priceLine[0].toUpperCase() + priceLine.slice(1)}; a ${bandBins(o, sz.bins)}-bin ${q.symbol}-only Spot band from ${laidFrom(o, quoteBelow)} ${quoteBelow ? "down" : "up"} (${sz.bins} bins ${quoteBelow ? "under" : "over"} it) covers ${r(sz.coverage, 2)}% of price${widthClause(sz, o)} against ${r(sz.depthQuote, 2)} ${q.symbol} of depth on that side. Size ${r(sz.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} (${r(sz.amountSol)} SOL), bound by ${sz.boundBy}; our share of the band ${r(sz.sharePct, 1)}%.${launchClause(sz, launch, x.launch ?? launchEnv(), limits)}`,
       confidence: isHotPick ? 0.6 : 0.55,
       headline: clip(`${q.symbol} ${quoteBelow ? "under the bid" : "over the ask"} in ${o.poolLabel}. ${r(sz.amountQuote, 2)} ${q.symbol} across ${bandBins(o, sz.bins)} bins.`),
     },

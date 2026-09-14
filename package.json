@@ -20,7 +20,7 @@
     "test:screener": "tsx src/scripts/test-screener.ts",
     "test:platform": "tsx src/scripts/test-platform.ts",
     "test:engine": "tsx src/scripts/test-engine.ts",
-    "test:all": "npm test && npm run test:engine && npm run test:platform && npm run test:rails && npm run test:screener && npm run test:backpack && npm run test:hot && npm run test:paper && npm run test:venues && npm run test:stock && npm run test:watchlist && npm run test:sim",
+    "test:all": "npm test && npm run test:engine && npm run test:platform && npm run test:rails && npm run test:screener && npm run test:backpack && npm run test:hot && npm run test:paper && npm run test:venues && npm run test:stock && npm run test:watchlist && npm run test:launch && npm run test:sim",
     "test:stock": "tsx src/scripts/test-stock.ts",
     "test:venues": "tsx src/scripts/test-venues.ts",
     "test:rails": "tsx src/scripts/test-rails.ts",
@@ -35,7 +35,8 @@
     "paper:report": "tsx src/scripts/paper-report.ts",
     "watchlist": "tsx src/scripts/watchlist.ts",
     "test:watchlist": "tsx src/scripts/test-watchlist.ts",
-    "test:sim": "tsx src/scripts/test-sim.ts"
+    "test:sim": "tsx src/scripts/test-sim.ts",
+    "test:launch": "tsx src/scripts/test-launch.ts"
   },
   "keywords": [],
   "author": "",

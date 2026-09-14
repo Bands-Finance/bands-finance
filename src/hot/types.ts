@@ -69,6 +69,10 @@ export interface HotSources {
   dexscreener: number;
   /** live Meteora fee reads made this tick */
   onchainReads: number;
+  /** GeckoTerminal token-pool lookups made this tick (sibling discovery) */
+  siblingLookups?: number;
+  /** pools the sibling lookups added to this tick that trending never mentioned */
+  siblingRows?: number;
   /** what failed, in plain words; empty when every source answered */
   errors: string[];
 }
@@ -98,7 +102,8 @@ export interface HotHistoryRow {
 
 /** A pool as a short-window source reports it. Nulls are what the source did not say. */
 export interface PoolSample {
-  source: "trending" | "dexscreener";
+  /** "siblings": GeckoTerminal's other pools for a token that trended somewhere we cannot trade */
+  source: "trending" | "dexscreener" | "siblings";
   address: string;
   name: string | null;
   /** the source's dex id, already mapped through venueOfDex */
