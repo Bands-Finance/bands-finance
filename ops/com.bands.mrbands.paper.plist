@@ -32,6 +32,7 @@
   <dict>
     <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string>
     <key>DATA_DIR</key><string>data-live</string>
+    <key>DRY_RUN</key><string>true</string>
     <key>PAPER_SOL</key><string>100</string>
     <key>PAPER_USDC</key><string>10000</string>
     <key>BOOK</key><string>all</string>

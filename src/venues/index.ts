@@ -9,7 +9,7 @@
  */
 import { PublicKey, type Connection } from "@solana/web3.js";
 import { loadScreen } from "../screener";
-import { isTradableVenue, tradableVenues } from "./env";
+import { VENUE_IDS } from "./types";
 import { meteoraVenue } from "./meteora";
 import { raydiumVenue } from "./raydium";
 import type { Venue, VenueId, VenuePool } from "./types";
@@ -93,32 +93,38 @@ export async function detectVenue(connection: VenueLookupConnection, address: st
   return venue;
 }
 
-/** Detect and load: the {venue, pool} pair the loop caches per address. Refuses venues off TRADABLE_VENUES. */
+/**
+ * Detect and load: the {venue, pool} pair the loop caches per address. Any venue with an adapter
+ * loads, tradable or not: a band we HOLD must be observed, guarded and closable even after its venue
+ * is taken out of TRADABLE_VENUES. Whether we may OPEN there is the guards' question
+ * (src/risk/guards.ts refuses opens on a venue that is not tradable), not the loader's.
+ */
 export async function loadVenuePool(connection: Connection, address: string, hint?: VenueId | null): Promise<{ venue: Venue; pool: VenuePool }> {
   const id = await detectVenue(connection, address, hint);
-  if (!isTradableVenue(id)) throw new Error(`${address} is on ${id}, which is not in TRADABLE_VENUES (${tradableVenues().join(", ") || "none"})`);
   const venue = venueOf(id);
   return { venue, pool: await venue.loadPool(connection, address) };
 }
 
+/** Every venue that has an adapter, whether or not TRADABLE_VENUES names it. */
+export const adapterVenues = (): VenueId[] => VENUE_IDS.filter((id) => id !== "orca-whirlpool");
+
 /**
- * Pools the owner holds a position in, on every tradable venue with an adapter. A venue that fails to
- * answer is logged and skipped; the call throws only when every venue failed.
+ * Pools the owner holds a position in, on EVERY venue with an adapter (not just the tradable ones:
+ * what we hold, we manage). Throws when any venue fails to answer: a partial list would let a held
+ * band drop out of the cycle unguarded and out of the marks, and three such cycles read as a crater
+ * to the portfolio breaker. The loop skips the cycle instead and asks again next time.
  */
 export async function poolsWithPositions(connection: Connection, owner: PublicKey, log: (s: string) => void = () => {}): Promise<{ address: string; venue: VenueId }[]> {
   const out: { address: string; venue: VenueId }[] = [];
-  const errors: string[] = [];
-  const venues = tradableVenues().filter((id) => id !== "orca-whirlpool");
-  for (const id of venues) {
+  for (const id of adapterVenues()) {
     const venue = venueOf(id);
     if (!venue.poolsWithPositions) continue;
     try {
       for (const address of await venue.poolsWithPositions(connection, owner)) out.push({ address, venue: id });
     } catch (err) {
-      errors.push(`${id}: ${(err as Error).message}`);
       log(`[venues] could not list ${id} positions: ${(err as Error).message}`);
+      throw new Error(`could not list ${id} positions (${(err as Error).message}); skipping the cycle rather than working a partial list`);
     }
   }
-  if (errors.length && errors.length === venues.length) throw new Error(`could not list positions on any venue: ${errors.join("; ")}`);
   return out;
 }

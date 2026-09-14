@@ -61,14 +61,39 @@ function fallback(note: string): DecideResult {
   return { decision: holdDecision(`${note} Holding.`, "Can't think straight. Holding."), source: "fallback", model: config.model, note };
 }
 
+/**
+ * Whether the desk policy may open or rebalance on a LIVE book (DRY_RUN=false). Only the literal
+ * "true" says yes. Without it, a live process that has no model (no key, an expired key, an API
+ * outage) holds instead of trading on the policy: the engine's own exits (stop, flatten, expire)
+ * do not pass through here and keep running either way.
+ */
+export function policyMayTradeLive(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.POLICY_LIVE === "true";
+}
+
 /** The desk policy's proposal, as the decision the model would otherwise have made. */
-export function policyDecideResult(observation: Observation, note: string, opts: DecideOptions = {}): DecideResult {
+export function policyDecideResult(observation: Observation, note: string, opts: DecideOptions = {}, dryRun: boolean = config.dryRun, env: NodeJS.ProcessEnv = process.env): DecideResult {
   try {
     const r = policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol });
+    const trades = r.decision.action === "OPEN_POSITION" || r.decision.action === "REBALANCE";
+    if (trades && !dryRun && !policyMayTradeLive(env)) {
+      const verb = r.decision.action === "OPEN_POSITION" ? "open" : "rebalance";
+      const held = holdDecision(
+        `${note} The desk policy would ${verb} here (${r.reason}), but this book is live and POLICY_LIVE is not set: without the model, only the engine's exits run. Holding.`,
+        "No model, no new bands.",
+      );
+      return { decision: held, source: "policy", model: "desk-policy", note: `${note} Desk policy (${r.branch}) withheld on a live book without POLICY_LIVE: ${r.reason}.` };
+    }
     return { decision: r.decision, source: "policy", model: "desk-policy", note: `${note} Desk policy (${r.branch}): ${r.reason}.` };
   } catch (err) {
     return fallback(`${note} Desk policy failed: ${(err as Error).message}.`);
   }
+}
+
+/** A policy result after the model was asked and did not answer usably: the model id goes in the note, the author stays the policy. */
+function policyAfterModel(observation: Observation, note: string, opts: DecideOptions, usage: LlmUsage, model: string): DecideResult {
+  const r = policyDecideResult(observation, note, opts);
+  return { ...r, usage, note: `${r.note ?? note} (${model} was asked.)` };
 }
 
 /** Ask Mr Bands what to do. Never throws: without a key or on any failure the desk policy proposes. */
@@ -98,14 +123,14 @@ export async function decide(observation: Observation, opts: DecideOptions = {})
 
     if (response.stop_reason === "refusal") {
       const why = response.stop_details?.explanation ?? "no explanation";
-      return { ...policyDecideResult(observation, `Model declined to answer (${why}).`, opts), usage, model: response.model };
+      return policyAfterModel(observation, `Model declined to answer (${why}).`, opts, usage, response.model);
     }
     if (response.stop_reason === "max_tokens") {
-      return { ...policyDecideResult(observation, "Model output was truncated.", opts), usage, model: response.model };
+      return policyAfterModel(observation, "Model output was truncated.", opts, usage, response.model);
     }
     const parsed = response.parsed_output;
     if (!parsed) {
-      return { ...policyDecideResult(observation, "Model output did not match the decision schema.", opts), usage, model: response.model };
+      return policyAfterModel(observation, "Model output did not match the decision schema.", opts, usage, response.model);
     }
     return { decision: parsed, source: "llm", model: response.model, usage };
   } catch (err) {

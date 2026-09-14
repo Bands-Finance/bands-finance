@@ -221,6 +221,7 @@
 
 /* --- status light: what the feed is doing right now --- */
 .term__status--rehearsal { color: var(--bands-gold); }
+.term__status--paper { color: var(--bands-gold); }
 .term__status--demo { color: var(--bands-accent-soft); }
 .term__status--standby { color: var(--bands-danger); }
 

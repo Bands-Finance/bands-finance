@@ -188,6 +188,27 @@ test("stop-loss overrides the model and skips the cooldown", () => {
   assert.equal(v.decision.action, "CLOSE_POSITION");
   assert.equal(v.decision.positionAddress, "pos1");
   assert.equal(v.proposal.action, "OPEN_POSITION");
+  // a band through its stop is mostly token: the forced close sells it back, never leaves it in the wallet
+  assert.equal(v.decision.liquidate, true);
+});
+
+test("venue gate: a held band on a venue off TRADABLE_VENUES is observed and may close, but nothing opens there", () => {
+  const prev = process.env.TRADABLE_VENUES;
+  process.env.TRADABLE_VENUES = "meteora-dlmm";
+  try {
+    const onRaydium = { ...snapshot, venue: "raydium-clmm" as const };
+    const v = evaluate(open(), ctx({ snapshot: onRaydium }), limits);
+    assert.equal(v.allowed, false);
+    assert.match(v.violations.join(), /venue: raydium-clmm is not in TRADABLE_VENUES \(meteora-dlmm\); holding what we hold there, opening nothing new/);
+    const close: Decision = { ...open(), action: "CLOSE_POSITION", open: null, positionAddress: "pos1" };
+    const c = evaluate(close, ctx({ snapshot: onRaydium, positions: [position] }), limits);
+    assert.equal(c.allowed, true, c.violations.join("; "));
+    process.env.TRADABLE_VENUES = "meteora-dlmm,raydium-clmm";
+    assert.equal(evaluate(open(), ctx({ snapshot: onRaydium }), limits).allowed, true);
+  } finally {
+    if (prev === undefined) delete process.env.TRADABLE_VENUES;
+    else process.env.TRADABLE_VENUES = prev;
+  }
 });
 
 test("closing a band we do not own is rejected", () => {
@@ -513,6 +534,21 @@ test("straddle: a BOTH band with acquireToken passes when the quote covers both 
   assert.equal(held.allowed, true, held.violations.join("; "));
   const notHeld = evaluate(straddle({ acquireToken: 0 }), uctx({ walletQuote: 21, walletToken: 0.05 }), limits);
   assert.match(notHeld.violations.join(), /not enough NVDAx: want 0\.111, have 0\.05/);
+});
+
+test("straddle: the purchase is budgeted at the swap's own slippage when SWAP_SLIPPAGE_BPS is wider than MAX_SLIPPAGE_PCT", () => {
+  // 41 USDC covers 20 + 20.18 at 1%; at 3% the buy needs 20.58 and the same wallet is short
+  const prev = process.env.SWAP_SLIPPAGE_BPS;
+  process.env.SWAP_SLIPPAGE_BPS = "300";
+  try {
+    const v = evaluate(straddle(), uctx({ walletQuote: 40.5, walletToken: 0 }), limits);
+    assert.equal(v.allowed, false);
+    assert.match(v.violations.join(), /want 20 \+ 20\.58 to buy 0\.111 NVDAx \(incl\. 3% slippage\), have 40\.5/);
+    assert.equal(evaluate(straddle(), uctx({ walletQuote: 41, walletToken: 0 }), limits).allowed, true);
+  } finally {
+    if (prev === undefined) delete process.env.SWAP_SLIPPAGE_BPS;
+    else process.env.SWAP_SLIPPAGE_BPS = prev;
+  }
 });
 
 test("straddle: acquireToken is only for BOTH, never more than the token leg, never negative", () => {

@@ -234,7 +234,8 @@ export class JupiterClient {
       otherAmountThreshold: big(raw.otherAmountThreshold),
       swapMode: raw.swapMode === "ExactOut" ? "ExactOut" : "ExactIn",
       slippageBps: Number(raw.slippageBps ?? slippageBps) || slippageBps,
-      priceImpactPct: Number(raw.priceImpactPct ?? 0) || 0,
+      // Jupiter reports the impact as a FRACTION ("0.0031" = 0.31%); we carry a percent
+      priceImpactPct: (Number(raw.priceImpactPct ?? 0) || 0) * 100,
       routeLabels: plan.map((leg) => String(obj(obj(leg).swapInfo).label ?? "?")),
       raw,
     };

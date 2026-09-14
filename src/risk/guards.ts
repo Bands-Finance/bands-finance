@@ -15,6 +15,8 @@
 import { Decision, holdDecision } from "../agent/schema";
 import { antiChurn, bandStopPct, drawdownPct } from "../engine/exit";
 import { OPEN_COST_ESTIMATE_SOL, PoolSnapshot, PositionSnapshot, quoteOf } from "../tools/dlmm";
+import { jupiterEnv } from "../tools/jupiter";
+import { isTradableVenue, tradableVenues } from "../venues/env";
 import type { RiskLimits } from "./limits";
 import type { RiskState } from "./state";
 
@@ -133,7 +135,9 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
         action: "CLOSE_POSITION",
         open: null,
         positionAddress: p.address,
-        reasoning: `Stop-loss triggered by risk guards at -${dd.toFixed(1)}% (stop -${stop.toFixed(2)}%, limit -${limits.stopLossPct}%). Model proposal (${proposal.action}) overridden.`,
+        // a band that fell through its stop is mostly token: sell it back to the quote, never leave it in the wallet
+        liquidate: true,
+        reasoning: `Stop-loss triggered by risk guards at -${dd.toFixed(1)}% (stop -${stop.toFixed(2)}%, limit -${limits.stopLossPct}%). Model proposal (${proposal.action}) overridden. The token comes off with it.`,
         confidence: 1,
         headline: "Stop-loss hit. Bands off the table.",
       };
@@ -233,6 +237,9 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
   //    the quote half AND the purchase; the token check counts what the swap brings in (and, on a
   //    REBALANCE, the base token the closing band hands back). Both legs count toward the size.
   if (isOpening(decision)) {
+    // the venue gate: we manage what we hold on any venue, but we only OPEN on a tradable one
+    const venueId = ctx.snapshot.venue ?? "meteora-dlmm";
+    if (!isTradableVenue(venueId)) violations.push(`venue: ${venueId} is not in TRADABLE_VENUES (${tradableVenues().join(", ") || "none"}); holding what we hold there, opening nothing new`);
     const o = decision.open;
     if (!o) {
       violations.push("OPEN/REBALANCE without `open` parameters");
@@ -249,7 +256,11 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
       // the token the swap must bring in before the deposit (stock straddles); the quote pays for it, with slippage
       const acquireRaw = o.acquireToken ?? 0;
       const acquire = Number.isFinite(acquireRaw) && acquireRaw > 0 ? acquireRaw : 0;
-      const acquireQuote = acquire * q.tokenPriceInQuote * (1 + limits.maxSlippagePct / 100);
+      // budget the purchase at the WIDER of the guard's slippage and the swap's own tolerance
+      // (SWAP_SLIPPAGE_BPS): the executor sizes the Jupiter leg with the latter, and the wallet must
+      // cover what the executor will actually spend, not what this file would like it to spend
+      const swapSlipPct = Math.max(limits.maxSlippagePct, jupiterEnv().slippageBps / 100);
+      const acquireQuote = acquire * q.tokenPriceInQuote * (1 + swapSlipPct / 100);
       const quoteSpend = o.amountSol + acquireQuote;
       // what a closing band (REBALANCE) hands back in quote units before it is re-laid
       const closingQuote = closing ? (closing.quoteInPosition ?? closing.solInPosition / q.priceInSol) : 0;
@@ -275,7 +286,7 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
       }
       if (exposureAfter > limits.maxTotalExposureSol) violations.push(`total exposure would be ${exposureAfter.toFixed(4)} SOL > max ${limits.maxTotalExposureSol}`);
       if (walletQuoteAfter < 0) {
-        const want = acquire > 0 ? `${o.amountSol} + ${acquireQuote.toFixed(quoteIsSol ? 4 : 2)} to buy ${acquire} ${s.baseToken.symbol} (incl. ${limits.maxSlippagePct}% slippage)` : `${o.amountSol}`;
+        const want = acquire > 0 ? `${o.amountSol} + ${acquireQuote.toFixed(quoteIsSol ? 4 : 2)} to buy ${acquire} ${s.baseToken.symbol} (incl. ${swapSlipPct}% slippage)` : `${o.amountSol}`;
         violations.push(`not enough ${q.symbol}: want ${want}, have ${walletQuote}${closing ? ` + ${closingQuote.toFixed(4)} back from the closing band` : ""}`);
       }
       if (walletSolAfter < limits.gasReserveSol) {

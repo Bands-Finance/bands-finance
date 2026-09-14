@@ -393,6 +393,14 @@ async function main(): Promise<void> {
     assert.match(noSize.reason, /gas reserve/);
   });
 
+  await test("quote(): Jupiter's priceImpactPct is a fraction on the wire and a percent in the client", async () => {
+    const wire = { inputMint: "A", outputMint: "B", inAmount: "1000", outAmount: "990", otherAmountThreshold: "985", swapMode: "ExactIn", slippageBps: 50, priceImpactPct: "0.0031", routePlan: [{ swapInfo: { label: "PumpSwap" } }] };
+    const client = new jup.JupiterClient({ fetch: async () => new Response(JSON.stringify(wire), { status: 200, headers: { "content-type": "application/json" } }) });
+    const q = await client.quote({ inputMint: "A", outputMint: "B", amount: 1000 });
+    near(q.priceImpactPct, 0.31, 1e-12);
+    assert.deepEqual(q.routeLabels, ["PumpSwap"]);
+  });
+
   console.log("paperSwap and the paper wallet's legs");
   await test("paperSwap: out = in x rate x (1 - fee); paperCostToBuy is its inverse; env defaults", () => {
     const f = jup.paperSwap(100, 1 / 767, 0.1);

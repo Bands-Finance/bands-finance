@@ -197,7 +197,12 @@ function blockOf(e: JournalEntry): DeskBlock {
     why: d.reasoning,
     headline: d.headline,
     txs: txsOf(e),
-    fallbackNote: e.llm.source === "fallback" ? e.llm.note ?? "the model did not answer; he held" : null,
+    fallbackNote:
+      e.llm.source === "fallback"
+        ? e.llm.note ?? "the model did not answer; he held"
+        : e.llm.source === "policy"
+          ? e.llm.note ?? "the desk policy decided: no model was asked"
+          : null,
   };
 }
 
@@ -444,8 +449,10 @@ export function statusOf(newestFirst: JournalEntry[], now: number, demo: boolean
   const latest = newestFirst[0];
   const lastTs = latest ? new Date(latest.ts).getTime() : null;
   const ageMs = lastTs ? now - lastTs : null;
-  // A paper run says so: the decisions and the marks are real, the wallet is not.
-  const paper = !demo && latest?.execution?.mode === "paper";
+  // A paper run says so: the decisions and the marks are real, the wallet is not. A hold carries
+  // execution mode "none", so look back through the newest entries for the run's kind rather than
+  // flipping to "dry run" every time the newest decision is a hold.
+  const paper = !demo && (latest?.mode === "paper" || newestFirst.slice(0, 40).some((e) => e.execution?.mode === "paper"));
   const mode: Mode = demo ? "demo" : paper ? "paper" : latest?.mode === "live" ? "live" : "dry-run";
   const ago = ageMs === null ? "" : ageMs < 90e3 ? "a minute ago" : ageMs < 3600e3 ? `${Math.round(ageMs / 60e3)} min ago` : ageMs < 86400e3 ? `${Math.round(ageMs / 3600e3)} h ago` : `${Math.round(ageMs / 86400e3)} d ago`;
   const span = latest && newestFirst.length ? (() => { const first = new Date(newestFirst[newestFirst.length - 1].ts).getTime(); const h = (lastTs! - first) / 3600e3; return h < 48 ? `${Math.round(h)} hours` : `${Math.round(h / 24)} days`; })() : "";

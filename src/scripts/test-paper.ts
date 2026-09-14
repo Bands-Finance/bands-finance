@@ -729,6 +729,20 @@ async function main(): Promise<void> {
     const off = await decide(obs({ screen: null }), { hot: [{ address: POOL, priceChange1hPct: 2, flags: [], heat: 35, surge: true }] });
     assert.equal(off.decision.action, "OPEN_POSITION");
   });
+  await test("policy on a LIVE book: without POLICY_LIVE an open becomes a hold that says why; POLICY_LIVE=true lets it through; closes are never withheld", async () => {
+    const { policyDecideResult } = await import("../agent/decide.js");
+    const live = policyDecideResult(obs(), "No ANTHROPIC_API_KEY configured.", {}, false, {});
+    assert.equal(live.source, "policy");
+    assert.equal(live.model, "desk-policy");
+    assert.equal(live.decision.action, "HOLD");
+    assert.match(live.decision.reasoning, /would open here .* but this book is live and POLICY_LIVE is not set: without the model, only the engine's exits run/);
+    assert.match(live.note!, /withheld on a live book without POLICY_LIVE/);
+    const allowed = policyDecideResult(obs(), "No ANTHROPIC_API_KEY configured.", {}, false, { POLICY_LIVE: "true" });
+    assert.equal(allowed.decision.action, "OPEN_POSITION");
+    const paper = policyDecideResult(obs(), "No ANTHROPIC_API_KEY configured.", {}, true, {});
+    assert.equal(paper.decision.action, "OPEN_POSITION", "a dry run or paper book is never withheld");
+    assert.equal(policyDecideResult(obs(), "x", {}, false, { POLICY_LIVE: "yes" }).decision.action, "HOLD", "only the literal true");
+  });
 
   console.log("report, file round-trip, route");
   await test("paperSummary + renderPaperReport: equity vs start, the identity, the decision tally", () => {

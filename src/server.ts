@@ -20,6 +20,7 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { paperEnabled } from "./paper/env";
 import { config, riskLimits } from "./config";
 import { dataDir, readRecent } from "./journal";
 import { loadScreen } from "./screener";
@@ -50,7 +51,7 @@ export function buildApp(): Hono {
   // (src/platform/routes.ts). Registered first so its middleware covers every route below.
   platformRoutes(app);
 
-  app.get("/api/health", (c) => c.json({ ok: true, now: new Date().toISOString(), mode: config.dryRun ? "dry-run" : "live" }));
+  app.get("/api/health", (c) => c.json({ ok: true, now: new Date().toISOString(), mode: paperEnabled(process.env, config.dryRun) ? "paper" : config.dryRun ? "dry-run" : "live" }));
 
   app.get("/api/journal", (c) => {
     const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 500), 1), 5000);

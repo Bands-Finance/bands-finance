@@ -381,7 +381,9 @@ async function main(): Promise<void> {
     assert.deepEqual(venues.tradableVenues({}), ["meteora-dlmm", "raydium-clmm"]);
     assert.deepEqual(venues.liveVenues({}), ["meteora-dlmm"]);
     assert.deepEqual(venues.tradableVenues({ TRADABLE_VENUES: "none" }), []);
-    assert.deepEqual(venues.tradableVenues({ TRADABLE_VENUES: " Raydium-CLMM , bogus, meteora-dlmm, raydium-clmm " }), ["raydium-clmm", "meteora-dlmm"]);
+    assert.deepEqual(venues.tradableVenues({ TRADABLE_VENUES: " Raydium-CLMM , meteora-dlmm, raydium-clmm, " }), ["raydium-clmm", "meteora-dlmm"]);
+    assert.throws(() => venues.tradableVenues({ TRADABLE_VENUES: "raydium-clmm, bogus" }), /unknown venue "bogus"/, "a typo is an error at boot, not an empty book");
+    assert.throws(() => venues.liveVenues({ LIVE_VENUES: "meteora_dlmm" }), /unknown venue "meteora_dlmm"/);
     assert.deepEqual(venues.tradableVenues({ TRADABLE_VENUES: "" }), ["meteora-dlmm", "raydium-clmm"]);
     assert.equal(venues.isTradableVenue("raydium-clmm", {}), true);
     assert.equal(venues.isTradableVenue("orca-whirlpool", {}), false);
@@ -564,6 +566,30 @@ async function main(): Promise<void> {
     assert.deepEqual([book2.bands[0].lowerBinId, book2.bands[0].upperBinId, book2.bands[0].priceModel, book2.bands[0].rentRefundableSol], [ACTIVE - 20, ACTIVE, undefined, dlmm.POSITION_RENT_SOL]);
     near(book2.rentSpentSol, dlmm.OPEN_COST_ESTIMATE_SOL - dlmm.POSITION_RENT_SOL, 1e-9);
     assert.match(m.ledger![0].note, /position \+ 2 bin arrays/);
+  });
+
+  console.log("position discovery");
+  await test("poolsWithPositions asks every venue with an adapter and throws when any of them fails: a partial list is never returned", async () => {
+    const meteoraList = venues.meteoraVenue.poolsWithPositions;
+    const raydiumList = venues.raydiumVenue.poolsWithPositions;
+    const prev = process.env.TRADABLE_VENUES;
+    const owner = Keypair.generate().publicKey;
+    const conn = {} as unknown as import("@solana/web3.js").Connection;
+    try {
+      venues.meteoraVenue.poolsWithPositions = async () => ["MeteoraPool111"];
+      venues.raydiumVenue.poolsWithPositions = async () => ["RaydiumPool111"];
+      process.env.TRADABLE_VENUES = "meteora-dlmm"; // Raydium is off the tradable list: what we hold there is still listed
+      assert.deepEqual(await venues.poolsWithPositions(conn, owner), [{ address: "MeteoraPool111", venue: "meteora-dlmm" }, { address: "RaydiumPool111", venue: "raydium-clmm" }]);
+      venues.raydiumVenue.poolsWithPositions = async () => { throw new Error("429 Too Many Requests"); };
+      const logs: string[] = [];
+      await assert.rejects(venues.poolsWithPositions(conn, owner, (s) => logs.push(s)), /could not list raydium-clmm positions \(429 Too Many Requests\); skipping the cycle rather than working a partial list/);
+      assert.equal(logs.length, 1);
+    } finally {
+      venues.meteoraVenue.poolsWithPositions = meteoraList;
+      venues.raydiumVenue.poolsWithPositions = raydiumList;
+      if (prev === undefined) delete process.env.TRADABLE_VENUES;
+      else process.env.TRADABLE_VENUES = prev;
+    }
   });
 
   console.log("the executor's live gate");

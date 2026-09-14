@@ -72,7 +72,7 @@ export function Record({ record, solPriceUsd, status, agentName }: RecordProps) 
 
   const up = record.net >= 0;
   const simulated = status.mode !== "live";
-  const simGloss = status.mode === "demo" ? GLOSS.demo : GLOSS.dryRun;
+  const simGloss = status.mode === "demo" ? GLOSS.demo : status.mode === "paper" ? GLOSS.paper : GLOSS.dryRun;
   const tokensHeld = record.tokens.map((t) => `${fmtAmount(t.amount)} ${t.symbol} (${solFmt(t.inSol)})`).join(", ");
 
   const c = record.counts;

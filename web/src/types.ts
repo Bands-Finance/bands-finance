@@ -109,13 +109,14 @@ export interface JournalEntry {
   id: string;
   ts: string;
   cycle: number;
-  mode: "dry-run" | "live";
+  mode: "dry-run" | "live" | "paper";
   agent?: { id: string; name: string };
   pool: JournalPool;
   wallet: { address: string; sol: number; token: number; tokenSymbol: string };
   positions: Position[];
   analytics: Analytics | null;
-  llm: { source: "llm" | "fallback"; model: string; note?: string; usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } };
+  /** who authored the decision: the model, the desk policy standing in for it, an engine directive, an approved outside proposal, or a bare hold when nothing answered */
+  llm: { source: "llm" | "fallback" | "policy" | "engine" | "proposal"; model: string; note?: string; usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } };
   proposal: Decision;
   decision: Decision;
   allowed: boolean;

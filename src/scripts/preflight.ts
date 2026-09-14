@@ -9,13 +9,14 @@ import path from "node:path";
 import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import Anthropic from "@anthropic-ai/sdk";
 import { config, riskLimits } from "../config";
+import { LOCK_FILE, lockBlocks, pidAlive, readLock, staleWindowMs } from "../engine/watchdog";
 import { loadKeypair } from "../tools/wallet";
 import { loadScreen } from "../screener";
 import { loadHot } from "../hot";
 import { loadEngineState, circuitHalted, standingDown } from "../engine/breakers";
 import { killSwitchActive } from "../risk/state";
 import { OPEN_COST_ESTIMATE_SOL } from "../tools/dlmm";
-import { paperEnv } from "../paper/env";
+import { paperEnabled, paperEnv } from "../paper/env";
 
 type Level = "PASS" | "WARN" | "FAIL";
 interface Check { name: string; level: Level; detail: string }
@@ -28,20 +29,28 @@ async function main(): Promise<void> {
 
   // 1. Mode and switches
   const paper = paperEnv();
-  const paperOn = paper.sol > 0 || paper.usdc > 0;
+  // the same predicate the loop uses (src/paper/env.ts): a paper book needs PAPER_SOL > 0 AND DRY_RUN
+  const paperOn = paperEnabled(process.env, config.dryRun);
   add("mode", config.dryRun ? "WARN" : "PASS", config.dryRun ? `DRY_RUN is on: nothing is broadcast${paperOn ? "" : " (set DRY_RUN=false to go live)"}` : "DRY_RUN=false: transactions WILL be broadcast");
   if (paperOn) add("paper book", "PASS", `virtual wallet ${paper.sol} SOL + ${paper.usdc} USDC: real pools and prices, pretend money (PAPER_SOL / PAPER_USDC)`);
+  else if (paper.usdc > 0 && paper.sol <= 0) add("paper book", "FAIL", `PAPER_USDC=${paper.usdc} without PAPER_SOL: the loop keys paper mode off PAPER_SOL alone, so this would ${config.dryRun ? "dry-run" : "trade LIVE"} with no paper book`);
+  else if (paper.sol > 0 && !config.dryRun) add("paper book", "FAIL", `PAPER_SOL=${paper.sol} with DRY_RUN=false: the loop refuses to start (paper runs only under DRY_RUN)`);
   add("kill switch", killSwitchActive() ? "FAIL" : "PASS", killSwitchActive() ? "STOP file or KILL_SWITCH=true is set: no new bands" : "clear");
-  const lock = path.join(dataDir, "engine.lock");
-  if (fs.existsSync(lock)) {
-    try {
-      const l = JSON.parse(fs.readFileSync(lock, "utf8")) as { pid: number; heartbeat: number };
-      const fresh = Date.now() - l.heartbeat < Math.max(3 * config.cycleIntervalSec, 900) * 1000;
-      add("engine lock", fresh ? "WARN" : "PASS", fresh ? `another process (pid ${l.pid}) holds this wallet; only one may run` : "stale lock, will be replaced");
-    } catch {
-      add("engine lock", "WARN", "unreadable lock file");
+  const lockFile = path.join(dataDir, LOCK_FILE);
+  const lockCheck = (wallet: string | null): void => {
+    if (!fs.existsSync(lockFile)) {
+      add("engine lock", "PASS", "free");
+      return;
     }
-  } else add("engine lock", "PASS", "free");
+    const l = readLock(lockFile);
+    if (!l) {
+      add("engine lock", "WARN", "unreadable lock file");
+      return;
+    }
+    // the watchdog's own rule (src/engine/watchdog.ts): a dead pid or another wallet's lock does not block
+    const blocks = lockBlocks(l, wallet ?? l.wallet, Date.now(), staleWindowMs(config.cycleIntervalSec), process.pid, pidAlive);
+    add("engine lock", blocks ? "WARN" : "PASS", blocks ? `another process (pid ${l.pid}) holds this wallet; only one may run` : pidAlive(l.pid) ? `held by pid ${l.pid} for a different wallet (${l.wallet.slice(0, 6)}...)` : "stale lock (its process is gone), will be replaced");
+  };
 
   // 2. Wallet
   let pubkey: PublicKey | null = null;
@@ -54,6 +63,7 @@ async function main(): Promise<void> {
       add("wallet key", "FAIL", `does not parse: ${(err as Error).message}`);
     }
   }
+  lockCheck(pubkey?.toBase58() ?? null);
   if (config.engine.expectedWallet) {
     const ok = pubkey?.toBase58() === config.engine.expectedWallet;
     add("EXPECTED_WALLET", ok ? "PASS" : "FAIL", ok ? "matches the loaded key" : `does not match the loaded key (${pubkey?.toBase58() ?? "none"})`);
@@ -107,7 +117,8 @@ async function main(): Promise<void> {
 
   // 6. Data feeds
   const screen = loadScreen();
-  add("screen", !screen ? "FAIL" : ageMin(screen.generatedAt) > 60 ? "WARN" : "PASS", screen ? `${screen.rankedPools} ranked, ${ageMin(screen.generatedAt).toFixed(0)} min old, SOL $${screen.solPriceUsd?.toFixed(2) ?? "n/a"}` : "no data/screen.json: run `npm run screen`");
+  // a missing screen is not a failure: the loop screens before its first cycle (ensureScreen in src/index.ts)
+  add("screen", !screen ? "WARN" : ageMin(screen.generatedAt) > 60 ? "WARN" : "PASS", screen ? `${screen.rankedPools} ranked, ${ageMin(screen.generatedAt).toFixed(0)} min old, SOL $${screen.solPriceUsd?.toFixed(2) ?? "n/a"}` : "no screen.json yet (the loop writes it before its first cycle; `npm run screen` to see the board now)");
   const hot = loadHot();
   add("hot watch", !hot ? "WARN" : ageMin(hot.generatedAt) > 15 ? "WARN" : "PASS", hot ? `${hot.rows.length} rows, ${ageMin(hot.generatedAt).toFixed(0)} min old` : "no data/hot.json yet (the loop writes it on start)");
   const basisFile = path.join(dataDir, "basis.json");

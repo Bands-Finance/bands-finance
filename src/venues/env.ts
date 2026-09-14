@@ -19,14 +19,20 @@ export type Book = "all" | "stocks";
 
 export const isVenueId = (v: string): v is VenueId => (VENUE_IDS as readonly string[]).includes(v);
 
-/** "a, b" -> [a, b] keeping only known venue ids, in order, deduplicated; "none" -> []; unset -> the fallback. */
+/**
+ * "a, b" -> [a, b] in order, deduplicated; "none" -> []; unset -> the fallback. An id that is not a
+ * venue THROWS: a typo used to read as "no venues", which in a live process meant every open and
+ * every broadcast silently refused with no word at boot.
+ */
 export function parseVenueList(raw: string | undefined, fallback: readonly VenueId[]): VenueId[] {
   if (raw === undefined || raw.trim() === "") return [...fallback];
   if (raw.trim().toLowerCase() === "none") return [];
   const out: VenueId[] = [];
   for (const part of raw.split(",")) {
     const v = part.trim().toLowerCase();
-    if (isVenueId(v) && !out.includes(v)) out.push(v);
+    if (v === "") continue;
+    if (!isVenueId(v)) throw new Error(`unknown venue "${part.trim()}" in a venue list; known venues: ${VENUE_IDS.join(", ")} (or "none")`);
+    if (!out.includes(v)) out.push(v);
   }
   return out;
 }

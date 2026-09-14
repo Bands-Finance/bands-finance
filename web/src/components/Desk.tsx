@@ -29,13 +29,13 @@ const CONSOLE_KEEP = 20;
 
 const GLYPH: Record<Verdict, string> = { placed: "✓", simulated: "◐", failed: "✕", blocked: "⊘", override: "⚠", hold: "○" };
 
-type Dot = "live" | "rehearsal" | "demo" | "standby";
+type Dot = "live" | "paper" | "rehearsal" | "demo" | "standby";
 
 /** The status light in the chrome: what the reader can expect from the feed right now. */
 function dotOf(status: Status): Dot {
   if (status.mode === "demo") return "demo";
   if (status.ageMs === null || status.ageMs > STALE_MS) return "standby";
-  return status.mode === "live" ? "live" : "rehearsal";
+  return status.mode === "live" ? "live" : status.mode === "paper" ? "paper" : "rehearsal";
 }
 
 function timeOf(ts: string): string {
