@@ -29,6 +29,8 @@ export interface RiskState {
   feesPendingSince?: Record<string, number>;
   /** pool address -> active-price samples, trimmed to the trailing 6h (knife check) */
   priceHistory?: Record<string, PriceSample[]>;
+  /** pool address -> epoch ms of the last band move (open, close, rebalance) there; the cooldown is per pool */
+  lastMoveByPool?: Record<string, number>;
 }
 
 const STATE_FILE = () => path.resolve(process.cwd(), config.dataDir, "state.json");
@@ -48,6 +50,7 @@ export function emptyState(day = todayUtc()): RiskState {
     outOfRangeSince: {},
     feesPendingSince: {},
     priceHistory: {},
+    lastMoveByPool: {},
   };
 }
 
@@ -63,6 +66,7 @@ export function loadState(): RiskState {
       outOfRangeSince: parsed.outOfRangeSince ?? {},
       feesPendingSince: parsed.feesPendingSince ?? {},
       priceHistory: parsed.priceHistory ?? {},
+      lastMoveByPool: parsed.lastMoveByPool ?? {},
     };
     if (s.day !== todayUtc()) {
       s.day = todayUtc();

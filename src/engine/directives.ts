@@ -89,10 +89,8 @@ export function engineDirective(ctx: DirectiveContext): Directive | null {
     };
   }
 
-  // COLLECT: only when the guards' rate limits would let it through, so the cycle is not wasted.
-  const rateOk =
-    state.actionsToday < ctx.limits.maxTxPerDay &&
-    (state.lastActionAt === null || (now - state.lastActionAt) / 1000 >= ctx.limits.minSecondsBetweenActions);
+  // COLLECT: only when the daily cap would let it through, so the cycle is not wasted (claims are not cooled down).
+  const rateOk = state.actionsToday < ctx.limits.maxTxPerDay;
   if (rateOk) {
     const plan = collectDirective(positions, ctx.snapshot, state, now, ctx.cfg, ctx.collectsToday);
     if (plan) {

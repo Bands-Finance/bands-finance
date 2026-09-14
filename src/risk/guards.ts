@@ -158,16 +158,19 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
   }
 
   // 4. Rate limits for anything that costs a transaction. Closes and emergencies are exempt: exits are never blocked.
+  //    The daily cap counts every transaction. The cooldown is PER POOL and applies to band moves (opens and
+  //    rebalances) only: a fee claim never resets it, and a move in one pool never blocks another pool.
   if (decision.action !== "HOLD" && decision.action !== "CLOSE_POSITION" && !emergency) {
     if (ctx.state.actionsToday >= limits.maxTxPerDay) {
       violations.push(`daily action cap reached (${ctx.state.actionsToday}/${limits.maxTxPerDay})`);
     } else {
       passed.push(`daily-cap ${ctx.state.actionsToday}/${limits.maxTxPerDay}`);
     }
-    if (ctx.state.lastActionAt !== null) {
-      const since = (ctx.now - ctx.state.lastActionAt) / 1000;
+    const lastMove = ctx.state.lastMoveByPool?.[ctx.snapshot.address] ?? null;
+    if (isOpening(decision) && lastMove !== null) {
+      const since = (ctx.now - lastMove) / 1000;
       if (since < limits.minSecondsBetweenActions) {
-        violations.push(`cooldown: ${Math.round(since)}s since last action (min ${limits.minSecondsBetweenActions}s)`);
+        violations.push(`cooldown: ${Math.round(since)}s since the last band move in this pool (min ${limits.minSecondsBetweenActions}s)`);
       } else {
         passed.push("cooldown");
       }

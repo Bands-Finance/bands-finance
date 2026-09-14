@@ -120,9 +120,9 @@ function openGate(o: Observation, limits: RiskLimits, now: number): string | nul
   if (e?.knife) return e.knife;
   if (e?.basis?.reason) return e.basis.reason;
   if (o.state.actionsToday >= limits.maxTxPerDay) return `daily action cap reached (${o.state.actionsToday}/${limits.maxTxPerDay})`;
-  if (o.state.lastActionAt !== null) {
-    const since = (now - o.state.lastActionAt) / 1000;
-    if (since < limits.minSecondsBetweenActions) return `cooldown: ${Math.round(since)}s since the last action, minimum ${limits.minSecondsBetweenActions}s`;
+  if (o.state.lastMoveAt !== null && o.state.lastMoveAt !== undefined) {
+    const since = (now - o.state.lastMoveAt) / 1000;
+    if (since < limits.minSecondsBetweenActions) return `cooldown: ${Math.round(since)}s since the last band move in this pool, minimum ${limits.minSecondsBetweenActions}s`;
   }
   if (o.state.lastPrice && o.snapshot.activePrice > 0) {
     const move = Math.abs(o.snapshot.activePrice / o.state.lastPrice - 1) * 100;

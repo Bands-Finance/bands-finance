@@ -84,7 +84,7 @@ export interface Observation {
   /** quote / quoteSymbol: the wallet's balance of the pool's quote token (absent or = sol for a SOL pool) */
   wallet: { address: string; sol: number; token: number; tokenSymbol: string; quote?: number; quoteSymbol?: string };
   analytics: PoolAnalytics | null;
-  state: { actionsToday: number; lastActionAt: number | null; lastPrice: number | null; killSwitch: boolean };
+  state: { actionsToday: number; lastActionAt: number | null; lastMoveAt?: number | null; lastPrice: number | null; killSwitch: boolean };
   recent: JournalGlimpse[];
   screen: ScreenContext | null;
   portfolio: PortfolioContext;
@@ -164,7 +164,7 @@ export function formatObservation(o: Observation): string {
   lines.push("");
   lines.push("## Risk bookkeeping");
   lines.push(`- actions today: ${o.state.actionsToday}`);
-  lines.push(`- last action: ${o.state.lastActionAt ? `${Math.round((Date.now() - o.state.lastActionAt) / 60000)} min ago` : "never"}`);
+  lines.push(`- last action: ${o.state.lastActionAt ? `${Math.round((Date.now() - o.state.lastActionAt) / 60000)} min ago` : "never"}; last band move in THIS pool: ${o.state.lastMoveAt ? `${Math.round((Date.now() - o.state.lastMoveAt) / 60000)} min ago (the cooldown is per pool)` : "never"}`);
   lines.push(`- kill switch: ${o.state.killSwitch ? "ACTIVE (no new exposure)" : "off"}`);
   lines.push("");
   if (o.screen?.hot?.length) {

@@ -293,6 +293,8 @@ function updateState(state: RiskState, exec: ExecutionResult, positions: Positio
   if (exec.txs.length > 0) {
     state.actionsToday += 1;
     state.lastActionAt = Date.now();
+    // Band moves start this pool's cooldown; a fee claim does not.
+    if (exec.opened || exec.closed) (state.lastMoveByPool ??= {})[snapshot.address] = Date.now();
   }
   if (exec.ok && exec.opened) {
     state.entryValueSol[exec.opened.address] = exec.opened.entryValueSol;
@@ -391,7 +393,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     positions,
     wallet: { address: app.wallet.publicKey.toBase58(), sol, token: token.ui, tokenSymbol: snapshot.baseToken.symbol, quote, quoteSymbol: q.symbol },
     analytics,
-    state: { actionsToday: state.actionsToday, lastActionAt: state.lastActionAt, lastPrice, killSwitch },
+    state: { actionsToday: state.actionsToday, lastActionAt: state.lastActionAt, lastMoveAt: state.lastMoveByPool?.[o.address] ?? null, lastPrice, killSwitch },
     recent: readRecent(40)
       .filter((e) => e.pool.address === o.address)
       .slice(0, 5)

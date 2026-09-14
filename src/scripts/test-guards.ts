@@ -170,10 +170,13 @@ test("price move sanity check", () => {
 test("daily cap and cooldown", () => {
   const capped = { ...freshState(), actionsToday: 24 };
   assert.equal(evaluate(open(), ctx({ state: capped }), limits).allowed, false);
-  const recent = { ...freshState(), lastActionAt: Date.now() - 60_000 };
+  const recent = { ...freshState(), lastActionAt: Date.now() - 60_000, lastMoveByPool: { pool: Date.now() - 60_000 } };
   const v = evaluate(open(), ctx({ state: recent }), limits);
   assert.equal(v.allowed, false);
   assert.match(v.violations.join(), /cooldown/);
+  // the cooldown is per pool: a move elsewhere does not block this pool
+  const elsewhere = { ...freshState(), lastActionAt: Date.now() - 60_000, lastMoveByPool: { other: Date.now() - 60_000 } };
+  assert.equal(evaluate(open(), ctx({ state: elsewhere }), limits).allowed, true);
 });
 
 test("stop-loss overrides the model and skips the cooldown", () => {
@@ -324,13 +327,14 @@ test("CLOSE_POSITION from the LLM is exempt from cooldown and the daily cap", ()
   assert.match(evaluate(claim, ctx({ positions: [position], state }), limits).violations.join(), /daily action cap/);
 });
 
-test("an engine COLLECT is not an exit: the guards still rate-limit it", () => {
+test("an engine COLLECT is not an exit: the daily cap still applies, the cooldown does not", () => {
   const claim: Decision = { ...open(), action: "CLAIM_FEES", open: null, positionAddress: "pos1" };
-  const state = { ...freshState(), lastActionAt: NOW - 10_000 };
-  const v = evaluate(claim, ctx({ positions: [position], state, source: "engine" }), limits);
+  const capped = { ...freshState(), actionsToday: 24 };
+  const v = evaluate(claim, ctx({ positions: [position], state: capped, source: "engine" }), limits);
   assert.equal(v.allowed, false);
-  assert.match(v.violations.join(), /cooldown/);
-  assert.equal(evaluate(claim, ctx({ positions: [position], source: "engine" }), limits).allowed, true);
+  assert.match(v.violations.join(), /daily action cap/);
+  const recentMove = { ...freshState(), lastActionAt: NOW - 10_000, lastMoveByPool: { pool: NOW - 10_000 } };
+  assert.equal(evaluate(claim, ctx({ positions: [position], state: recentMove, source: "engine" }), limits).allowed, true);
 });
 
 test("the per-band stop replaces the global limit when present", () => {

@@ -527,7 +527,8 @@ test("directives: COLLECT only when the guards' rate limits would let it through
   assert.equal(d.kind, "COLLECT");
   assert.equal(d.decision.action, "CLAIM_FEES");
   assert.equal(d.decision.positionAddress, "pos1");
-  assert.equal(engineDirective(dctx({ positions: [rich], state: freshState({ lastActionAt: T0 - 60_000 }) })), null, "cooldown");
+  // a recent band move does not cool a claim down; only the daily cap and the collect cap can stop it
+  assert.equal(engineDirective(dctx({ positions: [rich], state: freshState({ lastActionAt: T0 - 60_000, lastMoveByPool: { pool: T0 - 60_000 } }) }))?.kind, "COLLECT", "claims are not cooled down");
   assert.equal(engineDirective(dctx({ positions: [rich], state: freshState({ actionsToday: 24 }) })), null, "daily cap");
   assert.equal(engineDirective(dctx({ positions: [rich], collectsToday: 30 })), null, "collect cap");
   // a stop beats a collect

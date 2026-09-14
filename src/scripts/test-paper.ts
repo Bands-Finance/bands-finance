@@ -599,7 +599,7 @@ async function main(): Promise<void> {
       [{ engine: { ...e, sizeMultiplier: 0, regime: { medianMove24hPct: -20, multiplier: 0, reason: "regime: opens off" } } }, /regime: opens off/],
       [{ engine: { ...e, knife: "knife: -25.0% in 30 min" } }, /knife/],
       [{ engine: { ...e, basis: { session: "closed", minutesToOpen: 400, basisPct: 3, perpSymbol: "NVDA", perpMid: 1, widthMultiplier: 2, reason: "basis: market closed" } } }, /basis: market closed/],
-      [{ state: { ...obs().state, lastActionAt: T0 - 100e3 } }, /cooldown: 100s since the last action, minimum 600s/],
+      [{ state: { ...obs().state, lastActionAt: T0 - 100e3, lastMoveAt: T0 - 100e3 } }, /cooldown: 100s since the last band move in this pool, minimum 600s/],
       [{ state: { ...obs().state, actionsToday: 24 } }, /daily action cap reached \(24\/24\)/],
       [{ state: { ...obs().state, lastPrice: p(260) / 2 } }, /price moved 100.0% since the last cycle/],
       [{ portfolio: { activePools: [], poolsWithBands: 4, maxActivePools: 4, otherExposureSol: 80 } }, /pool cap 4\/4/],
