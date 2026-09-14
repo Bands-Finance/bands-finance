@@ -9,6 +9,12 @@
  * CLMM pool (stock book, session width, resting), the paper executor on a CLMM snapshot, and the
  * executor's refusal to broadcast on a non-live venue with DRY_RUN=false.
  */
+// The venue tests check geometry and wiring, not economics: their fixture pools are thin enough that
+// the policy's seat-yield floor would refuse them. The floor and the payback test have their own tests
+// in src/scripts/test-paper.ts.
+process.env.POLICY_MIN_SEAT_YIELD_PCT = "0";
+process.env.POLICY_MAX_PAYBACK_HOURS = "0";
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
