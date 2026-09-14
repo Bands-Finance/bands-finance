@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mr Bands, running continuously as a PAPER desk: real pools, live prices, a pretend wallet of
+  100 SOL + 10,000 USDC. Nothing is broadcast (DRY_RUN stays on and PAPER_SOL refuses to run
+  with it off). After each screen the loop pushes a snapshot to bands.finance, at most every
+  30 minutes, so the site shows what the desk is doing.
+
+  Install:  cp ops/com.bands.mrbands.paper.plist ~/Library/LaunchAgents/
+            launchctl load ~/Library/LaunchAgents/com.bands.mrbands.paper.plist
+  Stop:     launchctl unload ~/Library/LaunchAgents/com.bands.mrbands.paper.plist
+  Watch:    tail -f data-live/mrbands.log   ·  API: http://localhost:3100/api/journal
+  Book:     DATA_DIR=data-live npm run paper:report
+  Halt now: touch STOP   (blocks every new band; exits still run)
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.bands.mrbands.paper</string>
+  <key>WorkingDirectory</key><string>/Users/zach/Bands.Finance/mr-bands</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/npm</string>
+    <string>run</string>
+    <string>live</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>120</integer>
+  <key>StandardOutPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-live/mrbands.log</string>
+  <key>StandardErrorPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-live/mrbands.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string>
+    <key>DATA_DIR</key><string>data-live</string>
+    <key>PAPER_SOL</key><string>100</string>
+    <key>PAPER_USDC</key><string>10000</string>
+    <key>BOOK</key><string>stocks</string>
+    <key>MAX_ACTIVE_POOLS</key><string>4</string>
+    <key>MAX_POSITION_SOL</key><string>44</string>
+    <key>MAX_TOTAL_EXPOSURE_SOL</key><string>175</string>
+    <key>GAS_RESERVE_SOL</key><string>1</string>
+    <key>MAX_TX_PER_DAY</key><string>48</string>
+    <key>CYCLE_INTERVAL_SEC</key><string>300</string>
+    <key>SCREEN_INTERVAL_SEC</key><string>1800</string>
+    <key>AUTO_DEPLOY</key><string>true</string>
+    <key>AUTO_DEPLOY_MIN_MINUTES</key><string>30</string>
+    <key>SERVE_PORT</key><string>3100</string>
+  </dict>
+</dict>
+</plist>

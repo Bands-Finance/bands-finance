@@ -13,10 +13,10 @@ export interface ModeBannerProps {
  * it can never disagree with the rest of the page.
  */
 export function ModeBanner({ status }: ModeBannerProps) {
-  const gloss = status.mode === "dry-run" ? GLOSS.dryRun : status.mode === "demo" ? GLOSS.demo : null;
+  const gloss = status.mode === "dry-run" ? GLOSS.dryRun : status.mode === "paper" ? GLOSS.paper : status.mode === "demo" ? GLOSS.demo : null;
   // The words the gloss hangs on, in the order we look for them. The dry-run
   // sentence says "Rehearsal mode", not "dry run", so both spellings count.
-  const words = status.mode === "dry-run" ? ["dry run", "rehearsal"] : status.mode === "demo" ? ["demo"] : [];
+  const words = status.mode === "dry-run" ? ["dry run", "rehearsal"] : status.mode === "paper" ? ["Paper trading", "paper"] : status.mode === "demo" ? ["demo"] : [];
 
   return (
     <aside className="modebanner" aria-label="Status">

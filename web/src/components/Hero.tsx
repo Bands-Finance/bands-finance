@@ -30,9 +30,11 @@ export function Hero({ record, screen, status, workingNow, agentName }: HeroProp
   const eyebrow =
     status.mode === "live"
       ? "bands.finance · live on Solana · Meteora DLMM"
-      : status.mode === "dry-run"
-        ? "bands.finance · rehearsing on Solana · nothing broadcast"
-        : "bands.finance · demo · nothing broadcast";
+      : status.mode === "paper"
+        ? "bands.finance · paper trading real pools · nothing broadcast"
+        : status.mode === "dry-run"
+          ? "bands.finance · rehearsing on Solana · nothing broadcast"
+          : "bands.finance · demo · nothing broadcast";
 
   const sim = live ? "" : " (simulated)";
   const stats = [

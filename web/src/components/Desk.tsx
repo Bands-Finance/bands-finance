@@ -239,7 +239,7 @@ function DeskInner({ entries, status, limits, screen, agentName, id }: DeskProps
       <div className="app__desk-head">
         <h2 className="app__desk-title">Watch {agentName} work</h2>
         <p className="app__desk-sub">
-          His journal, {demo ? <Gloss term="demo">a scripted demo</Gloss> : "live"}. Every line below is a real decision he wrote, with the numbers he was looking at when he wrote it. He proposes; the{" "}
+          His journal, {demo ? <Gloss term="demo">a scripted demo</Gloss> : status.mode === "paper" ? <Gloss term="paper">paper traded</Gloss> : "live"}. Every line below is a real decision he wrote, with the numbers he was looking at when he wrote it. He proposes; the{" "}
           <Gloss term="guards">guards</Gloss> decide; the wallet does only what the guards allow. Type <code>start</code> in the console to walk through one cycle.
         </p>
       </div>
@@ -261,7 +261,7 @@ function DeskInner({ entries, status, limits, screen, agentName, id }: DeskProps
         <div className="term__body" ref={bodyRef}>
           <p className="term__boot">
             {agentId} v0.1 · strategy: concentrated-liquidity <Gloss term="band">bands</Gloss> · venue: Meteora DLMM (Solana) · decides every 5 min per pool · screens every pool every 15 min · mode:{" "}
-            {status.mode === "dry-run" ? <Gloss term="dryRun">{status.short}</Gloss> : demo ? <Gloss term="demo">{status.short}</Gloss> : status.short}
+            {status.mode === "dry-run" ? <Gloss term="dryRun">{status.short}</Gloss> : status.mode === "paper" ? <Gloss term="paper">{status.short}</Gloss> : demo ? <Gloss term="demo">{status.short}</Gloss> : status.short}
           </p>
 
           {blocks.length === 0 && (

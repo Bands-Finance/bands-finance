@@ -18,6 +18,7 @@ export interface BookProps {
 const PULSE: Record<Status["mode"], { word: string; cls: string; gloss: string | undefined }> = {
   live: { word: "live", cls: "", gloss: undefined },
   "dry-run": { word: "rehearsal", cls: "livepos__pulse--rehearsal", gloss: GLOSS.dryRun },
+  paper: { word: "paper", cls: "livepos__pulse--rehearsal", gloss: GLOSS.paper },
   demo: { word: "demo", cls: "livepos__pulse--demo", gloss: GLOSS.demo },
 };
 

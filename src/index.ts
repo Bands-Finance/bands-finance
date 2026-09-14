@@ -153,7 +153,16 @@ function banner(app: App): void {
   console.log("=".repeat(72));
 }
 
+let lastDeployAt = 0;
+const DEPLOY_MIN_MINUTES = Number(process.env.AUTO_DEPLOY_MIN_MINUTES ?? 30);
+
 function deploySnapshot(): void {
+  const sinceMin = (Date.now() - lastDeployAt) / 60000;
+  if (lastDeployAt > 0 && sinceMin < DEPLOY_MIN_MINUTES) {
+    console.log(`[deploy] skipped: ${sinceMin.toFixed(0)} min since the last push, minimum ${DEPLOY_MIN_MINUTES}`);
+    return;
+  }
+  lastDeployAt = Date.now();
   console.log("[deploy] pushing snapshot to Vercel");
   exec("npm run web:deploy", { cwd: process.cwd() }, (err, stdout, stderr) => {
     if (err) console.error(`[deploy] failed: ${err.message}\n${stderr.slice(-400)}`);

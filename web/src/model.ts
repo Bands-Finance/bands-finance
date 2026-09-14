@@ -60,6 +60,7 @@ export const GLOSS = {
   inRange: "In range means the current price is inside the band, so it is earning right now.",
   bin: "Pools on Meteora cut price into small steps called bins. A band is a run of bins.",
   dryRun: "Dry run: he decides exactly as he would live, the wallet builds and simulates the transaction, and nothing is broadcast.",
+  paper: "Paper trading: real pools, real prices, a pretend wallet. Every band, fee and hedge below is marked against the live market, and no transaction is ever sent.",
   demo: "Demo data: a seeded five-hour example of how he decides, not a real run.",
   guards: "Plain code around the AI: caps, a stop-loss, a cooldown. It can veto him or pull him out, and it prints why.",
 };
@@ -428,7 +429,7 @@ export function recordOf(newestFirst: JournalEntry[]): AgentRecord | null {
 
 /* ---------- status: one honest sentence ---------- */
 
-export type Mode = "demo" | "dry-run" | "live";
+export type Mode = "demo" | "paper" | "dry-run" | "live";
 
 export interface Status {
   mode: Mode;
@@ -443,11 +444,16 @@ export function statusOf(newestFirst: JournalEntry[], now: number, demo: boolean
   const latest = newestFirst[0];
   const lastTs = latest ? new Date(latest.ts).getTime() : null;
   const ageMs = lastTs ? now - lastTs : null;
-  const mode: Mode = demo ? "demo" : latest?.mode === "live" ? "live" : "dry-run";
+  // A paper run says so: the decisions and the marks are real, the wallet is not.
+  const paper = !demo && latest?.execution?.mode === "paper";
+  const mode: Mode = demo ? "demo" : paper ? "paper" : latest?.mode === "live" ? "live" : "dry-run";
   const ago = ageMs === null ? "" : ageMs < 90e3 ? "a minute ago" : ageMs < 3600e3 ? `${Math.round(ageMs / 60e3)} min ago` : ageMs < 86400e3 ? `${Math.round(ageMs / 3600e3)} h ago` : `${Math.round(ageMs / 86400e3)} d ago`;
   const span = latest && newestFirst.length ? (() => { const first = new Date(newestFirst[newestFirst.length - 1].ts).getTime(); const h = (lastTs! - first) / 3600e3; return h < 48 ? `${Math.round(h)} hours` : `${Math.round(h / 24)} days`; })() : "";
   if (mode === "demo") {
     return { mode, lastTs, ageMs, short: "demo", sentence: `This is a scripted demo: ${span} of simulated decisions in ${latest?.pool.label ?? "one pool"}, written to show how Mr Bands decides. No wallet, no real money, nothing sent to Solana.` };
+  }
+  if (mode === "paper") {
+    return { mode, lastTs, ageMs, short: "paper", sentence: `Paper trading: Mr Bands is working real pools at live prices with a pretend wallet. Bands, fees and hedges are marked against the market; nothing is sent to Solana. Last decision ${ago}.` };
   }
   if (mode === "dry-run") {
     return { mode, lastTs, ageMs, short: "dry run", sentence: `Rehearsal mode: Mr Bands is deciding on a real pool with a wallet that sends nothing. Every transaction is built and simulated, never broadcast. Last decision ${ago}.` };

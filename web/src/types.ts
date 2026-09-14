@@ -59,7 +59,7 @@ export interface TxReport {
 }
 
 export interface Execution {
-  mode: "none" | "dry-run" | "live";
+  mode: "none" | "dry-run" | "live" | "paper";
   ok: boolean;
   txs: TxReport[];
   opened?: { address: string; entryValueSol: number };

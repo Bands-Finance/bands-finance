@@ -15,6 +15,7 @@ import { loadHot } from "../hot";
 import { loadEngineState, circuitHalted, standingDown } from "../engine/breakers";
 import { killSwitchActive } from "../risk/state";
 import { OPEN_COST_ESTIMATE_SOL } from "../tools/dlmm";
+import { paperEnv } from "../paper/env";
 
 type Level = "PASS" | "WARN" | "FAIL";
 interface Check { name: string; level: Level; detail: string }
@@ -26,7 +27,10 @@ async function main(): Promise<void> {
   const dataDir = path.resolve(process.cwd(), config.dataDir);
 
   // 1. Mode and switches
-  add("mode", config.dryRun ? "WARN" : "PASS", config.dryRun ? "DRY_RUN is on: nothing is broadcast (set DRY_RUN=false to go live)" : "DRY_RUN=false: transactions WILL be broadcast");
+  const paper = paperEnv();
+  const paperOn = paper.sol > 0 || paper.usdc > 0;
+  add("mode", config.dryRun ? "WARN" : "PASS", config.dryRun ? `DRY_RUN is on: nothing is broadcast${paperOn ? "" : " (set DRY_RUN=false to go live)"}` : "DRY_RUN=false: transactions WILL be broadcast");
+  if (paperOn) add("paper book", "PASS", `virtual wallet ${paper.sol} SOL + ${paper.usdc} USDC: real pools and prices, pretend money (PAPER_SOL / PAPER_USDC)`);
   add("kill switch", killSwitchActive() ? "FAIL" : "PASS", killSwitchActive() ? "STOP file or KILL_SWITCH=true is set: no new bands" : "clear");
   const lock = path.join(dataDir, "engine.lock");
   if (fs.existsSync(lock)) {
@@ -72,8 +76,8 @@ async function main(): Promise<void> {
     try {
       sol = (await connection.getBalance(pubkey, "confirmed")) / LAMPORTS_PER_SOL;
       const need = riskLimits.maxTotalExposureSol + riskLimits.gasReserveSol + config.maxActivePools * OPEN_COST_ESTIMATE_SOL;
-      const level: Level = sol === 0 ? (config.dryRun ? "WARN" : "FAIL") : sol < need ? "WARN" : "PASS";
-      add("SOL balance", level, `${sol.toFixed(4)} SOL; the limits assume ${need.toFixed(2)} SOL (exposure ${riskLimits.maxTotalExposureSol} + gas reserve ${riskLimits.gasReserveSol} + rent for ${config.maxActivePools} bands)`);
+      const level: Level = paperOn ? "PASS" : sol === 0 ? (config.dryRun ? "WARN" : "FAIL") : sol < need ? "WARN" : "PASS";
+      add("SOL balance", level, `${sol.toFixed(4)} SOL${paperOn ? " on chain (the paper book spends its own virtual SOL)" : ""}; the limits assume ${need.toFixed(2)} SOL (exposure ${riskLimits.maxTotalExposureSol} + gas reserve ${riskLimits.gasReserveSol} + rent for ${config.maxActivePools} bands)`);
     } catch (err) {
       add("SOL balance", "FAIL", `could not read: ${(err as Error).message.slice(0, 80)}`);
     }
@@ -83,7 +87,13 @@ async function main(): Promise<void> {
 
   // 5. The model
   if (!config.anthropicApiKey && !process.env.ANTHROPIC_AUTH_TOKEN) {
-    add("anthropic", "FAIL", "ANTHROPIC_API_KEY is empty: every cycle falls back to HOLD, no band is ever opened");
+    // Without a key the deterministic desk policy (src/agent/policy.ts) proposes instead of the model.
+    // That is a working desk, so it is only a failure when real money is at stake.
+    add(
+      "anthropic",
+      config.dryRun ? "WARN" : "FAIL",
+      `ANTHROPIC_API_KEY is empty: the desk policy proposes instead of ${config.agentName}${config.dryRun ? " (fine for paper and dry runs)" : "; set a key before trading real money"}`,
+    );
   } else {
     try {
       const client = new Anthropic(config.anthropicApiKey ? { apiKey: config.anthropicApiKey } : {});
