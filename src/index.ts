@@ -38,6 +38,7 @@ import { killSwitchActive, loadState, saveState, RiskState, todayUtc } from "./r
 import { execute, executeSkim, ExecutionResult, toOpenPlan } from "./executor";
 import { appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool } from "./journal";
 import { loadScreen, runScreen, tradableVenue } from "./screener";
+import { loadWatchlist, watchlistRefusal } from "./screener/watchlist";
 import type { ScreenResult } from "./screener/types";
 import { KNOWN_TOKENS, PoolSnapshot, PositionSnapshot, quoteOf, QuotePriceUnknownError, setSolPriceUsd, UnsupportedQuoteError } from "./tools/dlmm";
 import { bookEnv, isTradableVenue, liveVenues, loadVenuePool, poolsWithPositions, stockBookPools, stockMinLiquidityUsd, tradableVenues, type Venue, type VenueId, type VenuePool } from "./venues";
@@ -230,6 +231,10 @@ function fundableQuotes(app: App, sol: number, usdc: number): Set<"SOL" | "USDC"
 
 function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">): string[] {
   const set = new Set<string>([...config.pinnedPools, ...withPositions]);
+  // The operator's list decides what the desk may put money into; the screener only finds it.
+  // Pinned pools and pools already holding a band are added above, so a band can always be managed out.
+  const watch = loadWatchlist();
+  const minVolume = Number(process.env.POLICY_MIN_VOLUME_24H_USD ?? 250_000);
   const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0 && funds.has("USDC");
   const quoteOk = (q: string) => (q === "SOL" && funds.has("SOL")) || (q === "USDC" && usdcOk);
   if (funds.size === 0) console.log(`[cycle ${app.cycle}] the wallet cannot fund a seat at the minimum in SOL or USDC; only held and pinned pools are worked`);
@@ -237,18 +242,21 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   if (bookEnv() === "stocks") {
     for (const p of stockBookPools(app.screen?.pools ?? [], usdcOk)) {
       if (set.size >= config.maxActivePools) break;
-      if (quoteOk(p.quoteSymbol)) set.add(p.address);
+      if (quoteOk(p.quoteSymbol) && watchlistRefusal(p, watch) === null) set.add(p.address);
     }
   }
   // Surges first: what the fast watch found in the last hour, already filtered for liquidity, age and dumping.
   for (const r of hotRows(app)) {
     if (set.size >= config.maxActivePools) break;
-    if (quoteOk(r.quoteSymbol)) set.add(r.address);
+    const row = { address: r.address, baseSymbol: r.baseSymbol, baseMint: r.baseMint, name: r.name };
+    if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume) set.add(r.address);
   }
   const candidates = (app.screen?.pools ?? []).filter(
     (p) =>
       tradableVenue(p) &&
       quoteOk(p.quoteSymbol) &&
+      watchlistRefusal(p, watch) === null &&
+      (p.volume24hUsd ?? 0) >= minVolume &&
       p.score > 0 &&
       !p.flags.includes("thin") &&
       !p.flags.includes("no-24h-data"),

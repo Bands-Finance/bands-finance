@@ -58,6 +58,8 @@ export interface PolicyEnv {
   stockCoverPct: number;
   /** a seat whose estimated fees are under this much per day is not worth opening (POLICY_MIN_SEAT_YIELD_PCT) */
   minSeatYieldPct: number;
+  /** a pool trading less than this in 24h is not a market to make (POLICY_MIN_VOLUME_24H_USD) */
+  minVolume24hUsd: number;
   /** the one-time cost of a seat (rent that never comes back plus the swap round trip) must be earned back inside this many hours (POLICY_MAX_PAYBACK_HOURS) */
   maxPaybackHours: number;
   /** a seat under this share of the book's max exposure is not worth its rent and attention (POLICY_MIN_SEAT_PCT) */
@@ -80,6 +82,7 @@ export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
     stockCoverPct: Math.max(0.05, num(env.STOCK_COVER_PCT, STOCK_COVER_PCT_DEFAULT)),
     minSeatPct: Math.max(0, num(env.POLICY_MIN_SEAT_PCT, 5)),
     minSeatYieldPct: Math.max(0, num(env.POLICY_MIN_SEAT_YIELD_PCT, 0.4)),
+    minVolume24hUsd: Math.max(0, num(env.POLICY_MIN_VOLUME_24H_USD, 250_000)),
     maxPaybackHours: Math.max(0, num(env.POLICY_MAX_PAYBACK_HOURS, 24)),
     minScore: num(env.POLICY_MIN_SCORE, 20),
     book: bookEnv(env),
@@ -564,6 +567,16 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   const flags = [...new Set([...flaggedBy(o.screen?.flags ?? []), ...flaggedBy(hot.flags)])];
   if (flags.length) {
     return hold(`No band in ${o.poolLabel} (${priceLine}). The pool is flagged ${flags.join(", ")}; ${poolClause(o, hot)}. Not a market to make.`, `Flagged ${flags.join(", ")}. Not touching it.`, "flagged", `flagged ${flags.join(", ")}`);
+  }
+  // Volume is what pays the fees: a pool that barely trades cannot pay a seat, whatever its yield looks like.
+  const vol24h = o.screen?.volume24hUsd ?? null;
+  if (env.minVolume24hUsd > 0 && vol24h !== null && vol24h < env.minVolume24hUsd) {
+    return hold(
+      `No band in ${o.poolLabel} (${priceLine}). The pool traded $${r(vol24h, 0)} in 24h, under the $${r(env.minVolume24hUsd, 0)} the policy will make a market in: fees come from volume, and there is not enough here to pay a seat. ${poolClause(o, hot)}.`,
+      clip(`Only $${r(vol24h / 1000, 0)}k traded here in a day. Passing.`),
+      "not-worth",
+      `24h volume $${r(vol24h, 0)} under the $${r(env.minVolume24hUsd, 0)} floor`,
+    );
   }
   // Size the seat once, here: the earnings test below needs to know how big it would be.
   const straddleHere = isStockPool(o);

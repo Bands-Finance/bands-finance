@@ -503,8 +503,8 @@ async function main(): Promise<void> {
     assert.equal(policy.binsForCover(1, 5, 69), 68);
     assert.equal(policy.binsForCover(5, 5, 10), 9);
     near(policy.coveragePct(20, 24), 4.91, 1e-3);
-    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, stockCoverPct: 1.5, minSeatPct: 5, minSeatYieldPct: 0.4, maxPaybackHours: 24, minScore: 20, book: "all" });
-    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, maxPaybackHours: 24, minScore: 10, book: "stocks" });
+    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, stockCoverPct: 1.5, minSeatPct: 5, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 20, book: "all" });
+    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 10, book: "stocks" });
   });
   await test("the seat must earn: a pool that pays too little per day, or takes too long to pay back its rent, is held", () => {
     const rich = { ...obs(), screen: { ...obs().screen!, tvlUsd: 1_000_000, feeToTvl24hPct: 2 } } as typeof obs extends never ? never : ReturnType<typeof obs>;
