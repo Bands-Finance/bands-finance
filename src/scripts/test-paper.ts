@@ -719,7 +719,7 @@ async function main(): Promise<void> {
     assert.match(text, /PAPER BOOK  started 2026-09-14T12:00:00.000Z/);
     assert.match(text, /start        100.0000 SOL \+ 0.00 USDC = 100.0000 SOL \(\$10,000.00\)/);
     assert.match(text, /OPEN BANDS \(0\)\n  none/);
-    assert.match(text, /CLOSED BANDS \(1\)\n  paper-6e7V9e-1\s+ANSEM\/SOL\s+realized -0.0062 SOL \(-0.62%\)/);
+    assert.match(text, /CLOSED BANDS \(1\)\n  paper-6e7V9e-1\s+ANSEM\/SOL\s+realized -0.0032 SOL \(-0.32%\)/);
     assert.match(text, /opens 1 \| rebalances 0 \| closes 1 \| claims 0 \| holds 1 \| guard vetoes 1 \| guard overrides 0 \| engine directives STOP 1/);
     assert.match(text, /proposed by: policy 3, engine 1/);
   });
