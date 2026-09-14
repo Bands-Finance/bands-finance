@@ -380,7 +380,18 @@ async function main(): Promise<void> {
 
   await test("planDecision + callerGuardContext + verdictView: the guards judge a caller's band", async () => {
     const { evaluate } = await import("../risk/guards.js");
-    const { riskLimits } = await import("../config.js");
+    // The desk's default limits, spelled out: .env may carry a live book's limits and this test must not depend on them.
+    const riskLimits: import("../risk/limits.js").RiskLimits = {
+      maxPositionSol: 0.5,
+      maxTotalExposureSol: 1,
+      gasReserveSol: 0.1,
+      stopLossPct: 15,
+      maxBinWidth: 69,
+      maxTxPerDay: 24,
+      minSecondsBetweenActions: 600,
+      maxSlippagePct: 1,
+      maxPriceMovePctPerCycle: 40,
+    };
     const snapshot: import("../tools/dlmm.js").PoolSnapshot = {
       address: "pool",
       label: "ANSEM/SOL",

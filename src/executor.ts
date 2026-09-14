@@ -17,6 +17,10 @@
  * cannot be measured the row is "marked" from the position snapshot.
  *
  * The treasury skim runs in its own failure domain (executeSkim): a failed skim never blocks trading.
+ *
+ * Paper mode: when the loop passes `ctx.paper` (PAPER_SOL > 0 under DRY_RUN), execute() hands the
+ * verdict to src/paper/executor.ts, which applies it to the virtual book and returns mode "paper"
+ * with the same ledger rows; nothing below it runs and the chain is never touched.
  */
 import DLMM, { LbPosition } from "@meteora-ag/dlmm";
 import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
@@ -40,6 +44,7 @@ import {
   toRawBN,
 } from "./tools/dlmm";
 import type { Wallet } from "./tools/wallet";
+import { executePaper, type PaperExecutionContext } from "./paper/executor";
 
 export interface TxReport {
   label: string;
@@ -52,7 +57,8 @@ export interface TxReport {
 }
 
 export interface ExecutionResult {
-  mode: "none" | "dry-run" | "live";
+  /** "paper": applied to the paper book (src/paper), nothing built or broadcast */
+  mode: "none" | "dry-run" | "live" | "paper";
   ok: boolean;
   txs: TxReport[];
   opened?: { address: string; entryValueSol: number };
@@ -68,6 +74,8 @@ export interface ExecutionContext {
   rawPositions: LbPosition[];
   snapshot: PoolSnapshot;
   positions: PositionSnapshot[];
+  /** paper mode: the book to apply the verdict to instead of the chain (src/paper/executor.ts) */
+  paper?: Omit<PaperExecutionContext, "snapshot" | "positions">;
 }
 
 /** amountSol is the QUOTE deposit (SOL or USDC), amountToken the base: mapped onto X/Y by the quote side, not by where SOL sits. */
@@ -315,6 +323,8 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
   const d = verdict.decision;
   if (!verdict.allowed) return { mode: "none", ok: true, txs: [], notes: ["blocked by guards"] };
   if (d.action === "HOLD") return { mode: "none", ok: true, txs: [], notes: ["hold"] };
+  // Paper mode: the verdict lands in the virtual book; nothing below is built.
+  if (ctx.paper) return executePaper(verdict, { ...ctx.paper, snapshot: ctx.snapshot, positions: ctx.positions });
 
   const result: ExecutionResult = { mode: config.dryRun ? "dry-run" : "live", ok: true, txs: [], notes: [], ledger: [] };
   const owner = ctx.wallet.publicKey;

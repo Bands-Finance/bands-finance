@@ -1,7 +1,14 @@
+/**
+ * Ask Mr Bands what to do. The LLM answers when credentials exist; without them, or when the
+ * call throws or the model refuses, the desk policy (src/agent/policy.ts) proposes instead, with
+ * source "policy" and a note saying why. A bare HOLD ("fallback") remains only for the case where
+ * the policy itself throws. Never throws.
+ */
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { config, riskLimits } from "../config";
 import { buildSystemPrompt } from "./persona";
+import { policyDecide, type PolicyExtras } from "./policy";
 import { Decision, DecisionSchema, holdDecision } from "./schema";
 import { formatObservation, Observation } from "./observation";
 
@@ -14,11 +21,16 @@ export interface LlmUsage {
 
 export interface DecideResult {
   decision: Decision;
-  /** "llm" when the model answered; "fallback" when we substituted a HOLD; "engine" when a directive replaced the call */
-  source: "llm" | "fallback" | "engine" | "proposal";
+  /** "llm" when the model answered; "policy" when the desk policy proposed (no key, or the call failed); "fallback" when we substituted a bare HOLD; "engine" when a directive replaced the call */
+  source: "llm" | "fallback" | "engine" | "proposal" | "policy";
   model: string;
   usage?: LlmUsage;
   note?: string;
+}
+
+export interface DecideOptions {
+  /** the hot list, for the policy (pools off the screen carry no hot rows in their observation) */
+  hot?: PolicyExtras["hot"];
 }
 
 /** An engine directive stands in for the model this cycle: the LLM is not called. */
@@ -38,12 +50,28 @@ function getClient(): Anthropic {
   return client;
 }
 
+/** A key in the config or an auth token in the environment; without either the model is not asked. */
+export function hasLlmCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !!(config.anthropicApiKey || (env.ANTHROPIC_AUTH_TOKEN && env.ANTHROPIC_AUTH_TOKEN.trim()));
+}
+
 function fallback(note: string): DecideResult {
   return { decision: holdDecision(`${note} Holding.`, "Can't think straight. Holding."), source: "fallback", model: config.model, note };
 }
 
-/** Ask Mr Bands what to do. Never throws: any failure becomes a HOLD with a note. */
-export async function decide(observation: Observation): Promise<DecideResult> {
+/** The desk policy's proposal, as the decision the model would otherwise have made. */
+export function policyDecideResult(observation: Observation, note: string, opts: DecideOptions = {}): DecideResult {
+  try {
+    const r = policyDecide(observation, { limits: riskLimits, hot: opts.hot });
+    return { decision: r.decision, source: "policy", model: "desk-policy", note: `${note} Desk policy (${r.branch}): ${r.reason}.` };
+  } catch (err) {
+    return fallback(`${note} Desk policy failed: ${(err as Error).message}.`);
+  }
+}
+
+/** Ask Mr Bands what to do. Never throws: without a key or on any failure the desk policy proposes. */
+export async function decide(observation: Observation, opts: DecideOptions = {}): Promise<DecideResult> {
+  if (!hasLlmCredentials()) return policyDecideResult(observation, "No ANTHROPIC_API_KEY configured.", opts);
   try {
     const response = await getClient().messages.parse({
       model: config.model,
@@ -68,21 +96,21 @@ export async function decide(observation: Observation): Promise<DecideResult> {
 
     if (response.stop_reason === "refusal") {
       const why = response.stop_details?.explanation ?? "no explanation";
-      return { ...fallback(`Model declined to answer (${why}).`), usage, model: response.model };
+      return { ...policyDecideResult(observation, `Model declined to answer (${why}).`, opts), usage, model: response.model };
     }
     if (response.stop_reason === "max_tokens") {
-      return { ...fallback("Model output was truncated."), usage, model: response.model };
+      return { ...policyDecideResult(observation, "Model output was truncated.", opts), usage, model: response.model };
     }
     const parsed = response.parsed_output;
     if (!parsed) {
-      return { ...fallback("Model output did not match the decision schema."), usage, model: response.model };
+      return { ...policyDecideResult(observation, "Model output did not match the decision schema.", opts), usage, model: response.model };
     }
     return { decision: parsed, source: "llm", model: response.model, usage };
   } catch (err) {
-    if (err instanceof Anthropic.AuthenticationError) return fallback("Anthropic auth failed: check ANTHROPIC_API_KEY.");
-    if (err instanceof Anthropic.RateLimitError) return fallback("Anthropic rate limit hit.");
-    if (err instanceof Anthropic.APIConnectionError) return fallback("Could not reach the Anthropic API.");
-    if (err instanceof Anthropic.APIError) return fallback(`Anthropic API error ${err.status}: ${err.message}`);
-    return fallback(`LLM call failed: ${(err as Error).message}`);
+    if (err instanceof Anthropic.AuthenticationError) return policyDecideResult(observation, "Anthropic auth failed: check ANTHROPIC_API_KEY.", opts);
+    if (err instanceof Anthropic.RateLimitError) return policyDecideResult(observation, "Anthropic rate limit hit.", opts);
+    if (err instanceof Anthropic.APIConnectionError) return policyDecideResult(observation, "Could not reach the Anthropic API.", opts);
+    if (err instanceof Anthropic.APIError) return policyDecideResult(observation, `Anthropic API error ${err.status}: ${err.message}`, opts);
+    return policyDecideResult(observation, `LLM call failed: ${(err as Error).message}`, opts);
   }
 }

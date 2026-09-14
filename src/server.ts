@@ -27,6 +27,7 @@ import { setSolPriceUsd } from "./tools/dlmm";
 import { engineRoutes } from "./engine/routes";
 import { basisRoutes } from "./basis";
 import { hotRoutes } from "./hot";
+import { paperRoutes } from "./paper";
 import { platformRoutes } from "./platform/routes";
 
 export function buildApp(): Hono {
@@ -72,6 +73,8 @@ export function buildApp(): Hono {
   basisRoutes(app);
   // The fast watch: pools surging in the last hour (src/hot).
   hotRoutes(app);
+  // The paper book (virtual wallet + bands) when PAPER_SOL is set (src/paper).
+  paperRoutes(app);
 
   app.get("/api/feed.md", (c) => {
     try {

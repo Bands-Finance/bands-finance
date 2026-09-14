@@ -189,6 +189,7 @@ export function renderFeed(entries: JournalEntry[]): string {
       }
     }
     if (e.llm.source === "fallback") out.push(`\n_LLM fallback: ${e.llm.note}_`);
+    if (e.llm.source === "policy") out.push(`\n_Desk policy: ${e.llm.note}_`);
     if (e.llm.source === "engine") out.push(`\n_Engine directive: ${e.llm.note}_`);
     out.push("");
   }

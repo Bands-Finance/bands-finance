@@ -8,6 +8,11 @@
  * The engine (src/engine) runs before the LLM (FLATTEN / STOP / COLLECT directives) and after it
  * (ledger rows, stop roll, bench, circuit and portfolio marks, skim, watchdog). One process holds
  * the key: boot refuses when another live process holds the same wallet.
+ *
+ * Paper mode (PAPER_SOL > 0 under DRY_RUN, src/paper): the wallet and the bands are virtual. Bands
+ * are marked against the live pool every cycle in place of getUserPositions, balances come from the
+ * book, and execute() applies the verdict to the book. Screen, hot watch, basis, directives, guards,
+ * engine state and journal run unchanged.
  */
 import { exec } from "node:child_process";
 import DLMM from "@meteora-ag/dlmm";
@@ -48,6 +53,7 @@ import { engineDirective } from "./engine/directives";
 import { forgetBand, knifeReason, outOfRangeSec, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
 import { collectsOnDay, dayOf, readLedgerRows, realizedOnDaySol, workingSol } from "./engine/ledger";
 import { acquireLock, heartbeat, releaseLock, startWatchdog } from "./engine/watchdog";
+import { assertPaperEnv, emptyBook, loadPaperBook, markPool, paperEnabled, paperEnv, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
 
 interface App {
   connection: Connection;
@@ -60,6 +66,9 @@ interface App {
   engine: EngineState;
   /** the board regime for this iteration */
   regime: RegimeView;
+  /** the paper book when PAPER_SOL > 0 (src/paper); null otherwise */
+  paper: PaperBook | null;
+  paperEnv: PaperEnv;
 }
 
 interface Observed {
@@ -97,12 +106,13 @@ function proposalDecision(p: Proposal): Decision {
 }
 
 function banner(app: App): void {
-  const mode = config.dryRun ? "DRY RUN (nothing is broadcast)" : "LIVE (real transactions)";
+  const mode = app.paper ? `PAPER: virtual ${app.paper.startSol} SOL wallet${app.paper.startUsdc > 0 ? ` + ${app.paper.startUsdc} USDC` : ""}, live prices, nothing broadcast` : config.dryRun ? "DRY RUN (nothing is broadcast)" : "LIVE (real transactions)";
   console.log("=".repeat(72));
   console.log(`${config.agentName}  |  ${mode}`);
   console.log(`pools     ${config.pinnedPools.length ? `pinned ${config.pinnedPools.join(", ")} + ` : ""}screener top picks, max ${config.maxActivePools} at once`);
   console.log(`quotes    SOL and USDC (a USDC pool is valued at the screen's SOL price: ${app.screen?.solPriceUsd ? `$${app.screen.solPriceUsd.toFixed(2)}` : "none yet, USDC pools skipped until a screen lands"})`);
   console.log(`wallet    ${app.wallet.publicKey.toBase58()}${app.wallet.ephemeral ? "  (ephemeral, no key configured)" : ""}${cfg.expectedWallet ? `  expected ${cfg.expectedWallet}` : ""}`);
+  if (app.paper) console.log(`paper     book ${app.paper.startedAt}: ${app.paper.wallet.sol.toFixed(4)} SOL, ${app.paper.wallet.usdc.toFixed(2)} USDC, ${app.paper.bands.length} band(s) open, ${app.paper.closed.length} closed; slippage ${app.paperEnv.slippagePct}% per open/close; report: DATA_DIR=${config.dataDir} npm run paper:report`);
   console.log(`model     ${config.model}`);
   console.log(`interval  ${config.cycleIntervalSec}s cycles, screen every ${config.screen.intervalSec}s`);
   console.log("limits");
@@ -253,10 +263,32 @@ function move24hPct(app: App, address: string, state: RiskState): number | null 
   return first > 0 ? (last / first - 1) * 100 : null;
 }
 
+/**
+ * The pool's price on the previous cycle, from its own history: the sample before the one this
+ * iteration recorded. state.lastPrice is one number for the whole state, so with several pools it
+ * would compare this pool against whichever pool was decided last and veto every open as a "price move".
+ */
+function previousPrice(state: RiskState, pool: string): number | null {
+  const h = state.priceHistory?.[pool];
+  if (!h || h.length < 2) return null;
+  const sorted = [...h].sort((a, b) => a.ts - b.ts);
+  const prev = sorted[sorted.length - 2].price;
+  return prev > 0 ? prev : null;
+}
+
+/** The 24h fee figure the paper mark accrues from: the screen row, else the hot watch's 24h volume. */
+function paperFeeSource(app: App, address: string): { fees24hUsd: number | null; volume24hUsd: number | null } | null {
+  const row = app.screen?.pools.find((p) => p.address === address);
+  if (row) return { fees24hUsd: row.fees24hUsd, volume24hUsd: row.volume24hUsd };
+  const hot = loadHot()?.rows.find((r) => r.address === address);
+  if (hot) return { fees24hUsd: null, volume24hUsd: hot.vol24hUsd };
+  return null;
+}
+
 function updateState(state: RiskState, exec: ExecutionResult, positions: PositionSnapshot[], snapshot: PoolSnapshot): void {
   state.lastPrice = snapshot.activePrice;
   for (const p of positions) {
-    if (!(p.address in state.entryValueSol)) state.entryValueSol[p.address] = p.valueInSol;
+    if (!(p.address in state.entryValueSol)) state.entryValueSol[p.address] = p.entryValueSol ?? p.valueInSol;
   }
   if (exec.txs.length > 0) {
     state.actionsToday += 1;
@@ -279,17 +311,23 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   const tag = `[cycle ${app.cycle} ${snapshot.label}]`;
   const q = quoteOf(snapshot);
   const quoteIsSol = q.symbol === "SOL";
+  const paper = app.paper;
 
   // Balances: SOL always (gas), the base token, and the pool's quote token when it is not SOL.
+  // Paper mode reads them from the virtual wallet instead of the chain.
   const [token, quoteBal, analytics] = await Promise.all([
-    app.wallet.tokenBalance(new PublicKey(snapshot.baseToken.mint)),
-    quoteIsSol ? Promise.resolve(null) : app.wallet.tokenBalance(new PublicKey(q.token.mint)),
+    paper ? Promise.resolve({ ui: paperTokenBalance(paper, snapshot.baseToken.mint) }) : app.wallet.tokenBalance(new PublicKey(snapshot.baseToken.mint)),
+    quoteIsSol ? Promise.resolve(null) : paper ? Promise.resolve({ ui: paper.wallet.usdc }) : app.wallet.tokenBalance(new PublicKey(q.token.mint)),
     fetchPoolAnalytics(o.address, snapshot),
   ]);
   const quote = quoteIsSol ? sol : (quoteBal?.ui ?? 0);
   const state = loadState();
   const killSwitch = killSwitchActive();
-  for (const p of positions) p.entryValueSol = state.entryValueSol[p.address];
+  // A paper band carries its entry from the book; a chain position has none until the state says.
+  for (const p of positions) p.entryValueSol = state.entryValueSol[p.address] ?? p.entryValueSol;
+  // The price this pool showed last cycle (not whichever pool was decided last: see previousPrice).
+  const lastPrice = previousPrice(state, o.address);
+  const guardState: RiskState = { ...state, lastPrice };
   trackOutOfRange(state, positions, now);
   trackFeesPending(state, positions, snapshot, now, cfg.collectFloorSol);
   const others = all.filter((x) => x !== o);
@@ -353,7 +391,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     positions,
     wallet: { address: app.wallet.publicKey.toBase58(), sol, token: token.ui, tokenSymbol: snapshot.baseToken.symbol, quote, quoteSymbol: q.symbol },
     analytics,
-    state: { actionsToday: state.actionsToday, lastActionAt: state.lastActionAt, lastPrice: state.lastPrice, killSwitch },
+    state: { actionsToday: state.actionsToday, lastActionAt: state.lastActionAt, lastPrice, killSwitch },
     recent: readRecent(40)
       .filter((e) => e.pool.address === o.address)
       .slice(0, 5)
@@ -375,7 +413,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     ? engineDecideResult(directive.decision, `${directive.kind}: ${directive.reason}`)
     : proposal
       ? proposalDecideResult(proposalDecision(proposal), `proposal ${proposal.id} by ${proposal.proposerName} (${proposal.proposerId})`)
-      : await decide(observation);
+      : await decide(observation, { hot: hotRows(app, 8) });
   console.log(`${tag} ${directive ? `engine directive ${directive.kind}` : proposal ? `proposal ${proposal.id}` : `${config.agentName} proposes`} ${llm.decision.action} (${llm.source}): "${llm.decision.headline}"`);
 
   const engineCtx: EngineGuardContext = {
@@ -393,13 +431,21 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   };
   const verdict = evaluate(
     llm.decision,
-    { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm" },
+    { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm" },
     riskLimits,
   );
   if (verdict.overrides.length) console.log(`${tag} guard override: ${verdict.overrides.join("; ")}`);
   if (verdict.violations.length) console.log(`${tag} guards BLOCKED: ${verdict.violations.join("; ")}`);
 
-  const execution = await execute(verdict, { dlmm: o.dlmm, wallet: app.wallet, rawPositions: raw, snapshot, positions });
+  const execution = await execute(verdict, {
+    dlmm: o.dlmm,
+    wallet: app.wallet,
+    rawPositions: raw,
+    snapshot,
+    positions,
+    paper: paper ? { book: paper, slippagePct: app.paperEnv.slippagePct, now } : undefined,
+  });
+  if (paper) savePaperBook(paper);
   for (const t of execution.txs) {
     console.log(`${tag} ${execution.mode} ${t.label}: ${t.signature ?? t.skipped ?? (t.ok ? "simulated ok" : `FAILED ${t.error}`)}`);
   }
@@ -518,8 +564,14 @@ async function runIteration(app: App): Promise<void> {
   await ensureScreen(app);
   app.engine = loadEngineState();
 
-  const held = await DLMM.getAllLbPairPositionsByUser(app.connection, app.wallet.publicKey);
-  const withPositions = [...held.entries()].filter(([, info]) => info.lbPairPositionsData.length > 0).map(([addr]) => addr);
+  const paper = app.paper;
+  let withPositions: string[];
+  if (paper) {
+    withPositions = poolsWithBands(paper);
+  } else {
+    const held = await DLMM.getAllLbPairPositionsByUser(app.connection, app.wallet.publicKey);
+    withPositions = [...held.entries()].filter(([, info]) => info.lbPairPositionsData.length > 0).map(([addr]) => addr);
+  }
   const pools = pickPools(app, withPositions);
   if (pools.length === 0) {
     console.log(`[cycle ${app.cycle}] nothing to work: no pinned pools, no bands held, no screen picks`);
@@ -533,8 +585,15 @@ async function runIteration(app: App): Promise<void> {
     try {
       const dlmm = await getDlmm(app, address);
       const snapshot = await getPoolSnapshot(dlmm, 10, { solPriceUsd });
-      const { raw, positions } = await getUserPositions(dlmm, app.wallet.publicKey, snapshot);
-      observed.push({ address, dlmm, snapshot, raw, positions });
+      if (paper) {
+        // The paper bands of this pool, marked against the live snapshot (fees accrue here).
+        const positions = markPool(paper, snapshot, { now: Date.now(), fees: paperFeeSource(app, address), solPriceUsd });
+        savePaperBook(paper);
+        observed.push({ address, dlmm, snapshot, raw: [], positions });
+      } else {
+        const { raw, positions } = await getUserPositions(dlmm, app.wallet.publicKey, snapshot);
+        observed.push({ address, dlmm, snapshot, raw, positions });
+      }
     } catch (err) {
       // A USDC pool without a SOL price, or a pool quoted in neither, is skipped with its reason: it
       // cannot be valued in SOL, so no guard, breaker or ledger row sees it this cycle.
@@ -548,23 +607,35 @@ async function runIteration(app: App): Promise<void> {
   const state = loadState();
   for (const o of observed) recordPrice(state, o.address, o.snapshot.activePrice, now);
   saveState(state);
-  app.regime = regimeView(observed.map((o) => move24hPct(app, o.address, state)));
+  // The board regime reads the broad tradable board (top 20 by score) plus the pools being worked,
+  // not just the picks: the picks are the surges, and two dumping surges must not switch the whole book off.
+  const usdcPriced = solPriceOf(app) !== null;
+  const boardSample = (app.screen?.pools ?? [])
+    .filter((p) => tradableVenue(p) && (p.quoteSymbol === "SOL" || (p.quoteSymbol === "USDC" && usdcPriced)) && p.score > 0)
+    .slice(0, 20)
+    .map((p) => p.address);
+  const regimeAddrs = [...new Set([...boardSample, ...observed.map((o) => o.address)])];
+  app.regime = regimeView(regimeAddrs.map((a) => move24hPct(app, a, state)));
   if (app.regime.reason) console.log(`[cycle ${app.cycle}] ${app.regime.reason}`);
 
-  const solAtStart = await app.wallet.solBalance();
+  const solAtStart = paper ? paper.wallet.sol : await app.wallet.solBalance();
   // The wallet's USDC is capital too (a closed USDC band returns as USDC): it marks at the SOL price.
   let usdcAtStart = 0;
-  try {
-    usdcAtStart = (await app.wallet.usdcBalance()).ui;
-  } catch (err) {
-    console.error(`[cycle ${app.cycle}] could not read the wallet's USDC: ${(err as Error).message}`);
+  if (paper) {
+    usdcAtStart = paper.wallet.usdc;
+  } else {
+    try {
+      usdcAtStart = (await app.wallet.usdcBalance()).ui;
+    } catch (err) {
+      console.error(`[cycle ${app.cycle}] could not read the wallet's USDC: ${(err as Error).message}`);
+    }
   }
   // Pools holding a band are decided first: closes free capital for opens later in the pass.
   observed.sort((a, b) => b.positions.length - a.positions.length);
   const entries: JournalEntry[] = [];
   for (const o of observed) {
     try {
-      const sol = await app.wallet.solBalance();
+      const sol = paper ? paper.wallet.sol : await app.wallet.solBalance();
       entries.push(await runPool(app, o, observed, sol));
     } catch (err) {
       console.error(`[cycle ${app.cycle} ${o.snapshot.label}] failed:`, err);
@@ -604,6 +675,17 @@ function sleepInterruptible(ms: number): Promise<void> {
 
 async function main(): Promise<void> {
   const once = process.argv.includes("--once");
+  // Paper mode never shares a process with a live key.
+  assertPaperEnv(config.dryRun);
+  const pEnv = paperEnv();
+  let paper: PaperBook | null = null;
+  if (paperEnabled(process.env, config.dryRun)) {
+    const existing = loadPaperBook();
+    paper = existing ?? emptyBook(pEnv.sol, pEnv.usdc);
+    if (existing) console.log(`[paper] resuming the book started ${existing.startedAt} (${existing.startSol} SOL${existing.startSol !== pEnv.sol ? `; PAPER_SOL=${pEnv.sol} ignored, the book keeps its start` : ""})`);
+    else console.log(`[paper] new book: ${pEnv.sol} SOL, ${pEnv.usdc} USDC`);
+    savePaperBook(paper);
+  }
   const connection = new Connection(config.rpcUrl, "confirmed");
   const wallet = Wallet.fromConfig(connection);
   acquireLock(wallet.publicKey.toBase58(), config.cycleIntervalSec);
@@ -621,6 +703,8 @@ async function main(): Promise<void> {
     screenAt: 0,
     engine: loadEngineState(),
     regime: regimeView([]),
+    paper,
+    paperEnv: pEnv,
   };
   if (app.screen) app.screenAt = new Date(app.screen.generatedAt).getTime();
   setSolPriceUsd(solPriceOf(app));
