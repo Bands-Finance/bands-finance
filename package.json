@@ -26,7 +26,9 @@
     "basis": "tsx src/scripts/basis.ts",
     "test:backpack": "tsx src/scripts/test-backpack.ts",
     "hot": "tsx src/scripts/hot.ts",
-    "test:hot": "tsx src/scripts/test-hot.ts"
+    "test:hot": "tsx src/scripts/test-hot.ts",
+    "preflight": "tsx src/scripts/preflight.ts",
+    "live": "npm run preflight && tsx src/index.ts"
   },
   "keywords": [],
   "author": "",

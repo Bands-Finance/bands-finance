@@ -1,0 +1,131 @@
+/**
+ * Go-live preflight. Reads the environment, the chain and the data files and prints a checklist:
+ * PASS / WARN / FAIL per item, and a verdict. Exit code 1 on any FAIL so `npm run live` can refuse.
+ *   npm run preflight
+ * Nothing here moves money. The Anthropic check sends one tiny request (a few tokens).
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import Anthropic from "@anthropic-ai/sdk";
+import { config, riskLimits } from "../config";
+import { loadKeypair } from "../tools/wallet";
+import { loadScreen } from "../screener";
+import { loadHot } from "../hot";
+import { loadEngineState, circuitHalted, standingDown } from "../engine/breakers";
+import { killSwitchActive } from "../risk/state";
+import { OPEN_COST_ESTIMATE_SOL } from "../tools/dlmm";
+
+type Level = "PASS" | "WARN" | "FAIL";
+interface Check { name: string; level: Level; detail: string }
+const checks: Check[] = [];
+const add = (name: string, level: Level, detail: string) => checks.push({ name, level, detail });
+const ageMin = (iso: string | undefined) => (iso ? (Date.now() - new Date(iso).getTime()) / 60000 : Infinity);
+
+async function main(): Promise<void> {
+  const dataDir = path.resolve(process.cwd(), config.dataDir);
+
+  // 1. Mode and switches
+  add("mode", config.dryRun ? "WARN" : "PASS", config.dryRun ? "DRY_RUN is on: nothing is broadcast (set DRY_RUN=false to go live)" : "DRY_RUN=false: transactions WILL be broadcast");
+  add("kill switch", killSwitchActive() ? "FAIL" : "PASS", killSwitchActive() ? "STOP file or KILL_SWITCH=true is set: no new bands" : "clear");
+  const lock = path.join(dataDir, "engine.lock");
+  if (fs.existsSync(lock)) {
+    try {
+      const l = JSON.parse(fs.readFileSync(lock, "utf8")) as { pid: number; heartbeat: number };
+      const fresh = Date.now() - l.heartbeat < Math.max(3 * config.cycleIntervalSec, 900) * 1000;
+      add("engine lock", fresh ? "WARN" : "PASS", fresh ? `another process (pid ${l.pid}) holds this wallet; only one may run` : "stale lock, will be replaced");
+    } catch {
+      add("engine lock", "WARN", "unreadable lock file");
+    }
+  } else add("engine lock", "PASS", "free");
+
+  // 2. Wallet
+  let pubkey: PublicKey | null = null;
+  if (!config.walletSecretKey) add("wallet key", config.dryRun ? "WARN" : "FAIL", "WALLET_SECRET_KEY is empty (dry-run uses a throwaway key)");
+  else {
+    try {
+      pubkey = loadKeypair(config.walletSecretKey).publicKey;
+      add("wallet key", "PASS", `loads; address ${pubkey.toBase58()}`);
+    } catch (err) {
+      add("wallet key", "FAIL", `does not parse: ${(err as Error).message}`);
+    }
+  }
+  if (config.engine.expectedWallet) {
+    const ok = pubkey?.toBase58() === config.engine.expectedWallet;
+    add("EXPECTED_WALLET", ok ? "PASS" : "FAIL", ok ? "matches the loaded key" : `does not match the loaded key (${pubkey?.toBase58() ?? "none"})`);
+  } else add("EXPECTED_WALLET", "WARN", "not set: pin the address so a wrong key cannot trade");
+
+  // 3. RPC
+  const connection = new Connection(config.rpcUrl, "confirmed");
+  const publicRpc = /api\.mainnet-beta\.solana\.com/.test(config.rpcUrl);
+  try {
+    const t0 = Date.now();
+    const slot = await connection.getSlot("confirmed");
+    add("rpc", publicRpc ? "WARN" : "PASS", `${publicRpc ? "PUBLIC endpoint (rate-limited, 429s under load); use Helius or another dedicated RPC" : "dedicated endpoint"}; slot ${slot} in ${Date.now() - t0} ms`);
+  } catch (err) {
+    add("rpc", "FAIL", `unreachable: ${(err as Error).message.slice(0, 80)}`);
+  }
+
+  // 4. Balances vs limits
+  let sol = 0;
+  if (pubkey) {
+    try {
+      sol = (await connection.getBalance(pubkey, "confirmed")) / LAMPORTS_PER_SOL;
+      const need = riskLimits.maxTotalExposureSol + riskLimits.gasReserveSol + config.maxActivePools * OPEN_COST_ESTIMATE_SOL;
+      const level: Level = sol === 0 ? (config.dryRun ? "WARN" : "FAIL") : sol < need ? "WARN" : "PASS";
+      add("SOL balance", level, `${sol.toFixed(4)} SOL; the limits assume ${need.toFixed(2)} SOL (exposure ${riskLimits.maxTotalExposureSol} + gas reserve ${riskLimits.gasReserveSol} + rent for ${config.maxActivePools} bands)`);
+    } catch (err) {
+      add("SOL balance", "FAIL", `could not read: ${(err as Error).message.slice(0, 80)}`);
+    }
+  }
+  add("limits", riskLimits.maxPositionSol * config.maxActivePools <= riskLimits.maxTotalExposureSol + 1e-9 ? "PASS" : "WARN",
+    `per band ${riskLimits.maxPositionSol} SOL x ${config.maxActivePools} pools vs total ${riskLimits.maxTotalExposureSol} SOL; stop ${riskLimits.stopLossPct}%; ${riskLimits.maxTxPerDay} actions/day, ${riskLimits.minSecondsBetweenActions}s apart`);
+
+  // 5. The model
+  if (!config.anthropicApiKey && !process.env.ANTHROPIC_AUTH_TOKEN) {
+    add("anthropic", "FAIL", "ANTHROPIC_API_KEY is empty: every cycle falls back to HOLD, no band is ever opened");
+  } else {
+    try {
+      const client = new Anthropic(config.anthropicApiKey ? { apiKey: config.anthropicApiKey } : {});
+      const r = await client.messages.create({ model: config.model, max_tokens: 5, messages: [{ role: "user", content: "Reply with the single word: ready" }] });
+      const text = r.content.map((c) => ("text" in c ? c.text : "")).join("").trim();
+      add("anthropic", "PASS", `${config.model} answered "${text.slice(0, 20)}"`);
+    } catch (err) {
+      add("anthropic", "FAIL", `${config.model}: ${(err as Error).message.slice(0, 100)}`);
+    }
+  }
+
+  // 6. Data feeds
+  const screen = loadScreen();
+  add("screen", !screen ? "FAIL" : ageMin(screen.generatedAt) > 60 ? "WARN" : "PASS", screen ? `${screen.rankedPools} ranked, ${ageMin(screen.generatedAt).toFixed(0)} min old, SOL $${screen.solPriceUsd?.toFixed(2) ?? "n/a"}` : "no data/screen.json: run `npm run screen`");
+  const hot = loadHot();
+  add("hot watch", !hot ? "WARN" : ageMin(hot.generatedAt) > 15 ? "WARN" : "PASS", hot ? `${hot.rows.length} rows, ${ageMin(hot.generatedAt).toFixed(0)} min old` : "no data/hot.json yet (the loop writes it on start)");
+  const basisFile = path.join(dataDir, "basis.json");
+  add("basis", fs.existsSync(basisFile) ? "PASS" : "WARN", fs.existsSync(basisFile) ? "present" : "no data/basis.json yet (stock pools are refused until the loop writes it)");
+
+  // 7. Breakers
+  const engine = loadEngineState();
+  const now = Date.now();
+  add("circuit breaker", circuitHalted(engine.circuit, now) ? "WARN" : "PASS", circuitHalted(engine.circuit, now) ? `halted until ${new Date(engine.circuit.haltUntil).toISOString()}` : "clear");
+  add("portfolio breaker", standingDown(engine.portfolio, now) ? "WARN" : "PASS", standingDown(engine.portfolio, now) ? `standing down until ${new Date(engine.portfolio.standDownUntil).toISOString()}` : "clear");
+
+  // 8. Dormant layers
+  add("hedge", process.env.HEDGE_LIVE === "true" ? "WARN" : "PASS", process.env.HEDGE_LIVE === "true" ? "HEDGE_LIVE=true: Backpack orders will be placed when keys are set" : "off (Backpack hedging dormant)");
+  add("skim", config.engine.skim && config.engine.treasuryAddress ? "WARN" : "PASS", config.engine.skim && config.engine.treasuryAddress ? `on -> ${config.engine.treasuryAddress}` : "off");
+
+  const width = Math.max(...checks.map((c) => c.name.length));
+  console.log("=".repeat(96));
+  console.log(`PREFLIGHT  ${config.agentName}  ${new Date().toISOString()}`);
+  console.log("=".repeat(96));
+  for (const c of checks) console.log(`${c.level.padEnd(4)}  ${c.name.padEnd(width)}  ${c.detail}`);
+  const fails = checks.filter((c) => c.level === "FAIL").length;
+  const warns = checks.filter((c) => c.level === "WARN").length;
+  console.log("=".repeat(96));
+  console.log(fails ? `NOT READY: ${fails} failing, ${warns} warnings` : warns ? `READY WITH ${warns} WARNING(S)` : "READY");
+  if (fails) process.exitCode = 1;
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
