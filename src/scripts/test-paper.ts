@@ -306,7 +306,7 @@ async function main(): Promise<void> {
     near(book.rentLockedSol, 0, 1e-12, "rent unlocked");
     const proceeds = v.amountQuote + v.feeQuote + (v.amountToken + v.feeToken) * 0.997 * p(256);
     near(closed.proceedsSol, proceeds, 1e-12);
-    near(closed.realizedSol, proceeds - 1.003, 1e-12, "realized vs all-in entry");
+    near(closed.realizedSol, proceeds - 1, 1e-12, "realized vs the entry (the deposit at the open mark)");
     near(closed.slippageSol, (v.amountToken + v.feeToken) * 0.003 * p(256), 1e-12);
     near(closed.holdSec, 2400, 1e-9);
     assert.equal(closed.reason, "test close");
@@ -354,18 +354,18 @@ async function main(): Promise<void> {
     assert.equal(r.txs[0].label, "open SOL_ONLY band bins [251, 260]");
     assert.match(r.txs[0].skipped!, /^paper: opened paper-6e7V9e-1 with 1 SOL across 10 bins/);
     assert.equal(r.opened!.address, "paper-6e7V9e-1");
-    near(r.opened!.entryValueSol, 1.003, 1e-9);
+    near(r.opened!.entryValueSol, 1, 1e-9);
     addr2 = r.opened!.address;
     const row = r.ledger![0];
     assert.equal(row.mode, "dry-run");
     assert.equal(row.basis, "marked");
     assert.equal(row.mech, "open");
     assert.match(row.note, /^paper/);
-    near(row.quoteDelta!, -1.003, 1e-12);
-    near(row.solDelta, -1.003, 1e-12);
+    near(row.quoteDelta!, -1, 1e-12);
+    near(row.solDelta, -1, 1e-12);
     near(row.rentSol, -dlmm.OPEN_COST_ESTIMATE_SOL, 1e-12);
     assert.equal(row.position, addr2);
-    near(book2.wallet.sol, 100 - 1.003 - dlmm.OPEN_COST_ESTIMATE_SOL - paper.PAPER_TX_FEE_SOL, 1e-9);
+    near(book2.wallet.sol, 100 - 1 - dlmm.OPEN_COST_ESTIMATE_SOL - paper.PAPER_TX_FEE_SOL, 1e-9);
     assert.ok(fs.existsSync(path.join(tmp, "ledger.jsonl")), "the ledger file was written under DATA_DIR");
   });
   await test("HOLD and blocked verdicts never reach the book (mode none)", async () => {
@@ -402,9 +402,9 @@ async function main(): Promise<void> {
   await test("CLOSE with an engine STOP reasoning records the emergency reason; the close row carries the entry", async () => {
     const s250 = snapAt(250);
     const positions = paper.markPool(book2, s250, { now: T0 + 7200e3, fees: null, solPriceUsd: 100 });
-    const stop = closeDecision(addr2, "Engine directive STOP: stop: paper- is 16.0% below entry (1.0030 -> 0.8400 SOL), stop 13.20%. The stop is the exit; it is not negotiated.", "Stop hit.");
+    const stop = closeDecision(addr2, "Engine directive STOP: stop: paper- is 16.0% below entry (10 -> 0.8400 SOL), stop 13.20%. The stop is the exit; it is not negotiated.", "Stop hit.");
     const v = verdictOf(stop, { emergency: true });
-    assert.deepEqual(paper.closeReason(v), { reason: "STOP: stop: paper- is 16.0% below entry (1.0030 -> 0.8400 SOL), stop 13.20%", emergency: true });
+    assert.deepEqual(paper.closeReason(v), { reason: "STOP: stop: paper- is 16.0% below entry (10 -> 0.8400 SOL), stop 13.20%", emergency: true });
     assert.deepEqual(paper.closeReason(verdictOf(stop, { emergency: true, overrides: ["stop-loss: x"] })), { reason: "stop-loss: x", emergency: true });
     assert.deepEqual(paper.closeReason(verdictOf(stop)), { reason: "Stop hit.", emergency: false });
     const r = await execute(v, ctx(s250, positions, T0 + 7200e3));
@@ -412,7 +412,7 @@ async function main(): Promise<void> {
     assert.equal(r.mode, "paper");
     const row = r.ledger![0];
     assert.equal(row.mech, "close");
-    near(row.entryValueSol!, 1.003, 1e-9);
+    near(row.entryValueSol!, 1, 1e-9);
     near(row.rentSol, dlmm.POSITION_RENT_SOL, 1e-12);
     assert.equal(book2.closed[1].emergency, true);
     assert.match(book2.closed[1].reason, /^STOP: /);
