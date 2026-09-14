@@ -503,8 +503,8 @@ async function main(): Promise<void> {
     assert.equal(policy.binsForCover(1, 5, 69), 68);
     assert.equal(policy.binsForCover(5, 5, 10), 9);
     near(policy.coveragePct(20, 24), 4.91, 1e-3);
-    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, minScore: 20, book: "all" });
-    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, minScore: 10, book: "stocks" });
+    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, minSeatPct: 5, minScore: 20, book: "all" });
+    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, minSeatPct: 2, minScore: 10, book: "stocks" });
   });
   await test("no band, score above the floor: OPEN a 24-bin SOL-only Spot band sized at the max band", () => {
     const r = policy.policyDecide(obs(), x);

@@ -23,6 +23,8 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { config, riskLimits } from "./config";
 import { decide, engineDecideResult, proposalDecideResult } from "./agent/decide";
 import type { Decision } from "./agent/schema";
+import { policyEnv } from "./agent/policy";
+import { OPEN_COST_ESTIMATE_SOL } from "./tools/dlmm";
 import { approvedProposals, markExecuted, Proposal } from "./platform/proposals";
 import type { EngineObservation, Observation, ScreenContext } from "./agent/observation";
 import { evaluate, EngineGuardContext } from "./risk/guards";
@@ -190,25 +192,38 @@ function hotRows(app: App, max = config.maxActivePools): HotRow[] {
   });
 }
 
-function pickPools(app: App, withPositions: string[]): string[] {
+/** Which quotes the wallet can seat at the policy's minimum: SOL above the gas reserve and the rent budget, USDC at the SOL price. */
+function fundableQuotes(app: App, sol: number, usdc: number): Set<"SOL" | "USDC"> {
+  const minSeatSol = Math.max(0.05, (riskLimits.maxTotalExposureSol * policyEnv().minSeatPct) / 100);
+  const rentBudget = OPEN_COST_ESTIMATE_SOL * config.maxActivePools;
+  const solPrice = solPriceOf(app);
+  const out = new Set<"SOL" | "USDC">();
+  if (sol - riskLimits.gasReserveSol - rentBudget >= minSeatSol) out.add("SOL");
+  if (solPrice !== null && usdc / solPrice >= minSeatSol && sol - OPEN_COST_ESTIMATE_SOL >= riskLimits.gasReserveSol) out.add("USDC");
+  return out;
+}
+
+function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">): string[] {
   const set = new Set<string>([...config.pinnedPools, ...withPositions]);
-  const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0;
+  const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0 && funds.has("USDC");
+  const quoteOk = (q: string) => (q === "SOL" && funds.has("SOL")) || (q === "USDC" && usdcOk);
+  if (funds.size === 0) console.log(`[cycle ${app.cycle}] the wallet cannot fund a seat at the minimum in SOL or USDC; only held and pinned pools are worked`);
   // The stock book: tokenized stocks first, by fee/TVL, then the rest of the picker.
   if (bookEnv() === "stocks") {
     for (const p of stockBookPools(app.screen?.pools ?? [], usdcOk)) {
       if (set.size >= config.maxActivePools) break;
-      set.add(p.address);
+      if (quoteOk(p.quoteSymbol)) set.add(p.address);
     }
   }
   // Surges first: what the fast watch found in the last hour, already filtered for liquidity, age and dumping.
   for (const r of hotRows(app)) {
     if (set.size >= config.maxActivePools) break;
-    set.add(r.address);
+    if (quoteOk(r.quoteSymbol)) set.add(r.address);
   }
   const candidates = (app.screen?.pools ?? []).filter(
     (p) =>
       tradableVenue(p) &&
-      (p.quoteSymbol === "SOL" || (p.quoteSymbol === "USDC" && usdcOk)) &&
+      quoteOk(p.quoteSymbol) &&
       p.score > 0 &&
       !p.flags.includes("thin") &&
       !p.flags.includes("no-24h-data"),
@@ -597,7 +612,22 @@ async function runIteration(app: App): Promise<void> {
   } else {
     withPositions = (await poolsWithPositions(app.connection, app.wallet.publicKey, (s) => console.error(`[cycle ${app.cycle}] ${s}`))).map((p) => p.address);
   }
-  const pools = pickPools(app, withPositions);
+  // What the wallet can fund decides which quotes the picker may take: a USDC book must not be handed
+  // SOL-quoted pools it cannot seat, and a seat must clear the policy's minimum.
+  const solAtStart = paper ? paper.wallet.sol : await app.wallet.solBalance();
+  // The wallet's USDC is capital too (a closed USDC band returns as USDC): it marks at the SOL price.
+  let usdcAtStart = 0;
+  if (paper) {
+    usdcAtStart = paper.wallet.usdc;
+  } else {
+    try {
+      usdcAtStart = (await app.wallet.usdcBalance()).ui;
+    } catch (err) {
+      console.error(`[cycle ${app.cycle}] could not read the wallet's USDC: ${(err as Error).message}`);
+    }
+  }
+  const funds = fundableQuotes(app, solAtStart, usdcAtStart);
+  const pools = pickPools(app, withPositions, funds);
   if (pools.length === 0) {
     console.log(`[cycle ${app.cycle}] nothing to work: no pinned pools, no bands held, no screen picks`);
     return;
@@ -643,18 +673,6 @@ async function runIteration(app: App): Promise<void> {
   app.regime = regimeView(regimeAddrs.map((a) => move24hPct(app, a, state)));
   if (app.regime.reason) console.log(`[cycle ${app.cycle}] ${app.regime.reason}`);
 
-  const solAtStart = paper ? paper.wallet.sol : await app.wallet.solBalance();
-  // The wallet's USDC is capital too (a closed USDC band returns as USDC): it marks at the SOL price.
-  let usdcAtStart = 0;
-  if (paper) {
-    usdcAtStart = paper.wallet.usdc;
-  } else {
-    try {
-      usdcAtStart = (await app.wallet.usdcBalance()).ui;
-    } catch (err) {
-      console.error(`[cycle ${app.cycle}] could not read the wallet's USDC: ${(err as Error).message}`);
-    }
-  }
   // Pools holding a band are decided first: closes free capital for opens later in the pass.
   observed.sort((a, b) => b.positions.length - a.positions.length);
   const entries: JournalEntry[] = [];

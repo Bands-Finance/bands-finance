@@ -39,6 +39,8 @@ import { holdDecision, type Decision, type OpenParams } from "./schema";
 export interface PolicyEnv {
   /** how far past the active bin a fresh band reaches, in percent of price */
   coverPct: number;
+  /** a seat under this share of the book's max exposure is not worth its rent and attention (POLICY_MIN_SEAT_PCT) */
+  minSeatPct: number;
   /** a pool off the hot list needs a screen score above this to get a band */
   minScore: number;
   /** "stocks": tokenized-stock pools are worth a band on their own (BOOK) */
@@ -52,7 +54,7 @@ const num = (v: string | undefined, d: number): number => {
 };
 
 export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
-  return { coverPct: Math.max(0.1, num(env.POLICY_COVER_PCT, 5)), minScore: num(env.POLICY_MIN_SCORE, 20), book: bookEnv(env) };
+  return { coverPct: Math.max(0.1, num(env.POLICY_COVER_PCT, 5)), minSeatPct: Math.max(0, num(env.POLICY_MIN_SEAT_PCT, 5)), minScore: num(env.POLICY_MIN_SCORE, 20), book: bookEnv(env) };
 }
 
 export const POLICY_MAX_1H_MOVE_PCT = 15;
@@ -196,9 +198,12 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
     { name: `half the band's depth (${r(depthQuote, 2)} ${q.symbol})`, quote: depthQuote },
     { name: `exposure room ${r(roomSol)} SOL`, quote: roomSol / q.priceInSol },
   ];
+  // Rent for the seats still to be opened stays in SOL: a SOL-quoted band must not eat the rent of the others.
+  const otherSeats = Math.max(0, o.portfolio.maxActivePools - o.portfolio.poolsWithBands - 1);
+  const rentBudget = openCost * otherSeats;
   if (quoteIsSol) {
-    const solRoom = o.wallet.sol + (closing?.solInPosition ?? 0) - limits.gasReserveSol - openCost;
-    caps.push({ name: `SOL after rent and the ${limits.gasReserveSol} SOL gas reserve`, quote: solRoom });
+    const solRoom = o.wallet.sol + (closing?.solInPosition ?? 0) - limits.gasReserveSol - openCost - rentBudget;
+    caps.push({ name: `SOL after rent, the ${limits.gasReserveSol} SOL gas reserve and ${r(rentBudget, 3)} SOL of rent kept for ${otherSeats} more seat(s)`, quote: solRoom });
   }
   let none: string | null = null;
   if (!quoteIsSol && o.wallet.sol - openCost < limits.gasReserveSol) none = `wallet holds ${r(o.wallet.sol)} SOL: rent ~${openCost.toFixed(3)} would breach the ${limits.gasReserveSol} SOL gas reserve`;
@@ -206,7 +211,9 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
   const decimals = quoteIsSol ? 4 : 2;
   const amountQuote = Math.max(0, Math.floor(bound.quote * 10 ** decimals) / 10 ** decimals);
   const amountSol = amountQuote * q.priceInSol;
-  if (!none && amountSol < MIN_BAND_SOL) none = `size ${r(amountSol)} SOL (bound by ${bound.name}) is under the ${MIN_BAND_SOL} SOL floor`;
+  // A seat has a minimum: rent and attention are not free, and a $100 band on a $10,000 book is neither.
+  const minSeatSol = Math.max(MIN_BAND_SOL, (limits.maxTotalExposureSol * env.minSeatPct) / 100);
+  if (!none && amountSol < minSeatSol) none = `size ${r(amountSol)} SOL (bound by ${bound.name}) is under the minimum seat ${r(minSeatSol)} SOL (${env.minSeatPct}% of the ${limits.maxTotalExposureSol} SOL book)`;
   const sharePct = shareOfBand(amountQuote, depthQuote) * 100;
   return { amountQuote, amountSol, bins, widthMultiplier, coverage: coveragePct(s.binStep, bins), depthQuote, sharePct, boundBy: bound.name, caps: caps.map((c) => c.name).join(", "), none };
 }
