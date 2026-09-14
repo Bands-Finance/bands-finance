@@ -43,7 +43,10 @@ const Raw = z.object({
   MAX_PRICE_MOVE_PCT_PER_CYCLE: z.coerce.number().default(40),
 
   // ---- the engine (src/engine): exit ladder, breakers, collect and skim policies ----
-  ENGINE_OUT_OF_RANGE_SEC: z.coerce.number().default(600),
+  // The floor under the cost-based move threshold (src/engine/exit.ts moveAfterSec). Bands are narrow
+  // and a move on a CLMM venue costs about a dollar, so a band that is out of range should not sit
+  // there for ten minutes earning nothing; the cost calculation raises this where fees are thin.
+  ENGINE_OUT_OF_RANGE_SEC: z.coerce.number().default(120),
   ENGINE_KNIFE_PCT: z.coerce.number().default(20),
   ENGINE_CIRCUIT_FLOOR_SOL: z.coerce.number().default(0.05),
   ENGINE_PORTFOLIO_FLOOR_SOL: z.coerce.number().default(0.15),

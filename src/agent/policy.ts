@@ -535,7 +535,10 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
           action: "CLOSE_POSITION",
           open: null,
           positionAddress: band.address,
-          reasoning: `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s, past the ${minSec}s minimum. The quote turned into token: the band ${bandClause(o, band, q)}. ${hot.onList ? "The pool is still hot but already had its extra cycle" : "The pool is not on the hot list"}; closing.`,
+          // The book is denominated in the quote. Token left in the wallet after an exit is not a
+          // position anyone chose, and it is capital the desk cannot lay into the next band.
+          liquidate: true,
+          reasoning: `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s, past the ${minSec}s minimum. The quote turned into token: the band ${bandClause(o, band, q)}. ${hot.onList ? "The pool is still hot but already had its extra cycle" : "The pool is not on the hot list"}; closing and selling the token back to ${q.symbol}.`,
           confidence: 0.75,
           headline: clip(`${dist} bins through the band and ${oor}s out. Off the table.`),
         },
@@ -571,7 +574,8 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
           action: "CLOSE_POSITION",
           open: null,
           positionAddress: band.address,
-          reasoning: `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s; the band ${bandClause(o, band, q)} and earns nothing there. A fresh band is off (${why}), so the idle quote comes back to the wallet.`,
+          liquidate: true,
+          reasoning: `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s; the band ${bandClause(o, band, q)} and earns nothing there. A fresh band is off (${why}), so the capital comes back to the wallet as ${q.symbol}.`,
           confidence: 0.7,
           headline: clip(`Idle ${oor}s above the band, no fresh band allowed. Pulling it.`),
         },
