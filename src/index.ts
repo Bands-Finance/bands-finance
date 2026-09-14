@@ -231,6 +231,20 @@ function fundableQuotes(app: App, sol: number, usdc: number): Set<"SOL" | "USDC"
 
 function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">): string[] {
   const set = new Set<string>([...config.pinnedPools, ...withPositions]);
+  // One seat per base token. Two pools of the same token move together, so a second seat is
+  // concentration, not diversification. Pools already holding a band keep their token's slot.
+  const byAddress = new Map((app.screen?.pools ?? []).map((p) => [p.address, p] as const));
+  const takenTokens = new Set<string>();
+  for (const a of set) {
+    const t = byAddress.get(a)?.baseMint;
+    if (t) takenTokens.add(t);
+  }
+  const take = (address: string, baseMint: string | undefined): boolean => {
+    if (baseMint && takenTokens.has(baseMint)) return false;
+    set.add(address);
+    if (baseMint) takenTokens.add(baseMint);
+    return true;
+  };
   // The operator's list decides what the desk may put money into; the screener only finds it.
   // Pinned pools and pools already holding a band are added above, so a band can always be managed out.
   const watch = loadWatchlist();
@@ -242,14 +256,14 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   if (bookEnv() === "stocks") {
     for (const p of stockBookPools(app.screen?.pools ?? [], usdcOk)) {
       if (set.size >= config.maxActivePools) break;
-      if (quoteOk(p.quoteSymbol) && watchlistRefusal(p, watch) === null) set.add(p.address);
+      if (quoteOk(p.quoteSymbol) && watchlistRefusal(p, watch) === null) take(p.address, p.baseMint);
     }
   }
   // Surges first: what the fast watch found in the last hour, already filtered for liquidity, age and dumping.
   for (const r of hotRows(app)) {
     if (set.size >= config.maxActivePools) break;
     const row = { address: r.address, baseSymbol: r.baseSymbol, baseMint: r.baseMint, name: r.name };
-    if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume) set.add(r.address);
+    if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume) take(r.address, r.baseMint);
   }
   const candidates = (app.screen?.pools ?? []).filter(
     (p) =>
@@ -267,7 +281,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const byYield = [...candidates].sort((a, b) => (b.feeToTvl24hPct ?? -1) - (a.feeToTvl24hPct ?? -1) || b.score - a.score);
   for (const p of byYield) {
     if (set.size >= config.maxActivePools) break;
-    set.add(p.address);
+    take(p.address, p.baseMint);
   }
   return [...set];
 }
