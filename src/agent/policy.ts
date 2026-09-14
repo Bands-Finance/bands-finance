@@ -586,7 +586,11 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   const scoreOk = score !== null && score > env.minScore;
   // The stock book: a tokenized-stock pool is the book's purpose; the guards and the basis still gate it.
   const stockBook = env.book === "stocks" && isStockPool(o);
-  if (!isHotPick && !scoreOk && !stockBook) {
+  // The operator's watchlist is a judgement about the token; the score is a judgement about the unknown.
+  // A listed token does not need a score, but every other gate (volume, yield, payback, flags, the
+  // guards, the basis and session rules) still applies to it.
+  const listed = o.screen?.watchlisted === true;
+  if (!isHotPick && !scoreOk && !stockBook && !listed) {
     const why = score === null ? `not on the screen and not on the hot list` : `score ${r(score, 1)} is not above ${env.minScore} and the pool is not on the hot list`;
     return hold(`No band in ${o.poolLabel} (${priceLine}): ${why}. ${poolClause(o, hot)}.`, "Nothing worth a band here. Holding.", "not-worth", why);
   }
@@ -617,7 +621,9 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       `payback ${r(earn.paybackHours, 1)}h over the ${env.maxPaybackHours}h limit`,
     );
   }
-  const worth = isHotPick
+  const worth = listed && !isHotPick && !scoreOk
+    ? `on the watchlist${score !== null ? `, screen score ${r(score, 1)}` : ""}`
+    : isHotPick
     ? `hot pick (heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}${hot.surge ? ", surge" : ""}${score !== null ? `, screen score ${r(score, 1)}` : ""})`
     : scoreOk
       ? `screen score ${r(score!, 1)} above ${env.minScore}`

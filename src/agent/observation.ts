@@ -11,6 +11,8 @@ export interface ScreenContext {
   ageHours: number | null;
   priceChange24hPct: number | null;
   flags: string[];
+  /** the operator put this token on the watchlist: their judgement stands in for the screener's score */
+  watchlisted?: boolean;
   generatedAt: string;
   /** the screen's stock tag when the base is a tokenized stock (the stock book's pools) */
   stock?: { ticker: string; issuer: string } | null;

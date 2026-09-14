@@ -312,6 +312,7 @@ function screenContext(app: App, address: string): ScreenContext | null {
     ageHours: p.ageHours,
     priceChange24hPct: p.priceChange24hPct,
     flags: p.flags,
+    watchlisted: watchlistRefusal(p, loadWatchlist()) === null && loadWatchlist().mode === "allow",
     generatedAt: s.generatedAt,
     stock: p.stock ? { ticker: p.stock.ticker, issuer: p.stock.issuer } : null,
     alternatives: s.pools
