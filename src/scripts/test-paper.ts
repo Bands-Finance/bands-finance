@@ -557,8 +557,9 @@ async function main(): Promise<void> {
     assert.equal(shallow.decision.open!.amountSol, 10);
     assert.match(shallow.decision.reasoning, /bound by half the band's depth \(10 SOL\); our share of the band 50%/);
     const poor = policy.policyDecide(obs({ wallet: { address: "w", sol: 10, token: 0, tokenSymbol: "ANSEM", quote: 10, quoteSymbol: "SOL" } }), x);
-    near(poor.decision.open!.amountSol, Math.floor((10 - 1 - dlmm.OPEN_COST_ESTIMATE_SOL) * 1e4) / 1e4, 1e-9);
-    assert.match(poor.decision.reasoning, /bound by SOL after rent and the 1 SOL gas reserve/);
+    // 10 SOL, 1 SOL reserve, rent for this seat and for the 3 seats still to open (4 pools, none held)
+    near(poor.decision.open!.amountSol, Math.floor((10 - 1 - dlmm.OPEN_COST_ESTIMATE_SOL - 3 * dlmm.OPEN_COST_ESTIMATE_SOL) * 1e4) / 1e4, 1e-9);
+    assert.match(poor.decision.reasoning, /bound by SOL after rent, the 1 SOL gas reserve and 0\.601 SOL of rent kept for 3 more seat\(s\)/);
     const room = policy.policyDecide(obs({ portfolio: { activePools: [], poolsWithBands: 3, maxActivePools: 4, otherExposureSol: 85 } }), x);
     near(room.decision.open!.amountSol, 5, 1e-9);
     assert.match(room.decision.reasoning, /bound by exposure room 5 SOL/);
@@ -566,7 +567,7 @@ async function main(): Promise<void> {
     assert.equal(half.decision.open!.amountSol, 11.25);
     const tiny = policy.policyDecide(obs({ wallet: { address: "w", sol: 1.25, token: 0, tokenSymbol: "ANSEM", quote: 1.25, quoteSymbol: "SOL" } }), x);
     assert.equal(tiny.branch, "no-size");
-    assert.match(tiny.reason, /under the 0.1 SOL floor/);
+    assert.match(tiny.reason, /under the minimum seat/);
   });
   await test("a USDC pool sizes in USDC, converts at the SOL price, and needs SOL for rent", () => {
     const usdcSnap = snapAt(260, {
