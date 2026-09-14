@@ -18,11 +18,21 @@
  *
  * The engine's gates (halt, stand-down, bench, regime, knife, basis, cooldown, daily cap, pool cap)
  * are checked first so the policy holds with the reason instead of proposing into a veto.
+ *
+ * Stock pools (src/basis): the band width is multiplied by the US session's width multiplier
+ * (regular 1, pre/after 1.5, closed 2) and opens are refused when the basis verdict says so. On the
+ * stock book (BOOK=stocks) a tokenized-stock pool is worth a band without a hot row or a score.
+ * Venues: the open cost comes from the venue (extras.openCostSol; Meteora's estimate by default).
+ * On a CLMM pool a quote-only band rests one bin under the price by construction, so one bin of
+ * distance on the quote side is "resting", not idle.
  */
+import { sessionClock } from "../basis/session";
+import { sessionWidthMultiplier } from "../basis/verdict";
 import type { HotRow } from "../hot/types";
 import { bandDepthQuote, shareOfBand } from "../paper/mark";
 import type { RiskLimits } from "../risk/limits";
 import { OPEN_COST_ESTIMATE_SOL, quoteOf, type PositionSnapshot, type QuoteView } from "../tools/dlmm";
+import { bookEnv, type Book } from "../venues/env";
 import type { Observation } from "./observation";
 import { holdDecision, type Decision, type OpenParams } from "./schema";
 
@@ -31,6 +41,8 @@ export interface PolicyEnv {
   coverPct: number;
   /** a pool off the hot list needs a screen score above this to get a band */
   minScore: number;
+  /** "stocks": tokenized-stock pools are worth a band on their own (BOOK) */
+  book: Book;
 }
 
 const num = (v: string | undefined, d: number): number => {
@@ -40,7 +52,7 @@ const num = (v: string | undefined, d: number): number => {
 };
 
 export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
-  return { coverPct: Math.max(0.1, num(env.POLICY_COVER_PCT, 5)), minScore: num(env.POLICY_MIN_SCORE, 20) };
+  return { coverPct: Math.max(0.1, num(env.POLICY_COVER_PCT, 5)), minScore: num(env.POLICY_MIN_SCORE, 20), book: bookEnv(env) };
 }
 
 export const POLICY_MAX_1H_MOVE_PCT = 15;
@@ -61,9 +73,11 @@ export interface PolicyExtras {
   now?: number;
   /** the fast watch's tradable picks, for pools whose screen context is missing (off the board) */
   hot?: PolicyHot[];
+  /** the venue's up-front cost of an open in SOL (rent); defaults to the Meteora estimate */
+  openCostSol?: number;
 }
 
-export type PolicyBranch = "in-range" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
+export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
 
 export interface PolicyResult {
   decision: Decision;
@@ -72,10 +86,22 @@ export interface PolicyResult {
   branch: PolicyBranch;
 }
 
-/** Bins that cover coverPct of price at this bin step, inside [3, maxBinWidth - 1]. */
-export function binsForCover(binStep: number, coverPct: number, maxBinWidth: number): number {
-  const raw = Math.round(Math.log(1 + coverPct / 100) / Math.log(1 + binStep / 10_000));
+/** Bins that cover coverPct of price at this bin step (x the width multiplier), inside [3, maxBinWidth - 1]. */
+export function binsForCover(binStep: number, coverPct: number, maxBinWidth: number, widthMultiplier = 1): number {
+  const mult = Number.isFinite(widthMultiplier) && widthMultiplier > 0 ? widthMultiplier : 1;
+  const raw = Math.round((Math.log(1 + coverPct / 100) / Math.log(1 + binStep / 10_000)) * mult);
   return Math.min(Math.max(3, raw), Math.max(1, maxBinWidth - 1));
+}
+
+/** Whether the pool is a tokenized stock: the screen's stock tag, or a basis row (only stock pools carry one). */
+export const isStockPool = (o: Pick<Observation, "screen" | "engine">): boolean => !!o.screen?.stock || !!o.engine?.basis;
+
+/** The band-width multiplier for this pool: the US session's (src/basis) for a stock pool, 1 otherwise. */
+export function widthMultiplierFor(o: Pick<Observation, "screen" | "engine">, now: number): number {
+  if (!isStockPool(o)) return 1;
+  const fromLoop = o.engine?.basis?.widthMultiplier;
+  if (typeof fromLoop === "number" && Number.isFinite(fromLoop) && fromLoop > 0) return fromLoop;
+  return sessionWidthMultiplier(sessionClock(new Date(now)));
 }
 
 export const coveragePct = (binStep: number, bins: number): number => (Math.pow(1 + binStep / 10_000, bins) - 1) * 100;
@@ -135,6 +161,8 @@ interface Sizing {
   amountQuote: number;
   amountSol: number;
   bins: number;
+  /** the session width multiplier applied to the bins (1 outside stock pools) */
+  widthMultiplier: number;
   coverage: number;
   depthQuote: number;
   sharePct: number;
@@ -145,11 +173,13 @@ interface Sizing {
 }
 
 /** Size a fresh quote-only band: min(effective max, 95% of the wallet's quote, half the depth, exposure room), rounded down to the quote's decimals. */
-function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv, closing: PositionSnapshot | null): Sizing {
+function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv, closing: PositionSnapshot | null, now: number): Sizing {
   const s = o.snapshot;
   const limits = x.limits;
   const quoteIsSol = q.symbol === "SOL";
-  const bins = binsForCover(s.binStep, env.coverPct, limits.maxBinWidth);
+  const openCost = typeof x.openCostSol === "number" && Number.isFinite(x.openCostSol) && x.openCostSol >= 0 ? x.openCostSol : OPEN_COST_ESTIMATE_SOL;
+  const widthMultiplier = widthMultiplierFor(o, now);
+  const bins = binsForCover(s.binStep, env.coverPct, limits.maxBinWidth, widthMultiplier);
   const quoteBelow = q.side === "Y";
   const lowerBinId = quoteBelow ? s.activeBinId - bins : s.activeBinId;
   const upperBinId = quoteBelow ? s.activeBinId : s.activeBinId + bins;
@@ -167,19 +197,27 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
     { name: `exposure room ${r(roomSol)} SOL`, quote: roomSol / q.priceInSol },
   ];
   if (quoteIsSol) {
-    const solRoom = o.wallet.sol + (closing?.solInPosition ?? 0) - limits.gasReserveSol - OPEN_COST_ESTIMATE_SOL;
+    const solRoom = o.wallet.sol + (closing?.solInPosition ?? 0) - limits.gasReserveSol - openCost;
     caps.push({ name: `SOL after rent and the ${limits.gasReserveSol} SOL gas reserve`, quote: solRoom });
   }
   let none: string | null = null;
-  if (!quoteIsSol && o.wallet.sol - OPEN_COST_ESTIMATE_SOL < limits.gasReserveSol) none = `wallet holds ${r(o.wallet.sol)} SOL: rent ~${OPEN_COST_ESTIMATE_SOL.toFixed(3)} would breach the ${limits.gasReserveSol} SOL gas reserve`;
+  if (!quoteIsSol && o.wallet.sol - openCost < limits.gasReserveSol) none = `wallet holds ${r(o.wallet.sol)} SOL: rent ~${openCost.toFixed(3)} would breach the ${limits.gasReserveSol} SOL gas reserve`;
   const bound = caps.reduce((a, b) => (b.quote < a.quote ? b : a));
   const decimals = quoteIsSol ? 4 : 2;
   const amountQuote = Math.max(0, Math.floor(bound.quote * 10 ** decimals) / 10 ** decimals);
   const amountSol = amountQuote * q.priceInSol;
   if (!none && amountSol < MIN_BAND_SOL) none = `size ${r(amountSol)} SOL (bound by ${bound.name}) is under the ${MIN_BAND_SOL} SOL floor`;
   const sharePct = shareOfBand(amountQuote, depthQuote) * 100;
-  return { amountQuote, amountSol, bins, coverage: coveragePct(s.binStep, bins), depthQuote, sharePct, boundBy: bound.name, caps: caps.map((c) => c.name).join(", "), none };
+  return { amountQuote, amountSol, bins, widthMultiplier, coverage: coveragePct(s.binStep, bins), depthQuote, sharePct, boundBy: bound.name, caps: caps.map((c) => c.name).join(", "), none };
 }
+
+/** Bins a quote-only band spans: the active bin plus `bins` past it on Meteora; `bins` strictly past it on a CLMM (src/tools/bins.ts). */
+const bandBins = (o: Pick<Observation, "snapshot">, bins: number): number => (o.snapshot.priceModel === "clmm" ? bins : bins + 1);
+/** where the band starts: the active bin on Meteora, the bin next to it on a CLMM */
+const laidFrom = (o: Pick<Observation, "snapshot">, quoteBelow: boolean): string => (o.snapshot.priceModel === "clmm" ? `the bin ${quoteBelow ? "under" : "over"} the active bin` : "the active bin");
+
+/** "x2 for the closed US session" when a stock pool's band was widened, else nothing. */
+const widthClause = (sz: Sizing, o: Observation): string => (sz.widthMultiplier !== 1 ? ` (x${sz.widthMultiplier} for the ${o.engine?.basis?.session ?? "current"} US session)` : "");
 
 function openParams(q: QuoteView, sz: Sizing): OpenParams {
   const quoteBelow = q.side === "Y";
@@ -271,6 +309,14 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
     // idle in quote: the price ran off the quote side
     const where = quoteBelow ? "above" : "below";
     const waitSec = IDLE_MULTIPLE * minSec;
+    if (s.priceModel === "clmm" && dist <= 1) {
+      return hold(
+        `Band ${addr} covers bins ${range} and the ${priceLine} sits one bin ${where} it. On a CLMM a ${q.symbol}-only band rests one bin ${quoteBelow ? "under" : "over"} the price by construction (the active bin is never part of a single-sided range); it ${bandClause(o, band, q)}. Fees start the moment the price crosses into it.`,
+        `Resting one bin ${quoteBelow ? "under" : "over"} the price. Waiting for the tape.`,
+        "resting",
+        `band ${addr} resting one bin ${where} the price (CLMM)`,
+      );
+    }
     if (oor < waitSec) {
       return hold(
         `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}); the band ${bandClause(o, band, q)} and earns nothing there. Idle ${oor}s of the ${waitSec}s (${IDLE_MULTIPLE}x the ${minSec}s minimum) the policy waits before re-laying it.`,
@@ -280,7 +326,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       );
     }
     const gate = openGate(o, limits, now);
-    const sz = gate ? null : sizeBand(o, x, q, env, band);
+    const sz = gate ? null : sizeBand(o, x, q, env, band, now);
     if (gate || !sz || sz.none) {
       const why = gate ?? sz!.none!;
       return {
@@ -301,11 +347,11 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
         action: "REBALANCE",
         open: openParams(q, sz),
         positionAddress: band.address,
-        reasoning: `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s, past ${waitSec}s; the band ${bandClause(o, band, q)} and earns nothing there. Re-laying ${r(sz.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} (${r(sz.amountSol)} SOL) as a ${sz.bins + 1}-bin ${q.symbol}-only band from bin ${s.activeBinId} ${quoteBelow ? "down" : "up"} (${sz.bins} bins ${quoteBelow ? "under" : "over"} it), covering ${r(sz.coverage, 2)}% of price; size bound by ${sz.boundBy}, our share of the band ${r(sz.sharePct, 1)}%.`,
+        reasoning: `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s, past ${waitSec}s; the band ${bandClause(o, band, q)} and earns nothing there. Re-laying ${r(sz.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} (${r(sz.amountSol)} SOL) as a ${bandBins(o, sz.bins)}-bin ${q.symbol}-only band from ${o.snapshot.priceModel === "clmm" ? `the bin ${quoteBelow ? "under" : "over"} bin ${s.activeBinId}` : `bin ${s.activeBinId}`} ${quoteBelow ? "down" : "up"} (${sz.bins} bins ${quoteBelow ? "under" : "over"} it), covering ${r(sz.coverage, 2)}% of price${widthClause(sz, o)}; size bound by ${sz.boundBy}, our share of the band ${r(sz.sharePct, 1)}%.`,
         confidence: 0.65,
-        headline: clip(`Idle ${oor}s above the band. Re-laying ${r(sz.amountQuote, 2)} ${q.symbol} across ${sz.bins + 1} bins under bin ${s.activeBinId}.`),
+        headline: clip(`Idle ${oor}s above the band. Re-laying ${r(sz.amountQuote, 2)} ${q.symbol} across ${bandBins(o, sz.bins)} bins under bin ${s.activeBinId}.`),
       },
-      reason: `band ${addr} idle ${oor}s: re-lay ${r(sz.amountQuote, 2)} ${q.symbol} across ${sz.bins + 1} bins`,
+      reason: `band ${addr} idle ${oor}s: re-lay ${r(sz.amountQuote, 2)} ${q.symbol} across ${bandBins(o, sz.bins)} bins`,
       branch: "rebalance",
     };
   }
@@ -330,7 +376,9 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   const isHotPick = hot.onList;
   const score = o.screen?.score ?? null;
   const scoreOk = score !== null && score > env.minScore;
-  if (!isHotPick && !scoreOk) {
+  // The stock book: a tokenized-stock pool is the book's purpose; the guards and the basis still gate it.
+  const stockBook = env.book === "stocks" && isStockPool(o);
+  if (!isHotPick && !scoreOk && !stockBook) {
     const why = score === null ? `not on the screen and not on the hot list` : `score ${r(score, 1)} is not above ${env.minScore} and the pool is not on the hot list`;
     return hold(`No band in ${o.poolLabel} (${priceLine}): ${why}. ${poolClause(o, hot)}.`, "Nothing worth a band here. Holding.", "not-worth", why);
   }
@@ -342,21 +390,25 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       `1h move ${pct(hot.priceChange1hPct)} outside +/-${POLICY_MAX_1H_MOVE_PCT}%`,
     );
   }
-  const sz = sizeBand(o, x, q, env, null);
+  const sz = sizeBand(o, x, q, env, null, now);
   if (sz.none) {
     return hold(`No band in ${o.poolLabel} (${priceLine}); ${poolClause(o, hot)}. No size: ${sz.none}.`, "No size for a band here. Holding.", "no-size", sz.none);
   }
-  const worth = isHotPick ? `hot pick (heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}${hot.surge ? ", surge" : ""}${score !== null ? `, screen score ${r(score, 1)}` : ""})` : `screen score ${r(score!, 1)} above ${env.minScore}`;
+  const worth = isHotPick
+    ? `hot pick (heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}${hot.surge ? ", surge" : ""}${score !== null ? `, screen score ${r(score, 1)}` : ""})`
+    : scoreOk
+      ? `screen score ${r(score!, 1)} above ${env.minScore}`
+      : `stock book: ${o.screen?.stock ? `${o.screen.stock.ticker} (${o.screen.stock.issuer})` : "tokenized stock"}${score !== null ? `, screen score ${r(score, 1)}` : ""}`;
   return {
     decision: {
       action: "OPEN_POSITION",
       open: openParams(q, sz),
       positionAddress: null,
-      reasoning: `${o.poolLabel}: ${worth}; ${poolClause(o, hot)}. ${priceLine[0].toUpperCase() + priceLine.slice(1)}; a ${sz.bins + 1}-bin ${q.symbol}-only Spot band from the active bin ${quoteBelow ? "down" : "up"} (${sz.bins} bins ${quoteBelow ? "under" : "over"} it) covers ${r(sz.coverage, 2)}% of price against ${r(sz.depthQuote, 2)} ${q.symbol} of depth on that side. Size ${r(sz.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} (${r(sz.amountSol)} SOL), bound by ${sz.boundBy}; our share of the band ${r(sz.sharePct, 1)}%.`,
+      reasoning: `${o.poolLabel}: ${worth}; ${poolClause(o, hot)}. ${priceLine[0].toUpperCase() + priceLine.slice(1)}; a ${bandBins(o, sz.bins)}-bin ${q.symbol}-only Spot band from ${laidFrom(o, quoteBelow)} ${quoteBelow ? "down" : "up"} (${sz.bins} bins ${quoteBelow ? "under" : "over"} it) covers ${r(sz.coverage, 2)}% of price${widthClause(sz, o)} against ${r(sz.depthQuote, 2)} ${q.symbol} of depth on that side. Size ${r(sz.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} (${r(sz.amountSol)} SOL), bound by ${sz.boundBy}; our share of the band ${r(sz.sharePct, 1)}%.`,
       confidence: isHotPick ? 0.6 : 0.55,
-      headline: clip(`${q.symbol} ${quoteBelow ? "under the bid" : "over the ask"} in ${o.poolLabel}. ${r(sz.amountQuote, 2)} ${q.symbol} across ${sz.bins + 1} bins.`),
+      headline: clip(`${q.symbol} ${quoteBelow ? "under the bid" : "over the ask"} in ${o.poolLabel}. ${r(sz.amountQuote, 2)} ${q.symbol} across ${bandBins(o, sz.bins)} bins.`),
     },
-    reason: `open ${r(sz.amountQuote, 2)} ${q.symbol} across ${sz.bins + 1} bins (${worth})`,
+    reason: `open ${r(sz.amountQuote, 2)} ${q.symbol} across ${bandBins(o, sz.bins)} bins (${worth})`,
     branch: "open",
   };
 }

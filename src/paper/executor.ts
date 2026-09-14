@@ -11,8 +11,10 @@ import type { OpenParams } from "../agent/schema";
 import { LedgerRow, recordLedger } from "../engine/ledger";
 import type { ExecutionResult, TxReport } from "../executor";
 import type { Verdict } from "../risk/guards";
-import { binPriceUi, PoolSnapshot, POSITION_RENT_SOL, PositionSnapshot, quoteOf } from "../tools/dlmm";
-import { bandsInPool, claimFees, closeBand, openBand, OPEN_COST_ESTIMATE_SOL, type PaperBook } from "./book";
+import { binPrice, clmmBandTicks, priceModelOf } from "../tools/bins";
+import { PoolSnapshot, POSITION_RENT_SOL, PositionSnapshot, quoteOf } from "../tools/dlmm";
+import type { OpenCost } from "../venues/types";
+import { bandRentRefund, bandsInPool, claimFees, closeBand, openBand, OPEN_COST_ESTIMATE_SOL, type PaperBook } from "./book";
 import { valueBand } from "./mark";
 
 /** marked network fee per paper transaction, as the real dry-run rows carry */
@@ -24,6 +26,18 @@ export interface PaperExecutionContext {
   positions: PositionSnapshot[];
   slippagePct: number;
   now?: number;
+  /** the venue's open cost for the proposed band (src/venues); absent = the Meteora estimate */
+  openCost?: OpenCost;
+}
+
+/** Where a paper band lands: a CLMM single-sided band excludes the active bin (src/tools/bins.ts), a Meteora band includes it. */
+export function paperBandBins(s: Pick<PoolSnapshot, "activeBinId" | "priceModel" | "binStep" | "quoteSide" | "solSide">, o: Pick<OpenParams, "side" | "binsBelowActive" | "binsAboveActive">): { lowerBinId: number; upperBinId: number; note: string | null } {
+  if (priceModelOf(s) === "clmm") {
+    const quoteSide: "X" | "Y" = s.quoteSide ?? (s.solSide === "X" ? "X" : "Y");
+    const g = clmmBandTicks(s.activeBinId, s.binStep, o.binsBelowActive, o.binsAboveActive, o.side, quoteSide);
+    return { lowerBinId: g.lowerBinId, upperBinId: g.upperBinId, note: g.note };
+  }
+  return { lowerBinId: s.activeBinId - o.binsBelowActive, upperBinId: s.activeBinId + o.binsAboveActive, note: null };
 }
 
 const fmt = (n: number, d = 4) => Number(n.toFixed(d)).toString();
@@ -113,12 +127,13 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
       if (!band) throw new Error(`position ${d.positionAddress} not found in the paper book`);
       const value = valueBand(band, s);
       const why = closeReason(verdict);
+      const rentRefund = bandRentRefund(band);
       const closed = closeBand(book, { address: band.address, value, slippagePct, now, reason: why.reason, emergency: why.emergency });
       book.wallet.sol -= PAPER_TX_FEE_SOL;
       push({
         label: `close band ${band.address.slice(0, 13)}`,
         ok: true,
-        skipped: `paper: closed ${closed.inRangeAtClose ? "in range" : "out of range"} at bin ${s.activeBinId}; back ${fmt(closed.quoteBack, 4)} ${q.symbol} + ${fmt(closed.tokenBack, 4)} ${s.baseToken.symbol} + fees ${fmt(closed.feeSol, 6)} SOL, rent ${POSITION_RENT_SOL} SOL refunded; realized ${closed.realizedSol >= 0 ? "+" : ""}${fmt(closed.realizedSol, 4)} SOL (${closed.realizedPct >= 0 ? "+" : ""}${closed.realizedPct.toFixed(2)}%) vs entry ${fmt(closed.entryValueSol, 4)}`,
+        skipped: `paper: closed ${closed.inRangeAtClose ? "in range" : "out of range"} at bin ${s.activeBinId}; back ${fmt(closed.quoteBack, 4)} ${q.symbol} + ${fmt(closed.tokenBack, 4)} ${s.baseToken.symbol} + fees ${fmt(closed.feeSol, 6)} SOL, rent ${rentRefund} SOL refunded; realized ${closed.realizedSol >= 0 ? "+" : ""}${fmt(closed.realizedSol, 4)} SOL (${closed.realizedPct >= 0 ? "+" : ""}${closed.realizedPct.toFixed(2)}%) vs entry ${fmt(closed.entryValueSol, 4)}`,
       });
       result.closed = band.address;
       const tokenDelta = closed.tokenBack + closed.feeToken;
@@ -127,7 +142,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         quoteDelta: closed.quoteBack + closed.feeQuote,
         solDelta: (closed.quoteBack + closed.feeQuote) * q.priceInSol,
         tokenDelta: tokenDelta * (1 - slippagePct / 100),
-        rentSol: POSITION_RENT_SOL,
+        rentSol: rentRefund,
         txFeeSol: -PAPER_TX_FEE_SOL,
         basis: "marked",
         feeSol: closed.feeSol,
@@ -140,10 +155,10 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
     if (d.action === "OPEN_POSITION" || d.action === "REBALANCE") {
       if (!d.open) throw new Error("open parameters missing");
       const o: OpenParams = d.open;
-      const lowerBinId = s.activeBinId - o.binsBelowActive;
-      const upperBinId = s.activeBinId + o.binsAboveActive;
+      const { lowerBinId, upperBinId, note: geometryNote } = paperBandBins(s, o);
       const xDec = s.tokenX.decimals;
       const yDec = s.tokenY.decimals;
+      const cost = ctx.openCost ?? { total: OPEN_COST_ESTIMATE_SOL, refundable: POSITION_RENT_SOL };
       const opened = openBand(book, {
         pool: s.address,
         label: s.label,
@@ -161,32 +176,35 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         quotePriceInSol: q.priceInSol,
         lowerBinId,
         upperBinId,
-        lowerPrice: binPriceUi(lowerBinId, s.binStep, xDec, yDec),
-        upperPrice: binPriceUi(upperBinId, s.binStep, xDec, yDec),
+        lowerPrice: binPrice(s, lowerBinId),
+        upperPrice: binPrice(s, upperBinId),
         side: o.side,
         strategy: o.strategy,
         amountQuote: o.amountSol,
         amountToken: o.amountToken,
         slippagePct,
         now,
+        ...(priceModelOf(s) === "clmm" ? { priceModel: "clmm" as const } : {}),
+        ...(ctx.openCost ? { rentChargedSol: cost.total, rentRefundableSol: cost.refundable } : {}),
       });
       book.wallet.sol -= PAPER_TX_FEE_SOL;
       const b = opened.band;
       push({
         label: `open ${o.side} band bins [${lowerBinId}, ${upperBinId}]`,
         ok: true,
-        skipped: `paper: opened ${b.address} with ${fmt(o.amountSol, 4)} ${q.symbol}${o.amountToken > 0 ? ` + ${fmt(o.amountToken, 4)} ${s.baseToken.symbol}` : ""} across ${upperBinId - lowerBinId + 1} bins; slippage ${fmt(opened.slippageSol, 6)} SOL, rent ${OPEN_COST_ESTIMATE_SOL.toFixed(4)} SOL charged (${POSITION_RENT_SOL} refundable); entry ${fmt(b.entryValueSol, 4)} SOL${b.strategyNote ? `; ${b.strategyNote}` : ""}`,
+        skipped: `paper: opened ${b.address} with ${fmt(o.amountSol, 4)} ${q.symbol}${o.amountToken > 0 ? ` + ${fmt(o.amountToken, 4)} ${s.baseToken.symbol}` : ""} across ${upperBinId - lowerBinId + 1} bins; slippage ${fmt(opened.slippageSol, 6)} SOL, rent ${opened.rentChargedSol.toFixed(4)} SOL charged (${fmt(bandRentRefund(b), 6)} refundable); entry ${fmt(b.entryValueSol, 4)} SOL${b.strategyNote ? `; ${b.strategyNote}` : ""}${geometryNote ? `; ${geometryNote}` : ""}`,
       });
       result.opened = { address: b.address, entryValueSol: b.entryValueSol };
+      if (geometryNote) result.notes.push(geometryNote);
       ledger({
         ...baseRow(s, "open", b.address, now),
         quoteDelta: -(o.amountSol + opened.slippageQuote),
         solDelta: -(o.amountSol + opened.slippageQuote) * q.priceInSol,
         tokenDelta: -(o.amountToken + opened.slippageToken),
-        rentSol: -OPEN_COST_ESTIMATE_SOL,
+        rentSol: -opened.rentChargedSol,
         txFeeSol: -PAPER_TX_FEE_SOL,
         basis: "marked",
-        note: `paper: open ${o.side} band incl. ${slippagePct}% slippage; rent charged at the open estimate (position + 2 bin arrays)`,
+        note: `paper: open ${o.side} band incl. ${slippagePct}% slippage; rent charged at the open estimate (${ctx.openCost?.note ?? "position + 2 bin arrays"})`,
       });
     }
   } catch (err) {

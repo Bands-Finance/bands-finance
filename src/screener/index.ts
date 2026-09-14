@@ -12,6 +12,7 @@ import { loadHistory, recordSamples, windowStats } from "./history";
 import { scanOnchain } from "./scan";
 import { scorePool } from "./score";
 import { stockOf, verifiedStock } from "./stocks";
+import { isTradableVenue } from "../venues/env";
 import { scanVenues, SOL_MINT, venueEnv, VENUE_LABEL, VenueScan } from "./venues";
 import type { ScreenedPool, ScreenResult, Venue, VenueCount, VenuePool } from "./types";
 
@@ -26,7 +27,7 @@ type Partial = Omit<ScreenedPool, "score" | "flags" | "rank">;
 
 /** Only Meteora DLMM is executable for now: the executor speaks DLMM. The rest of the board is for eyes. */
 export function tradableVenue(p: Pick<ScreenedPool, "venue">): boolean {
-  return p.venue === "meteora-dlmm";
+  return isTradableVenue(p.venue);
 }
 
 /* ---------- loading, with the old single-venue shape still accepted ---------- */

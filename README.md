@@ -25,10 +25,14 @@ src/
 The screener reads three venues into one ranked board: Meteora DLMM from chain (every pool, then the
 live ones), plus Raydium CLMM and Orca Whirlpools through their public pool APIs. Every row carries
 its venue and, for tokenized stocks, the ticker and issuer (xStocks by Backed, whose mints start with
-"Xs", or Backpack Securities). Mr Bands trades Meteora today; Raydium and Orca rows are ranked and
-shown but not traded until each venue has its own position math and transaction builders. The stock
-liquidity lives on Raydium and Orca (NVDAx/USDC and TSLAx/USDC on Raydium hold about $2M each), which
-is why the venue layer is the next execution step.
+"Xs", or Backpack Securities). Execution goes through a venue layer (src/venues): Meteora DLMM and
+Raydium CLMM share one bin model (a CLMM "bin" is one tick-spacing step, priced by the tick formula),
+one PositionSnapshot, and one executor. `TRADABLE_VENUES` (default both) says what the desk may work in
+paper and dry-run; `LIVE_VENUES` (default Meteora only) says what it may broadcast on, so Raydium ships
+dormant until its transaction path has been simulated with a funded wallet. Orca is the next adapter.
+`BOOK=stocks` makes the picker take tokenized-stock pools first (liquidity >= `STOCK_MIN_LIQUIDITY_USD`,
+ranked by fee yield) with the band width following the US session and the basis gate applied before
+a proposal is made.
 
 ## Tokenized stocks and Backpack
 

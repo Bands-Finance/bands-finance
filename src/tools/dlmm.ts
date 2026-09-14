@@ -2,6 +2,8 @@ import DLMM, { LbPosition, StrategyType } from "@meteora-ag/dlmm";
 import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import BN from "bn.js";
 import { config } from "../config";
+import { binPrice, type BandSide, type PriceModel } from "./bins";
+import type { VenueId } from "../venues/types";
 
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
 /** The USDC mint (config USDC_MINT). USDC is the second quote the desk trades; every xStock pool is USDC-quoted. */
@@ -83,6 +85,27 @@ export interface PoolSnapshot {
   tokenPriceInQuote?: number;
   /** the SOL price the quote conversion used, when one was known (informational for SOL pools) */
   solPriceUsd?: number | null;
+  // ---- the venue. Absent on snapshots written before venues existed: Meteora DLMM.
+  /** which price model the bins follow (src/tools/bins.ts); absent = meteora-dlmm */
+  priceModel?: PriceModel;
+  /** the venue the pool was read from; absent = meteora-dlmm */
+  venue?: VenueId;
+  /** CLMM: the pool charges a variable fee on top of the base (Raydium dynamic fee); Meteora's variable fee is dynamicFeePct */
+  hasDynamicFee?: boolean;
+  /** CLMM only: the tick state behind the bins (src/venues/raydium.ts) */
+  clmm?: ClmmState;
+}
+
+/** What a CLMM snapshot keeps of the pool's tick state, enough to size a band's rent without the chain. */
+export interface ClmmState {
+  tickSpacing: number;
+  tickCurrent: number;
+  /** the pool's sqrt price, Q64.64, as a decimal string */
+  sqrtPriceX64: string;
+  /** the pool's active liquidity, as a decimal string */
+  liquidity: string;
+  /** start ticks of the tick arrays that exist on chain around the price; a band landing outside them pays tick-array rent */
+  initializedTickArrays: number[];
 }
 
 /** The quote side of a snapshot with the SOL-pool defaults filled in. */
@@ -203,6 +226,40 @@ export interface SnapshotOptions {
   solPriceUsd?: number | null;
 }
 
+/** The quote view of a pair, resolved the same way on every venue (see resolveQuote). */
+export interface ResolvedQuote {
+  solSide: "X" | "Y" | null;
+  quoteSide: "X" | "Y";
+  quoteSymbol: QuoteSymbol;
+  quoteToken: TokenInfo;
+  baseToken: TokenInfo;
+  quotePriceInSol: number;
+  tokenPriceInQuote: number;
+  tokenPriceInSol: number;
+  solPriceUsd: number | null;
+}
+
+/**
+ * Which side of a pair is the quote and what the base is worth, for any venue: SOL when the pool has
+ * it (SOL/USDC itself is a SOL pool), else USDC valued at the SOL price, else unsupported. Throws
+ * QuotePriceUnknownError / UnsupportedQuoteError exactly as getPoolSnapshot always has.
+ */
+export function resolveQuote(i: { address: string; label: string; tokenX: TokenInfo; tokenY: TokenInfo; activePrice: number; solPriceUsd?: number | null }): ResolvedQuote {
+  const xMint = i.tokenX.mint;
+  const yMint = i.tokenY.mint;
+  const solSide: PoolSnapshot["solSide"] = xMint === SOL_MINT ? "X" : yMint === SOL_MINT ? "Y" : null;
+  const quoteSide: "X" | "Y" | null = solSide ?? (xMint === USDC_MINT ? "X" : yMint === USDC_MINT ? "Y" : null);
+  if (!quoteSide) throw new UnsupportedQuoteError(i.address, i.label);
+  const quoteSymbol: QuoteSymbol = solSide ? "SOL" : "USDC";
+  const quoteToken = quoteSide === "X" ? i.tokenX : i.tokenY;
+  const baseToken = quoteSide === "X" ? i.tokenY : i.tokenX;
+  const solPriceUsd = i.solPriceUsd !== undefined ? (typeof i.solPriceUsd === "number" && Number.isFinite(i.solPriceUsd) && i.solPriceUsd > 0 ? i.solPriceUsd : null) : solPriceUsdDefault;
+  if (quoteSymbol === "USDC" && solPriceUsd === null) throw new QuotePriceUnknownError(i.address, i.label);
+  const quotePriceInSol = quoteSymbol === "SOL" ? 1 : 1 / solPriceUsd!;
+  const tokenPriceInQuote = quoteSide === "X" ? (i.activePrice > 0 ? 1 / i.activePrice : 0) : i.activePrice;
+  return { solSide, quoteSide, quoteSymbol, quoteToken, baseToken, quotePriceInSol, tokenPriceInQuote, tokenPriceInSol: tokenPriceInQuote * quotePriceInSol, solPriceUsd };
+}
+
 /**
  * Read a pool. A SOL-quoted pool needs nothing else. A USDC-quoted pool needs a SOL price
  * (opts.solPriceUsd, else the module default from setSolPriceUsd) and throws
@@ -226,20 +283,9 @@ export async function getPoolSnapshot(dlmm: DLMM, binsEachSide = 10, opts: Snaps
   const tokenY: TokenInfo = { mint: yMint, symbol: symbolFor(yMint), decimals: yDec, reserve: ui(dlmm.tokenY.amount, yDec) };
   const address = dlmm.pubkey.toBase58();
   const label = `${tokenX.symbol}/${tokenY.symbol}`;
-  const solSide: PoolSnapshot["solSide"] = xMint === SOL_MINT ? "X" : yMint === SOL_MINT ? "Y" : null;
-  // The quote: SOL when the pool has it (SOL/USDC itself is a SOL pool), else USDC, else unsupported.
-  const quoteSide: "X" | "Y" | null = solSide ?? (xMint === USDC_MINT ? "X" : yMint === USDC_MINT ? "Y" : null);
-  if (!quoteSide) throw new UnsupportedQuoteError(address, label);
-  const quoteSymbol: QuoteSymbol = solSide ? "SOL" : "USDC";
-  const quoteToken = quoteSide === "X" ? tokenX : tokenY;
-  const baseToken = quoteSide === "X" ? tokenY : tokenX;
-  const solPriceUsd = opts.solPriceUsd !== undefined ? (typeof opts.solPriceUsd === "number" && Number.isFinite(opts.solPriceUsd) && opts.solPriceUsd > 0 ? opts.solPriceUsd : null) : solPriceUsdDefault;
-  if (quoteSymbol === "USDC" && solPriceUsd === null) throw new QuotePriceUnknownError(address, label);
-  const quotePriceInSol = quoteSymbol === "SOL" ? 1 : 1 / solPriceUsd!;
-
   const activePrice = Number(active.pricePerToken);
-  const tokenPriceInQuote = quoteSide === "X" ? (activePrice > 0 ? 1 / activePrice : 0) : activePrice;
-  const tokenPriceInSol = tokenPriceInQuote * quotePriceInSol;
+  // The quote: SOL when the pool has it (SOL/USDC itself is a SOL pool), else USDC, else unsupported.
+  const { solSide, quoteSide, quoteSymbol, quoteToken, baseToken, quotePriceInSol, tokenPriceInQuote, tokenPriceInSol, solPriceUsd } = resolveQuote({ address, label, tokenX, tokenY, activePrice, solPriceUsd: opts.solPriceUsd });
 
   const fee = dlmm.getFeeInfo();
   const dyn = dlmm.getDynamicFee();
@@ -277,6 +323,8 @@ export async function getPoolSnapshot(dlmm: DLMM, binsEachSide = 10, opts: Snaps
     liquidityBelowY: bins.filter((b) => b.binId < active.binId).reduce((s, b) => s + b.yAmount, 0),
     liquidityAboveX: bins.filter((b) => b.binId > active.binId).reduce((s, b) => s + b.xAmount, 0),
     fetchedAt: new Date().toISOString(),
+    priceModel: "meteora-dlmm",
+    venue: "meteora-dlmm",
   };
 }
 
@@ -301,8 +349,8 @@ export function toPositionSnapshot(p: LbPosition, s: PoolSnapshot): PositionSnap
     address: p.publicKey.toBase58(),
     lowerBinId: d.lowerBinId,
     upperBinId: d.upperBinId,
-    lowerPrice: binPriceUi(d.lowerBinId, s.binStep, xDec, yDec),
-    upperPrice: binPriceUi(d.upperBinId, s.binStep, xDec, yDec),
+    lowerPrice: binPrice(s, d.lowerBinId),
+    upperPrice: binPrice(s, d.upperBinId),
     widthBins: d.upperBinId - d.lowerBinId + 1,
     inRange,
     binsFromRange,
@@ -333,6 +381,8 @@ export interface OpenPlan {
   amountY: BN;
   strategyType: StrategyType;
   slippagePct: number;
+  /** the decision's side; a CLMM venue uses it to keep a single-sided band on one side of the price (absent = BOTH) */
+  side?: BandSide;
 }
 
 export const STRATEGY_BY_NAME: Record<"Spot" | "Curve" | "BidAsk", StrategyType> = {

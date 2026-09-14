@@ -12,6 +12,8 @@ export interface ScreenContext {
   priceChange24hPct: number | null;
   flags: string[];
   generatedAt: string;
+  /** the screen's stock tag when the base is a tokenized stock (the stock book's pools) */
+  stock?: { ticker: string; issuer: string } | null;
   alternatives: { name: string; score: number; feeToTvl24hPct: number | null; tvlUsd: number | null }[];
   /** the fast watch's surges (src/hot): what printed fees in the last hour, across every venue */
   hot?: {
@@ -120,6 +122,7 @@ export function formatObservation(o: Observation): string {
   } else if (s.solPriceUsd) {
     lines.push(`- SOL price: $${r(s.solPriceUsd, 2)}`);
   }
+  lines.push(`- venue: ${s.venue ?? "meteora-dlmm"}${s.priceModel === "clmm" ? " (CLMM: one bin = one tick-spacing step; a single-sided band sits strictly to one side of the price, so it excludes the active bin)" : ""}`);
   lines.push(`- bin step: ${s.binStep} bps | active bin: ${s.activeBinId} | price: ${sig(s.activePrice)} ${s.priceLabel}`);
   lines.push(`- fees: base ${r(s.baseFeePct, 3)}% | dynamic now ${r(s.dynamicFeePct, 3)}% | max ${r(s.maxFeePct, 2)}%`);
   lines.push(`- observed depth: ${r(s.liquidityBelowY, 3)} ${s.tokenY.symbol} below active, ${r(s.liquidityAboveX, 2)} ${s.tokenX.symbol} above`);

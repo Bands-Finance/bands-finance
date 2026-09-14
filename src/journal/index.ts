@@ -12,6 +12,7 @@ import type { DecideResult } from "../agent/decide";
 import type { ExecutionResult } from "../executor";
 import { quoteOf, SOL_MINT, type BinRow, type PoolSnapshot, type PositionSnapshot, type QuoteSymbol } from "../tools/dlmm";
 import type { PoolAnalytics } from "../tools/lpagent";
+import type { VenueId } from "../venues/types";
 
 export interface JournalPool {
   address: string;
@@ -39,6 +40,8 @@ export interface JournalPool {
   quotePriceInSol?: number;
   /** base token in the quote token, UI units */
   tokenPriceInQuote?: number;
+  /** the venue the pool lives on; absent on entries written before venues: meteora-dlmm */
+  venue?: VenueId;
 }
 
 /** The quote of a journal pool with the defaults an old entry needs: SOL, at 1 SOL per SOL. */
@@ -121,6 +124,7 @@ export function toJournalPool(s: PoolSnapshot): JournalPool {
     quoteSide: q.side,
     quotePriceInSol: q.priceInSol,
     tokenPriceInQuote: q.tokenPriceInQuote,
+    venue: s.venue ?? "meteora-dlmm",
   };
 }
 

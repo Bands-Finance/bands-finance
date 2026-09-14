@@ -31,6 +31,8 @@ export interface DecideResult {
 export interface DecideOptions {
   /** the hot list, for the policy (pools off the screen carry no hot rows in their observation) */
   hot?: PolicyExtras["hot"];
+  /** the venue's open cost in SOL, for the policy's sizing (defaults to the Meteora estimate) */
+  openCostSol?: number;
 }
 
 /** An engine directive stands in for the model this cycle: the LLM is not called. */
@@ -62,7 +64,7 @@ function fallback(note: string): DecideResult {
 /** The desk policy's proposal, as the decision the model would otherwise have made. */
 export function policyDecideResult(observation: Observation, note: string, opts: DecideOptions = {}): DecideResult {
   try {
-    const r = policyDecide(observation, { limits: riskLimits, hot: opts.hot });
+    const r = policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol });
     return { decision: r.decision, source: "policy", model: "desk-policy", note: `${note} Desk policy (${r.branch}): ${r.reason}.` };
   } catch (err) {
     return fallback(`${note} Desk policy failed: ${(err as Error).message}.`);

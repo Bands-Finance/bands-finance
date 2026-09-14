@@ -4,9 +4,13 @@ import {
   LAMPORTS_PER_SOL,
   PublicKey,
   Transaction,
+  VersionedTransaction,
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import { config } from "../config";
+
+/** A legacy transaction (Meteora's SDK) or a versioned one with lookup tables (Raydium's SDK). */
+export type AnyTransaction = Transaction | VersionedTransaction;
 
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -163,8 +167,21 @@ export class Wallet {
     return null;
   }
 
-  /** Simulate a legacy transaction without broadcasting. Used in DRY_RUN. */
-  async simulate(tx: Transaction, extraSigners: Keypair[] = []): Promise<SimulationReport> {
+  /**
+   * Simulate without broadcasting. Used in DRY_RUN. A versioned transaction is simulated as built
+   * (its lookup tables resolved by the RPC) with signature checks off and a fresh blockhash, so a
+   * transaction built for an unfunded wallet still reports its logs and compute.
+   */
+  async simulate(tx: AnyTransaction, extraSigners: Keypair[] = []): Promise<SimulationReport> {
+    if (tx instanceof VersionedTransaction) {
+      const res = await this.connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" });
+      return {
+        ok: res.value.err === null,
+        err: res.value.err,
+        unitsConsumed: res.value.unitsConsumed,
+        logsTail: (res.value.logs ?? []).slice(-8),
+      };
+    }
     if (!tx.recentBlockhash) {
       const { blockhash } = await this.connection.getLatestBlockhash("confirmed");
       tx.recentBlockhash = blockhash;
@@ -179,13 +196,26 @@ export class Wallet {
     };
   }
 
-  /** Broadcast. Throws while DRY_RUN is on or when no real key is configured. */
-  async signAndSend(tx: Transaction, extraSigners: Keypair[] = []): Promise<string> {
+  /**
+   * Broadcast. Throws while DRY_RUN is on or when no real key is configured. A versioned transaction
+   * gets a fresh blockhash, is signed by the wallet and every extra signer (a builder's own signature
+   * would not survive the new blockhash), sent raw and confirmed against that blockhash's height.
+   */
+  async signAndSend(tx: AnyTransaction, extraSigners: Keypair[] = []): Promise<string> {
     if (config.dryRun) {
       throw new Error("DRY_RUN=true: wallet refuses to broadcast transactions");
     }
     if (this.ephemeral) {
       throw new Error("No WALLET_SECRET_KEY configured: cannot broadcast");
+    }
+    if (tx instanceof VersionedTransaction) {
+      const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash("confirmed");
+      tx.message.recentBlockhash = blockhash;
+      tx.sign([this.keypair, ...extraSigners]);
+      const signature = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: "confirmed" });
+      const conf = await this.connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
+      if (conf.value.err) throw new Error(`transaction ${signature} failed: ${JSON.stringify(conf.value.err)}`);
+      return signature;
     }
     return sendAndConfirmTransaction(this.connection, tx, [this.keypair, ...extraSigners], {
       commitment: "confirmed",

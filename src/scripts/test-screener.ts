@@ -530,10 +530,15 @@ async function main(): Promise<void> {
       { venue: "orca-whirlpool", scanned: 1000, live: 800, ranked: 2 },
     ]);
   });
-  await test("tradableVenue: only Meteora DLMM is executable for now", () => {
+  await test("tradableVenue: Meteora DLMM and Raydium CLMM by default (TRADABLE_VENUES), Orca not yet", () => {
     assert.equal(tradableVenue({ venue: "meteora-dlmm" }), true);
-    assert.equal(tradableVenue({ venue: "raydium-clmm" }), false);
+    assert.equal(tradableVenue({ venue: "raydium-clmm" }), true);
     assert.equal(tradableVenue({ venue: "orca-whirlpool" }), false);
+    const before = process.env.TRADABLE_VENUES;
+    process.env.TRADABLE_VENUES = "meteora-dlmm";
+    assert.equal(tradableVenue({ venue: "raydium-clmm" }), false);
+    if (before === undefined) delete process.env.TRADABLE_VENUES;
+    else process.env.TRADABLE_VENUES = before;
   });
   await test("normalizeScreen: a screen.json from before venues loads as a Meteora-only board with the new fields filled", () => {
     // A row exactly as data/screen.json wrote it before this change.

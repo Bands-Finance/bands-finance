@@ -10,12 +10,15 @@
  * the key: boot refuses when another live process holds the same wallet.
  *
  * Paper mode (PAPER_SOL > 0 under DRY_RUN, src/paper): the wallet and the bands are virtual. Bands
- * are marked against the live pool every cycle in place of getUserPositions, balances come from the
- * book, and execute() applies the verdict to the book. Screen, hot watch, basis, directives, guards,
- * engine state and journal run unchanged.
+ * are marked against the live pool every cycle in place of the venue's position read, balances come
+ * from the book, and execute() applies the verdict to the book. Screen, hot watch, basis, directives,
+ * guards, engine state and journal run unchanged.
+ *
+ * Venues (src/venues): every pool is read, marked and traded through its venue adapter (Meteora
+ * DLMM, Raydium CLMM). TRADABLE_VENUES says which venues the picker may seat; LIVE_VENUES which ones
+ * the executor may broadcast on. BOOK=stocks seats tokenized-stock pools first.
  */
 import { exec } from "node:child_process";
-import DLMM from "@meteora-ag/dlmm";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { config, riskLimits } from "./config";
 import { decide, engineDecideResult, proposalDecideResult } from "./agent/decide";
@@ -25,11 +28,12 @@ import type { EngineObservation, Observation, ScreenContext } from "./agent/obse
 import { evaluate, EngineGuardContext } from "./risk/guards";
 import { describeLimits } from "./risk/limits";
 import { killSwitchActive, loadState, saveState, RiskState, todayUtc } from "./risk/state";
-import { execute, executeSkim, ExecutionResult } from "./executor";
+import { execute, executeSkim, ExecutionResult, toOpenPlan } from "./executor";
 import { appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool } from "./journal";
 import { loadScreen, runScreen, tradableVenue } from "./screener";
 import type { ScreenResult } from "./screener/types";
-import { getPoolSnapshot, getUserPositions, KNOWN_TOKENS, loadPool, PoolSnapshot, PositionSnapshot, quoteOf, QuotePriceUnknownError, setSolPriceUsd, UnsupportedQuoteError } from "./tools/dlmm";
+import { KNOWN_TOKENS, PoolSnapshot, PositionSnapshot, quoteOf, QuotePriceUnknownError, setSolPriceUsd, UnsupportedQuoteError } from "./tools/dlmm";
+import { bookEnv, isTradableVenue, liveVenues, loadVenuePool, poolsWithPositions, stockBookPools, stockMinLiquidityUsd, tradableVenues, type Venue, type VenueId, type VenuePool } from "./venues";
 import { fetchPoolAnalytics } from "./tools/lpagent";
 import { Wallet } from "./tools/wallet";
 import { startServer } from "./server";
@@ -59,7 +63,8 @@ interface App {
   connection: Connection;
   wallet: Wallet;
   cycle: number;
-  dlmms: Map<string, DLMM>;
+  /** venue + pool handle per address (src/venues) */
+  pools: Map<string, { venue: Venue; pool: VenuePool }>;
   screen: ScreenResult | null;
   screenAt: number;
   /** breaker state, loaded once per iteration and saved after every change */
@@ -73,9 +78,11 @@ interface App {
 
 interface Observed {
   address: string;
-  dlmm: DLMM;
+  venue: Venue;
+  pool: VenuePool;
   snapshot: PoolSnapshot;
-  raw: Awaited<ReturnType<typeof getUserPositions>>["raw"];
+  /** the venue's raw positions, index-aligned with positions */
+  raw: unknown[];
   positions: PositionSnapshot[];
 }
 
@@ -110,6 +117,7 @@ function banner(app: App): void {
   console.log("=".repeat(72));
   console.log(`${config.agentName}  |  ${mode}`);
   console.log(`pools     ${config.pinnedPools.length ? `pinned ${config.pinnedPools.join(", ")} + ` : ""}screener top picks, max ${config.maxActivePools} at once`);
+  console.log(`venues    tradable ${tradableVenues().join(", ") || "none"} | live ${liveVenues().filter((v) => isTradableVenue(v)).join(", ") || "none"} (a tradable venue off LIVE_VENUES trades in paper and dry-run only) | book ${bookEnv()}${bookEnv() === "stocks" ? ` (tokenized stocks first, liquidity >= $${stockMinLiquidityUsd().toLocaleString("en-US")})` : ""}`);
   console.log(`quotes    SOL and USDC (a USDC pool is valued at the screen's SOL price: ${app.screen?.solPriceUsd ? `$${app.screen.solPriceUsd.toFixed(2)}` : "none yet, USDC pools skipped until a screen lands"})`);
   console.log(`wallet    ${app.wallet.publicKey.toBase58()}${app.wallet.ephemeral ? "  (ephemeral, no key configured)" : ""}${cfg.expectedWallet ? `  expected ${cfg.expectedWallet}` : ""}`);
   if (app.paper) console.log(`paper     book ${app.paper.startedAt}: ${app.paper.wallet.sol.toFixed(4)} SOL, ${app.paper.wallet.usdc.toFixed(2)} USDC, ${app.paper.bands.length} band(s) open, ${app.paper.closed.length} closed; slippage ${app.paperEnv.slippagePct}% per open/close; report: DATA_DIR=${config.dataDir} npm run paper:report`);
@@ -173,11 +181,11 @@ async function ensureScreen(app: App): Promise<void> {
  * SOL-quoted pools always qualify; USDC-quoted ones only when the screen carries a SOL price
  * (the guards' limits are in SOL, so a USDC seat needs the conversion). Every stock pool is USDC-quoted.
  */
-/** The hot watch's tradable rows: Meteora, quoted in SOL (or USDC when priced), best heat first. */
+/** The hot watch's tradable rows: a tradable venue, quoted in SOL (or USDC when priced), best heat first. */
 function hotRows(app: App, max = config.maxActivePools): HotRow[] {
   const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0;
   return hotPicks(loadHot(), {
-    tradable: (r) => r.venue === "meteora-dlmm" && (r.quoteSymbol === "SOL" || (r.quoteSymbol === "USDC" && usdcOk)),
+    tradable: (r) => isTradableVenue(r.venue) && (r.quoteSymbol === "SOL" || (r.quoteSymbol === "USDC" && usdcOk)),
     max,
   });
 }
@@ -185,6 +193,13 @@ function hotRows(app: App, max = config.maxActivePools): HotRow[] {
 function pickPools(app: App, withPositions: string[]): string[] {
   const set = new Set<string>([...config.pinnedPools, ...withPositions]);
   const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0;
+  // The stock book: tokenized stocks first, by fee/TVL, then the rest of the picker.
+  if (bookEnv() === "stocks") {
+    for (const p of stockBookPools(app.screen?.pools ?? [], usdcOk)) {
+      if (set.size >= config.maxActivePools) break;
+      set.add(p.address);
+    }
+  }
   // Surges first: what the fast watch found in the last hour, already filtered for liquidity, age and dumping.
   for (const r of hotRows(app)) {
     if (set.size >= config.maxActivePools) break;
@@ -205,13 +220,15 @@ function pickPools(app: App, withPositions: string[]): string[] {
   return [...set];
 }
 
-async function getDlmm(app: App, address: string): Promise<DLMM> {
-  let d = app.dlmms.get(address);
-  if (!d) {
-    d = await loadPool(app.connection, address);
-    app.dlmms.set(address, d);
+/** The venue and pool handle for an address, loaded once: the screen's venue when the pool is on the board, else the account owner. */
+async function getVenuePool(app: App, address: string): Promise<{ venue: Venue; pool: VenuePool }> {
+  let vp = app.pools.get(address);
+  if (!vp) {
+    const hint: VenueId | undefined = app.screen?.pools.find((p) => p.address === address)?.venue;
+    vp = await loadVenuePool(app.connection, address, hint);
+    app.pools.set(address, vp);
   }
-  return d;
+  return vp;
 }
 
 function screenContext(app: App, address: string): ScreenContext | null {
@@ -230,6 +247,7 @@ function screenContext(app: App, address: string): ScreenContext | null {
     priceChange24hPct: p.priceChange24hPct,
     flags: p.flags,
     generatedAt: s.generatedAt,
+    stock: p.stock ? { ticker: p.stock.ticker, issuer: p.stock.issuer } : null,
     alternatives: s.pools
       .filter((x) => x.address !== address && tradableVenue(x) && (x.quoteSymbol === "SOL" || (x.quoteSymbol === "USDC" && solPriceOf(app) !== null)))
       .slice(0, 5)
@@ -237,7 +255,7 @@ function screenContext(app: App, address: string): ScreenContext | null {
     hot: hotPicks(loadHot(), { tradable: () => true, max: 8 }).map((r) => ({
       name: r.name,
       venue: r.venue,
-      tradable: r.venue === "meteora-dlmm" && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC"),
+      tradable: isTradableVenue(r.venue) && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC"),
       thisPool: r.address === address,
       liquidityUsd: r.liquidityUsd,
       vol1hUsd: r.vol1hUsd,
@@ -311,7 +329,10 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   const mode = config.dryRun ? "dry-run" : "live";
   const { snapshot, positions, raw } = o;
   const tag = `[cycle ${app.cycle} ${snapshot.label}]`;
+  const venueTag = o.venue.id === "meteora-dlmm" ? "" : ` ${o.venue.id}`;
   const q = quoteOf(snapshot);
+  // The venue's open cost: what the policy sizes with and the guards' gas-reserve check charges.
+  const openCostDefault = o.venue.openCostSol(snapshot).total;
   const quoteIsSol = q.symbol === "SOL";
   const paper = app.paper;
 
@@ -403,7 +424,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     engine: engineObs,
   };
   console.log(
-    `${tag} active bin ${snapshot.activeBinId} price ${snapshot.activePrice.toPrecision(6)} ${snapshot.priceLabel} | quote ${q.symbol}${quoteIsSol ? "" : ` (1 ${q.symbol} = ${q.priceInSol.toFixed(6)} SOL)`} | screen ${screen ? `#${screen.rank} score ${screen.score}` : "n/a"} | wallet ${sol.toFixed(4)} SOL, ${quoteIsSol ? "" : `${quote.toFixed(2)} ${q.symbol}, `}${token.ui.toFixed(2)} ${snapshot.baseToken.symbol} | bands ${positions.length} | size x${view.sizeMultiplier}${knife ? ` | ${knife}` : ""}`,
+    `${tag}${venueTag} active bin ${snapshot.activeBinId} price ${snapshot.activePrice.toPrecision(6)} ${snapshot.priceLabel} | quote ${q.symbol}${quoteIsSol ? "" : ` (1 ${q.symbol} = ${q.priceInSol.toFixed(6)} SOL)`} | screen ${screen ? `#${screen.rank} score ${screen.score}` : "n/a"} | wallet ${sol.toFixed(4)} SOL, ${quoteIsSol ? "" : `${quote.toFixed(2)} ${q.symbol}, `}${token.ui.toFixed(2)} ${snapshot.baseToken.symbol} | bands ${positions.length} | size x${view.sizeMultiplier}${knife ? ` | ${knife}` : ""}`,
   );
 
   // The engine decides first. When it has a directive the LLM is not asked this cycle.
@@ -415,7 +436,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     ? engineDecideResult(directive.decision, `${directive.kind}: ${directive.reason}`)
     : proposal
       ? proposalDecideResult(proposalDecision(proposal), `proposal ${proposal.id} by ${proposal.proposerName} (${proposal.proposerId})`)
-      : await decide(observation, { hot: hotRows(app, 8) });
+      : await decide(observation, { hot: hotRows(app, 8), openCostSol: openCostDefault });
   console.log(`${tag} ${directive ? `engine directive ${directive.kind}` : proposal ? `proposal ${proposal.id}` : `${config.agentName} proposes`} ${llm.decision.action} (${llm.source}): "${llm.decision.headline}"`);
 
   const engineCtx: EngineGuardContext = {
@@ -431,16 +452,18 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     outOfRangeSec: cfg.outOfRangeSec,
     basisReason: basisObs?.reason ?? null,
   };
+  const openCostSol = llm.decision.open ? o.venue.openCostSol(snapshot, toOpenPlan(llm.decision.open, snapshot)).total : openCostDefault;
   const verdict = evaluate(
     llm.decision,
-    { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm" },
+    { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol },
     riskLimits,
   );
   if (verdict.overrides.length) console.log(`${tag} guard override: ${verdict.overrides.join("; ")}`);
   if (verdict.violations.length) console.log(`${tag} guards BLOCKED: ${verdict.violations.join("; ")}`);
 
   const execution = await execute(verdict, {
-    dlmm: o.dlmm,
+    venue: o.venue,
+    pool: o.pool,
     wallet: app.wallet,
     rawPositions: raw,
     snapshot,
@@ -451,6 +474,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   for (const t of execution.txs) {
     console.log(`${tag} ${execution.mode} ${t.label}: ${t.signature ?? t.skipped ?? (t.ok ? "simulated ok" : `FAILED ${t.error}`)}`);
   }
+  if (!execution.ok || execution.txs.length === 0) for (const n of execution.notes) if (n !== "hold" && n !== "blocked by guards") console.log(`${tag} ${execution.mode}: ${n}`);
   for (const row of execution.ledger ?? []) {
     const quoteLeg = quoteIsSol || typeof row.quoteDelta !== "number" ? "" : ` (${row.quoteDelta.toFixed(4)} ${q.symbol})`;
     console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)}${quoteLeg} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
@@ -571,8 +595,7 @@ async function runIteration(app: App): Promise<void> {
   if (paper) {
     withPositions = poolsWithBands(paper);
   } else {
-    const held = await DLMM.getAllLbPairPositionsByUser(app.connection, app.wallet.publicKey);
-    withPositions = [...held.entries()].filter(([, info]) => info.lbPairPositionsData.length > 0).map(([addr]) => addr);
+    withPositions = (await poolsWithPositions(app.connection, app.wallet.publicKey, (s) => console.error(`[cycle ${app.cycle}] ${s}`))).map((p) => p.address);
   }
   const pools = pickPools(app, withPositions);
   if (pools.length === 0) {
@@ -585,16 +608,16 @@ async function runIteration(app: App): Promise<void> {
   const observed: Observed[] = [];
   for (const address of pools) {
     try {
-      const dlmm = await getDlmm(app, address);
-      const snapshot = await getPoolSnapshot(dlmm, 10, { solPriceUsd });
+      const { venue, pool } = await getVenuePool(app, address);
+      const snapshot = await venue.snapshot(pool, 10, { solPriceUsd });
       if (paper) {
         // The paper bands of this pool, marked against the live snapshot (fees accrue here).
         const positions = markPool(paper, snapshot, { now: Date.now(), fees: paperFeeSource(app, address), solPriceUsd });
         savePaperBook(paper);
-        observed.push({ address, dlmm, snapshot, raw: [], positions });
+        observed.push({ address, venue, pool, snapshot, raw: [], positions });
       } else {
-        const { raw, positions } = await getUserPositions(dlmm, app.wallet.publicKey, snapshot);
-        observed.push({ address, dlmm, snapshot, raw, positions });
+        const { raw, positions } = await venue.positions(pool, app.wallet.publicKey, snapshot);
+        observed.push({ address, venue, pool, snapshot, raw, positions });
       }
     } catch (err) {
       // A USDC pool without a SOL price, or a pool quoted in neither, is skipped with its reason: it
@@ -700,7 +723,7 @@ async function main(): Promise<void> {
     connection,
     wallet,
     cycle: 0,
-    dlmms: new Map(),
+    pools: new Map(),
     screen: loadScreen(),
     screenAt: 0,
     engine: loadEngineState(),

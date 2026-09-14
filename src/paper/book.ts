@@ -17,6 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { dataPath } from "../lib/ledger";
+import type { PriceModel } from "../tools/bins";
 import { BIN_ARRAY_RENT_SOL, OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, type QuoteSymbol } from "../tools/dlmm";
 
 export const PAPER_BOOK_FILE = "paper-book.json";
@@ -60,6 +61,10 @@ export interface PaperBand {
   lowerPrice: number;
   upperPrice: number;
   binStep: number;
+  /** the pool's price model (src/tools/bins.ts); absent on bands opened before venues: Meteora */
+  priceModel?: PriceModel;
+  /** the rent the wallet gets back on close; absent on bands opened before venues: the Meteora position rent */
+  rentRefundableSol?: number;
   strategy: PaperStrategy;
   /** Curve/BidAsk are laid as Spot; the note says so */
   strategyNote: string | null;
@@ -271,6 +276,11 @@ export interface OpenBandInput {
   amountToken: number;
   slippagePct: number;
   now: number;
+  /** the pool's price model (default Meteora) */
+  priceModel?: PriceModel;
+  /** the venue's open cost: charged now, and the part refunded on close (default: the Meteora estimate and position rent) */
+  rentChargedSol?: number;
+  rentRefundableSol?: number;
 }
 
 export interface OpenBandResult {
@@ -293,7 +303,8 @@ export function openBand(book: PaperBook, i: OpenBandInput): OpenBandResult {
   const slippageToken = i.amountToken * slip;
   const quoteCost = i.amountQuote + slippageQuote;
   const tokenCost = i.amountToken + slippageToken;
-  const rentChargedSol = OPEN_COST_ESTIMATE_SOL;
+  const rentChargedSol = i.rentChargedSol ?? OPEN_COST_ESTIMATE_SOL;
+  const rentRefundableSol = Math.min(rentChargedSol, i.rentRefundableSol ?? POSITION_RENT_SOL);
   const solCost = rentChargedSol + (i.quoteSymbol === "SOL" ? quoteCost : 0);
   if (book.wallet.sol < solCost) throw new Error(`paper wallet holds ${book.wallet.sol.toFixed(4)} SOL, needs ${solCost.toFixed(4)} (deposit, slippage and rent)`);
   if (i.quoteSymbol === "USDC" && book.wallet.usdc < quoteCost) throw new Error(`paper wallet holds ${book.wallet.usdc.toFixed(2)} USDC, needs ${quoteCost.toFixed(2)}`);
@@ -302,8 +313,8 @@ export function openBand(book: PaperBook, i: OpenBandInput): OpenBandResult {
   creditQuote(book, i.quoteSymbol, -quoteCost);
   if (tokenCost > 0) creditToken(book, i.tokenMint, -tokenCost, i.tokenPriceInQuote * i.quotePriceInSol);
   book.wallet.sol = r9(book.wallet.sol - rentChargedSol);
-  book.rentLockedSol = r9(book.rentLockedSol + POSITION_RENT_SOL);
-  book.rentSpentSol = r9(book.rentSpentSol + (rentChargedSol - POSITION_RENT_SOL));
+  book.rentLockedSol = r9(book.rentLockedSol + rentRefundableSol);
+  book.rentSpentSol = r9(book.rentSpentSol + (rentChargedSol - rentRefundableSol));
   const slippageSol = (slippageQuote + slippageToken * i.tokenPriceInQuote) * i.quotePriceInSol;
   book.slippagePaidSol = r9(book.slippagePaidSol + slippageSol);
   book.seq += 1;
@@ -325,6 +336,8 @@ export function openBand(book: PaperBook, i: OpenBandInput): OpenBandResult {
     lowerPrice: i.lowerPrice,
     upperPrice: i.upperPrice,
     binStep: i.binStep,
+    ...(i.priceModel ? { priceModel: i.priceModel } : {}),
+    ...(i.rentRefundableSol !== undefined ? { rentRefundableSol } : {}),
     strategy: i.strategy,
     strategyNote,
     side: i.side,
@@ -383,8 +396,9 @@ export function closeBand(book: PaperBook, i: CloseBandInput): PaperClosed {
 
   creditQuote(book, b.quoteSymbol, v.amountQuote + v.feeQuote);
   if (tokenNet > 0) creditToken(book, b.tokenMint, tokenNet, v.tokenPriceInQuote * v.quotePriceInSol);
-  book.wallet.sol = r9(book.wallet.sol + POSITION_RENT_SOL);
-  book.rentLockedSol = r9(Math.max(0, book.rentLockedSol - POSITION_RENT_SOL));
+  const rentRefund = bandRentRefund(b);
+  book.wallet.sol = r9(book.wallet.sol + rentRefund);
+  book.rentLockedSol = r9(Math.max(0, book.rentLockedSol - rentRefund));
   book.slippagePaidSol = r9(book.slippagePaidSol + slippageSol);
   book.feesRealizedSol = r9(book.feesRealizedSol + feeSol);
 
@@ -448,6 +462,9 @@ export function claimFees(book: PaperBook, address: string, mark: Pick<BandValue
   return { address, feeQuote, feeToken, feeSol };
 }
 
-/** The non-refundable part of one open, for reports. */
+/** The rent a band hands back on close: what it recorded at open, else the Meteora position rent. */
+export const bandRentRefund = (b: Pick<PaperBand, "rentRefundableSol">): number => (typeof b.rentRefundableSol === "number" && b.rentRefundableSol >= 0 ? b.rentRefundableSol : POSITION_RENT_SOL);
+
+/** The non-refundable part of one Meteora open, for reports. */
 export const OPEN_RENT_SPENT_SOL = OPEN_COST_ESTIMATE_SOL - POSITION_RENT_SOL;
 export { BIN_ARRAY_RENT_SOL, OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL };

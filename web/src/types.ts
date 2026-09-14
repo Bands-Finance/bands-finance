@@ -97,6 +97,8 @@ export interface JournalPool {
   quotePriceInSol?: number;
   /** quote per base token */
   tokenPriceInQuote?: number;
+  /** the venue the pool lives on; absent on entries written before venues: meteora-dlmm */
+  venue?: "meteora-dlmm" | "raydium-clmm" | "orca-whirlpool";
 }
 
 export interface JournalEntry {

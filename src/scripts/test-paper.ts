@@ -344,7 +344,7 @@ async function main(): Promise<void> {
   console.log("paper executor and execute() delegation");
   const book2 = paper.emptyBook(100, 0, T0);
   const ctx = (snapshot: PoolSnapshot, positions: PositionSnapshot[], now: number) =>
-    ({ dlmm: {} as never, wallet: {} as never, rawPositions: [], snapshot, positions, paper: { book: book2, slippagePct: 0.3, now } }) as Parameters<typeof execute>[1];
+    ({ venue: {} as never, pool: {} as never, wallet: {} as never, rawPositions: [], snapshot, positions, paper: { book: book2, slippagePct: 0.3, now } }) as Parameters<typeof execute>[1];
   let addr2 = "";
   await test("execute() with a paper context: an allowed OPEN lands in the book, mode paper, ledger row dry-run/marked/paper", async () => {
     const r = await execute(verdictOf(openDecision(1, 9)), ctx(s260, [], T0));
@@ -503,8 +503,8 @@ async function main(): Promise<void> {
     assert.equal(policy.binsForCover(1, 5, 69), 68);
     assert.equal(policy.binsForCover(5, 5, 10), 9);
     near(policy.coveragePct(20, 24), 4.91, 1e-3);
-    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, minScore: 20 });
-    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", POLICY_MIN_SCORE: "10" }), { coverPct: 8, minScore: 10 });
+    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, minScore: 20, book: "all" });
+    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, minScore: 10, book: "stocks" });
   });
   await test("no band, score above the floor: OPEN a 24-bin SOL-only Spot band sized at the max band", () => {
     const r = policy.policyDecide(obs(), x);

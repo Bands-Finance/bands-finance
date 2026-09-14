@@ -18,7 +18,8 @@
  * the depth being the snapshot's quote-side liquidity scaled to the band's width, capped at 50%.
  * dt is capped at MAX_MARK_GAP_SEC so a restart never accrues a day of fees in one mark.
  */
-import { binPriceUi, quoteMath, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
+import { binPrice } from "../tools/bins";
+import { quoteMath, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
 import type { BandValue, PaperBand, PaperBook, PaperMark } from "./book";
 
 export const MAX_MARK_GAP_SEC = 3600;
@@ -28,7 +29,7 @@ export const UNKNOWN_SPLIT = 0.5;
 
 /** The fields of a snapshot the mark reads; a test can build one without the rest. */
 export type MarkSnapshot = Pick<PoolSnapshot, "activeBinId" | "activePrice" | "binStep" | "bins" | "liquidityBelowY" | "liquidityAboveX" | "dynamicFeePct" | "solSide" | "tokenPriceInSol"> &
-  Partial<Pick<PoolSnapshot, "quoteSide" | "quotePriceInSol" | "tokenPriceInQuote" | "solPriceUsd">> & {
+  Partial<Pick<PoolSnapshot, "quoteSide" | "quotePriceInSol" | "tokenPriceInQuote" | "solPriceUsd" | "priceModel">> & {
     tokenX: Pick<PoolSnapshot["tokenX"], "decimals">;
     tokenY: Pick<PoolSnapshot["tokenY"], "decimals">;
   };
@@ -46,9 +47,9 @@ export interface MarkContext {
   solPriceUsd: number | null;
 }
 
-/** Price of the base token in quote units at a bin: Y per X when the quote is Y, X per Y when it is X. */
-export function quotePerTokenAt(binId: number, band: Pick<PaperBand, "binStep" | "xDecimals" | "yDecimals" | "quoteSide">): number {
-  const p = binPriceUi(binId, band.binStep, band.xDecimals, band.yDecimals);
+/** Price of the base token in quote units at a bin (under the band's price model): Y per X when the quote is Y, X per Y when it is X. */
+export function quotePerTokenAt(binId: number, band: Pick<PaperBand, "binStep" | "xDecimals" | "yDecimals" | "quoteSide" | "priceModel">): number {
+  const p = binPrice({ binStep: band.binStep, priceModel: band.priceModel, tokenX: { decimals: band.xDecimals }, tokenY: { decimals: band.yDecimals } }, binId);
   return band.quoteSide === "Y" ? p : p > 0 ? 1 / p : 0;
 }
 
@@ -67,7 +68,7 @@ export function depositBins(band: Pick<PaperBand, "lowerBinId" | "upperBinId" | 
 }
 
 /** Quote notional per bin: what each bin's slice is worth in quote at its own price. */
-export function binNotionals(band: Pick<PaperBand, "lowerBinId" | "upperBinId" | "openedBinId" | "quoteSide" | "quoteDeposit" | "tokenDeposit" | "binStep" | "xDecimals" | "yDecimals">): Map<number, number> {
+export function binNotionals(band: Pick<PaperBand, "lowerBinId" | "upperBinId" | "openedBinId" | "quoteSide" | "quoteDeposit" | "tokenDeposit" | "binStep" | "xDecimals" | "yDecimals" | "priceModel">): Map<number, number> {
   const { quoteBins, tokenBins } = depositBins(band);
   const out = new Map<number, number>();
   for (let i = band.lowerBinId; i <= band.upperBinId; i++) out.set(i, 0);

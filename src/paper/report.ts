@@ -180,7 +180,7 @@ export function renderPaperReport(s: PaperSummary): string {
   out.push(`equity now   ${sol(s.equity.sol)} (${usd(s.equity.usd)}) = wallet ${sol(s.wallet.sol)} + USDC ${sol(s.equity.usdcSol)} + tokens ${sol(s.equity.tokensSol)} + bands ${sol(s.equity.bandsSol)} (incl. ${sol(s.feesUnclaimedSol, 6)} unclaimed fees)`);
   out.push(`vs start     ${signed(s.equity.vsStartSol)} SOL (${signed(s.equity.vsStartPct, 2)}%, ${s.equity.vsStartUsd === null ? "n/a" : (s.equity.vsStartUsd >= 0 ? "+" : "") + usd(s.equity.vsStartUsd)})  = realized ${signed(s.realizedSol)} + marked ${signed(s.markedSol)} (bands ${signed(s.markedBandsSol)}, wallet tokens ${signed(s.markedTokensSol)}) - rent locked ${s.rentLockedSol.toFixed(4)} - rent spent ${s.rentSpentSol.toFixed(4)}`);
   out.push(`fees         claimed ${sol(s.feesClaimedSol, 6)} | realized incl. closes ${sol(s.feesRealizedSol, 6)} | unclaimed ${sol(s.feesUnclaimedSol, 6)} | slippage paid ${sol(s.slippagePaidSol, 6)}`);
-  out.push(`rent         ${sol(s.rentLockedSol)} locked in ${s.bands.length} band(s), refunded on close | ${sol(s.rentSpentSol)} spent on bin arrays, not refunded`);
+  out.push(`rent         ${sol(s.rentLockedSol)} locked in ${s.bands.length} band(s), refunded on close | ${sol(s.rentSpentSol)} spent on bin arrays (CLMM: tick arrays and protocol positions), not refunded`);
   out.push("");
   out.push(`OPEN BANDS (${s.bands.length})`);
   if (!s.bands.length) out.push("  none");

@@ -73,6 +73,8 @@ export interface GuardContext {
   engine?: EngineGuardContext;
   /** who made the proposal: anti-churn applies to the LLM only; an engine close is an emergency */
   source?: "llm" | "engine";
+  /** the venue's up-front cost of the proposed open in SOL (position rent plus whatever the band must initialise); defaults to the Meteora estimate */
+  openCostSol?: number;
 }
 
 export interface Verdict {
@@ -244,7 +246,8 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
       const walletQuoteAfter = walletQuote + closingQuote - o.amountSol;
       // SOL: the deposit only when the quote is SOL; rent + fees always
       const walletSolAfterClose = ctx.walletSol + (quoteIsSol ? (closing?.solInPosition ?? 0) : 0);
-      const walletSolAfter = walletSolAfterClose - (quoteIsSol ? o.amountSol : 0) - OPEN_COST_ESTIMATE_SOL;
+      const openCost = typeof ctx.openCostSol === "number" && Number.isFinite(ctx.openCostSol) && ctx.openCostSol >= 0 ? ctx.openCostSol : OPEN_COST_ESTIMATE_SOL;
+      const walletSolAfter = walletSolAfterClose - (quoteIsSol ? o.amountSol : 0) - openCost;
       const width = o.binsBelowActive + o.binsAboveActive + 1;
       const mult = Math.min(Math.max(engine.sizeMultiplier, 0), 1);
       const effectiveMax = limits.maxPositionSol * mult;
@@ -262,8 +265,8 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
       if (walletSolAfter < limits.gasReserveSol) {
         violations.push(
           quoteIsSol
-            ? `wallet would hold ${walletSolAfter.toFixed(4)} SOL after deposit + ~${OPEN_COST_ESTIMATE_SOL.toFixed(3)} rent, below gas reserve ${limits.gasReserveSol}`
-            : `wallet would hold ${walletSolAfter.toFixed(4)} SOL after ~${OPEN_COST_ESTIMATE_SOL.toFixed(3)} rent (the ${q.symbol} deposit spends no SOL), below gas reserve ${limits.gasReserveSol}`,
+            ? `wallet would hold ${walletSolAfter.toFixed(4)} SOL after deposit + ~${openCost.toFixed(3)} rent, below gas reserve ${limits.gasReserveSol}`
+            : `wallet would hold ${walletSolAfter.toFixed(4)} SOL after ~${openCost.toFixed(3)} rent (the ${q.symbol} deposit spends no SOL), below gas reserve ${limits.gasReserveSol}`,
         );
       }
       if (o.amountToken > ctx.walletToken + (closing ? closing.amountX + closing.amountY : 0)) {

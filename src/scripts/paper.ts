@@ -20,7 +20,9 @@ import { evaluate, EngineGuardContext } from "../risk/guards";
 import type { RiskLimits } from "../risk/limits";
 import { emptyState } from "../risk/state";
 import { benchView, circuitHalted, EngineState, loadEngineState, regimeView, RegimeView, standingDown } from "../engine/breakers";
-import { BIN_ARRAY_RENT_SOL, getPoolSnapshot, loadPool, OPEN_COST_ESTIMATE_SOL, PoolSnapshot, POSITION_RENT_SOL, quoteOf, setSolPriceUsd } from "../tools/dlmm";
+import { PoolSnapshot, quoteOf, setSolPriceUsd } from "../tools/dlmm";
+import { isTradableVenue, loadVenuePool, tradableVenues, venueOf, type OpenCost } from "../venues";
+import { toOpenPlan } from "../executor";
 
 const arg = (name: string, fallback: string) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -74,6 +76,8 @@ interface Seat {
   /** true when the quote is token Y and the band sits under the active bin; false when it sits above (quote is X) */
   quoteBelow: boolean;
   coveragePct: number;
+  /** the venue's up-front cost of this band */
+  openCost: OpenCost;
   verdict: ReturnType<typeof evaluate>;
 }
 
@@ -108,8 +112,6 @@ function planSeat(desk: Desk, p: ScreenedPool, snapshot: PoolSnapshot, book: { e
   // earns only while price sits in it. Floor: what an average LP spread across the whole pool made (fee/TVL).
   const feesPerDayUsd = p.fees24hUsd !== null ? (p.fees24hUsd * Math.min(sharePct, MAX_SHARE_PCT)) / 100 * 0.5 : null;
   const feesFloorUsd = p.feeToTvl24hPct !== null ? (seatUsd * p.feeToTvl24hPct) / 100 : null;
-  const nonRefundableSol = 2 * BIN_ARRAY_RENT_SOL + 0.002;
-  const paybackDays = feesPerDayUsd && feesPerDayUsd > 0 ? (nonRefundableSol * solPrice) / feesPerDayUsd : null;
   const coveragePct = (Math.pow(1 + p.binStep / 10_000, bins) - 1) * 100;
   const proposal: Decision = {
     action: "OPEN_POSITION",
@@ -126,6 +128,10 @@ function planSeat(desk: Desk, p: ScreenedPool, snapshot: PoolSnapshot, book: { e
     confidence: 0.6,
     headline: `Paper: ${seatQuote.toFixed(2)} ${q.symbol} ${quoteBelow ? "under the bid" : "over the ask"} in ${p.name}.`,
   };
+  // The venue's rent for this exact band (Raydium: position NFT + protocol position + any tick array to initialise).
+  const openCost = venueOf(p.venue).openCostSol(snapshot, toOpenPlan(proposal.open!, snapshot));
+  const nonRefundableSol = openCost.total - openCost.refundable + 0.002;
+  const paybackDays = feesPerDayUsd && feesPerDayUsd > 0 ? (nonRefundableSol * solPrice) / feesPerDayUsd : null;
   const engineCtx: EngineGuardContext = {
     haltedUntil: circuitHalted(engine.circuit, now) ? engine.circuit.haltUntil : null,
     standDownUntil: standingDown(engine.portfolio, now) ? engine.portfolio.standDownUntil : null,
@@ -158,6 +164,7 @@ function planSeat(desk: Desk, p: ScreenedPool, snapshot: PoolSnapshot, book: { e
       maxActivePools: POOLS,
       engine: engineCtx,
       source: "llm",
+      openCostSol: openCost.total,
     },
     limits,
   );
@@ -178,6 +185,7 @@ function planSeat(desk: Desk, p: ScreenedPool, snapshot: PoolSnapshot, book: { e
     coveragePct,
     bins,
     quoteBelow,
+    openCost,
     verdict: { ...verdict, allowed: verdict.allowed && viable },
   };
 }
@@ -203,7 +211,7 @@ async function main(): Promise<void> {
   console.log("=".repeat(96));
 
   // Candidates: SOL- or USDC-quoted, qualified, best score first.
-  // Only venues the desk can execute on today (Meteora); Raydium and Orca rows are shown, not seated.
+  // Only venues the desk can execute on (TRADABLE_VENUES: Meteora and Raydium by default); the rest are shown, not seated.
   const tradable = screen.pools.filter((p) => tradableVenue(p) && (p.quoteSymbol === "SOL" || p.quoteSymbol === "USDC"));
   const skipped: string[] = [];
   const qualified = tradable.filter((p) => {
@@ -212,7 +220,7 @@ async function main(): Promise<void> {
     return !why;
   });
   // Surges first: the fast watch's tradable rows (last-hour fee yield), then the board by score.
-  const hot = hotPicks(loadHot(), { tradable: (r) => r.venue === "meteora-dlmm" && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC"), max: POOLS * 2 });
+  const hot = hotPicks(loadHot(), { tradable: (r) => isTradableVenue(r.venue) && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC"), max: POOLS * 2 });
   const heat = new Map(hot.map((r) => [r.address, r.heat]));
   const candidates = [...qualified].sort((a, b) => (heat.get(b.address) ?? -1) - (heat.get(a.address) ?? -1) || b.score - a.score);
   if (hot.length) console.log(`  hot right now (fast watch): ${hot.map((r) => `${r.name} ${r.feeToTvlDailyPct === null ? "n/a" : `${r.feeToTvlDailyPct.toFixed(1)}%/day`}${r.surge ? " SURGE" : ""}`).join("; ")}`);
@@ -223,7 +231,11 @@ async function main(): Promise<void> {
   const desk: Desk = { solPrice, limits, engine, regime, now };
 
   const connection = new Connection(config.rpcUrl, "confirmed");
-  const readLive = async (p: ScreenedPool): Promise<PoolSnapshot> => getPoolSnapshot(await loadPool(connection, p.address), 15, { solPriceUsd: solPrice });
+  // Every candidate is read through its venue adapter (src/venues), so Raydium rows can be seated beside Meteora ones.
+  const readLive = async (p: ScreenedPool): Promise<PoolSnapshot> => {
+    const { venue, pool } = await loadVenuePool(connection, p.address, p.venue);
+    return venue.snapshot(pool, 15, { solPriceUsd: solPrice });
+  };
 
   const seats: Seat[] = [];
   const notes: string[] = [];
@@ -245,7 +257,7 @@ async function main(): Promise<void> {
     seats.push(seat);
     if (seat.verdict.allowed) {
       exposure += seat.seatSol;
-      walletUsd -= seat.seatUsd + OPEN_COST_ESTIMATE_SOL * solPrice;
+      walletUsd -= seat.seatUsd + seat.openCost.total * solPrice;
     }
   }
 
@@ -254,7 +266,7 @@ async function main(): Promise<void> {
   const stocks = screen.pools.filter((p) => (p.stock && p.stock.issuer !== "unknown") || isTokenizedStock(p) === "xstock").sort((a, b) => a.rank - b.rank);
   const stockSeatUsd = (USD * (1 - RESERVE_SHARE)) / POOLS;
   const venueLabel = (v: string | undefined) => (v === "raydium-clmm" ? "Raydium" : v === "orca-whirlpool" ? "Orca" : "Meteora");
-  console.log(`\nTOKENIZED STOCKS on the board (${stocks.length}): Meteora rows go through the guards; Raydium and Orca rows are listed, not tradable yet`);
+  console.log(`\nTOKENIZED STOCKS on the board (${stocks.length}): ${tradableVenues().map(venueLabel).join(" and ") || "no"} rows go through the guards; the rest are listed, not tradable yet`);
   console.log(`  ${pad("rank", 5)} ${pad("pool", 16)} ${pad("venue", 8)} ${rpad("TVL", 10)} ${rpad("vol 24h", 10)} ${rpad("fees 24h", 9)} ${rpad("fee/TVL", 8)} ${rpad("24h", 7)} ${rpad("score", 6)}  ${pad("flags", 14)}  guard verdict for a ${fmtUsd(stockSeatUsd)} USDC seat`);
   for (const p of stocks) {
     let verdict: string;
@@ -307,10 +319,11 @@ async function main(): Promise<void> {
   const deployedUsd = open.reduce((t, s) => t + s.seatUsd, 0);
   const deployedSolQuote = open.filter((s) => s.quoteSymbol === "SOL").reduce((t, s) => t + s.seatQuote, 0);
   const deployedUsdcQuote = open.filter((s) => s.quoteSymbol === "USDC").reduce((t, s) => t + s.seatQuote, 0);
-  const rentSol = open.length * OPEN_COST_ESTIMATE_SOL;
+  const rentSol = open.reduce((t, s) => t + s.openCost.total, 0);
+  const rentBackSol = open.reduce((t, s) => t + s.openCost.refundable, 0);
   console.log("\nPORTFOLIO");
   console.log(`  deployed        ${fmtUsd(deployedUsd)} in ${open.length} bands (${((deployedUsd / USD) * 100).toFixed(0)}% of ${fmtUsd(USD)}): ${deployedSolQuote.toFixed(2)} SOL in SOL pools + ${fmtUsd(deployedUsdcQuote)} USDC in USDC pools; ${fmtUsd(USD - deployedUsd)} stays in the wallet as reserve`);
-  console.log(`  rent locked     ${rentSol.toFixed(3)} SOL (${fmtUsd(rentSol * solPrice)}) of which ${(open.length * POSITION_RENT_SOL).toFixed(3)} SOL comes back on close; rent and fees are SOL in every pool, so the wallet needs SOL beside the USDC`);
+  console.log(`  rent locked     ${rentSol.toFixed(3)} SOL (${fmtUsd(rentSol * solPrice)}) of which ${rentBackSol.toFixed(3)} SOL comes back on close (per venue: ${open.map((s) => `${venueLabel(s.pool.venue)} ${s.openCost.total.toFixed(4)}`).join(", ") || "none"}); rent and fees are SOL in every pool, so the wallet needs SOL beside the USDC`);
   const lo = Math.min(feesFloor, feesDay);
   const hi = Math.max(feesFloor, feesDay);
   console.log(`  fees, estimate  ${fmtUsd(lo, 0)} to ${fmtUsd(hi, 0)} a day (${fmtUsd(lo * 30, 0)} to ${fmtUsd(hi * 30, 0)} a month) IF yesterday repeats and price stays in every band; the low end is the pool's own fee/TVL, the high end our share of the band`);
