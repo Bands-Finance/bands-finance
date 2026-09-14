@@ -496,16 +496,33 @@ async function main(): Promise<void> {
     assert.match(d.reasoning, /\d/, "numbers in the reasoning");
   };
   const x = { limits };
-  await test("binsForCover: 5% at 20 bps is 24 bins, bounded to [3, maxBinWidth - 1]", () => {
+  await test("binsForCover: 5% at 20 bps is 24 bins, bounded to [1, maxBinWidth - 1] (one bin is the floor: only the active bin earns)", () => {
     assert.equal(policy.binsForCover(20, 5, 69), 24);
     assert.equal(policy.binsForCover(100, 5, 69), 5);
-    assert.equal(policy.binsForCover(200, 5, 69), 3);
+    assert.equal(policy.binsForCover(200, 5, 69), 2);
+    // a step so wide that the cover is under one bin still gets one: a band is never zero bins
+    assert.equal(policy.binsForCover(4000, 0.5, 69), 1);
     assert.equal(policy.binsForCover(1, 5, 69), 68);
     assert.equal(policy.binsForCover(5, 5, 10), 9);
     near(policy.coveragePct(20, 24), 4.91, 1e-3);
-    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, stockCoverPct: 1.5, minSeatPct: 5, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 20, book: "all" });
-    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 10, book: "stocks" });
+    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, stockCoverPct: 1.5, minSeatPct: 5, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 20, book: "all", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4 });
+    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 10, book: "stocks", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4 });
   });
+  await test("band width follows the pool's own movement, floored and capped", () => {
+    const calm = policy.coverPctFor({ screen: null }, policy.policyEnv({}), 5, { priceChange1hPct: 0.2 });
+    assert.equal(calm.coverPct, 0.2, "a pool that moved 0.2% in an hour gets a 0.2% band each way");
+    assert.match(calm.from, /1x the 0.2% the pool moved/);
+    const tiny = policy.coverPctFor({ screen: null }, policy.policyEnv({}), 5, { priceChange1hPct: 0.01 });
+    assert.equal(tiny.coverPct, 0.15, "the floor holds");
+    assert.match(tiny.from, /the floor/);
+    const wild = policy.coverPctFor({ screen: null }, policy.policyEnv({}), 5, { priceChange1hPct: -25 });
+    assert.equal(wild.coverPct, 4, "the cap holds, and the sign of the move does not matter");
+    assert.match(wild.from, /the cap/);
+    const unknown = policy.coverPctFor({ screen: null }, policy.policyEnv({}), 5, { priceChange1hPct: null });
+    assert.equal(unknown.coverPct, 5, "no recent move: the configured cover stands");
+    assert.equal(policy.coverPctFor({ screen: null }, policy.policyEnv({ POLICY_VOL_MULTIPLE: "0" }), 5, { priceChange1hPct: 3 }).coverPct, 5, "multiple 0 turns it off");
+  });
+
   await test("the seat must earn: a pool that pays too little per day, or takes too long to pay back its rent, is held", () => {
     const rich = { ...obs(), screen: { ...obs().screen!, tvlUsd: 1_000_000, feeToTvl24hPct: 2 } } as typeof obs extends never ? never : ReturnType<typeof obs>;
     const poorPool = { ...obs(), screen: { ...obs().screen!, tvlUsd: 1_000_000, feeToTvl24hPct: 0.01 } } as typeof rich;

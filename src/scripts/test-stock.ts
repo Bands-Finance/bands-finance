@@ -302,7 +302,8 @@ async function main(): Promise<void> {
     const narrow = policy.policyDecide(obs({ engine: engineObs({ basis: { ...engineObs().basis!, session: "closed", widthMultiplier: 2 } }) }), { ...x, limits: { ...limits, maxBinWidth: 21 } });
     assert.equal(narrow.decision.open!.binsBelowActive, 10, "(21 - 1) / 2");
     assert.equal(policy.stockBinsPerSide(1, 1.5, 69, 2), 34, "a 1 bps pool is capped by the width, not the cover");
-    assert.equal(policy.stockBinsPerSide(60, 1.5, 69, 1), 3, "binsForCover's floor of 3");
+    assert.equal(policy.stockBinsPerSide(60, 1.5, 69, 1), 2, "1.5% at 60 bps rounds to 2 bins; the floor is 1, not 3");
+    assert.equal(policy.stockBinsPerSide(400, 0.2, 69, 1), 1, "a band is never narrower than the one bin that earns");
     // no multiplier from the loop: the NYSE clock decides (Sunday = closed = x2)
     const sunday = policy.policyDecide(obs({ engine: engineObs({ basis: undefined }) }), { ...x, now: Date.parse("2026-09-13T17:30:00.000Z") });
     assert.equal(sunday.decision.open!.binsBelowActive, 30);

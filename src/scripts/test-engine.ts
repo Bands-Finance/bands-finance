@@ -21,7 +21,7 @@ import {
   summary,
   workingSol,
 } from "../engine/ledger";
-import { antiChurn, bandStopPct, drawdownPct, dropOverWindowPct, forgetBand, knifeReason, recordPrice, rollStop, trackOutOfRange } from "../engine/exit";
+import { antiChurn, bandStopPct, drawdownPct, dropOverWindowPct, forgetBand, knifeReason, recordPrice, rollStop, trackOutOfRange, moveAfterSec } from "../engine/exit";
 import {
   benchMultiplier,
   benchView,
@@ -654,5 +654,18 @@ test("ledger: quote fields default to SOL on old rows and fold in SOL on USDC ro
   const closeBack = 30 / SOL_USD + 0.06 * (180 / SOL_USD);
   near(realizedOnDaySol(mixed, "live", DAY), r6(realizedOnDaySol(rows, "live", DAY) + (closeBack - 0.00001 - 40 / SOL_USD) - 0.00001));
 });
+
+test("moveAfterSec: a band moves once the fees it is missing cover the move", () => {
+  // $0.90 to move, $2,000/day of fees when in range: the foregone fees cover it in about 39 seconds,
+  // so the 60s floor binds. The same move on a venue charging $21 waits fifteen minutes.
+  assert.equal(moveAfterSec(0.9, 2000, 60), 60);
+  assert.equal(Math.round(moveAfterSec(21, 2000, 60)), 907);
+  // no fee estimate, or a free move: the configured minimum is all we have
+  assert.equal(moveAfterSec(0.9, null, 600), 600);
+  assert.equal(moveAfterSec(0, 2000, 600), 600);
+  // a dead band is not held forever
+  assert.equal(moveAfterSec(21, 0.5, 60), 3600);
+});
+
 
 console.log(`${n} engine tests passed (with USDC-quote checks)`);

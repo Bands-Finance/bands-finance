@@ -58,6 +58,21 @@ export function outOfRangeSec(outOfRangeSince: Record<string, number> | undefine
  * stop. An in-range band is not judged here (the model may still close into a dislocation).
  * Returns the violation string or null. Never applied to engine directives.
  */
+/**
+ * How long a band should sit out of range before moving it is worth the cost.
+ *
+ * Out of range it earns nothing, so every minute costs the fees it would have made. Moving costs the
+ * rent that does not come back plus the swap fees on the token half. Wait until the foregone fees
+ * cover the move, and no longer: on a venue where a move costs a dollar that is a minute or two, and
+ * a tight band can be re-centred all day. Floors at `minSec` so a pool with no fee estimate still has
+ * a brake, and caps at an hour so a dead band is not held forever.
+ */
+export function moveAfterSec(moveCostUsd: number, feesPerDayUsd: number | null, minSec: number, maxSec = 3600): number {
+  if (!feesPerDayUsd || feesPerDayUsd <= 0 || moveCostUsd <= 0) return minSec;
+  const perSec = feesPerDayUsd / 86400;
+  return Math.min(maxSec, Math.max(minSec, moveCostUsd / perSec));
+}
+
 export function antiChurn(
   decision: Decision,
   positions: readonly PositionSnapshot[],

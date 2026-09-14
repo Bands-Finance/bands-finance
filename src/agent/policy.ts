@@ -60,6 +60,11 @@ export interface PolicyEnv {
   minSeatYieldPct: number;
   /** a pool trading less than this in 24h is not a market to make (POLICY_MIN_VOLUME_24H_USD) */
   minVolume24hUsd: number;
+  /** band half-width as a multiple of the pool's last-hour move; 0 uses the configured cover (POLICY_VOL_MULTIPLE) */
+  volMultiple: number;
+  /** the tightest and widest the volatility-derived band may be, in percent of price each way */
+  minCoverPct: number;
+  maxCoverPct: number;
   /** the one-time cost of a seat (rent that never comes back plus the swap round trip) must be earned back inside this many hours (POLICY_MAX_PAYBACK_HOURS) */
   maxPaybackHours: number;
   /** a seat under this share of the book's max exposure is not worth its rent and attention (POLICY_MIN_SEAT_PCT) */
@@ -83,6 +88,9 @@ export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
     minSeatPct: Math.max(0, num(env.POLICY_MIN_SEAT_PCT, 5)),
     minSeatYieldPct: Math.max(0, num(env.POLICY_MIN_SEAT_YIELD_PCT, 0.4)),
     minVolume24hUsd: Math.max(0, num(env.POLICY_MIN_VOLUME_24H_USD, 250_000)),
+    volMultiple: Math.max(0, num(env.POLICY_VOL_MULTIPLE, 1)),
+    minCoverPct: Math.max(0.01, num(env.POLICY_MIN_COVER_PCT, 0.15)),
+    maxCoverPct: Math.max(0.02, num(env.POLICY_MAX_COVER_PCT, 4)),
     maxPaybackHours: Math.max(0, num(env.POLICY_MAX_PAYBACK_HOURS, 24)),
     minScore: num(env.POLICY_MIN_SCORE, 20),
     book: bookEnv(env),
@@ -128,7 +136,9 @@ export interface PolicyResult {
 export function binsForCover(binStep: number, coverPct: number, maxBinWidth: number, widthMultiplier = 1): number {
   const mult = Number.isFinite(widthMultiplier) && widthMultiplier > 0 ? widthMultiplier : 1;
   const raw = Math.round((Math.log(1 + coverPct / 100) / Math.log(1 + binStep / 10_000)) * mult);
-  return Math.min(Math.max(3, raw), Math.max(1, maxBinWidth - 1));
+  // One bin is the floor, not three: fees accrue only to the bin the price is in, so every extra bin
+  // is money standing idle. A wide band is a choice about staying in range, never a free one.
+  return Math.min(Math.max(1, raw), Math.max(1, maxBinWidth - 1));
 }
 
 /** Whether the pool is a tokenized stock: the screen's stock tag, or a basis row (only stock pools carry one). */
@@ -141,6 +151,27 @@ export function stockBinsPerSide(binStep: number, coverPct: number, maxBinWidth:
 }
 
 /** The band-width multiplier for this pool: the US session's (src/basis) for a stock pool, 1 otherwise. */
+/**
+ * How wide the band should be, in percent of price each way: a multiple of what the pool actually
+ * moved in the last hour, floored and capped. A stock that drifts 0.3% an hour gets a band a few bins
+ * wide, where our money is a real share of the bin that earns; a memecoin swinging 20% gets a wide one,
+ * because a tight band there is out of range before the transaction confirms. With no recent move to
+ * read (a fresh screen, a quiet pool) the configured cover stands.
+ */
+export function coverPctFor(o: Pick<Observation, "screen">, env: PolicyEnv, base: number, hot: { priceChange1hPct: number | null }): { coverPct: number; from: string } {
+  const move = hot.priceChange1hPct;
+  if (env.volMultiple <= 0 || move === null || !Number.isFinite(move)) return { coverPct: base, from: `${r(base, 2)}% each way (configured)` };
+  const raw = Math.abs(move) * env.volMultiple;
+  const coverPct = Math.min(env.maxCoverPct, Math.max(env.minCoverPct, raw));
+  const why =
+    raw < env.minCoverPct
+      ? `${r(coverPct, 2)}% each way (the floor: the pool moved ${r(Math.abs(move), 2)}% in the last hour)`
+      : raw > env.maxCoverPct
+        ? `${r(coverPct, 2)}% each way (the cap: the pool moved ${r(Math.abs(move), 2)}% in the last hour)`
+        : `${r(coverPct, 2)}% each way (${env.volMultiple}x the ${r(Math.abs(move), 2)}% the pool moved in the last hour)`;
+  return { coverPct, from: why };
+}
+
 export function widthMultiplierFor(o: Pick<Observation, "screen" | "engine">, now: number): number {
   if (!isStockPool(o)) return 1;
   const fromLoop = o.engine?.basis?.widthMultiplier;
@@ -208,6 +239,8 @@ interface Sizing {
   /** the session width multiplier applied to the bins (1 outside stock pools) */
   widthMultiplier: number;
   coverage: number;
+  /** why the band is this wide, in words */
+  widthFrom: string;
   depthQuote: number;
   sharePct: number;
   /** which cap bound the size */
@@ -223,7 +256,8 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
   const quoteIsSol = q.symbol === "SOL";
   const openCost = typeof x.openCostSol === "number" && Number.isFinite(x.openCostSol) && x.openCostSol >= 0 ? x.openCostSol : OPEN_COST_ESTIMATE_SOL;
   const widthMultiplier = widthMultiplierFor(o, now);
-  const bins = binsForCover(s.binStep, env.coverPct, limits.maxBinWidth, widthMultiplier);
+  const cover = coverPctFor(o, env, env.coverPct, hotView(o, x));
+  const bins = binsForCover(s.binStep, cover.coverPct, limits.maxBinWidth, widthMultiplier);
   const quoteBelow = q.side === "Y";
   const lowerBinId = quoteBelow ? s.activeBinId - bins : s.activeBinId;
   const upperBinId = quoteBelow ? s.activeBinId : s.activeBinId + bins;
@@ -257,7 +291,7 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
   const minSeatSol = Math.max(MIN_BAND_SOL, (limits.maxTotalExposureSol * env.minSeatPct) / 100);
   if (!none && amountSol < minSeatSol) none = `size ${r(amountSol)} SOL (bound by ${bound.name}) is under the minimum seat ${r(minSeatSol)} SOL (${env.minSeatPct}% of the ${limits.maxTotalExposureSol} SOL book)`;
   const sharePct = shareOfBand(amountQuote, depthQuote) * 100;
-  return { amountQuote, amountSol, bins, widthMultiplier, coverage: coveragePct(s.binStep, bins), depthQuote, sharePct, boundBy: bound.name, caps: caps.map((c) => c.name).join(", "), none };
+  return { amountQuote, amountSol, bins, widthMultiplier, coverage: coveragePct(s.binStep, bins), widthFrom: cover.from, depthQuote, sharePct, boundBy: bound.name, caps: caps.map((c) => c.name).join(", "), none };
 }
 
 /** What a seat of this size in this pool is worth, and what it costs to take. */
@@ -314,6 +348,8 @@ interface StraddleSizing {
   widthMultiplier: number;
   /** percent of price covered on each side */
   coverage: number;
+  /** why the band is this wide, in words */
+  widthFrom: string;
   /** both sides' depth in quote units */
   depthQuote: number;
   sharePct: number;
@@ -336,7 +372,8 @@ function sizeStraddle(o: Observation, x: PolicyExtras, q: QuoteView, env: Policy
   const slip = limits.maxSlippagePct / 100;
   const openCost = typeof x.openCostSol === "number" && Number.isFinite(x.openCostSol) && x.openCostSol >= 0 ? x.openCostSol : OPEN_COST_ESTIMATE_SOL;
   const widthMultiplier = widthMultiplierFor(o, now);
-  const bins = stockBinsPerSide(s.binStep, env.stockCoverPct, limits.maxBinWidth, widthMultiplier);
+  const cover = coverPctFor(o, env, env.stockCoverPct, hotView(o, x));
+  const bins = stockBinsPerSide(s.binStep, cover.coverPct, limits.maxBinWidth, widthMultiplier);
   // depth on both sides, scaled from the observed bins to the band's reach, in quote units
   const quoteBelow = q.side === "Y";
   const a = s.activeBinId;
@@ -383,7 +420,8 @@ function sizeStraddle(o: Observation, x: PolicyExtras, q: QuoteView, env: Policy
   if (!none && seatSol < minSeatSol) none = `size ${r(seatSol)} SOL (bound by ${bound.name}) is under the minimum seat ${r(minSeatSol)} SOL (${env.minSeatPct}% of the ${limits.maxTotalExposureSol} SOL book)`;
   if (!none && (amountQuote <= 0 || amountToken <= 0)) none = `a straddle needs both halves: ${r(amountQuote, qDec)} ${q.symbol} + ${r(amountToken, tDec)} ${s.baseToken.symbol}`;
   const sharePct = shareOfBand(seatQuote, depthQuote) * 100;
-  return { seatQuote, seatSol, amountQuote, amountToken, acquireToken, surplusToken, bins, widthMultiplier, coverage: coveragePct(s.binStep, bins), depthQuote, sharePct, boundBy: bound.name, none };
+  return { seatQuote, seatSol, amountQuote, amountToken, acquireToken, surplusToken, bins, widthMultiplier, widthFrom: cover.from,
+    coverage: coveragePct(s.binStep, bins), depthQuote, sharePct, boundBy: bound.name, none };
 }
 
 function straddleParams(sz: StraddleSizing): OpenParams {

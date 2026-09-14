@@ -62,7 +62,7 @@ import {
 } from "./engine/breakers";
 import { skimPlan, trackFeesPending } from "./engine/collect";
 import { engineDirective } from "./engine/directives";
-import { forgetBand, knifeReason, outOfRangeSec, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
+import { forgetBand, knifeReason, moveAfterSec, outOfRangeSec, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
 import { collectsOnDay, dayOf, readLedgerRows, realizedOnDaySol, workingSol } from "./engine/ledger";
 import { acquireLock, heartbeat, releaseLock, startWatchdog } from "./engine/watchdog";
 import { assertPaperEnv, emptyBook, loadPaperBook, markPool, paperEnabled, paperEnv, paperHedgeEquityUsd, paperPoolTokenInventory, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
@@ -456,6 +456,15 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
         reason: basisCheck && !basisCheck.ok ? basisCheck.reason : null,
       }
     : undefined;
+  // How long a band here should sit out of range before moving it pays for itself: the venue's
+  // unrecoverable rent plus the swap fees, against what the band earns when it is in range.
+  const poolFeesPerDayUsd = screen?.tvlUsd && screen?.feeToTvl24hPct !== null && screen?.feeToTvl24hPct !== undefined ? (screen.tvlUsd * screen.feeToTvl24hPct) / 100 : null;
+  const heldShare = positions.length > 0 && snapshot.bins.length > 0 ? Math.min(0.5, positions.reduce((t, p) => t + p.valueInSol, 0) / Math.max(1e-9, positions.reduce((t, p) => t + p.valueInSol, 0) + (quoteOf(snapshot).side === "Y" ? snapshot.liquidityBelowY : snapshot.liquidityAboveX))) : 0;
+  const bandFeesPerDayUsd = poolFeesPerDayUsd !== null && heldShare > 0 ? poolFeesPerDayUsd * heldShare * 0.5 : null;
+  const cost = o.venue.openCostSol(snapshot);
+  const px = solPriceOf(app);
+  const moveCostUsd = px ? Math.max(0, cost.total - cost.refundable) * px : 0;
+  const moveSec = Math.round(moveAfterSec(moveCostUsd, bandFeesPerDayUsd, cfg.outOfRangeSec));
   const engineObs: EngineObservation = {
     halt: view.haltedUntil !== null ? { until: view.haltedUntil, stage: view.haltStage, reason: view.haltReason } : null,
     standDown: view.standDownUntil !== null ? { until: view.standDownUntil, reason: view.standDownReason } : null,
@@ -465,7 +474,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     effectiveMaxPositionSol: riskLimits.maxPositionSol * view.sizeMultiplier,
     stops,
     outOfRangeSec: oorSec,
-    minOutOfRangeSec: cfg.outOfRangeSec,
+    minOutOfRangeSec: moveSec,
     knife,
     collectsToday,
     collectMaxPerDay: cfg.collectMaxPerDay,
@@ -518,7 +527,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     knife,
     outOfRangeSince: state.outOfRangeSince ?? {},
     stops: stateStops,
-    outOfRangeSec: cfg.outOfRangeSec,
+    outOfRangeSec: moveSec,
     basisReason: basisObs?.reason ?? null,
   };
   const openCostSol = llm.decision.open ? o.venue.openCostSol(snapshot, toOpenPlan(llm.decision.open, snapshot)).total : openCostDefault;
