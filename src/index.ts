@@ -740,6 +740,10 @@ async function main(): Promise<void> {
     }
     heartbeat();
     if (once || stopping) break;
+    if (config.maxCycles > 0 && app.cycle >= config.maxCycles) {
+      console.log(`[loop] MAX_CYCLES=${config.maxCycles} reached; stopping cleanly`);
+      break;
+    }
     await sleepInterruptible(config.cycleIntervalSec * 1000);
   }
   hotWatch?.stop();

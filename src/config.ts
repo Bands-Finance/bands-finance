@@ -16,6 +16,8 @@ const Raw = z.object({
   POOL_ADDRESS: z.string().default(""),
   AUTO_DEPLOY: z.string().default("false"),
   CYCLE_INTERVAL_SEC: z.coerce.number().default(300),
+  // stop after this many cycles (0 = run until stopped); for bounded dry runs
+  MAX_CYCLES: z.coerce.number().default(0),
   DATA_DIR: z.string().default("data"),
   LPAGENT_API_URL: z.string().default("https://api.lpagent.io/open-api/v1"),
   LPAGENT_API_KEY: z.string().default(""),
@@ -95,6 +97,7 @@ export const config = {
   /** after each screen, push a snapshot to Vercel (npm run web:deploy) */
   autoDeploy: raw.AUTO_DEPLOY.trim().toLowerCase() === "true",
   cycleIntervalSec: raw.CYCLE_INTERVAL_SEC,
+  maxCycles: raw.MAX_CYCLES,
   dataDir: raw.DATA_DIR,
   lpagentApiUrl: raw.LPAGENT_API_URL,
   lpagentApiKey: raw.LPAGENT_API_KEY,
