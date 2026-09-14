@@ -153,6 +153,16 @@ async function main(): Promise<void> {
     assert.equal(tickArrayStart(20383, 10), 19800);
     assert.equal(raydium.SDK_SPANS.ticksPerArray, bins.TICK_ARRAY_SIZE);
   });
+  await test("reward rows: the SDK's divn asserts past 2^26, so a 9-decimal reward mint (SOL) threw on every read; ours divides with BN and matches the SDK where the SDK works", () => {
+    const x64 = new BN(1).shln(64);
+    const perSecond = x64.muln(3); // three token-units per second, X64-scaled, before the decimals divide
+    // 6 decimals: same answer as the SDK's divn
+    assert.equal(raydium.safePerSecond(perSecond.muln(1_000_000), 6), Number(perSecond.muln(1_000_000).divn(10 ** 6).toString()));
+    // 9 decimals: the SDK's route throws, ours answers
+    assert.throws(() => perSecond.divn(10 ** 9), /Assertion failed/);
+    assert.equal(raydium.safePerSecond(perSecond.mul(new BN(10).pow(new BN(9))), 9), Number(perSecond.toString()));
+    assert.equal(raydium.safePerSecond(new BN(0), 9), 0);
+  });
   await test("binPrice: Meteora bins price as before; CLMM bins price as 1.0001^(bin x spacing) within 1e-9 of the tick formula and of the SDK", () => {
     const meteora = { binStep: 20, tokenX: { decimals: 6 }, tokenY: { decimals: 9 } };
     for (const bin of [-100, 0, 260, 1000]) near(binPrice(meteora, bin), dlmm.binPriceUi(bin, 20, 6, 9), 1e-15, `meteora bin ${bin}`);

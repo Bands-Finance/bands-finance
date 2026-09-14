@@ -31,10 +31,15 @@ import {
   TickArrayLayout,
   TickUtil,
   TxVersion,
+  clmmComputeInfoToApiInfo,
+  fetchMultipleMintInfos,
+  getMultipleAccountsInfoWithCustomFlags,
+  splAccountLayout,
+  toApiV3Token,
   type ApiV3PoolInfoConcentratedItem,
   type ClmmKeys,
 } from "@raydium-io/raydium-sdk-v2";
-import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import BN from "bn.js";
 import { config, riskLimits } from "../config";
@@ -120,9 +125,57 @@ async function sdkFor(connection: Connection, owner?: PublicKey): Promise<Raydiu
 
 async function readPool(pool: RaydiumPool): Promise<PoolRead> {
   const sdk = await sdkFor(pool.connection);
-  const read = await sdk.clmm.getPoolInfoFromRpc(pool.address);
+  const read = await readPoolInfo(sdk, pool.address);
   pool.last = read;
   return read;
+}
+
+/**
+ * The SDK's getPoolInfoFromRpc, with the reward rows converted safely. The SDK turns each reward's
+ * emissionsPerSecondX64 into a per-second figure with bn.js `divn(10 ** decimals)`, and divn asserts
+ * for divisors above 2^26, so every pool paying rewards in a token with 8+ decimals (SOL, most
+ * memecoins) threw "Assertion failed" on read. We never trade rewards; the rows are rebuilt with
+ * BN division so the read cannot throw on them. Everything else is the SDK's own composition.
+ */
+export async function readPoolInfo(sdk: Raydium, poolId: string): Promise<PoolRead> {
+  const connection = sdk.connection;
+  const rpcData = await sdk.clmm.getRpcClmmPoolInfo({ poolId });
+  const live = (r: { mint: PublicKey }) => !r.mint.equals(PublicKey.default);
+  const mintSet = new Set([rpcData.mintA.toBase58(), rpcData.mintB.toBase58(), ...rpcData.rewardInfos.filter(live).map((r) => r.mint.toBase58())]);
+  const mintInfos = await fetchMultipleMintInfos({ connection, mints: Array.from(mintSet).map((m) => new PublicKey(m)) });
+  const { computeClmmPoolInfo, computePoolTickData } = await sdk.clmm.getComputeClmmPoolInfos({ clmmPoolsRpcInfo: { [poolId]: rpcData }, mintInfos });
+  const compute = computeClmmPoolInfo[poolId];
+  const vaultData = await getMultipleAccountsInfoWithCustomFlags(connection, [{ pubkey: rpcData.vaultA }, { pubkey: rpcData.vaultB }]);
+  if (!vaultData[0].accountInfo || !vaultData[1].accountInfo) throw new Error("pool vault data not found");
+  const decimalsOf = (mint: string): number => mintInfos[mint]?.decimals ?? 6;
+  const apiToken = (mint: PublicKey) => toApiV3Token({ address: mint.toBase58(), programId: TOKEN_PROGRAM_ID.toBase58(), decimals: decimalsOf(mint.toBase58()) });
+  const poolInfo = clmmComputeInfoToApiInfo({ ...compute, rewardInfos: [] }, mintInfos);
+  poolInfo.rewardDefaultInfos = compute.rewardInfos.filter(live).map((r) => ({
+    mint: apiToken(r.mint),
+    perSecond: safePerSecond(r.emissionsPerSecondX64, decimalsOf(r.mint.toBase58())),
+    startTime: r.openTime.toNumber(),
+    endTime: r.endTime.toNumber(),
+  }));
+  poolInfo.mintAmountA = Number(splAccountLayout.decode(vaultData[0].accountInfo.data).amount.toString());
+  poolInfo.mintAmountB = Number(splAccountLayout.decode(vaultData[1].accountInfo.data).amount.toString());
+  const poolKeys: ClmmKeys = {
+    ...compute,
+    exBitmapAccount: compute.exBitmapAccount.toBase58(),
+    observationId: compute.observationId.toBase58(),
+    id: poolId,
+    programId: rpcData.programId.toBase58(),
+    openTime: rpcData.startTime.toString(),
+    vault: { A: rpcData.vaultA.toBase58(), B: rpcData.vaultB.toBase58() },
+    config: poolInfo.config,
+    rewardInfos: compute.rewardInfos.filter((r) => !r.vault.equals(PublicKey.default)).map((r) => ({ mint: apiToken(r.mint), vault: r.vault.toBase58() })),
+  };
+  return { poolInfo, poolKeys, computePoolInfo: compute, tickData: computePoolTickData, rpcPoolInfo: rpcData, tickArrays: Object.values(computePoolTickData[poolId]) };
+}
+
+/** emissions per second in whole tokens; BN division instead of the SDK's divn, which asserts past 2^26 */
+export function safePerSecond(emissionsPerSecondX64: BN, decimals: number): number {
+  const scaled = emissionsPerSecondX64.div(new BN(10).pow(new BN(Math.max(0, Math.floor(decimals)))));
+  return Number(scaled.toString());
 }
 
 const lastOrRead = async (pool: RaydiumPool): Promise<PoolRead> => pool.last ?? readPool(pool);
