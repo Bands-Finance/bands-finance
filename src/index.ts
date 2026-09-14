@@ -193,7 +193,6 @@ async function ensureScreen(app: App): Promise<void> {
       .then((b) => console.log(`[basis] ${b.rows.length} stock pools priced against Backpack; US session ${b.session}`))
       .catch((err) => console.error(`[basis] failed: ${(err as Error).message}`));
     setSolPriceUsd(solPriceOf(app));
-    if (config.autoDeploy) deploySnapshot();
   } catch (err) {
     console.error(`[screen] failed: ${(err as Error).message}`);
     if (!app.screen) {
@@ -803,6 +802,10 @@ async function runIteration(app: App): Promise<void> {
     console.log(`[cycle ${app.cycle}] marks skipped: ${observed.length}/${pools.length} pools observed, ${entries.length} decided`);
   }
   await runSkim(app);
+  // The site shows what the desk just did: push once the cycle's decisions are on disk, throttled.
+  // (Deploying right after the screen would ship a journal that stops at the previous cycle, and an
+  // empty one on the very first run.)
+  if (config.autoDeploy && entries.length > 0) deploySnapshot();
 }
 
 function sleepInterruptible(ms: number): Promise<void> {

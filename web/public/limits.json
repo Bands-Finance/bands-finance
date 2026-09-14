@@ -1,10 +1,10 @@
 {
-  "maxPositionSol": 0.5,
-  "maxTotalExposureSol": 1,
-  "gasReserveSol": 0.1,
+  "maxPositionSol": 44,
+  "maxTotalExposureSol": 175,
+  "gasReserveSol": 1,
   "stopLossPct": 15,
   "maxBinWidth": 69,
-  "maxTxPerDay": 24,
+  "maxTxPerDay": 48,
   "minSecondsBetweenActions": 600,
   "maxSlippagePct": 1,
   "maxPriceMovePctPerCycle": 40
