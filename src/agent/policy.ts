@@ -159,16 +159,20 @@ export function stockBinsPerSide(binStep: number, coverPct: number, maxBinWidth:
  * read (a fresh screen, a quiet pool) the configured cover stands.
  */
 export function coverPctFor(o: Pick<Observation, "screen">, env: PolicyEnv, base: number, hot: { priceChange1hPct: number | null }): { coverPct: number; from: string } {
-  const move = hot.priceChange1hPct;
+  // The measured travel of the price in the last hour, then the hot list's 1h change: the first is the
+  // range the band must survive, the second is only the net move, so it understates a pool that went
+  // up and came back. Either beats a fixed percentage.
+  const measured = o.screen?.recentMovePct;
+  const move = typeof measured === "number" && Number.isFinite(measured) ? measured : hot.priceChange1hPct;
   if (env.volMultiple <= 0 || move === null || !Number.isFinite(move)) return { coverPct: base, from: `${r(base, 2)}% each way (configured)` };
   const raw = Math.abs(move) * env.volMultiple;
   const coverPct = Math.min(env.maxCoverPct, Math.max(env.minCoverPct, raw));
   const why =
     raw < env.minCoverPct
-      ? `${r(coverPct, 2)}% each way (the floor: the pool moved ${r(Math.abs(move), 2)}% in the last hour)`
+      ? `${r(coverPct, 2)}% each way (the floor: the price travelled ${r(Math.abs(move), 2)}% in the last hour)`
       : raw > env.maxCoverPct
-        ? `${r(coverPct, 2)}% each way (the cap: the pool moved ${r(Math.abs(move), 2)}% in the last hour)`
-        : `${r(coverPct, 2)}% each way (${env.volMultiple}x the ${r(Math.abs(move), 2)}% the pool moved in the last hour)`;
+        ? `${r(coverPct, 2)}% each way (the cap: the price travelled ${r(Math.abs(move), 2)}% in the last hour)`
+        : `${r(coverPct, 2)}% each way (${env.volMultiple}x the ${r(Math.abs(move), 2)}% the price travelled in the last hour)`;
   return { coverPct, from: why };
 }
 

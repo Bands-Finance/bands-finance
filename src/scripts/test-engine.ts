@@ -21,7 +21,7 @@ import {
   summary,
   workingSol,
 } from "../engine/ledger";
-import { antiChurn, bandStopPct, drawdownPct, dropOverWindowPct, forgetBand, knifeReason, recordPrice, rollStop, trackOutOfRange, moveAfterSec } from "../engine/exit";
+import { antiChurn, bandStopPct, drawdownPct, dropOverWindowPct, forgetBand, knifeReason, recordPrice, rollStop, trackOutOfRange, moveAfterSec, rangeOverWindowPct } from "../engine/exit";
 import {
   benchMultiplier,
   benchView,
@@ -653,6 +653,22 @@ test("ledger: quote fields default to SOL on old rows and fold in SOL on USDC ro
   // realized today: the close gives back 30 USDC + 0.06 NVDAx at mark against a 40 USDC entry
   const closeBack = 30 / SOL_USD + 0.06 * (180 / SOL_USD);
   near(realizedOnDaySol(mixed, "live", DAY), r6(realizedOnDaySol(rows, "live", DAY) + (closeBack - 0.00001 - 40 / SOL_USD) - 0.00001));
+});
+
+test("rangeOverWindowPct: the travel high to low, not the net move", () => {
+  const now = 1_000_000;
+  const h = [
+    { ts: now - 50 * 60_000, price: 100 },
+    { ts: now - 30 * 60_000, price: 103 },
+    { ts: now - 10 * 60_000, price: 99 },
+    { ts: now, price: 100 },
+  ];
+  // up 3, down 4, back to where it started: the net move is 0% and the travel is 4.04%
+  assert.equal(Math.round(rangeOverWindowPct(h, now)! * 100) / 100, 4.04);
+  // samples outside the window do not count
+  assert.equal(rangeOverWindowPct([{ ts: now - 120 * 60_000, price: 50 }, ...h], now, 60 * 60_000)!.toFixed(2), "4.04");
+  assert.equal(rangeOverWindowPct([h[0]], now), null, "one sample says nothing");
+  assert.equal(rangeOverWindowPct(undefined, now), null);
 });
 
 test("moveAfterSec: a band moves once the fees it is missing cover the move", () => {

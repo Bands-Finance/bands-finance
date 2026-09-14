@@ -125,6 +125,20 @@ export function dropOverWindowPct(history: readonly PriceSample[] | undefined, n
 }
 
 /** The knife reason for a pool, or null when the tape is not falling that fast. */
+/**
+ * How far the price actually travelled in the window, high to low, as a percent of the low. This is
+ * the pool's own recent volatility measured from what we watched, not a 24h figure: it is what the
+ * band has to survive between re-centres. Null when there is not enough history to say.
+ */
+export function rangeOverWindowPct(history: readonly PriceSample[] | undefined, now: number, windowMs = 60 * 60 * 1000): number | null {
+  if (!history || history.length < 2) return null;
+  const win = history.filter((h) => now - h.ts <= windowMs && h.price > 0);
+  if (win.length < 2) return null;
+  const hi = Math.max(...win.map((h) => h.price));
+  const lo = Math.min(...win.map((h) => h.price));
+  return lo > 0 ? ((hi - lo) / lo) * 100 : null;
+}
+
 export function knifeReason(history: readonly PriceSample[] | undefined, now: number, knifePct: number, windowMs = KNIFE_WINDOW_MS): string | null {
   const drop = dropOverWindowPct(history, now, windowMs);
   if (drop === null || drop <= knifePct) return null;

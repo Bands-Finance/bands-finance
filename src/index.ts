@@ -62,7 +62,7 @@ import {
 } from "./engine/breakers";
 import { skimPlan, trackFeesPending } from "./engine/collect";
 import { engineDirective } from "./engine/directives";
-import { forgetBand, knifeReason, moveAfterSec, outOfRangeSec, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
+import { forgetBand, knifeReason, moveAfterSec, outOfRangeSec, rangeOverWindowPct, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
 import { collectsOnDay, dayOf, readLedgerRows, realizedOnDaySol, workingSol } from "./engine/ledger";
 import { acquireLock, heartbeat, releaseLock, startWatchdog } from "./engine/watchdog";
 import { assertPaperEnv, emptyBook, loadPaperBook, markPool, paperEnabled, paperEnv, paperHedgeEquityUsd, paperPoolTokenInventory, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
@@ -297,7 +297,7 @@ async function getVenuePool(app: App, address: string): Promise<{ venue: Venue; 
   return vp;
 }
 
-function screenContext(app: App, address: string): ScreenContext | null {
+function screenContext(app: App, address: string, state?: RiskState): ScreenContext | null {
   const s = app.screen;
   if (!s) return null;
   const p = s.pools.find((x) => x.address === address);
@@ -313,6 +313,9 @@ function screenContext(app: App, address: string): ScreenContext | null {
     priceChange24hPct: p.priceChange24hPct,
     flags: p.flags,
     watchlisted: watchlistRefusal(p, loadWatchlist()) === null && loadWatchlist().mode === "allow",
+    // Measured from our own samples first (the loop records the active price every cycle), then the
+    // screener's walk over its sample window. Either is the pool's real movement; the 24h figure is not.
+    recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()) ?? p.binRangePct ?? null,
     generatedAt: s.generatedAt,
     stock: p.stock ? { ticker: p.stock.ticker, issuer: p.stock.issuer } : null,
     alternatives: s.pools
@@ -427,7 +430,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     maxActivePools: config.maxActivePools,
     otherExposureSol: others.reduce((s, x) => s + x.positions.reduce((t, p) => t + p.valueInSol, 0), 0),
   };
-  const screen = screenContext(app, o.address);
+  const screen = screenContext(app, o.address, state);
 
   // The engine's view of this pool: breakers, bench, regime, knife, collects.
   const ledgerRows = readLedgerRows();

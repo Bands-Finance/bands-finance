@@ -13,6 +13,8 @@ export interface ScreenContext {
   flags: string[];
   /** the operator put this token on the watchlist: their judgement stands in for the screener's score */
   watchlisted?: boolean;
+  /** how far the price travelled in the last hour, high to low, in percent: what the band must survive */
+  recentMovePct?: number | null;
   generatedAt: string;
   /** the screen's stock tag when the base is a tokenized stock (the stock book's pools) */
   stock?: { ticker: string; issuer: string } | null;
