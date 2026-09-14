@@ -503,9 +503,27 @@ async function main(): Promise<void> {
     assert.equal(policy.binsForCover(1, 5, 69), 68);
     assert.equal(policy.binsForCover(5, 5, 10), 9);
     near(policy.coveragePct(20, 24), 4.91, 1e-3);
-    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, stockCoverPct: 1.5, minSeatPct: 5, minScore: 20, book: "all" });
-    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minScore: 10, book: "stocks" });
+    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, stockCoverPct: 1.5, minSeatPct: 5, minSeatYieldPct: 0.4, maxPaybackHours: 24, minScore: 20, book: "all" });
+    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, maxPaybackHours: 24, minScore: 10, book: "stocks" });
   });
+  await test("the seat must earn: a pool that pays too little per day, or takes too long to pay back its rent, is held", () => {
+    const rich = { ...obs(), screen: { ...obs().screen!, tvlUsd: 1_000_000, feeToTvl24hPct: 2 } } as typeof obs extends never ? never : ReturnType<typeof obs>;
+    const poorPool = { ...obs(), screen: { ...obs().screen!, tvlUsd: 1_000_000, feeToTvl24hPct: 0.01 } } as typeof rich;
+    const yieldOn = { ...x, openCostSol: 0.2004, openCostRefundableSol: 0.0574 };
+    // A pool paying 2% of its liquidity a day clears the floor; one paying 0.01% does not.
+    assert.equal(policy.policyDecide(rich, yieldOn).branch, "open");
+    const poor = policy.policyDecide(poorPool, yieldOn);
+    assert.equal(poor.branch, "not-worth");
+    assert.match(poor.reason, /seat yield .* under the .*% floor/);
+    // The same pool with the floor off is refused by the payback test instead: the rent outlives the fees.
+    const noFloor = { ...poorPool };
+    process.env.POLICY_MIN_SEAT_YIELD_PCT = "0";
+    const payback = policy.policyDecide(noFloor, yieldOn);
+    process.env.POLICY_MIN_SEAT_YIELD_PCT = "";
+    assert.equal(payback.branch, "not-worth");
+    assert.match(payback.reason, /payback .*h over the .*h limit/);
+  });
+
   await test("no band, score above the floor: OPEN a 24-bin SOL-only Spot band sized at the max band", () => {
     const r = policy.policyDecide(obs(), x);
     assert.equal(r.branch, "open");

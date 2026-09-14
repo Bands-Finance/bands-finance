@@ -9,6 +9,12 @@
  * report view and its identity, and the hedge desk wired to a fake Backpack client (paper fill,
  * plan-only, live order).
  */
+// The straddle tests are about geometry and legs, not economics: the fixtures' pools are thin enough
+// that the policy's seat-yield floor would refuse them, so it is switched off here. The floor and the
+// payback test have their own tests in src/scripts/test-paper.ts.
+process.env.POLICY_MIN_SEAT_YIELD_PCT = "0";
+process.env.POLICY_MAX_PAYBACK_HOURS = "0";
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

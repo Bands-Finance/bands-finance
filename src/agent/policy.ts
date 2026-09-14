@@ -45,7 +45,8 @@ import { sessionWidthMultiplier } from "../basis/verdict";
 import type { HotRow } from "../hot/types";
 import { bandDepthQuote, shareOfBand } from "../paper/mark";
 import type { RiskLimits } from "../risk/limits";
-import { OPEN_COST_ESTIMATE_SOL, quoteOf, type PositionSnapshot, type QuoteView } from "../tools/dlmm";
+import { OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, quoteOf, type PositionSnapshot, type QuoteView } from "../tools/dlmm";
+import { jupiterEnv } from "../tools/jupiter";
 import { bookEnv, type Book } from "../venues/env";
 import type { Observation } from "./observation";
 import { holdDecision, type Decision, type OpenParams } from "./schema";
@@ -55,6 +56,10 @@ export interface PolicyEnv {
   coverPct: number;
   /** stock straddles: how far EACH side of the active bin reaches, in percent of price (STOCK_COVER_PCT) */
   stockCoverPct: number;
+  /** a seat whose estimated fees are under this much per day is not worth opening (POLICY_MIN_SEAT_YIELD_PCT) */
+  minSeatYieldPct: number;
+  /** the one-time cost of a seat (rent that never comes back plus the swap round trip) must be earned back inside this many hours (POLICY_MAX_PAYBACK_HOURS) */
+  maxPaybackHours: number;
   /** a seat under this share of the book's max exposure is not worth its rent and attention (POLICY_MIN_SEAT_PCT) */
   minSeatPct: number;
   /** a pool off the hot list needs a screen score above this to get a band */
@@ -74,6 +79,8 @@ export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
     coverPct: Math.max(0.1, num(env.POLICY_COVER_PCT, 5)),
     stockCoverPct: Math.max(0.05, num(env.STOCK_COVER_PCT, STOCK_COVER_PCT_DEFAULT)),
     minSeatPct: Math.max(0, num(env.POLICY_MIN_SEAT_PCT, 5)),
+    minSeatYieldPct: Math.max(0, num(env.POLICY_MIN_SEAT_YIELD_PCT, 0.4)),
+    maxPaybackHours: Math.max(0, num(env.POLICY_MAX_PAYBACK_HOURS, 24)),
     minScore: num(env.POLICY_MIN_SCORE, 20),
     book: bookEnv(env),
   };
@@ -101,6 +108,8 @@ export interface PolicyExtras {
   hot?: PolicyHot[];
   /** the venue's up-front cost of an open in SOL (rent); defaults to the Meteora estimate */
   openCostSol?: number;
+  /** the refundable part of the open cost (venue rent that comes back on close) */
+  openCostRefundableSol?: number;
 }
 
 export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
@@ -246,6 +255,45 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
   if (!none && amountSol < minSeatSol) none = `size ${r(amountSol)} SOL (bound by ${bound.name}) is under the minimum seat ${r(minSeatSol)} SOL (${env.minSeatPct}% of the ${limits.maxTotalExposureSol} SOL book)`;
   const sharePct = shareOfBand(amountQuote, depthQuote) * 100;
   return { amountQuote, amountSol, bins, widthMultiplier, coverage: coveragePct(s.binStep, bins), depthQuote, sharePct, boundBy: bound.name, caps: caps.map((c) => c.name).join(", "), none };
+}
+
+/** What a seat of this size in this pool is worth, and what it costs to take. */
+export interface SeatEarnings {
+  seatUsd: number;
+  poolFeesPerDayUsd: number;
+  sharePct: number;
+  feesPerDayUsd: number;
+  yieldPctPerDay: number;
+  /** rent that never comes back, plus the swap round trip on a straddle's token half */
+  costUsd: number;
+  paybackHours: number | null;
+}
+
+/**
+ * The same arithmetic the paper book marks fees with: the pool's own 24h fees, times our share of
+ * the band, halved because a band earns only while price is inside it. Null when the screen did not
+ * price the pool (no TVL or no fee figure) or the SOL price is unknown: an unknown is not a refusal.
+ */
+export function seatEarnings(o: Observation, x: PolicyExtras, seatSol: number, sharePct: number, straddle: boolean): SeatEarnings | null {
+  const solPriceUsd = o.snapshot.solPriceUsd ?? null;
+  const tvlUsd = o.screen?.tvlUsd ?? null;
+  const feeToTvl = o.screen?.feeToTvl24hPct ?? null;
+  if (!solPriceUsd || !tvlUsd || feeToTvl === null || !Number.isFinite(feeToTvl) || seatSol <= 0) return null;
+  const poolFeesPerDayUsd = (tvlUsd * feeToTvl) / 100;
+  const feesPerDayUsd = poolFeesPerDayUsd * (Math.min(sharePct, 50) / 100) * 0.5;
+  const seatUsd = seatSol * solPriceUsd;
+  const yieldPctPerDay = (feesPerDayUsd / seatUsd) * 100;
+  // Rent: only the part that does not come back on close is a cost. The refundable share differs by
+  // venue (a CLMM position is cheap, a DLMM position pays for bin arrays), so read it from the plan
+  // when the venue gave us one and fall back to Meteora's position rent.
+  const openCost = typeof x.openCostSol === "number" && x.openCostSol >= 0 ? x.openCostSol : OPEN_COST_ESTIMATE_SOL;
+  const refundable = typeof x.openCostRefundableSol === "number" && x.openCostRefundableSol >= 0 ? x.openCostRefundableSol : Math.min(openCost, POSITION_RENT_SOL);
+  const rentUsd = Math.max(0, openCost - refundable) * solPriceUsd;
+  // A straddle buys its token half and sells it back: two swaps on half the seat.
+  const swapUsd = straddle ? (seatUsd / 2) * (jupiterEnv().feePct / 100) * 2 : 0;
+  const costUsd = rentUsd + swapUsd;
+  const paybackHours = feesPerDayUsd > 0 ? costUsd / (feesPerDayUsd / 24) : null;
+  return { seatUsd, poolFeesPerDayUsd, sharePct, feesPerDayUsd, yieldPctPerDay, costUsd, paybackHours };
 }
 
 interface StraddleSizing {
@@ -517,6 +565,9 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   if (flags.length) {
     return hold(`No band in ${o.poolLabel} (${priceLine}). The pool is flagged ${flags.join(", ")}; ${poolClause(o, hot)}. Not a market to make.`, `Flagged ${flags.join(", ")}. Not touching it.`, "flagged", `flagged ${flags.join(", ")}`);
   }
+  // Size the seat once, here: the earnings test below needs to know how big it would be.
+  const straddleHere = isStockPool(o);
+  const szPreview = straddleHere ? sizeStraddle(o, x, q, env, null, now) : sizeBand(o, x, q, env, null, now);
   const isHotPick = hot.onList;
   const score = o.screen?.score ?? null;
   const scoreOk = score !== null && score > env.minScore;
@@ -534,6 +585,25 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       `1h move ${pct(hot.priceChange1hPct)} outside +/-${POLICY_MAX_1H_MOVE_PCT}%`,
     );
   }
+  // Is the seat worth taking? What it earns, against what it costs.
+  const seatSolPreview = straddleHere ? (szPreview as StraddleSizing).seatSol : (szPreview as Sizing).amountSol;
+  const earn = szPreview.none ? null : seatEarnings(o, x, seatSolPreview, szPreview.sharePct, straddleHere);
+  if (earn && env.minSeatYieldPct > 0 && earn.yieldPctPerDay < env.minSeatYieldPct) {
+    return hold(
+      `No band in ${o.poolLabel} (${priceLine}). The seat would earn about $${r(earn.feesPerDayUsd, 2)} a day on $${r(earn.seatUsd, 0)}, ${r(earn.yieldPctPerDay, 2)}% a day, under the ${env.minSeatYieldPct}% floor: the pool pays $${r(earn.poolFeesPerDayUsd, 0)} a day and our share of the band would be ${r(earn.sharePct, 1)}%. ${poolClause(o, hot)}.`,
+      clip(`${r(earn.yieldPctPerDay, 2)}% a day here. Not worth the rent.`),
+      "not-worth",
+      `seat yield ${r(earn.yieldPctPerDay, 2)}%/day under the ${env.minSeatYieldPct}% floor`,
+    );
+  }
+  if (earn && env.maxPaybackHours > 0 && earn.paybackHours !== null && earn.paybackHours > env.maxPaybackHours) {
+    return hold(
+      `No band in ${o.poolLabel} (${priceLine}). Opening costs about $${r(earn.costUsd, 2)} in rent that does not come back and swap fees, and the seat earns about $${r(earn.feesPerDayUsd, 2)} a day, so it pays that back in ${r(earn.paybackHours, 1)}h, past the ${env.maxPaybackHours}h the policy will wait. ${poolClause(o, hot)}.`,
+      clip(`${r(earn.paybackHours, 0)}h to earn the rent back. Passing.`),
+      "not-worth",
+      `payback ${r(earn.paybackHours, 1)}h over the ${env.maxPaybackHours}h limit`,
+    );
+  }
   const worth = isHotPick
     ? `hot pick (heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}${hot.surge ? ", surge" : ""}${score !== null ? `, screen score ${r(score, 1)}` : ""})`
     : scoreOk
@@ -541,7 +611,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       : `stock book: ${o.screen?.stock ? `${o.screen.stock.ticker} (${o.screen.stock.issuer})` : "tokenized stock"}${score !== null ? `, screen score ${r(score, 1)}` : ""}`;
   // A stock pool gets a straddle, whatever made it worth a band.
   if (isStockPool(o)) {
-    const sz = sizeStraddle(o, x, q, env, null, now);
+    const sz = szPreview as StraddleSizing;
     if (sz.none) {
       return hold(`No band in ${o.poolLabel} (${priceLine}); ${poolClause(o, hot)}. No size for a straddle: ${sz.none}.`, "No size for a straddle here. Holding.", "no-size", sz.none);
     }
@@ -560,7 +630,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       branch: "open",
     };
   }
-  const sz = sizeBand(o, x, q, env, null, now);
+  const sz = szPreview as Sizing;
   if (sz.none) {
     return hold(`No band in ${o.poolLabel} (${priceLine}); ${poolClause(o, hot)}. No size: ${sz.none}.`, "No size for a band here. Holding.", "no-size", sz.none);
   }

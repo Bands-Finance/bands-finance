@@ -253,7 +253,11 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
       !p.flags.includes("thin") &&
       !p.flags.includes("no-24h-data"),
   );
-  for (const p of candidates) {
+  // Rank what is left by the money: fees earned per dollar of liquidity in the last 24h, which is what
+  // a seat here is paid. The score still decides who qualifies (it brakes thin, new, wild and one-sided
+  // pools); this decides the order among those that do.
+  const byYield = [...candidates].sort((a, b) => (b.feeToTvl24hPct ?? -1) - (a.feeToTvl24hPct ?? -1) || b.score - a.score);
+  for (const p of byYield) {
     if (set.size >= config.maxActivePools) break;
     set.add(p.address);
   }
