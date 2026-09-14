@@ -503,8 +503,8 @@ async function main(): Promise<void> {
     assert.equal(policy.binsForCover(1, 5, 69), 68);
     assert.equal(policy.binsForCover(5, 5, 10), 9);
     near(policy.coveragePct(20, 24), 4.91, 1e-3);
-    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, minSeatPct: 5, minScore: 20, book: "all" });
-    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, minSeatPct: 2, minScore: 10, book: "stocks" });
+    assert.deepEqual(policy.policyEnv({}), { coverPct: 5, stockCoverPct: 1.5, minSeatPct: 5, minScore: 20, book: "all" });
+    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minScore: 10, book: "stocks" });
   });
   await test("no band, score above the floor: OPEN a 24-bin SOL-only Spot band sized at the max band", () => {
     const r = policy.policyDecide(obs(), x);
@@ -710,8 +710,8 @@ async function main(): Promise<void> {
     entries.push(entry({ decision: closeDecision("paper-1"), llm: { source: "engine", model: "engine" }, execution: { mode: "paper", ok: true, txs: [{ label: "c", ok: true }], notes: [], closed: "paper-1" }, engine: { ...entry({}).engine!, directive: "STOP" } }));
     entries.push(entry({ ts: new Date(T0 - 3600e3).toISOString() })); // before the book started: not counted
     const summary = paper.paperSummary(book, entries, T0 + 7200e3);
-    assert.deepEqual({ ...summary.tally, firstTs: null, lastTs: null }, { entries: 4, holds: 1, opens: 1, closes: 1, rebalances: 0, claims: 0, vetoes: 1, overrides: 0, directives: { STOP: 1 }, sources: { policy: 3, engine: 1 }, pools: 1, firstTs: null, lastTs: null });
-    near(summary.equity.vsStartSol, summary.realizedSol + summary.markedSol - summary.rentLockedSol - summary.rentSpentSol, 1e-9, "identity in the summary");
+    assert.deepEqual({ ...summary.tally, firstTs: null, lastTs: null }, { entries: 4, holds: 1, opens: 1, closes: 1, rebalances: 0, claims: 0, vetoes: 1, overrides: 0, directives: { STOP: 1 }, sources: { policy: 3, engine: 1 }, pools: 1, firstTs: null, lastTs: null, hedgeFills: 0, hedgeHolds: {} });
+    near(summary.equity.vsStartSol, summary.realizedSol + summary.markedSol + summary.equity.hedgeSol - summary.rentLockedSol - summary.rentSpentSol - summary.swapCostSol - summary.txFeesSol, 1e-9, "identity in the summary");
     assert.equal(summary.closed.length, 1);
     assert.equal(summary.bands.length, 0);
     near(summary.equity.usd!, summary.equity.sol * 100, 1e-9);
@@ -720,7 +720,8 @@ async function main(): Promise<void> {
     assert.match(text, /PAPER BOOK  started 2026-09-14T12:00:00.000Z/);
     assert.match(text, /start        100.0000 SOL \+ 0.00 USDC = 100.0000 SOL \(\$10,000.00\)/);
     assert.match(text, /OPEN BANDS \(0\)\n  none/);
-    assert.match(text, /CLOSED BANDS \(1\)\n  paper-6e7V9e-1\s+ANSEM\/SOL\s+realized -0.0032 SOL \(-0.32%\)/);
+    assert.match(text, /CLOSED BANDS \(1\)\n  paper-6e7V9e-1\s+ANSEM\/SOL\s+realized -0.0032 SOL \(-\$0.32\) \(-0.32%\)/);
+    assert.match(text, /SOL book/);
     assert.match(text, /opens 1 \| rebalances 0 \| closes 1 \| claims 0 \| holds 1 \| guard vetoes 1 \| guard overrides 0 \| engine directives STOP 1/);
     assert.match(text, /proposed by: policy 3, engine 1/);
   });

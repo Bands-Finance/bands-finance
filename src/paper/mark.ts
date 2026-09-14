@@ -21,6 +21,7 @@
 import { binPrice } from "../tools/bins";
 import { quoteMath, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
 import type { BandValue, PaperBand, PaperBook, PaperMark } from "./book";
+import { paperHedgeEquityUsd } from "./hedge";
 
 export const MAX_MARK_GAP_SEC = 3600;
 export const MAX_SHARE = 0.5;
@@ -270,9 +271,15 @@ export function markPool(book: PaperBook, s: PoolSnapshot, ctx: MarkContext): Po
   return book.bands.filter((b) => b.pool === s.address).map((b) => markBand(b, s, ctx).position);
 }
 
-/** Every open band at its last mark plus the wallet, in SOL. Null marks count at zero. tokensMarkedSol is the wallet's token inventory against its cost basis. */
-export function bookEquitySol(book: PaperBook): { walletSol: number; usdcSol: number; tokensSol: number; tokensBasisSol: number; tokensMarkedSol: number; bandsSol: number; feesUnclaimedSol: number; equitySol: number } {
+/**
+ * Every open band at its last mark plus the wallet, in SOL. Null marks count at zero. tokensMarkedSol
+ * is the wallet's token inventory against its cost basis. hedgeSol is the virtual perp book's net
+ * P&L (src/paper/hedge.ts) at the last SOL price; it is part of equitySol.
+ */
+export function bookEquitySol(book: PaperBook): { walletSol: number; usdcSol: number; tokensSol: number; tokensBasisSol: number; tokensMarkedSol: number; bandsSol: number; feesUnclaimedSol: number; hedgeSol: number; hedgeUsd: number; equitySol: number } {
   const usdcInSol = book.solPriceUsd && book.solPriceUsd > 0 ? 1 / book.solPriceUsd : 0;
+  const hedgeUsd = paperHedgeEquityUsd(book.hedge).netUsd;
+  const hedgeSol = hedgeUsd * usdcInSol;
   const usdcSol = book.wallet.usdc * usdcInSol;
   let tokensSol = 0;
   let tokensBasisSol = 0;
@@ -286,5 +293,15 @@ export function bookEquitySol(book: PaperBook): { walletSol: number; usdcSol: nu
     bandsSol += b.lastMark?.valueInSol ?? b.entryValueSol;
     feesUnclaimedSol += b.lastMark?.feeSol ?? 0;
   }
-  return { walletSol: book.wallet.sol, usdcSol, tokensSol, tokensBasisSol, tokensMarkedSol: tokensSol - tokensBasisSol, bandsSol, feesUnclaimedSol, equitySol: book.wallet.sol + usdcSol + tokensSol + bandsSol };
+  return { walletSol: book.wallet.sol, usdcSol, tokensSol, tokensBasisSol, tokensMarkedSol: tokensSol - tokensBasisSol, bandsSol, feesUnclaimedSol, hedgeSol, hedgeUsd, equitySol: book.wallet.sol + usdcSol + tokensSol + bandsSol + hedgeSol };
+}
+
+/** Base token held in a pool's paper bands at their last marks (incl. unclaimed base fees): the hedge's inventory. */
+export function paperPoolTokenInventory(book: PaperBook, pool: string): number {
+  let total = 0;
+  for (const b of book.bands) {
+    if (b.pool !== pool) continue;
+    total += b.lastMark ? b.lastMark.amountToken + b.feeToken : b.tokenDeposit + b.feeToken;
+  }
+  return total;
 }

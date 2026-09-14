@@ -45,6 +45,30 @@ window around the US open, and tells the model to widen bands when the reference
 src/engine/hedge.ts computes the perp short that keeps a band's inventory delta-neutral; the signed
 Backpack client ships dormant and refuses to trade without keys, `HEDGE_LIVE=true` and `DRY_RUN=false`.
 
+### The stock book: straddles, hedged
+
+A one-sided USDC band under a stock's price earns nothing while the price sits above it (three of four
+bands idled through a whole session in the 10,000 USDC paper run), so a stock pool is worked as a
+STRADDLE: a `BOTH` band centred on the active bin, half USDC and half stock token, `STOCK_COVER_PCT`
+(1.5%) of price on each side times the US session's width (pre/after x1.5, closed x2). The desk
+policy sizes the seat so the wallet funds the quote half plus the purchase of the token half it does
+not hold (`open.acquireToken`, bought through Jupiter's free API before the deposit, at
+`SWAP_SLIPPAGE_BPS`); the guards check that spend, the token leg and the geometry. Out of range for
+the engine minimum, the straddle is re-centred (close, buy the shortfall or sell the surplus, deposit)
+or, when the basis/session gates refuse, closed with `liquidate: true` so the book returns to USDC.
+After every execution the hedge desk (src/engine/hedgeDesk.ts) carries the wallet's and the bands'
+stock token short on Backpack's perp: live only with keys, `HEDGE_LIVE=true` and `DRY_RUN=false`
+(a post-only limit at the perp mid, reduce-only when shrinking), otherwise the plan is journaled
+(`entry.hedge`). In paper mode the hedge is virtual (src/paper/hedge.ts): fills at the perp mid, marked
+every cycle, funding accrued from the basis row, and the report nets band P&L, swap costs, hedge P&L
+and funding per stock, in USD first when the book started with USDC.
+
+```bash
+PAPER_SOL=2 PAPER_USDC=10000 DATA_DIR=data-paper-stock BOOK=stocks npm start   # a stock paper book
+DATA_DIR=data-paper-stock npm run paper:report                                  # per stock: bands, hedge, funding, net
+npm run test:stock                                                              # the straddle end to end
+```
+
 ```bash
 npm run paper -- --usd 10000 --pools 4   # size a budget across the board and run each band through the guards
 npm run basis                            # stock pools vs Backpack perps: basis, session clock, funding

@@ -438,32 +438,36 @@ async function main(): Promise<void> {
     };
   }
   void hotOff;
-  await test("BOOK=all: a score-4 stock pool off the hot list is not worth a band; BOOK=stocks: it is, USDC-only, under the price, sized in USDC", () => {
+  await test("BOOK=all: a score-4 stock pool off the hot list is not worth a band; BOOK=stocks: it is, a straddle (BOTH) centred on the active bin, sized in USDC (src/scripts/test-stock.ts has the numbers)", () => {
     const all = policy.policyDecide(obs(), { limits, env: { book: "all" }, now: T0, openCostSol: raydium.CLMM_OPEN_COST_DEFAULT_SOL });
     assert.equal(all.branch, "not-worth");
     const stocks = policy.policyDecide(obs(), { limits, env: { book: "stocks" }, now: T0, openCostSol: raydium.CLMM_OPEN_COST_DEFAULT_SOL });
     assert.equal(stocks.branch, "open", stocks.reason);
     const o = stocks.decision.open!;
-    assert.equal(o.side, "SOL_ONLY");
-    assert.equal(o.binsAboveActive, 0);
-    assert.equal(o.binsBelowActive, policy.binsForCover(10, 5, 69, 1));
-    assert.equal(o.binsBelowActive, 49, "5% of price at 10 bps is 49 bins");
+    assert.equal(o.side, "BOTH");
+    assert.equal(o.binsAboveActive, policy.stockBinsPerSide(10, 1.5, 69, 1));
+    assert.equal(o.binsBelowActive, o.binsAboveActive);
+    assert.equal(o.binsBelowActive, 15, "1.5% of price at 10 bps is 15 bins each side");
     assert.match(stocks.decision.reasoning, /stock book: SPY \(xstocks\)/);
-    assert.match(stocks.decision.headline, /USDC under the bid in SPYx\/USDC/);
+    assert.match(stocks.decision.headline, /^Straddling SPYx\/USDC/);
     assert.ok(o.amountSol > 0 && o.amountSol <= 22.5 * 100, `sized ${o.amountSol} USDC`);
+    assert.ok(o.amountToken > 0 && (o.acquireToken ?? 0) === o.amountToken, "the wallet holds no SPYx: the token half is bought");
     // the basis verdict still refuses
     const refused = policy.policyDecide(obs({ engine: { ...obs().engine!, basis: { ...obs().engine!.basis!, reason: "NYSE opens in 12 min (< 30): the open reprices the stock, no new bands until it settles" } } }), { limits, env: { book: "stocks" }, now: T0 });
     assert.equal(refused.branch, "gated");
     assert.match(refused.reason, /NYSE opens in 12 min/);
   });
-  await test("the session width multiplier widens a stock pool's band (x2 closed, x1.5 pre/after), capped at the max width; non-stock pools ignore it", () => {
+  await test("the session width multiplier widens a stock pool's straddle (x2 closed, x1.5 pre/after), each side capped so the band fits the max width; non-stock pools ignore it", () => {
     const closed = policy.policyDecide(obs({ engine: { ...obs().engine!, basis: { ...obs().engine!.basis!, session: "closed", widthMultiplier: 2 } } }), { limits, env: { book: "stocks" }, now: T0 });
     assert.equal(closed.branch, "open");
-    assert.equal(closed.decision.open!.binsBelowActive, 68, "98 bins capped at maxBinWidth - 1");
+    assert.equal(closed.decision.open!.binsBelowActive, 30, "15 bins x 2 each side (61 wide)");
     assert.match(closed.decision.reasoning, /x2 for the closed US session/);
     const wide: RiskLimits = { ...limits, maxBinWidth: 200 };
     const after = policy.policyDecide(obs({ engine: { ...obs().engine!, basis: { ...obs().engine!.basis!, session: "after", widthMultiplier: 1.5 } } }), { limits: wide, env: { book: "stocks" }, now: T0 });
-    assert.equal(after.decision.open!.binsBelowActive, 73, "48.8 bins x 1.5, rounded once");
+    assert.equal(after.decision.open!.binsBelowActive, 22, "14.9 bins x 1.5, rounded once");
+    assert.equal(policy.stockBinsPerSide(10, 1.5, 200, 1.5), 22);
+    assert.equal(policy.stockBinsPerSide(10, 1.5, 69, 2), 30);
+    assert.equal(policy.stockBinsPerSide(10, 5, 69, 2), 34, "capped at (69 - 1) / 2 per side");
     assert.equal(policy.binsForCover(10, 5, 200, 1.5), 73);
     assert.equal(policy.binsForCover(10, 5, 200, 2), 98);
     assert.equal(policy.widthMultiplierFor(obs({ engine: { ...obs().engine!, basis: undefined }, screen: null }), T0), 1, "not a stock pool");
@@ -471,18 +475,24 @@ async function main(): Promise<void> {
     assert.equal(policy.widthMultiplierFor(obs({ engine: { ...obs().engine!, basis: undefined } }), Date.parse("2026-09-13T17:30:00.000Z")), 2, "Sunday: closed, from the clock");
     assert.equal(policy.policyEnv({ BOOK: "stocks" }).book, "stocks");
   });
-  await test("a CLMM band resting one bin under the price holds as 'resting', not idle; two bins away is idle", () => {
+  await test("a CLMM quote-only band (non-stock pool) resting one bin under the price holds as 'resting', not idle; two bins away is idle", () => {
     const s = spySnapshot();
+    // the same pool without its stock tag and basis row: a plain CLMM pool keeps the one-sided behaviour
+    const plain = (over: Partial<Observation> = {}, snap: PoolSnapshot = s): Observation => obs({ ...over, screen: { ...obs().screen!, stock: null, score: 30 }, engine: { ...obs().engine!, ...(over.engine ?? {}), basis: undefined } }, snap);
     const band = (upper: number) => ({ address: "nftmint111", lowerBinId: upper - 48, upperBinId: upper, lowerPrice: clmmPrice(upper - 48), upperPrice: clmmPrice(upper), widthBins: 49, inRange: false, binsFromRange: ACTIVE - upper, amountX: 0, amountY: 2000, feeX: 0, feeY: 0, valueInSol: 20, solInPosition: 20, quoteInPosition: 2000, lastUpdatedAt: 0, entryValueSol: 20 });
-    const resting = policy.policyDecide(obs({ positions: [band(ACTIVE - 1)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 5000 } } }), { limits, env: { book: "stocks" }, now: T0 });
+    const resting = policy.policyDecide(plain({ positions: [band(ACTIVE - 1)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 5000 } } }), { limits, env: { book: "stocks" }, now: T0 });
     assert.equal(resting.branch, "resting");
     assert.match(resting.decision.headline, /Resting one bin under the price/);
-    const idle = policy.policyDecide(obs({ positions: [band(ACTIVE - 2)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 100 } } }), { limits, env: { book: "stocks" }, now: T0 });
+    const idle = policy.policyDecide(plain({ positions: [band(ACTIVE - 2)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 100 } } }), { limits, env: { book: "stocks" }, now: T0 });
     assert.equal(idle.branch, "idle-wait");
     // on Meteora one bin above the band is idle as before
     const meteoraSnap = spySnapshot({ priceModel: "meteora-dlmm", venue: "meteora-dlmm", clmm: undefined });
-    const m = policy.policyDecide(obs({ positions: [band(ACTIVE - 1)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 100 } } }, meteoraSnap), { limits, env: { book: "stocks" }, now: T0 });
+    const m = policy.policyDecide(plain({ positions: [band(ACTIVE - 1)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 100 } } }, meteoraSnap), { limits, env: { book: "stocks" }, now: T0 });
     assert.equal(m.branch, "idle-wait");
+    // the stock pool itself: one bin out for 5000s is a re-centre, not a rest
+    const stock = policy.policyDecide(obs({ positions: [band(ACTIVE - 1)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 5000 } } }), { limits, env: { book: "stocks" }, now: T0 });
+    assert.equal(stock.branch, "rebalance");
+    assert.equal(stock.decision.open!.side, "BOTH");
   });
 
   console.log("the paper executor on a CLMM snapshot");

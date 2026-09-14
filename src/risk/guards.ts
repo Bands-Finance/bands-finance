@@ -9,7 +9,8 @@
  * The engine (src/engine) feeds `ctx.engine`: halts, stand-down, bench, regime, knife, per-band
  * stops and out-of-range timers. Those gate OPENS only. Exits are never blocked by cooldown,
  * daily cap, kill switch, halts or stand-down; the one check that can stop an exit is "this
- * position is not ours". The LLM proposes, the guards decide: every limit lives here.
+ * position is not ours". A close's `liquidate` flag (sell the token that comes back, stock bands)
+ * is never judged here: an exit is an exit. The LLM proposes, the guards decide: every limit lives here.
  */
 import { Decision, holdDecision } from "../agent/schema";
 import { antiChurn, bandStopPct, drawdownPct } from "../engine/exit";
@@ -227,6 +228,10 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
   //    pool). Sizes, exposure and caps are SOL-denominated: a quote figure converts at
   //    quotePriceInSol (1 for SOL). The deposit is checked against the quote balance; the gas
   //    reserve against the real SOL balance, which a USDC deposit spends only on rent and fees.
+  //    A BOTH band with `acquireToken` (the stock straddle) also spends quote on the swap that
+  //    brings the token in: acquireToken x price x (1 + maxSlippagePct), so the quote must cover
+  //    the quote half AND the purchase; the token check counts what the swap brings in (and, on a
+  //    REBALANCE, the base token the closing band hands back). Both legs count toward the size.
   if (isOpening(decision)) {
     const o = decision.open;
     if (!o) {
@@ -241,18 +246,28 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
       const sizeLabel = quoteIsSol ? `${sizeSol.toFixed(4)} SOL` : `${sizeSol.toFixed(4)} SOL (${sizeQuote.toFixed(2)} ${q.symbol})`;
       const currentExposure = ctx.positions.reduce((sum, p) => sum + p.valueInSol, 0);
       const exposureAfter = ctx.otherExposureSol + currentExposure - (closing?.valueInSol ?? 0) + sizeSol;
+      // the token the swap must bring in before the deposit (stock straddles); the quote pays for it, with slippage
+      const acquireRaw = o.acquireToken ?? 0;
+      const acquire = Number.isFinite(acquireRaw) && acquireRaw > 0 ? acquireRaw : 0;
+      const acquireQuote = acquire * q.tokenPriceInQuote * (1 + limits.maxSlippagePct / 100);
+      const quoteSpend = o.amountSol + acquireQuote;
       // what a closing band (REBALANCE) hands back in quote units before it is re-laid
       const closingQuote = closing ? (closing.quoteInPosition ?? closing.solInPosition / q.priceInSol) : 0;
-      const walletQuoteAfter = walletQuote + closingQuote - o.amountSol;
-      // SOL: the deposit only when the quote is SOL; rent + fees always
+      // and in base token units (incl. its unclaimed base fees)
+      const closingToken = closing ? (q.side === "X" ? closing.amountY + closing.feeY : closing.amountX + closing.feeX) : 0;
+      const walletQuoteAfter = walletQuote + closingQuote - quoteSpend;
+      // SOL: the deposit (and the purchase) only when the quote is SOL; rent + fees always
       const walletSolAfterClose = ctx.walletSol + (quoteIsSol ? (closing?.solInPosition ?? 0) : 0);
       const openCost = typeof ctx.openCostSol === "number" && Number.isFinite(ctx.openCostSol) && ctx.openCostSol >= 0 ? ctx.openCostSol : OPEN_COST_ESTIMATE_SOL;
-      const walletSolAfter = walletSolAfterClose - (quoteIsSol ? o.amountSol : 0) - openCost;
+      const walletSolAfter = walletSolAfterClose - (quoteIsSol ? quoteSpend : 0) - openCost;
       const width = o.binsBelowActive + o.binsAboveActive + 1;
       const mult = Math.min(Math.max(engine.sizeMultiplier, 0), 1);
       const effectiveMax = limits.maxPositionSol * mult;
 
       if (!(o.amountSol >= 0) || !(o.amountToken >= 0) || sizeSol <= 0) violations.push("deposit amounts must be positive");
+      if (!(acquireRaw >= 0) || !Number.isFinite(acquireRaw)) violations.push("acquireToken must be a non-negative number");
+      if (acquire > 0 && o.side !== "BOTH") violations.push("acquireToken is only for a BOTH band (the stock straddle)");
+      if (acquire > o.amountToken) violations.push(`acquireToken ${acquire} exceeds the token leg ${o.amountToken}: nothing to buy beyond the deposit`);
       if (sizeSol > limits.maxPositionSol) {
         violations.push(`band size ${sizeLabel} > max ${limits.maxPositionSol}`);
       } else if (mult > 0 && mult < 1 && sizeSol > effectiveMax) {
@@ -260,7 +275,8 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
       }
       if (exposureAfter > limits.maxTotalExposureSol) violations.push(`total exposure would be ${exposureAfter.toFixed(4)} SOL > max ${limits.maxTotalExposureSol}`);
       if (walletQuoteAfter < 0) {
-        violations.push(`not enough ${q.symbol}: want ${o.amountSol}, have ${walletQuote}${closing ? ` + ${closingQuote.toFixed(4)} back from the closing band` : ""}`);
+        const want = acquire > 0 ? `${o.amountSol} + ${acquireQuote.toFixed(quoteIsSol ? 4 : 2)} to buy ${acquire} ${s.baseToken.symbol} (incl. ${limits.maxSlippagePct}% slippage)` : `${o.amountSol}`;
+        violations.push(`not enough ${q.symbol}: want ${want}, have ${walletQuote}${closing ? ` + ${closingQuote.toFixed(4)} back from the closing band` : ""}`);
       }
       if (walletSolAfter < limits.gasReserveSol) {
         violations.push(
@@ -269,8 +285,8 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
             : `wallet would hold ${walletSolAfter.toFixed(4)} SOL after ~${openCost.toFixed(3)} rent (the ${q.symbol} deposit spends no SOL), below gas reserve ${limits.gasReserveSol}`,
         );
       }
-      if (o.amountToken > ctx.walletToken + (closing ? closing.amountX + closing.amountY : 0)) {
-        violations.push(`not enough ${s.baseToken.symbol}: want ${o.amountToken}, have ${ctx.walletToken}`);
+      if (o.amountToken > ctx.walletToken + acquire + closingToken) {
+        violations.push(`not enough ${s.baseToken.symbol}: want ${o.amountToken}, have ${ctx.walletToken}${acquire > 0 ? ` + ${acquire} bought` : ""}${closing ? ` + ${closingToken.toFixed(6)} back from the closing band` : ""}`);
       }
       if (!isInt(o.binsBelowActive) || !isInt(o.binsAboveActive) || o.binsBelowActive < 0 || o.binsAboveActive < 0) {
         violations.push("bin counts must be non-negative integers");
@@ -296,6 +312,10 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
         if (quoteBelow ? o.binsBelowActive !== 0 : o.binsAboveActive !== 0) {
           violations.push(`TOKEN_ONLY band must sit ${quoteBelow ? "at/above" : "at/below"} the active bin`);
         }
+      } else if (o.side === "BOTH") {
+        // a straddle: both tokens, at least one bin on each side of the active bin
+        if (o.amountSol <= 0 || o.amountToken <= 0) violations.push(`BOTH band needs amountSol > 0 (${q.symbol}) and amountToken > 0 (${s.baseToken.symbol})`);
+        if (o.binsBelowActive < 1 || o.binsAboveActive < 1) violations.push("BOTH band must straddle the active bin: binsBelowActive >= 1 and binsAboveActive >= 1");
       }
       if (violations.length === 0) passed.push(`open size ${sizeLabel}, width ${width}, exposure after ${exposureAfter.toFixed(4)}`);
     }

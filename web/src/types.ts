@@ -7,6 +7,8 @@ export interface OpenParams {
   binsBelowActive: number;
   binsAboveActive: number;
   strategy: string;
+  /** stock straddles: base token bought (Jupiter) before the deposit; absent or 0 otherwise */
+  acquireToken?: number;
 }
 
 export interface Decision {
@@ -16,6 +18,8 @@ export interface Decision {
   reasoning: string;
   confidence: number;
   headline: string;
+  /** CLOSE_POSITION on a stock band: the token that comes back is sold into the quote; absent = false */
+  liquidate?: boolean;
 }
 
 export interface BinRow {

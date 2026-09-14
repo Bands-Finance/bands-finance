@@ -17,6 +17,11 @@
  * Venues (src/venues): every pool is read, marked and traded through its venue adapter (Meteora
  * DLMM, Raydium CLMM). TRADABLE_VENUES says which venues the picker may seat; LIVE_VENUES which ones
  * the executor may broadcast on. BOOK=stocks seats tokenized-stock pools first.
+ *
+ * The stock book: a stock pool's band is a straddle (src/agent/policy.ts) whose token half the hedge
+ * desk (src/engine/hedgeDesk.ts) carries short on Backpack's perp after every execution; the perp
+ * mids of the symbols in play are refreshed once per cycle, and an engine close in a stock pool
+ * liquidates the token back to the quote. In paper mode the hedge is virtual (src/paper/hedge.ts).
  */
 import { exec } from "node:child_process";
 import { Connection, PublicKey } from "@solana/web3.js";
@@ -59,7 +64,11 @@ import { engineDirective } from "./engine/directives";
 import { forgetBand, knifeReason, outOfRangeSec, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
 import { collectsOnDay, dayOf, readLedgerRows, realizedOnDaySol, workingSol } from "./engine/ledger";
 import { acquireLock, heartbeat, releaseLock, startWatchdog } from "./engine/watchdog";
-import { assertPaperEnv, emptyBook, loadPaperBook, markPool, paperEnabled, paperEnv, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
+import { assertPaperEnv, emptyBook, loadPaperBook, markPool, paperEnabled, paperEnv, paperHedgeEquityUsd, paperPoolTokenInventory, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
+import { backpack, tickerOfXstock } from "./tools/backpack";
+import { baseInventoryOf } from "./engine/hedge";
+import { runHedgeDesk } from "./engine/hedgeDesk";
+import type { JournalHedge } from "./journal";
 
 interface App {
   connection: Connection;
@@ -76,6 +85,12 @@ interface App {
   /** the paper book when PAPER_SOL > 0 (src/paper); null otherwise */
   paper: PaperBook | null;
   paperEnv: PaperEnv;
+  /** perp symbol -> the mid refreshed this cycle (the hedge desk's price and the paper hedge's mark) */
+  perpMarks: Map<string, { mid: number; at: number }>;
+  /** perp symbol -> contracts the pools decided so far this cycle target (live: they share one Backpack position) */
+  hedgedThisCycle: Map<string, number>;
+  /** base mints whose wallet balance has been attributed to a pool's hedge this cycle */
+  mintAttributed: Set<string>;
 }
 
 interface Observed {
@@ -123,6 +138,8 @@ function banner(app: App): void {
   console.log(`quotes    SOL and USDC (a USDC pool is valued at the screen's SOL price: ${app.screen?.solPriceUsd ? `$${app.screen.solPriceUsd.toFixed(2)}` : "none yet, USDC pools skipped until a screen lands"})`);
   console.log(`wallet    ${app.wallet.publicKey.toBase58()}${app.wallet.ephemeral ? "  (ephemeral, no key configured)" : ""}${cfg.expectedWallet ? `  expected ${cfg.expectedWallet}` : ""}`);
   if (app.paper) console.log(`paper     book ${app.paper.startedAt}: ${app.paper.wallet.sol.toFixed(4)} SOL, ${app.paper.wallet.usdc.toFixed(2)} USDC, ${app.paper.bands.length} band(s) open, ${app.paper.closed.length} closed; slippage ${app.paperEnv.slippagePct}% per open/close; report: DATA_DIR=${config.dataDir} npm run paper:report`);
+  const hedgeGate = backpack().canTrade();
+  console.log(`stocks    straddles (BOTH, half quote half token, STOCK_COVER_PCT=${policyEnv().stockCoverPct}% each side x session width); token half hedged short on Backpack: ${app.paper ? "PAPER (virtual fills at the perp mid, funding accrued)" : hedgeGate.ok ? "LIVE post-only orders" : `plan only (${hedgeGate.reason})`}; swaps via Jupiter (${app.paper ? "paper fills" : config.dryRun ? "built + simulated" : "broadcast"})`);
   console.log(`model     ${config.model}`);
   console.log(`interval  ${config.cycleIntervalSec}s cycles, screen every ${config.screen.intervalSec}s`);
   console.log("limits");
@@ -399,7 +416,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
         minutesToOpen: clock.minutesToOpen,
         basisPct: basisRow.basisPct ?? null,
         perpSymbol: basisRow.perpSymbol ?? null,
-        perpMid: basisRow.perpMid ?? null,
+        perpMid: (basisRow.perpSymbol ? app.perpMarks.get(basisRow.perpSymbol)?.mid : undefined) ?? basisRow.perpMid ?? null,
         widthMultiplier: sessionWidthMultiplier(clock),
         reason: basisCheck && !basisCheck.ok ? basisCheck.reason : null,
       }
@@ -447,8 +464,10 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // Then an approved outside proposal, oldest first: "agents propose, the operator decides, the desk
   // executes through its own guards". Otherwise Mr Bands proposes.
   const proposal = directive ? null : (approvedProposals(o.address)[0] ?? null);
+  // An engine close in a stock pool liquidates: the book returns to the quote, the hedge comes off with it.
+  const directiveDecision = directive && basisRow && directive.decision.action === "CLOSE_POSITION" ? { ...directive.decision, liquidate: true } : directive?.decision;
   const llm = directive
-    ? engineDecideResult(directive.decision, `${directive.kind}: ${directive.reason}`)
+    ? engineDecideResult(directiveDecision!, `${directive.kind}: ${directive.reason}`)
     : proposal
       ? proposalDecideResult(proposalDecision(proposal), `proposal ${proposal.id} by ${proposal.proposerName} (${proposal.proposerId})`)
       : await decide(observation, { hot: hotRows(app, 8), openCostSol: openCostDefault });
@@ -484,6 +503,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     snapshot,
     positions,
     paper: paper ? { book: paper, slippagePct: app.paperEnv.slippagePct, now } : undefined,
+    walletToken: token.ui,
   });
   if (paper) savePaperBook(paper);
   for (const t of execution.txs) {
@@ -495,6 +515,49 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)}${quoteLeg} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
   }
   updateState(state, execution, positions, snapshot);
+
+  // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
+  let hedgeJournal: JournalHedge | undefined;
+  if (basisRow) {
+    try {
+      const mint = snapshot.baseToken.mint;
+      const symbol = basisRow.perpSymbol ?? null;
+      const ticker = basisRow.ticker ?? screen?.stock?.ticker ?? tickerOfXstock(snapshot.baseToken.symbol);
+      let bandsToken: number;
+      let walletToken: number;
+      if (paper) {
+        bandsToken = paperPoolTokenInventory(paper, o.address);
+        walletToken = paperTokenBalance(paper, mint);
+      } else {
+        const remaining = positions.filter((p) => p.address !== execution.closed);
+        const openedToken = execution.ok && execution.opened && verdict.decision.open ? verdict.decision.open.amountToken : 0;
+        bandsToken = remaining.reduce((t, p) => t + baseInventoryOf(p, snapshot), 0) + openedToken;
+        walletToken = token.ui;
+        if (!config.dryRun && execution.txs.length > 0) {
+          try {
+            walletToken = (await app.wallet.tokenBalance(new PublicKey(mint))).ui;
+          } catch {
+            /* keep the pre-execution read */
+          }
+        }
+      }
+      // the wallet's token counts once per mint per cycle, for the first pool decided on it
+      const attribute = !app.mintAttributed.has(mint);
+      app.mintAttributed.add(mint);
+      const baseInventory = bandsToken + (attribute ? walletToken : 0);
+      const quoteUsd = quoteIsSol ? (solPriceOf(app) ?? 0) : 1;
+      const poolUsd = q.tokenPriceInQuote * quoteUsd;
+      const basePrice = (symbol ? app.perpMarks.get(symbol)?.mid : undefined) ?? basisRow.perpMid ?? (poolUsd > 0 ? poolUsd : null);
+      const otherPoolsShort = symbol ? (app.hedgedThisCycle.get(symbol) ?? 0) : 0;
+      const outcome = await runHedgeDesk({ pool: o.address, label: snapshot.label, ticker, symbol, baseInventory, basePrice, fundingRatePerHour: basisRow.fundingRatePerHour ?? null, now, paper, client: backpack(), otherPoolsShort });
+      if (symbol) app.hedgedThisCycle.set(symbol, otherPoolsShort + outcome.journal.targetShortQty);
+      hedgeJournal = outcome.journal;
+      for (const line of outcome.lines) console.log(`${tag} ${line}`);
+      if (paper) savePaperBook(paper);
+    } catch (err) {
+      console.error(`${tag} hedge desk failed (trading unaffected): ${(err as Error).message}`);
+    }
+  }
 
   // A stop-loss close that went through counts against the pool on the bench ladder.
   const stoppedOut = execution.ok && !!execution.closed && (directive?.kind === "STOP" || verdict.overrides.some((v) => v.startsWith("stop-loss")));
@@ -540,6 +603,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     headline: verdict.decision.headline,
     screen: screen ? { rank: screen.rank, rankedPools: screen.rankedPools, score: screen.score, feeToTvl24hPct: screen.feeToTvl24hPct } : null,
     engine: journalEngine,
+    ...(hedgeJournal ? { hedge: hedgeJournal } : {}),
   };
   appendJournal(entry);
   if (proposal) {
@@ -555,7 +619,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
  * The breakers mark the book once per iteration, only on a complete read: a pool that failed to
  * observe would read as vanished capital, and a phantom crater must never trip a breaker.
  */
-function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAtStart: number, usdcAtStartSol: number): void {
+function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAtStart: number, usdcAtStartSol: number, hedgeSol = 0): void {
   const now = Date.now();
   const today = todayUtc();
   const mode = config.dryRun ? "dry-run" : "live";
@@ -573,7 +637,7 @@ function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAt
 
   // Portfolio breaker: whole-book equity in SOL (wallet SOL + wallet USDC at the SOL price + bands marked incl. unclaimed fees + wallet base tokens at mark).
   const tokensSol = entries.reduce((s, e) => s + e.wallet.token * e.pool.tokenPriceInSol, 0);
-  const equity = solAtStart + usdcAtStartSol + observed.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + tokensSol;
+  const equity = solAtStart + usdcAtStartSol + observed.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + tokensSol + hedgeSol;
   if (Number.isFinite(equity) && equity > 0) {
     const pv = portfolioVerdict(app.engine.portfolio, equity, today, now, { floorSol: cfg.portfolioFloorSol });
     app.engine.portfolio = pv.next;
@@ -581,7 +645,7 @@ function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAt
   }
   saveEngineState(app.engine);
   console.log(
-    `[cycle ${app.cycle}] marks: equity ${equity.toFixed(4)} SOL (day high ${app.engine.portfolio.hwmSol.toFixed(4)}) | today's loss ${loss.toFixed(4)} / limit ${app.engine.circuit.lastLimitSol.toFixed(4)} SOL | working ${workingSol(state.entryValueSol).toFixed(4)}`,
+    `[cycle ${app.cycle}] marks: equity ${equity.toFixed(4)} SOL (day high ${app.engine.portfolio.hwmSol.toFixed(4)})${hedgeSol !== 0 ? ` incl. hedge ${hedgeSol >= 0 ? "+" : ""}${hedgeSol.toFixed(4)}` : ""} | today's loss ${loss.toFixed(4)} / limit ${app.engine.circuit.lastLimitSol.toFixed(4)} SOL | working ${workingSol(state.entryValueSol).toFixed(4)}`,
   );
 }
 
@@ -599,6 +663,32 @@ async function runSkim(app: App): Promise<void> {
   } catch (err) {
     console.error(`[cycle ${app.cycle}] skim failed (trading unaffected): ${(err as Error).message}`);
   }
+}
+
+/**
+ * The perp mids the hedge desk prices at, refreshed at most once per cycle: the symbols of the stock
+ * pools being worked and of the paper shorts held. Public Backpack calls, paced; a failure keeps the
+ * basis row's figure. The funding rate stays the basis row's (refreshed after each screen).
+ */
+async function refreshPerpMarks(app: App, pools: string[]): Promise<void> {
+  const symbols = new Set<string>();
+  for (const address of pools) {
+    const sym = basisForPool(address)?.perpSymbol;
+    if (sym) symbols.add(sym);
+  }
+  for (const p of app.paper?.hedge?.positions ?? []) symbols.add(p.symbol);
+  if (symbols.size === 0) return;
+  const now = Date.now();
+  for (const symbol of symbols) {
+    try {
+      const depth = await backpack().depth(symbol, 5);
+      if (depth?.mid && depth.mid > 0) app.perpMarks.set(symbol, { mid: depth.mid, at: now });
+    } catch (err) {
+      console.error(`[cycle ${app.cycle}] perp mid ${symbol}: ${(err as Error).message}`);
+    }
+  }
+  const marks = [...symbols].map((sym) => `${sym} ${app.perpMarks.get(sym)?.mid ?? "n/a"}`);
+  console.log(`[cycle ${app.cycle}] perp mids: ${marks.join(", ")}`);
 }
 
 async function runIteration(app: App): Promise<void> {
@@ -633,6 +723,9 @@ async function runIteration(app: App): Promise<void> {
     return;
   }
   console.log(`[cycle ${app.cycle}] working ${pools.length} pools (${withPositions.length} with bands)`);
+  app.hedgedThisCycle.clear();
+  app.mintAttributed.clear();
+  await refreshPerpMarks(app, pools);
 
   const solPriceUsd = solPriceOf(app);
   const observed: Observed[] = [];
@@ -690,7 +783,8 @@ async function runIteration(app: App): Promise<void> {
   const usdcUnpriced = usdcAtStart > 0.01 && solPriceUsd === null;
   if (observed.length === pools.length && entries.length === observed.length && observed.length > 0 && !usdcUnpriced) {
     try {
-      markBook(app, observed, entries, solAtStart, solPriceUsd ? usdcAtStart / solPriceUsd : 0);
+      const hedgeSol = paper && solPriceUsd ? paperHedgeEquityUsd(paper.hedge).netUsd / solPriceUsd : 0;
+      markBook(app, observed, entries, solAtStart, solPriceUsd ? usdcAtStart / solPriceUsd : 0, hedgeSol);
     } catch (err) {
       console.error(`[cycle ${app.cycle}] marks failed:`, err);
     }
@@ -748,6 +842,9 @@ async function main(): Promise<void> {
     regime: regimeView([]),
     paper,
     paperEnv: pEnv,
+    perpMarks: new Map(),
+    hedgedThisCycle: new Map(),
+    mintAttributed: new Set(),
   };
   if (app.screen) app.screenAt = new Date(app.screen.generatedAt).getTime();
   setSolPriceUsd(solPriceOf(app));

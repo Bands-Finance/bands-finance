@@ -31,7 +31,8 @@ import { SOL_MINT } from "../tools/dlmm";
 export const LEDGER_FILE = "ledger.jsonl";
 
 export type LedgerMode = "live" | "dry-run";
-export type LedgerMech = "open" | "close" | "collect" | "skim" | "rent" | "txfee";
+/** "swap": a Jupiter leg of the stock straddle (acquire the token half before a BOTH deposit, or liquidate the token a close hands back) */
+export type LedgerMech = "open" | "close" | "collect" | "skim" | "rent" | "txfee" | "swap";
 export type LedgerBasis = "exact" | "marked";
 
 export interface LedgerRow {
@@ -202,8 +203,10 @@ export function collectsOnDay(rows: readonly LedgerRow[], mode: LedgerMode, day:
 
 /**
  * Realized SOL on a UTC day, marked where a token leg is involved: collect rows count in full,
- * a close row counts (cash + tokens at the row's mark + fee) minus the band's entry value, and
- * every other row contributes its network fee and rent. Used by the circuit breaker.
+ * a close row counts (cash + tokens at the row's mark + fee) minus the band's entry value, a swap
+ * row counts its two legs at the row's mark (the quote that left against the token that arrived,
+ * or the reverse: the route's fee and impact, never the notional), and every other row contributes
+ * its network fee and rent. Used by the circuit breaker.
  */
 export function realizedOnDaySol(rows: readonly LedgerRow[], mode: LedgerMode, day: string): number {
   let sum = 0;
@@ -211,6 +214,7 @@ export function realizedOnDaySol(rows: readonly LedgerRow[], mode: LedgerMode, d
     if (dayOf(r.ts) !== day) continue;
     const back = r.solDelta + r.tokenDelta * r.markTokenInSol;
     if (r.mech === "collect") sum += back + r.txFeeSol;
+    else if (r.mech === "swap") sum += back + r.txFeeSol;
     else if (r.mech === "close") sum += back + r.txFeeSol - (r.entryValueSol ?? back);
     else if (r.mech === "open") sum += r.txFeeSol;
     else if (r.mech === "skim") sum += r.txFeeSol;

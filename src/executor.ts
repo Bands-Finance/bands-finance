@@ -26,6 +26,14 @@
  * by the venue (Meteora legacy transactions, Raydium versioned ones) and signed and sent by the
  * wallet. A venue that is tradable but not in LIVE_VENUES is refused before anything is built when
  * DRY_RUN=false: it trades in paper and dry-run only until the operator turns it on.
+ *
+ * Swap legs (src/tools/jupiter.ts), the stock straddle's: a BOTH open with `acquireToken` buys the
+ * token the wallet lacks before the deposit (ExactIn, sized at the pool price plus SWAP_SLIPPAGE_BPS;
+ * live, the deposit's token leg is then clamped to what the wallet actually holds); a CLOSE with
+ * `liquidate` sells the token the band handed back; a REBALANCE of a BOTH band closes, buys the
+ * shortfall or sells the surplus (only what the band returned), then deposits. Each leg is one
+ * Jupiter VersionedTransaction run like any other: simulated in dry-run, broadcast live, ledgered
+ * as a "swap" row (quote leg exact when measured, token leg from the quote).
  */
 import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { config, riskLimits } from "./config";
@@ -34,6 +42,7 @@ import type { SkimPlan } from "./engine/collect";
 import { LedgerRow, recordLedger } from "./engine/ledger";
 import type { Verdict } from "./risk/guards";
 import { OpenPlan, PoolSnapshot, POSITION_RENT_SOL, PositionSnapshot, quoteOf, QuoteView, SOL_MINT, STRATEGY_BY_NAME, toRawBN } from "./tools/dlmm";
+import { fromRawUnits, jupiter, toRawUnits, type JupiterQuote } from "./tools/jupiter";
 import type { AnyTransaction, Wallet } from "./tools/wallet";
 import { executePaper, type PaperExecutionContext } from "./paper/executor";
 import { isLiveVenue, liveVenues } from "./venues/env";
@@ -72,7 +81,12 @@ export interface ExecutionContext {
   positions: PositionSnapshot[];
   /** paper mode: the book to apply the verdict to instead of the chain (src/paper/executor.ts) */
   paper?: Omit<PaperExecutionContext, "snapshot" | "positions" | "openCost">;
+  /** the wallet's base-token balance before execution, UI units: the swap legs size against it (absent: 0) */
+  walletToken?: number;
 }
+
+/** token amounts under this are dust: no swap leg is worth a transaction */
+export const SWAP_DUST_TOKEN = 1e-6;
 
 /** amountSol is the QUOTE deposit (SOL or USDC), amountToken the base: mapped onto X/Y by the quote side, not by where SOL sits. */
 export function toOpenPlan(o: OpenParams, s: PoolSnapshot): OpenPlan {
@@ -334,6 +348,81 @@ function collectRow(ctx: ExecutionContext, targets: PositionSnapshot[], outcomes
   };
 }
 
+/** Base token units in a position incl. unclaimed base fees. */
+function tokenInPosition(p: PositionSnapshot, s: PoolSnapshot): number {
+  return quoteOf(s).side === "X" ? p.amountY + p.feeY : p.amountX + p.feeX;
+}
+
+/** The wallet's base-token balance from chain (live only); null when it cannot be read. */
+async function readWalletToken(ctx: ExecutionContext): Promise<number | null> {
+  if (config.dryRun || ctx.wallet.ephemeral || typeof ctx.wallet.tokenBalance !== "function") return null;
+  try {
+    return (await ctx.wallet.tokenBalance(new PublicKey(ctx.snapshot.baseToken.mint))).ui;
+  } catch {
+    return null;
+  }
+}
+
+const fmtUnits = (n: number, d: number) => Number(n.toFixed(Math.min(d, 8))).toString();
+const floorTo = (n: number, d: number) => Math.floor(n * 10 ** d) / 10 ** d;
+
+type SwapLeg = "acquire" | "liquidate" | "shortfall" | "surplus";
+
+interface SwapLegOutcome {
+  ok: boolean;
+  /** base token units the wallet gained (+) or gave (-), from the quote (the fill may differ inside the slippage) */
+  tokenDelta: number;
+  quote: JupiterQuote | null;
+}
+
+/**
+ * One Jupiter leg: BUY `tokenUi` of the base with the quote (acquire / shortfall: ExactIn sized at the
+ * pool price plus the slippage allowance, since ExactOut is not routed for every pair) or SELL
+ * `tokenUi` into the quote (liquidate / surplus). Built, then run like a venue transaction.
+ */
+async function runSwapLeg(ctx: ExecutionContext, leg: SwapLeg, tokenUi: number, result: ExecutionResult, ledger: (row: LedgerRow) => void): Promise<SwapLegOutcome> {
+  const s = ctx.snapshot;
+  const q = quoteOf(s);
+  const client = jupiter();
+  const buy = leg === "acquire" || leg === "shortfall";
+  const tokenDec = s.baseToken.decimals;
+  const quoteDec = q.token.decimals;
+  const base = s.baseToken.symbol;
+  try {
+    let jq: JupiterQuote;
+    if (buy) {
+      const quoteUi = tokenUi * q.tokenPriceInQuote * (1 + client.slippageBps / 10_000);
+      jq = await client.quote({ inputMint: q.token.mint, outputMint: s.baseToken.mint, amount: toRawUnits(quoteUi, quoteDec) });
+    } else {
+      jq = await client.quote({ inputMint: s.baseToken.mint, outputMint: q.token.mint, amount: toRawUnits(tokenUi, tokenDec) });
+    }
+    const inUi = fromRawUnits(jq.inAmount, buy ? quoteDec : tokenDec);
+    const outUi = fromRawUnits(jq.outAmount, buy ? tokenDec : quoteDec);
+    const route = jq.routeLabels.join(" > ") || "?";
+    const built = await client.buildSwap(jq, ctx.wallet.publicKey);
+    const label = `swap ${fmtUnits(inUi, buy ? quoteDec : tokenDec)} ${buy ? q.symbol : base} -> ~${fmtUnits(outUi, buy ? tokenDec : quoteDec)} ${buy ? base : q.symbol} (${leg} leg, Jupiter via ${route}, impact ${jq.priceImpactPct}%)`;
+    const out = await runTx(ctx.wallet, label, built.tx, [], result.txs, q.token.mint);
+    if (!out.ok) return { ok: false, tokenDelta: 0, quote: jq };
+    const tokenDelta = buy ? outUi : -inUi;
+    const cash = out.cash;
+    const measured = !!cash && (q.symbol === "SOL" || cash.quoteDelta !== null);
+    const quoteDelta = measured ? (q.symbol === "SOL" ? cash!.walletDeltaSol - cash!.txFeeSol : cash!.quoteDelta!) : buy ? -inUi : outUi;
+    ledger({
+      ...baseRow(ctx, "swap", out.signature, null),
+      ...quoteLeg(quoteDelta, q),
+      tokenDelta,
+      rentSol: 0,
+      txFeeSol: measured ? cash!.txFeeSol : -MARKED_TX_FEE_SOL,
+      basis: measured ? "exact" : "marked",
+      note: `${leg} leg: Jupiter ${buy ? `${q.symbol} -> ${base}` : `${base} -> ${q.symbol}`} via ${route}, impact ${jq.priceImpactPct}%, slippage ${jq.slippageBps} bps; token leg from the quote`,
+    });
+    return { ok: true, tokenDelta, quote: jq };
+  } catch (err) {
+    result.txs.push({ label: `swap (${leg} leg)`, ok: false, error: (err as Error).message });
+    return { ok: false, tokenDelta: 0, quote: null };
+  }
+}
+
 export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<ExecutionResult> {
   const d = verdict.decision;
   if (!verdict.allowed) return { mode: "none", ok: true, txs: [], notes: ["blocked by guards"] };
@@ -379,6 +468,9 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       return result;
     }
 
+    // the base token a closing band handed the wallet: what a liquidate sells, what a re-laid straddle re-uses
+    let tokensBack = 0;
+    const tokenDec = ctx.snapshot.baseToken.decimals;
     if (d.action === "CLOSE_POSITION" || d.action === "REBALANCE") {
       const raw = findRaw(d.positionAddress);
       if (raw === undefined) throw new Error(`position ${d.positionAddress} not found`);
@@ -395,13 +487,60 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       if (!result.ok) return result;
       result.closed = d.positionAddress!;
       const snap = findSnap(d.positionAddress);
-      if (snap) ledger(closeRow(ctx, snap, outcomes));
-      if (d.action === "CLOSE_POSITION") return result;
+      if (snap) {
+        ledger(closeRow(ctx, snap, outcomes));
+        // live: what actually arrived; dry-run: the snapshot's token leg
+        const held = await readWalletToken(ctx);
+        tokensBack = held !== null && held - (ctx.walletToken ?? 0) > 0 ? held - (ctx.walletToken ?? 0) : tokenInPosition(snap, ctx.snapshot);
+      }
+      if (d.action === "CLOSE_POSITION") {
+        if (d.liquidate === true) {
+          if (tokensBack > SWAP_DUST_TOKEN) {
+            const leg = await runSwapLeg(ctx, "liquidate", floorTo(tokensBack, tokenDec), result, ledger);
+            result.ok = result.ok && leg.ok;
+            if (!leg.ok) result.notes.push(`liquidate: the swap failed; ${fmtUnits(tokensBack, tokenDec)} ${ctx.snapshot.baseToken.symbol} stays in the wallet`);
+          } else {
+            result.notes.push("liquidate: no token came back, nothing to sell");
+          }
+        }
+        return result;
+      }
     }
 
     if (d.action === "OPEN_POSITION" || d.action === "REBALANCE") {
       if (!d.open) throw new Error("open parameters missing");
-      const plan = toOpenPlan(d.open, ctx.snapshot);
+      let o: OpenParams = d.open;
+      // the straddle's legs: buy the shortfall (declared as acquireToken, or whatever a re-centre needs), sell a re-centre's surplus
+      if (o.side === "BOTH" && o.amountToken > 0) {
+        const before = ctx.walletToken ?? 0;
+        const read = await readWalletToken(ctx);
+        const held = read !== null ? read : before + tokensBack;
+        const shortfall = o.amountToken - held;
+        const declared = Number.isFinite(o.acquireToken ?? 0) ? Math.max(0, o.acquireToken ?? 0) : 0;
+        if (shortfall > SWAP_DUST_TOKEN && (declared > 0 || d.action === "REBALANCE")) {
+          const leg = await runSwapLeg(ctx, d.action === "REBALANCE" ? "shortfall" : "acquire", Number(shortfall.toFixed(Math.min(tokenDec, 8))), result, ledger);
+          if (!leg.ok) {
+            result.ok = false;
+            result.notes.push(`the ${d.action === "REBALANCE" ? "shortfall" : "acquire"} leg failed: no deposit`);
+            return result;
+          }
+        } else if (d.action === "REBALANCE" && -shortfall > SWAP_DUST_TOKEN && tokensBack > SWAP_DUST_TOKEN) {
+          const leg = await runSwapLeg(ctx, "surplus", floorTo(Math.min(-shortfall, tokensBack), tokenDec), result, ledger);
+          if (!leg.ok) {
+            result.ok = false;
+            result.notes.push("the surplus leg failed: no deposit");
+            return result;
+          }
+        }
+        // live: the fill decides the token leg; the deposit takes what the wallet holds, never more
+        const after = await readWalletToken(ctx);
+        if (after !== null && after + 1e-9 < o.amountToken) {
+          const clamped = floorTo(after, Math.min(tokenDec, 8));
+          result.notes.push(`token leg clamped to the wallet's ${fmtUnits(after, tokenDec)} ${ctx.snapshot.baseToken.symbol} (planned ${o.amountToken})`);
+          o = { ...o, amountToken: clamped };
+        }
+      }
+      const plan = toOpenPlan(o, ctx.snapshot);
       const built = await ctx.venue.buildOpen(ctx.pool, owner, plan, ctx.snapshot);
       if (built.notes?.length) result.notes.push(...built.notes);
       const out = await runTx(ctx.wallet, built.label, built.tx, built.signers, result.txs, quoteMint);
@@ -409,8 +548,8 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       if (out.ok) {
         const address = built.positionAddress ?? built.signers[0]?.publicKey.toBase58();
         if (!address) throw new Error("the venue returned no position address for the open");
-        result.opened = { address, entryValueSol: entryValueOf(d.open, ctx.snapshot) };
-        ledger(openRow(ctx, d.open, address, [out]));
+        result.opened = { address, entryValueSol: entryValueOf(o, ctx.snapshot) };
+        ledger(openRow(ctx, o, address, [out]));
       }
     }
   } catch (err) {

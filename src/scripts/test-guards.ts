@@ -495,4 +495,62 @@ test("basis rule refuses opens in a stock pool, exits still pass", () => {
   assert.equal(evaluate(close, ctx({ engine: e, positions: [position] }), limits).allowed, true);
 });
 
-console.log(`${n} guard tests passed (with portfolio, engine, USDC-quote and basis checks)`);
+// ---- the stock straddle: BOTH bands with an acquire leg, liquidating closes ----
+
+/** a straddle on NVDAx/USDC at $180: 20 USDC + 0.111 NVDAx (~20 USDC) both sides of the active bin, the NVDAx bought first */
+const straddle = (over: Partial<NonNullable<Decision["open"]>> = {}): Decision => open({ side: "BOTH", amountSol: 20, amountToken: 0.111, acquireToken: 0.111, binsBelowActive: 15, binsAboveActive: 15, ...over });
+
+test("straddle: a BOTH band with acquireToken passes when the quote covers both halves and the purchase (with slippage); the size counts both legs", () => {
+  // 20 USDC + 0.111 x 180 x 1.01 = 40.18 USDC of quote; the wallet holds no NVDAx, the swap brings it in
+  const v = evaluate(straddle(), uctx({ walletQuote: 41, walletToken: 0 }), limits);
+  assert.equal(v.allowed, true, v.violations.join("; "));
+  assert.match(v.passed.join(), /open size 0\.3920 SOL \(39\.98 USDC\), width 31/);
+  const short = evaluate(straddle(), uctx({ walletQuote: 39, walletToken: 0 }), limits);
+  assert.equal(short.allowed, false);
+  assert.match(short.violations.join(), /not enough USDC: want 20 \+ 20\.18 to buy 0\.111 NVDAx \(incl\. 1% slippage\), have 39/);
+  // the wallet already holds the token half: nothing to buy, only the quote half is spent
+  const held = evaluate(straddle({ acquireToken: 0 }), uctx({ walletQuote: 21, walletToken: 0.2 }), limits);
+  assert.equal(held.allowed, true, held.violations.join("; "));
+  const notHeld = evaluate(straddle({ acquireToken: 0 }), uctx({ walletQuote: 21, walletToken: 0.05 }), limits);
+  assert.match(notHeld.violations.join(), /not enough NVDAx: want 0\.111, have 0\.05/);
+});
+
+test("straddle: acquireToken is only for BOTH, never more than the token leg, never negative", () => {
+  assert.match(evaluate(uopen({ acquireToken: 0.1 }), uctx(), limits).violations.join(), /acquireToken is only for a BOTH band/);
+  assert.match(evaluate(straddle({ acquireToken: 0.5 }), uctx({ walletQuote: 200 }), limits).violations.join(), /acquireToken 0\.5 exceeds the token leg 0\.111/);
+  assert.match(evaluate(straddle({ acquireToken: -1 }), uctx({ walletQuote: 200 }), limits).violations.join(), /acquireToken must be a non-negative number/);
+});
+
+test("straddle: geometry needs a bin on each side and both amounts", () => {
+  assert.match(evaluate(straddle({ binsBelowActive: 0 }), uctx({ walletQuote: 50 }), limits).violations.join(), /BOTH band must straddle the active bin/);
+  assert.match(evaluate(straddle({ binsAboveActive: 0 }), uctx({ walletQuote: 50 }), limits).violations.join(), /BOTH band must straddle the active bin/);
+  assert.match(evaluate(straddle({ amountToken: 0, acquireToken: 0 }), uctx({ walletQuote: 50 }), limits).violations.join(), /BOTH band needs amountSol > 0 \(USDC\) and amountToken > 0 \(NVDAx\)/);
+});
+
+test("straddle: a REBALANCE counts the closing band's token and quote toward the new halves", () => {
+  // the old straddle holds 0.05 NVDAx + 35 USDC (+ fees); the wallet holds nothing: the re-centre needs 0.06 more NVDAx bought (10.91 USDC at 1% slippage) plus the 20 USDC half, from the 35.5 USDC back
+  const old = { ...position, address: "posu", amountX: 0.05, amountY: 35, feeX: 0.001, feeY: 0.5, valueInSol: (35.5 + 0.051 * 180) / SOL_USD, solInPosition: 35.5 / SOL_USD, quoteInPosition: 35.5, inRange: false, binsFromRange: 20 };
+  const reb: Decision = { ...straddle({ acquireToken: 0.06 }), action: "REBALANCE", positionAddress: "posu" };
+  const state = { ...freshState(), outOfRangeSince: { posu: NOW - 900_000 } };
+  const e = engine({ outOfRangeSince: { posu: NOW - 900_000 } });
+  const v = evaluate(reb, uctx({ positions: [old], walletQuote: 0, walletToken: 0, state, engine: e }), limits);
+  assert.equal(v.allowed, true, v.violations.join("; "));
+  // without the purchase the token leg is short
+  const noBuy: Decision = { ...straddle({ acquireToken: 0 }), action: "REBALANCE", positionAddress: "posu" };
+  assert.match(evaluate(noBuy, uctx({ positions: [old], walletQuote: 0, walletToken: 0, state, engine: e }), limits).violations.join(), /not enough NVDAx: want 0\.111, have 0 \+ 0\.051000 back from the closing band/);
+});
+
+test("liquidate: a close that sells the token back is an exit like any other, never blocked; the flag rides through", () => {
+  const close: Decision = { ...open(), action: "CLOSE_POSITION", open: null, positionAddress: "pos1", liquidate: true };
+  const state = { ...freshState(), actionsToday: 24, lastActionAt: NOW - 10_000 };
+  const e = engine({ haltedUntil: NOW + 3600_000, standDownUntil: NOW + 3600_000, benched: true, knife: "knife: -30% in 30 min (limit 20%)", basisReason: "basis: off" });
+  const v = evaluate(close, ctx({ positions: [{ ...position, inRange: false, binsFromRange: -3 }], state, killSwitch: true, engine: { ...e, outOfRangeSince: { pos1: NOW - 900_000 } } }), limits);
+  assert.equal(v.allowed, true, v.violations.join("; "));
+  assert.equal(v.decision.liquidate, true);
+  assert.equal(v.decision.action, "CLOSE_POSITION");
+  const engineClose = evaluate(close, ctx({ positions: [position], source: "engine", killSwitch: true }), limits);
+  assert.equal(engineClose.allowed, true);
+  assert.equal(engineClose.decision.liquidate, true);
+});
+
+console.log(`${n} guard tests passed (with portfolio, engine, USDC-quote, basis and straddle checks)`);

@@ -86,6 +86,35 @@ export interface JournalEntry {
   screen?: { rank: number; rankedPools: number; score: number; feeToTvl24hPct: number | null } | null;
   /** the engine's view for this pool this cycle (src/engine); absent in entries written before it existed */
   engine?: JournalEngine;
+  /** stock pools: the hedge plan for this pool after execution (src/engine/hedgeDesk.ts); absent elsewhere */
+  hedge?: JournalHedge;
+}
+
+/** The hedge desk's plan for a stock pool this cycle, and what became of it. */
+export interface JournalHedge {
+  /** the perp symbol ("SPY.US_USDC_PERP"), or null when Backpack lists none for the stock */
+  symbol: string | null;
+  /** base inventory to hedge: the stock token in the wallet + this pool's bands, contracts */
+  targetShortQty: number;
+  existingShortQty: number;
+  /** Ask = sell perp (add to the short), Bid = buy back (reduceOnly), null = hold */
+  side: "Ask" | "Bid" | null;
+  quantity: number;
+  reason: string;
+  /** true when an order was placed live or filled in the paper book */
+  placed: boolean;
+  /** USD per contract the plan priced at (the perp mid, else the pool price in USD) */
+  basePrice?: number | null;
+  /** "paper": filled in the virtual hedge book; "live": placed on Backpack; "plan": journaled only */
+  mode?: "paper" | "live" | "plan";
+  /** the paper fill or the live order's price */
+  fillPrice?: number | null;
+  /** the live order id, when placed */
+  orderId?: string | null;
+  /** funding accrued on the paper short this cycle, USD (negative = received) */
+  fundingUsd?: number | null;
+  /** why nothing was placed although the plan had an order (no keys, HEDGE_LIVE off, dry-run, an API error) */
+  note?: string | null;
 }
 
 export interface JournalEngine {

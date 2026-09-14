@@ -7,18 +7,23 @@
  *   open   wallet -= deposit and the open rent estimate (a deposit is not a swap: no slippage); rentLockedSol += the refundable part
  *   close  wallet += quote + token (less slippage on the token leg) + fees + the rent refund; a PaperClosed row is appended
  *   claim  wallet += the band's accrued fees; feesClaimedSol tallies them
+ *   buy / sell  a paper Jupiter leg (src/tools/jupiter.ts paperSwap): quote <-> base token at the pool's price less the
+ *          swap fee; swapCostSol tallies the fee (the stock straddle's acquire and liquidate legs)
  *
  * Every SOL figure is SOL-equivalent at the mark passed in; a USDC pool's quote converts at
  * quotePriceInSol. The entry value of a band is the deposit at the open mark, and the wallet's
  * base tokens carry a SOL cost basis from the mark they arrived at (tokenBasisSol), so that
- *   equity now - equity at start = realized + marked bands + marked wallet tokens - rentLockedSol - rentSpentSol
- * holds exactly (rentSpentSol is the non-refundable bin-array rent).
+ *   equity now - equity at start = realized + marked bands + marked wallet tokens + hedge - rentLockedSol - rentSpentSol - swapCostSol - txFeesSol
+ * holds exactly (rentSpentSol is the non-refundable bin-array rent; hedge is the virtual perp book's
+ * net P&L, src/paper/hedge.ts, in SOL at the last SOL price; txFeesSol the marked network fees).
  */
 import fs from "node:fs";
 import path from "node:path";
 import { dataPath } from "../lib/ledger";
 import type { PriceModel } from "../tools/bins";
 import { BIN_ARRAY_RENT_SOL, OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, type QuoteSymbol } from "../tools/dlmm";
+import { paperCostToBuy, paperSwap } from "../tools/jupiter";
+import { emptyHedgeBook, normalizeHedgeBook, type PaperHedgeBook } from "./hedge";
 
 export const PAPER_BOOK_FILE = "paper-book.json";
 
@@ -159,6 +164,25 @@ export interface PaperBook {
   /** the SOL price at the last mark, for the USD view */
   solPriceUsd: number | null;
   lastMarkAt: number | null;
+  /** fees paid on paper swaps (the straddle's acquire and liquidate legs), SOL-equivalent; absent on older books: 0 */
+  swapCostSol?: number;
+  /** the same by base mint, for the per-stock report */
+  swapCostByMint?: Record<string, number>;
+  /** fees moved to the wallet by CLAIM_FEES, by pool, SOL-equivalent (the per-stock report) */
+  feesClaimedByPool?: Record<string, number>;
+  /** the virtual perp hedge book (src/paper/hedge.ts); absent on older books: empty */
+  hedge?: PaperHedgeBook;
+  /** marked network fees charged on paper transactions (PAPER_TX_FEE_SOL each), SOL; absent on older books: 0 */
+  txFeesSol?: number;
+}
+
+/** marked network fee per paper transaction, as the real dry-run rows carry */
+export const PAPER_TX_FEE_SOL = 0.000005;
+
+/** Charge one paper transaction's network fee to the wallet and tally it (the equity identity subtracts the tally). */
+export function chargeTxFee(book: PaperBook, feeSol: number = PAPER_TX_FEE_SOL): void {
+  book.wallet.sol = r9(book.wallet.sol - feeSol);
+  book.txFeesSol = r9((book.txFeesSol ?? 0) + feeSol);
 }
 
 export function emptyBook(startSol: number, startUsdc: number, now = Date.now()): PaperBook {
@@ -180,6 +204,11 @@ export function emptyBook(startSol: number, startUsdc: number, now = Date.now())
     tokenBasisSol: {},
     solPriceUsd: null,
     lastMarkAt: null,
+    swapCostSol: 0,
+    swapCostByMint: {},
+    feesClaimedByPool: {},
+    hedge: emptyHedgeBook(),
+    txFeesSol: 0,
   };
 }
 
@@ -200,6 +229,11 @@ export function loadPaperBook(file: string = paperBookFile()): PaperBook | null 
       closed: Array.isArray(raw.closed) ? raw.closed : [],
       tokenMarks: raw.tokenMarks ?? {},
       tokenBasisSol: raw.tokenBasisSol ?? {},
+      swapCostSol: typeof raw.swapCostSol === "number" && Number.isFinite(raw.swapCostSol) ? raw.swapCostSol : 0,
+      swapCostByMint: raw.swapCostByMint ?? {},
+      feesClaimedByPool: raw.feesClaimedByPool ?? {},
+      hedge: normalizeHedgeBook(raw.hedge),
+      txFeesSol: typeof raw.txFeesSol === "number" && Number.isFinite(raw.txFeesSol) ? raw.txFeesSol : 0,
     };
   } catch {
     return null;
@@ -311,10 +345,11 @@ export function openBand(book: PaperBook, i: OpenBandInput): OpenBandResult {
   const solCost = rentChargedSol + (i.quoteSymbol === "SOL" ? quoteCost : 0);
   if (book.wallet.sol < solCost) throw new Error(`paper wallet holds ${book.wallet.sol.toFixed(4)} SOL, needs ${solCost.toFixed(4)} (deposit, slippage and rent)`);
   if (i.quoteSymbol === "USDC" && book.wallet.usdc < quoteCost) throw new Error(`paper wallet holds ${book.wallet.usdc.toFixed(2)} USDC, needs ${quoteCost.toFixed(2)}`);
-  if (tokenCost > 0 && paperTokenBalance(book, i.tokenMint) < tokenCost) throw new Error(`paper wallet holds ${paperTokenBalance(book, i.tokenMint)} ${i.tokenSymbol}, needs ${tokenCost}`);
+  // 1e-9 of tolerance: a token half that a paper swap just brought in is kept at 9 decimals
+  if (tokenCost > 0 && paperTokenBalance(book, i.tokenMint) + 1e-9 < tokenCost) throw new Error(`paper wallet holds ${paperTokenBalance(book, i.tokenMint)} ${i.tokenSymbol}, needs ${tokenCost}`);
 
   creditQuote(book, i.quoteSymbol, -quoteCost);
-  if (tokenCost > 0) creditToken(book, i.tokenMint, -tokenCost, i.tokenPriceInQuote * i.quotePriceInSol);
+  if (tokenCost > 0) creditToken(book, i.tokenMint, -Math.min(tokenCost, paperTokenBalance(book, i.tokenMint)), i.tokenPriceInQuote * i.quotePriceInSol);
   book.wallet.sol = r9(book.wallet.sol - rentChargedSol);
   book.rentLockedSol = r9(book.rentLockedSol + rentRefundableSol);
   book.rentSpentSol = r9(book.rentSpentSol + (rentChargedSol - rentRefundableSol));
@@ -462,7 +497,66 @@ export function claimFees(book: PaperBook, address: string, mark: Pick<BandValue
   b.lastMarkAt = Math.max(b.lastMarkAt, now);
   book.feesClaimedSol = r9(book.feesClaimedSol + feeSol);
   book.feesRealizedSol = r9(book.feesRealizedSol + feeSol);
+  (book.feesClaimedByPool ??= {})[b.pool] = r9((book.feesClaimedByPool[b.pool] ?? 0) + feeSol);
   return { address, feeQuote, feeToken, feeSol };
+}
+
+export interface PaperSwapInput {
+  quoteSymbol: QuoteSymbol;
+  tokenMint: string;
+  tokenSymbol: string;
+  /** base token in quote units and one quote token in SOL, at the swap */
+  tokenPriceInQuote: number;
+  quotePriceInSol: number;
+  /** the swap fee in percent of the input (default SWAP_FEE_PCT) */
+  feePct?: number;
+}
+
+export interface PaperSwapResult {
+  /** input units spent (quote for a buy, token for a sell) */
+  amountIn: number;
+  /** output units received (token for a buy, quote for a sell) */
+  amountOut: number;
+  /** the fee in input units, and SOL-equivalent */
+  feeIn: number;
+  feeSol: number;
+  feePct: number;
+}
+
+/**
+ * A paper Jupiter leg: BUY `tokenOut` base tokens with the quote at the pool's price (the wallet
+ * pays the token's value plus the fee; the token arrives at the mark). Throws when the quote is short.
+ */
+export function buyToken(book: PaperBook, i: PaperSwapInput & { tokenOut: number }): PaperSwapResult {
+  if (!(i.tokenOut > 0) || !Number.isFinite(i.tokenOut)) throw new Error(`paper buy: bad amount ${i.tokenOut}`);
+  const feePct = i.feePct ?? paperSwap(1, 1).feePct;
+  const amountIn = paperCostToBuy(i.tokenOut, i.tokenPriceInQuote, feePct);
+  const fill = paperSwap(amountIn, 1 / i.tokenPriceInQuote, feePct);
+  const have = quoteBalance(book, i.quoteSymbol);
+  if (have < amountIn) throw new Error(`paper wallet holds ${have.toFixed(i.quoteSymbol === "SOL" ? 4 : 2)} ${i.quoteSymbol}, needs ${amountIn.toFixed(i.quoteSymbol === "SOL" ? 4 : 2)} to buy ${i.tokenOut} ${i.tokenSymbol}`);
+  creditQuote(book, i.quoteSymbol, -amountIn);
+  creditToken(book, i.tokenMint, fill.amountOut, i.tokenPriceInQuote * i.quotePriceInSol);
+  const feeSol = fill.feeIn * i.quotePriceInSol;
+  tallySwapCost(book, i.tokenMint, feeSol);
+  return { amountIn, amountOut: fill.amountOut, feeIn: fill.feeIn, feeSol, feePct: fill.feePct };
+}
+
+/** A paper Jupiter leg: SELL `tokenIn` base tokens into the quote at the pool's price less the fee. Throws when the wallet holds less. */
+export function sellToken(book: PaperBook, i: PaperSwapInput & { tokenIn: number }): PaperSwapResult {
+  if (!(i.tokenIn > 0) || !Number.isFinite(i.tokenIn)) throw new Error(`paper sell: bad amount ${i.tokenIn}`);
+  const have = paperTokenBalance(book, i.tokenMint);
+  if (have + 1e-9 < i.tokenIn) throw new Error(`paper wallet holds ${have} ${i.tokenSymbol}, cannot sell ${i.tokenIn}`);
+  const fill = paperSwap(i.tokenIn, i.tokenPriceInQuote, i.feePct);
+  creditToken(book, i.tokenMint, -Math.min(have, i.tokenIn), i.tokenPriceInQuote * i.quotePriceInSol);
+  creditQuote(book, i.quoteSymbol, fill.amountOut);
+  const feeSol = fill.feeIn * i.tokenPriceInQuote * i.quotePriceInSol;
+  tallySwapCost(book, i.tokenMint, feeSol);
+  return { amountIn: i.tokenIn, amountOut: fill.amountOut, feeIn: fill.feeIn, feeSol, feePct: fill.feePct };
+}
+
+function tallySwapCost(book: PaperBook, mint: string, feeSol: number): void {
+  book.swapCostSol = r9((book.swapCostSol ?? 0) + feeSol);
+  (book.swapCostByMint ??= {})[mint] = r9((book.swapCostByMint[mint] ?? 0) + feeSol);
 }
 
 /** The rent a band hands back on close: what it recorded at open, else the Meteora position rent. */

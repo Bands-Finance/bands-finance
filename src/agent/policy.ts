@@ -19,12 +19,26 @@
  * The engine's gates (halt, stand-down, bench, regime, knife, basis, cooldown, daily cap, pool cap)
  * are checked first so the policy holds with the reason instead of proposing into a veto.
  *
- * Stock pools (src/basis): the band width is multiplied by the US session's width multiplier
- * (regular 1, pre/after 1.5, closed 2) and opens are refused when the basis verdict says so. On the
- * stock book (BOOK=stocks) a tokenized-stock pool is worth a band without a hot row or a score.
+ * Stock pools (src/basis; the screen's stock tag or a basis row) are worked as STRADDLES, not as
+ * quote-only bids: Zach's 10,000 USDC paper run left three of four one-sided bands idle under the
+ * price for a whole session. A stock band is BOTH, centred on the active bin, half quote and half
+ * stock token, so it earns on every tick in either direction; the token leg is hedged short on
+ * Backpack's perp (src/engine/hedgeDesk.ts) so the fees are earned delta-neutral.
+ *   width    binsBelow = binsAbove = the bins covering STOCK_COVER_PCT of price (default 1.5%) x the
+ *            US session's width multiplier (regular 1, pre/after 1.5, closed 2), each side capped so
+ *            the whole band fits MAX_BIN_WIDTH
+ *   seat     S quote units = min(effective max band, what the wallet can fund (the quote half plus
+ *            the purchase of the token half it does not hold, at MAX_SLIPPAGE_PCT), both sides'
+ *            depth (share <= 50%), exposure room); amountSol = S/2, amountToken = S/2 / price,
+ *            acquireToken = the token half less what the wallet (and a closing band) already holds
+ *   in range HOLD; out of range for the engine minimum: REBALANCE to a fresh straddle around the
+ *            new price when the gates allow (the executor buys the shortfall or sells the surplus
+ *            after the close), else CLOSE with liquidate: true so the book returns to USDC
+ * Opens are refused when the basis verdict says so (openGate). On the stock book (BOOK=stocks) a
+ * tokenized-stock pool is worth a band without a hot row or a score.
  * Venues: the open cost comes from the venue (extras.openCostSol; Meteora's estimate by default).
  * On a CLMM pool a quote-only band rests one bin under the price by construction, so one bin of
- * distance on the quote side is "resting", not idle.
+ * distance on the quote side is "resting", not idle (non-stock pools).
  */
 import { sessionClock } from "../basis/session";
 import { sessionWidthMultiplier } from "../basis/verdict";
@@ -39,6 +53,8 @@ import { holdDecision, type Decision, type OpenParams } from "./schema";
 export interface PolicyEnv {
   /** how far past the active bin a fresh band reaches, in percent of price */
   coverPct: number;
+  /** stock straddles: how far EACH side of the active bin reaches, in percent of price (STOCK_COVER_PCT) */
+  stockCoverPct: number;
   /** a seat under this share of the book's max exposure is not worth its rent and attention (POLICY_MIN_SEAT_PCT) */
   minSeatPct: number;
   /** a pool off the hot list needs a screen score above this to get a band */
@@ -54,8 +70,16 @@ const num = (v: string | undefined, d: number): number => {
 };
 
 export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
-  return { coverPct: Math.max(0.1, num(env.POLICY_COVER_PCT, 5)), minSeatPct: Math.max(0, num(env.POLICY_MIN_SEAT_PCT, 5)), minScore: num(env.POLICY_MIN_SCORE, 20), book: bookEnv(env) };
+  return {
+    coverPct: Math.max(0.1, num(env.POLICY_COVER_PCT, 5)),
+    stockCoverPct: Math.max(0.05, num(env.STOCK_COVER_PCT, STOCK_COVER_PCT_DEFAULT)),
+    minSeatPct: Math.max(0, num(env.POLICY_MIN_SEAT_PCT, 5)),
+    minScore: num(env.POLICY_MIN_SCORE, 20),
+    book: bookEnv(env),
+  };
 }
+
+export const STOCK_COVER_PCT_DEFAULT = 1.5;
 
 export const POLICY_MAX_1H_MOVE_PCT = 15;
 export const POLICY_BLOCK_FLAGS = ["thin", "new", "dumping", "wild"];
@@ -97,6 +121,12 @@ export function binsForCover(binStep: number, coverPct: number, maxBinWidth: num
 
 /** Whether the pool is a tokenized stock: the screen's stock tag, or a basis row (only stock pools carry one). */
 export const isStockPool = (o: Pick<Observation, "screen" | "engine">): boolean => !!o.screen?.stock || !!o.engine?.basis;
+
+/** Bins on EACH side of a stock straddle: coverPct of price x the width multiplier, capped so 2 x bins + 1 fits maxBinWidth, at least 1. */
+export function stockBinsPerSide(binStep: number, coverPct: number, maxBinWidth: number, widthMultiplier = 1): number {
+  const perSideCap = Math.max(1, Math.floor((maxBinWidth - 1) / 2));
+  return Math.max(1, Math.min(binsForCover(binStep, coverPct, maxBinWidth, widthMultiplier), perSideCap));
+}
 
 /** The band-width multiplier for this pool: the US session's (src/basis) for a stock pool, 1 otherwise. */
 export function widthMultiplierFor(o: Pick<Observation, "screen" | "engine">, now: number): number {
@@ -218,6 +248,112 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
   return { amountQuote, amountSol, bins, widthMultiplier, coverage: coveragePct(s.binStep, bins), depthQuote, sharePct, boundBy: bound.name, caps: caps.map((c) => c.name).join(", "), none };
 }
 
+interface StraddleSizing {
+  /** the whole seat in quote units (both halves) and in SOL */
+  seatQuote: number;
+  seatSol: number;
+  amountQuote: number;
+  amountToken: number;
+  /** the token the swap must bring in before the deposit */
+  acquireToken: number;
+  /** the token a re-centre would sell back (a closing band returned more than the new half needs) */
+  surplusToken: number;
+  /** bins on each side of the active bin */
+  bins: number;
+  widthMultiplier: number;
+  /** percent of price covered on each side */
+  coverage: number;
+  /** both sides' depth in quote units */
+  depthQuote: number;
+  sharePct: number;
+  boundBy: string;
+  none: string | null;
+}
+
+/**
+ * Size a stock straddle: half quote, half token at the active price. The wallet cap solves
+ *   S/2 + max(0, S/2 - held x p) x (1 + slip) <= Q   (the quote half plus the purchase of the missing token half)
+ * for S, Q being the fundable quote (95% of the wallet's, plus a closing band's); the other caps are
+ * the effective max band, both sides' depth (share <= 50%) and the exposure room. Rounded down to the
+ * quote's decimals and the token's (at most 6).
+ */
+function sizeStraddle(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv, closing: PositionSnapshot | null, now: number): StraddleSizing {
+  const s = o.snapshot;
+  const limits = x.limits;
+  const quoteIsSol = q.symbol === "SOL";
+  const p = q.tokenPriceInQuote;
+  const slip = limits.maxSlippagePct / 100;
+  const openCost = typeof x.openCostSol === "number" && Number.isFinite(x.openCostSol) && x.openCostSol >= 0 ? x.openCostSol : OPEN_COST_ESTIMATE_SOL;
+  const widthMultiplier = widthMultiplierFor(o, now);
+  const bins = stockBinsPerSide(s.binStep, env.stockCoverPct, limits.maxBinWidth, widthMultiplier);
+  // depth on both sides, scaled from the observed bins to the band's reach, in quote units
+  const quoteBelow = q.side === "Y";
+  const a = s.activeBinId;
+  const observedQuote = s.bins.filter((b) => (quoteBelow ? b.binId < a : b.binId > a)).length || 1;
+  const observedToken = s.bins.filter((b) => (quoteBelow ? b.binId > a : b.binId < a)).length || 1;
+  const quoteSideLiq = quoteBelow ? s.liquidityBelowY : s.liquidityAboveX;
+  const tokenSideLiq = quoteBelow ? s.liquidityAboveX : s.liquidityBelowY;
+  const depthQuote = (quoteSideLiq / observedQuote) * bins + (tokenSideLiq / observedToken) * bins * p;
+  // what the wallet (and a closing band) can put up
+  const closingQuote = closing ? (closing.quoteInPosition ?? closing.solInPosition / q.priceInSol) : 0;
+  const closingToken = closing ? (q.side === "X" ? closing.amountY + closing.feeY : closing.amountX + closing.feeX) : 0;
+  const closingSol = closing ? closing.valueInSol : 0;
+  const walletQuote = (o.wallet.quote ?? (quoteIsSol ? o.wallet.sol : 0)) + closingQuote;
+  const heldToken = o.wallet.token + closingToken;
+  const otherSeats = Math.max(0, o.portfolio.maxActivePools - o.portfolio.poolsWithBands - 1);
+  const rentBudget = openCost * otherSeats;
+  let fundable = walletQuote * WALLET_SHARE;
+  if (quoteIsSol) fundable = Math.min(fundable, o.wallet.sol + (closing?.solInPosition ?? 0) - limits.gasReserveSol - openCost - rentBudget);
+  const heldValue = heldToken * p;
+  const walletCap = fundable >= heldValue ? (2 * (fundable + heldValue * (1 + slip))) / (2 + slip) : 2 * fundable;
+  const effectiveMaxSol = Math.min(limits.maxPositionSol, o.engine?.effectiveMaxPositionSol ?? limits.maxPositionSol);
+  const thisPoolExposure = o.positions.reduce((t, pp) => t + pp.valueInSol, 0);
+  const roomSol = limits.maxTotalExposureSol - o.portfolio.otherExposureSol - thisPoolExposure + closingSol;
+  const caps: { name: string; quote: number }[] = [
+    { name: `max band ${r(effectiveMaxSol)} SOL`, quote: effectiveMaxSol / q.priceInSol },
+    { name: `the wallet's ${r(walletQuote, quoteIsSol ? 4 : 2)} ${q.symbol} and ${r(heldToken, 4)} ${s.baseToken.symbol} (95%, the token half bought at ${limits.maxSlippagePct}% slippage${quoteIsSol ? `, after rent, the ${limits.gasReserveSol} SOL gas reserve and ${r(rentBudget, 3)} SOL of rent kept for ${otherSeats} more seat(s)` : ""})`, quote: Math.max(0, walletCap) },
+    { name: `half the band's depth on both sides (${r(depthQuote, 2)} ${q.symbol})`, quote: depthQuote },
+    { name: `exposure room ${r(roomSol)} SOL`, quote: roomSol / q.priceInSol },
+  ];
+  let none: string | null = null;
+  if (!quoteIsSol && o.wallet.sol - openCost < limits.gasReserveSol) none = `wallet holds ${r(o.wallet.sol)} SOL: rent ~${openCost.toFixed(3)} would breach the ${limits.gasReserveSol} SOL gas reserve`;
+  if (!(p > 0)) none = "no price for the base token";
+  const bound = caps.reduce((acc, c) => (c.quote < acc.quote ? c : acc));
+  const qDec = quoteIsSol ? 4 : 2;
+  const tDec = Math.min(s.baseToken.decimals, 6);
+  const seatQuote = Math.max(0, Math.floor(bound.quote * 10 ** qDec) / 10 ** qDec);
+  const amountQuote = Math.floor((seatQuote / 2) * 10 ** qDec) / 10 ** qDec;
+  const amountToken = p > 0 ? Math.floor((seatQuote / 2 / p) * 10 ** tDec) / 10 ** tDec : 0;
+  const shortfall = amountToken - heldToken;
+  const acquireToken = shortfall > 0 ? Math.min(amountToken, Math.ceil(shortfall * 10 ** tDec) / 10 ** tDec) : 0;
+  const surplusToken = shortfall < 0 ? Math.min(-shortfall, closingToken) : 0;
+  const seatSol = seatQuote * q.priceInSol;
+  const minSeatSol = Math.max(MIN_BAND_SOL, (limits.maxTotalExposureSol * env.minSeatPct) / 100);
+  if (!none && seatSol < minSeatSol) none = `size ${r(seatSol)} SOL (bound by ${bound.name}) is under the minimum seat ${r(minSeatSol)} SOL (${env.minSeatPct}% of the ${limits.maxTotalExposureSol} SOL book)`;
+  if (!none && (amountQuote <= 0 || amountToken <= 0)) none = `a straddle needs both halves: ${r(amountQuote, qDec)} ${q.symbol} + ${r(amountToken, tDec)} ${s.baseToken.symbol}`;
+  const sharePct = shareOfBand(seatQuote, depthQuote) * 100;
+  return { seatQuote, seatSol, amountQuote, amountToken, acquireToken, surplusToken, bins, widthMultiplier, coverage: coveragePct(s.binStep, bins), depthQuote, sharePct, boundBy: bound.name, none };
+}
+
+function straddleParams(sz: StraddleSizing): OpenParams {
+  return { side: "BOTH", amountSol: sz.amountQuote, amountToken: sz.amountToken, binsBelowActive: sz.bins, binsAboveActive: sz.bins, strategy: "Spot", acquireToken: sz.acquireToken };
+}
+
+/** "x2 for the closed US session" when a stock pool's band was widened, else nothing. */
+const straddleWidthClause = (sz: StraddleSizing, o: Observation): string => (sz.widthMultiplier !== 1 ? ` (x${sz.widthMultiplier} for the ${o.engine?.basis?.session ?? "current"} US session)` : "");
+
+/** "buying 1.51 SPYx (wallet holds 0)" / "selling 0.2 SPYx of the 1.7 coming back" / "the wallet already holds the token half" */
+function legClause(sz: StraddleSizing, o: Observation, closing: PositionSnapshot | null, q: QuoteView): string {
+  const sym = o.snapshot.baseToken.symbol;
+  const tDec = Math.min(o.snapshot.baseToken.decimals, 6);
+  const closingToken = closing ? (q.side === "X" ? closing.amountY + closing.feeY : closing.amountX + closing.feeX) : 0;
+  if (sz.acquireToken > 0) return `buying ${r(sz.acquireToken, tDec)} ${sym} first (the wallet holds ${r(o.wallet.token, tDec)}${closing ? `, the closing band returns ${r(closingToken, tDec)}` : ""})`;
+  if (sz.surplusToken > 0) return `selling ${r(sz.surplusToken, tDec)} ${sym} of the ${r(closingToken, tDec)} the closing band returns`;
+  return `the wallet already holds the ${sym} half`;
+}
+
+const perpClause = (o: Observation): string => (o.engine?.basis?.perpSymbol ? `The ${o.snapshot.baseToken.symbol} half is hedged short on Backpack ${o.engine.basis.perpSymbol}.` : `No Backpack perp is listed for ${o.snapshot.baseToken.symbol}: the token half runs unhedged.`);
+
 /** Bins a quote-only band spans: the active bin plus `bins` past it on Meteora; `bins` strictly past it on a CLMM (src/tools/bins.ts). */
 const bandBins = (o: Pick<Observation, "snapshot">, bins: number): number => (o.snapshot.priceModel === "clmm" ? bins : bins + 1);
 /** where the band starts: the active bin on Meteora, the bin next to it on a CLMM */
@@ -266,6 +402,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
 
   // ---- a band is open in this pool -------------------------------------------------------------
   const band = [...o.positions].sort((a, b) => b.valueInSol - a.valueInSol)[0];
+  if (band && isStockPool(o)) return stockBandDecide(o, x, env, q, band, now);
   if (band) {
     const addr = band.address.slice(0, 6);
     const range = `[${band.lowerBinId}, ${band.upperBinId}]`;
@@ -397,15 +534,36 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       `1h move ${pct(hot.priceChange1hPct)} outside +/-${POLICY_MAX_1H_MOVE_PCT}%`,
     );
   }
-  const sz = sizeBand(o, x, q, env, null, now);
-  if (sz.none) {
-    return hold(`No band in ${o.poolLabel} (${priceLine}); ${poolClause(o, hot)}. No size: ${sz.none}.`, "No size for a band here. Holding.", "no-size", sz.none);
-  }
   const worth = isHotPick
     ? `hot pick (heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}${hot.surge ? ", surge" : ""}${score !== null ? `, screen score ${r(score, 1)}` : ""})`
     : scoreOk
       ? `screen score ${r(score!, 1)} above ${env.minScore}`
       : `stock book: ${o.screen?.stock ? `${o.screen.stock.ticker} (${o.screen.stock.issuer})` : "tokenized stock"}${score !== null ? `, screen score ${r(score, 1)}` : ""}`;
+  // A stock pool gets a straddle, whatever made it worth a band.
+  if (isStockPool(o)) {
+    const sz = sizeStraddle(o, x, q, env, null, now);
+    if (sz.none) {
+      return hold(`No band in ${o.poolLabel} (${priceLine}); ${poolClause(o, hot)}. No size for a straddle: ${sz.none}.`, "No size for a straddle here. Holding.", "no-size", sz.none);
+    }
+    const tDec = Math.min(s.baseToken.decimals, 6);
+    const width = 2 * sz.bins + 1;
+    return {
+      decision: {
+        action: "OPEN_POSITION",
+        open: straddleParams(sz),
+        positionAddress: null,
+        reasoning: `${o.poolLabel}: ${worth}; ${poolClause(o, hot)}. ${priceLine[0].toUpperCase() + priceLine.slice(1)}; a ${width}-bin Spot straddle from bin ${s.activeBinId - sz.bins} to ${s.activeBinId + sz.bins} (${sz.bins} bins each side, ${r(sz.coverage, 2)}% of price each way${straddleWidthClause(sz, o)}) against ${r(sz.depthQuote, 2)} ${q.symbol} of depth on both sides. Seat ${r(sz.seatQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} (${r(sz.seatSol)} SOL): ${r(sz.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} + ${r(sz.amountToken, tDec)} ${s.baseToken.symbol}, ${legClause(sz, o, null, q)}; bound by ${sz.boundBy}; our share of the band ${r(sz.sharePct, 1)}%. ${perpClause(o)}`,
+        confidence: isHotPick ? 0.6 : 0.55,
+        headline: clip(`Straddling ${o.poolLabel}: ${r(sz.amountQuote, 2)} ${q.symbol} + ${r(sz.amountToken, 4)} ${s.baseToken.symbol} across ${width} bins. Hedged.`),
+      },
+      reason: `straddle ${r(sz.amountQuote, 2)} ${q.symbol} + ${r(sz.amountToken, tDec)} ${s.baseToken.symbol} across ${width} bins${sz.acquireToken > 0 ? `, buying ${r(sz.acquireToken, tDec)}` : ""} (${worth})`,
+      branch: "open",
+    };
+  }
+  const sz = sizeBand(o, x, q, env, null, now);
+  if (sz.none) {
+    return hold(`No band in ${o.poolLabel} (${priceLine}); ${poolClause(o, hot)}. No size: ${sz.none}.`, "No size for a band here. Holding.", "no-size", sz.none);
+  }
   return {
     decision: {
       action: "OPEN_POSITION",
@@ -417,5 +575,71 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
     },
     reason: `open ${r(sz.amountQuote, 2)} ${q.symbol} across ${bandBins(o, sz.bins)} bins (${worth})`,
     branch: "open",
+  };
+}
+
+/**
+ * A stock pool with a band open: HOLD in range; out of range under the engine minimum is churn;
+ * past it, REBALANCE to a fresh straddle around the new price when the gates allow, else CLOSE
+ * with liquidate so the book returns to the quote.
+ */
+function stockBandDecide(o: Observation, x: PolicyExtras, env: PolicyEnv, q: QuoteView, band: PositionSnapshot, now: number): PolicyResult {
+  const s = o.snapshot;
+  const limits = x.limits;
+  const addr = band.address.slice(0, 6);
+  const range = `[${band.lowerBinId}, ${band.upperBinId}]`;
+  const priceLine = `active bin ${s.activeBinId} at ${s.activePrice.toPrecision(6)} ${s.priceLabel}`;
+  const minSec = o.engine?.minOutOfRangeSec ?? 600;
+  const oor = Math.round(o.engine?.outOfRangeSec?.[band.address] ?? 0);
+  const sym = s.baseToken.symbol;
+  const tDec = Math.min(s.baseToken.decimals, 6);
+  if (band.inRange) {
+    return hold(
+      `Straddle ${addr} covers bins ${range} and the ${priceLine} sits inside it. It ${bandClause(o, band, q)}. In range is where the fees are, in both directions; the ${sym} half is the hedge desk's to cover. Nothing to move.`,
+      "In range. Fees ticking both ways. Nothing to do.",
+      "in-range",
+      `straddle ${addr} in range at bin ${s.activeBinId}`,
+    );
+  }
+  const dist = Math.abs(band.binsFromRange);
+  const where = band.binsFromRange < 0 ? "below" : "above";
+  if (oor < minSec) {
+    return hold(
+      `Price is ${dist} bins ${where} straddle ${addr} ${range} (${priceLine}) and the band ${bandClause(o, band, q)}. Out of range ${oor}s against the engine minimum ${minSec}s: re-centring now is churn.`,
+      `${dist} bins ${where} the straddle, ${oor}s out. Not long enough. Holding.`,
+      "churn-wait",
+      `straddle ${addr} ${where} the price, ${oor}s < ${minSec}s minimum`,
+    );
+  }
+  const gate = openGate(o, limits, now);
+  const sz = gate ? null : sizeStraddle(o, x, q, env, band, now);
+  if (gate || !sz || sz.none) {
+    const why = gate ?? sz!.none!;
+    return {
+      decision: {
+        action: "CLOSE_POSITION",
+        open: null,
+        positionAddress: band.address,
+        liquidate: true,
+        reasoning: `Price is ${dist} bins ${where} straddle ${addr} ${range} (${priceLine}) for ${oor}s, past the ${minSec}s minimum; the band ${bandClause(o, band, q)} and earns nothing there. A fresh straddle is off (${why}), so the band comes off and its ${sym} is sold back to ${q.symbol}.`,
+        confidence: 0.7,
+        headline: clip(`${dist} bins ${where} the straddle for ${oor}s, no re-centre allowed. Off, back to ${q.symbol}.`),
+      },
+      reason: `straddle ${addr} ${where} the price for ${oor}s; re-centre refused: ${why}`,
+      branch: "close",
+    };
+  }
+  const width = 2 * sz.bins + 1;
+  return {
+    decision: {
+      action: "REBALANCE",
+      open: straddleParams(sz),
+      positionAddress: band.address,
+      reasoning: `Price is ${dist} bins ${where} straddle ${addr} ${range} (${priceLine}) for ${oor}s, past the ${minSec}s minimum; the band ${bandClause(o, band, q)} and earns nothing there. Re-centring: close it, then lay ${r(sz.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} + ${r(sz.amountToken, tDec)} ${sym} as a ${width}-bin straddle from bin ${s.activeBinId - sz.bins} to ${s.activeBinId + sz.bins} (${r(sz.coverage, 2)}% of price each way${straddleWidthClause(sz, o)}), ${legClause(sz, o, band, q)}; size bound by ${sz.boundBy}, our share of the band ${r(sz.sharePct, 1)}%. ${perpClause(o)}`,
+      confidence: 0.65,
+      headline: clip(`${dist} bins ${where} the straddle for ${oor}s. Re-centring ${r(sz.amountQuote, 2)} ${q.symbol} + ${r(sz.amountToken, 4)} ${sym} on bin ${s.activeBinId}.`),
+    },
+    reason: `straddle ${addr} ${where} the price for ${oor}s: re-centre ${r(sz.amountQuote, 2)} ${q.symbol} + ${r(sz.amountToken, tDec)} ${sym} across ${width} bins${sz.acquireToken > 0 ? `, buying ${r(sz.acquireToken, tDec)}` : sz.surplusToken > 0 ? `, selling ${r(sz.surplusToken, tDec)}` : ""}`,
+    branch: "rebalance",
   };
 }
