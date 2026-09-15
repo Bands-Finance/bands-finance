@@ -288,6 +288,7 @@ export function markPool(book: PaperBook, s: PoolSnapshot, ctx: MarkContext): Po
     made.lastPrice = s.activePrice;
     made.lastMarkAt = ctx.now;
     made.lastRefStale = s.pair.stale;
+    if (s.pair.refKnown !== undefined) made.lastRefKnown = s.pair.refKnown;
   }
   return book.bands.filter((b) => b.pool === s.address).map((b) => markBand(b, s, ctx).position);
 }

@@ -11,6 +11,8 @@
  *   live        the create transaction's parameters derived offline: the address from the pair alone,
  *               the base factor, the program's constraints, the broadcast gate (no RPC anywhere here)
  *   policy      the pair seat's shape and headline; a band in our own pool
+ *   house       PAIR_HOUSE_MINTS: our own token is always seated (no reference needed), a DENY still wins,
+ *               it takes no PAIR_MAX_POOLS slot and carries no launch-style exit
  *
  * Fixture: GeckoTerminal's top PumpSwap pools, captured 2026-09-14 (the NIKE/SOL row). No network,
  * no disk outside a temp dir, no clock.
@@ -52,7 +54,7 @@ import type { PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
 import type { PairCandidate, PairEnv, PairRow } from "../screener/pair";
 // The SDK and web3 read no config: static imports (a dynamic import would resolve the SDK's ESM source entry).
 import * as sdk from "@meteora-ag/dlmm";
-import { PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
 import BN from "bn.js";
 
 let passed = 0;
@@ -140,7 +142,7 @@ async function main(): Promise<void> {
     assert.deepEqual(pair.pairEnv({}), {
       on: true, minAgeMin: 30, maxAgeHours: 48, minRefLiquidityUsd: 30_000, minVolume24hUsd: 1_000_000, minVolume1hUsd: 100_000, minTurnover: 5,
       maxPools: 1, reserveSeat: true, quote: "SOL", binStep: 100, feeBps: 50, feeBpsFixed: false, feeMenuBps: [25, 50, 100], collectFeeMode: "quote", seatPct: 10, binsEachSide: 2, stopPct: 10, maxHoldMin: 240,
-      live: false, tradeMinUsd: 50, tradeMaxUsd: 5000, pumpswapFeePct: 0.25,
+      live: false, tradeMinUsd: 50, tradeMaxUsd: 5000, pumpswapFeePct: 0.25, houseMints: [], houseSeatPct: 10,
     });
     for (const v of ["false", "no", "0", "yes"]) assert.equal(pair.pairEnv({ PAIR_LANE: v }).on, false, `PAIR_LANE=${v}`);
     assert.equal(pair.pairEnv({ PAIR_LANE: "true" }).on, true);
@@ -778,6 +780,127 @@ async function main(): Promise<void> {
     assert.equal(close.decision.action, "CLOSE_POSITION");
     assert.equal(close.decision.liquidate, true);
     assert.match(close.reason, /the reference row has gone cold/);
+  });
+
+  /* ================= 8. the house token ==================================================== */
+  console.log("\npair lane / the house token");
+  const HOUSE = Keypair.generate().publicKey.toBase58();
+  const henv = env({ houseMints: [HOUSE] });
+  const houseRow = (over: Partial<PairCandidate> = {}): PairCandidate => ({
+    ...good(), address: "curve", baseMint: HOUSE, baseSymbol: "CLAW", name: "CLAW / SOL", venue: "pump-fun", origin: null,
+    ageHours: 0.1, liquidityUsd: 900, vol24hUsd: 40, vol1hUsd: 5, sellShare1h: 0.9, priceChange1hPct: -40, flags: ["new", "dumping"], priceNative: 0.00000001, heat: 0, ...over,
+  });
+  await test("PAIR_HOUSE_MINTS / PAIR_HOUSE_SEAT_PCT: parsed, defaulted; a house mint clears every floor and says so; the lane off still seats nothing", () => {
+    assert.deepEqual(pair.pairEnv({ PAIR_HOUSE_MINTS: " a, b ,a" }).houseMints, ["a", "b"]);
+    assert.deepEqual(pair.pairEnv({}).houseMints, []);
+    assert.equal(pair.pairEnv({}).houseSeatPct, 10);
+    assert.equal(pair.pairEnv({ PAIR_HOUSE_SEAT_PCT: "25" }).houseSeatPct, 25);
+    assert.equal(pair.pairHouseSeatSol(100, env({ houseSeatPct: 25 })), 25);
+    assert.ok(pair.isHouseMint(HOUSE, henv) && !pair.isHouseMint(NIKE, henv) && !pair.isHouseMint(null, henv));
+    const v = pair.pairVerdict(houseRow(), henv);
+    assert.ok(v.ok, "a house mint on the bonding curve, an hour old, dumping, with $900 of liquidity: admitted");
+    assert.equal(v.house, true);
+    assert.equal(v.note, "house token: always seated");
+    assert.equal(v.refLiquidityUsd, 900);
+    const bare = pair.pairVerdict(pair.houseCandidateOf(HOUSE, henv), henv);
+    assert.ok(bare.ok && bare.house && bare.refLiquidityUsd === 0 && bare.ageHours === 0, "no row at all: still admitted");
+    assert.ok(!pair.pairVerdict(houseRow(), env()).ok, "the same row without the house list is refused");
+    assert.match((pair.pairVerdict(houseRow(), env({ houseMints: [HOUSE], on: false })) as { reason: string }).reason, /the pair lane is off/);
+  });
+  await test("pairSeats: the house token is seated first, with or without a row, never counted against PAIR_MAX_POOLS; a DENY still wins", () => {
+    const rows = [cand({ address: "a", baseMint: "mA", vol1hUsd: 900_000 })];
+    const opts = seatOpts({ env: henv, freeSeats: 3 });
+    assert.deepEqual(pair.pairSeats(rows, opts).map((s) => [s.address, !!s.house]), [["pair-" + HOUSE, true], ["pair-mA", false]], "the house seat first, then the ordinary pick");
+    assert.deepEqual(pair.pairSeats(rows, seatOpts({ env: henv, freeSeats: 3, poolsTaken: 1 })).map((s) => s.address), ["pair-" + HOUSE], "PAIR_MAX_POOLS is full: the house token is seated anyway, the ordinary pick is not");
+    assert.deepEqual(pair.pairSeats([...rows, houseRow()], seatOpts({ env: henv, freeSeats: 3, poolsTaken: 1 })).map((s) => s.row.address), ["curve"], "with a row for the mint, that row is the seat's reference");
+    assert.deepEqual(pair.pairSeats(rows, seatOpts({ env: henv, freeSeats: 1 })).map((s) => s.address), ["pair-" + HOUSE], "the book's room still binds: one seat, the house takes it");
+    assert.deepEqual(pair.pairSeats(rows, seatOpts({ env: henv, freeSeats: 3, hasPool: (a) => a === "pair-" + HOUSE })).map((s) => s.address), ["pair-mA"], "already picked: not seated twice");
+    assert.deepEqual(pair.pairSeats(rows, seatOpts({ env: henv, freeSeats: 3, hasToken: (m) => m === HOUSE })).map((s) => s.address), ["pair-mA"], "one seat per token");
+    const w = denyToken(emptyWatchlist(), HOUSE);
+    const denied = (r: PairCandidate) => watchlistDenial({ address: r.address, baseSymbol: r.baseSymbol, baseMint: r.baseMint, name: r.name }, w);
+    assert.deepEqual(pair.pairSeats(rows, seatOpts({ env: henv, freeSeats: 3, denied })).map((s) => s.address), ["pair-mA"], "a DENY on the mint wins");
+    assert.deepEqual(pair.pairHouseSeats(rows, { env: henv, freeSeats: 3, quoteOk: () => true, denied }), []);
+    assert.deepEqual(pair.pairHouseSeats(rows, { env: henv, freeSeats: 3, quoteOk: () => false }), [], "the wallet cannot fund the quote");
+    assert.equal(pair.pairCandidatesOf([hotRowOf({ address: "curve", baseMint: HOUSE, venue: "pump-fun", origin: null })], [HOUSE]).length, 1, "a house row is a candidate whatever its venue");
+    assert.equal(pair.pairCandidatesOf([hotRowOf({ address: "curve", baseMint: HOUSE, venue: "pump-fun", origin: null })]).length, 0);
+  });
+  await test("the venue: a house pool prices from any row (the bonding curve), then from the board, then throws; the model reads n/a without a reference; the policy opens, re-centres and never expires it", async () => {
+    venue.clearPairCaches();
+    const hbook = paper.emptyBook(100, 0, NOW);
+    let hhot: HotFile | null = hotFileOf([hotRowOf({ address: "curve", baseMint: HOUSE, baseSymbol: "CLAW", name: "CLAW / SOL", venue: "pump-fun", origin: null, liquidityUsd: 900, vol24hUsd: 40, vol1hUsd: 5, priceNative: 0.00000002 })]);
+    let hboard: { address: string; venue: string; baseMint: string; quoteSymbol: string; liquidityUsd: number | null; priceUsd?: number | null }[] = [];
+    const hv = venue.createPairVenue({
+      paper: () => hbook, created: () => ({}), seatSol: () => 10, solPriceUsd: () => 100, screenRows: () => hboard,
+      ourBins: (address, activeBinId, binsEachSide, spec) => paper.paperBinRows(hbook, address, activeBinId, binsEachSide, { binStep: spec.binStep, xDecimals: spec.decimals, yDecimals: spec.quoteDecimals }),
+      env: () => henv, hot: () => hhot, accountExists: async () => false, mintDecimals: async () => 6, now: () => clock,
+    });
+    const HKEY = "pair-" + HOUSE;
+    const hpool = await hv.loadPool(fakeConnection, HKEY);
+    assert.equal(hpool.pair.house, true);
+    assert.equal(hpool.pair.symbol, "CLAW");
+    const h0 = await hv.snapshot(hpool, 10, { solPriceUsd: 100 });
+    assert.equal(h0.pair!.house, true);
+    assert.equal(h0.pair!.refKnown, true, "the bonding-curve row is the reference");
+    assert.equal(h0.pair!.refVenue, "pump-fun");
+    assert.equal(h0.pair!.stale, false);
+    near(h0.activePrice, 0.00000002, 0.005);
+    // the policy makes the pool: no payback test for a house token, the seat is PAIR_HOUSE_SEAT_PCT
+    const ho = (snap: PoolSnapshot, positions: PositionSnapshot[], oor: Record<string, number> = {}): Observation => ({
+      ...observe(snap, positions, 0, oor),
+      wallet: { address: "w", sol: hbook.wallet.sol, token: 0, tokenSymbol: "CLAW", quote: hbook.wallet.sol, quoteSymbol: "SOL" },
+      screen: { ...observe(snap, positions).screen!, pair: { ok: true, ageHours: 0, turnover: 0 } },
+    });
+    const r0 = policy.policyDecide(ho(h0, []), { limits, now: clock, openCostSol: hv.openCostSol(h0).total, pair: henv, launch: launch.launchEnv({}) });
+    assert.equal(r0.decision.action, "OPEN_POSITION", r0.reason);
+    assert.equal(r0.decision.open!.amountSol, 5, "half of the 10% house seat on a 100 SOL book");
+    assert.match(r0.decision.reasoning, /house token: CLAW is our own launch, always seated/);
+    assert.match(r0.decision.reasoning, /House token: always seated, capped at 10 SOL \(10% of the 100 SOL book\); the ordinary 15% stop, no maximum hold, no volume-fade exit/);
+    const made = paper.executePaper(verdictOf(r0.decision), { book: hbook, snapshot: h0, positions: [], slippagePct: 0.3, now: clock, openCost: hv.openCostSol(h0) });
+    assert.ok(made.ok, made.notes.join("; "));
+    assert.equal(hbook.pairPools![HKEY].house, true);
+    // the row disappears: the pool prices at the last price, the model reads n/a, nothing accrues, and the policy does not close
+    hhot = hotFileOf([]);
+    clock += 10 * M;
+    const h1 = await hv.snapshot(hpool, 10, { solPriceUsd: 100 });
+    assert.equal(h1.pair!.stale, true);
+    assert.equal(h1.pair!.refKnown, false);
+    assert.equal(h1.pair!.feesPerDayUsd, 0);
+    const hp1 = paper.markPool(hbook, h1, { now: clock, fees: null, solPriceUsd: 100 });
+    assert.equal(hbook.bands[0].feeQuote, 0, "nothing accrues without a reference");
+    assert.equal(hbook.pairPools![HKEY].lastRefKnown, false);
+    const hold = policy.policyDecide(ho(h1, hp1), { limits, now: clock, pair: henv });
+    assert.equal(hold.decision.action, "HOLD");
+    assert.match(hold.decision.reasoning, /No reference row right now; a house pool stays up/);
+    const ro = policy.policyDecide(ho({ ...h1, pair: { ...h1.pair!, exists: true, ours: true, creationRentSol: 0 } }, []), { limits, now: clock, openCostSol: dlmm.OPEN_COST_ESTIMATE_SOL, pair: henv, launch: launch.launchEnv({}) });
+    assert.equal(ro.decision.action, "OPEN_POSITION", "no reference at all: the seat is still taken (share n/a)");
+    assert.match(ro.decision.reasoning, /no reference pool for the mint yet, so the share is n\/a/);
+    // no launch-style exit: without a launch context the engine has nothing to expire, whatever the age or the fade
+    const state = emptyState("2026-09-14");
+    state.entryValueSol = { [hbook.bands[0].address]: hbook.bands[0].entryValueSol };
+    const cfg = { outOfRangeSec: 120, knifePct: 20, circuitFloorSol: 0.05, portfolioFloorSol: 0.15, collectMinSol: 0.005, collectFloorSol: 0.001, collectMaxPerDay: 30, skim: false, floatTargetSol: 1, treasuryAddress: "", expectedWallet: "" };
+    assert.equal(engineDirective({ now: NOW + 999 * M, snapshot: h1, positions: hp1, state, engine: emptyEngineState(), cfg, limits, collectsToday: 0 }), null, "no EXPIRE for a house pool");
+    // out of range with the reference gone: a house pool re-centres instead of closing
+    const far = { ...h1, activeBinId: h1.activeBinId + 9, activePrice: h1.activePrice * 1.09, tokenPriceInQuote: h1.activePrice * 1.09, tokenPriceInSol: h1.activePrice * 1.09 };
+    const hpFar = paper.markPool(hbook, far, { now: clock, fees: null, solPriceUsd: 100 });
+    const re = policy.policyDecide(ho(far, hpFar, { [hbook.bands[0].address]: 700 }), { limits, now: clock, openCostSol: dlmm.OPEN_COST_ESTIMATE_SOL, pair: henv });
+    assert.equal(re.decision.action, "REBALANCE", re.reason);
+    // the report says HOUSE TOKEN and routed n/a
+    const text = paper.renderPaperReport(paper.paperSummary(hbook, [], clock));
+    assert.match(text, /HOUSE TOKEN  1\.00%\/bin fee 1\.00%.*routed n\/a \(no reference yet\)/);
+    assert.doesNotMatch(text, /REFERENCE GONE/, "a house pool is never 'gone'");
+    // a fresh venue with no row and nothing remembered: the board's price is the last resort, then nothing
+    venue.clearPairCaches();
+    hboard = [{ address: "board", venue: "meteora-dlmm", baseMint: HOUSE, quoteSymbol: "SOL", liquidityUsd: 100, priceUsd: 0.003 }];
+    const hv2 = venue.createPairVenue({ paper: () => hbook, created: () => ({}), seatSol: () => 10, solPriceUsd: () => 100, screenRows: () => hboard, env: () => henv, hot: () => hhot, accountExists: async () => false, mintDecimals: async () => 6, now: () => clock });
+    const hp2 = await hv2.loadPool(fakeConnection, HKEY);
+    const h2 = await hv2.snapshot(hp2, 10, { solPriceUsd: 100 });
+    near(h2.activePrice, 0.00003, 0.005, "the board's $0.003 at $100 per SOL");
+    assert.equal(h2.pair!.refKnown, false);
+    venue.clearPairCaches();
+    hboard = [];
+    const hv3 = venue.createPairVenue({ paper: () => hbook, created: () => ({}), seatSol: () => 10, solPriceUsd: () => 100, screenRows: () => hboard, env: () => henv, hot: () => hhot, accountExists: async () => false, mintDecimals: async () => 6, now: () => clock });
+    const hp3 = await hv3.loadPool(fakeConnection, HKEY);
+    await assert.rejects(() => hv3.snapshot(hp3, 10, { solPriceUsd: 100 }), /a house token still needs a price to open at/);
   });
 
   fs.rmSync(tmp, { recursive: true, force: true });

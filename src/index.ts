@@ -32,6 +32,15 @@
  * picked LAST, after the launch lane, one pool at a time, and its band carries the launch lane's
  * exits with the pair's stop and hold.
  *
+ * The STOCK PAIR lane (src/screener/pairStock.ts): the focus. For each tokenized stock the lane admits
+ * on the board (the ticker's deepest pool as the reference, its volume summed over its pools) the desk
+ * makes a STOCKx/SOL pool on Meteora DLMM through the same pair venue (key pair-<mint>), priced from
+ * the Backpack perp mid, and seats a two-sided straddle in it, hedged on Backpack where a perp is
+ * listed. It is picked RIGHT AFTER held and pinned pools, before every ordinary lane, up to
+ * PAIR_STOCK_MAX_POOLS with PAIR_STOCK_RESERVE_SEATS kept from ordinary picks. Its exits are the
+ * ordinary stop, the cost-based re-centre and the stock policy's own closes, plus one guard: the
+ * reference off the board for PAIR_STOCK_REF_GONE_CYCLES cycles closes and liquidates.
+ *
  * The stock book: a stock pool's band is a straddle (src/agent/policy.ts) whose token half the hedge
  * desk (src/engine/hedgeDesk.ts) carries short on Backpack's perp after every execution; the perp
  * mids of the symbols in play are refreshed once per cycle, and an engine close in a stock pool
@@ -54,8 +63,10 @@ import { appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool }
 import { loadScreen, runScreen, tradableVenue } from "./screener";
 import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
-import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairLaunchEnv, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict } from "./screener/pair";
-import { createPairVenue, hotRowForPool } from "./venues/pair";
+import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairHouseSeats, pairHouseSeatSol, pairLaunchEnv, pairMintOf, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict } from "./screener/pair";
+import { createPairVenue, hotRowForPool, isPairPool as isPairVenuePool } from "./venues/pair";
+import { pairStockCandidateFor, pairStockCandidatesOf, pairStockEnv, pairStockReserve, pairStockSeats, pairStockSeatSol, chooseStockFeeBps, stockPairModel, type PairStockCandidate } from "./screener/pairStock";
+import { stockBinsPerSide } from "./agent/policy";
 import { loadHotFileCached } from "./hot/store";
 import type { ScreenResult } from "./screener/types";
 import { KNOWN_TOKENS, PoolSnapshot, PositionSnapshot, quoteOf, QuotePriceUnknownError, setSolPriceUsd, UnsupportedQuoteError } from "./tools/dlmm";
@@ -63,7 +74,7 @@ import { bookEnv, isTradableVenue, liveVenues, loadVenuePool, poolsWithPositions
 import { fetchPoolAnalytics } from "./tools/lpagent";
 import { Wallet } from "./tools/wallet";
 import { startServer } from "./server";
-import { basisForPool, basisVerdict, refreshBasis, sessionClock, sessionWidthMultiplier } from "./basis";
+import { basisForPool, basisForTicker, basisVerdict, refreshBasis, sessionClock, sessionWidthMultiplier, type BasisRow } from "./basis";
 import { hotPicks, HotRow, launchRowOf, loadHot, runHotTick, startHotWatch } from "./hot";
 import {
   circuitLossSol,
@@ -83,7 +94,7 @@ import { engineDirective } from "./engine/directives";
 import { forgetBand, knifeReason, moveAfterSec, outOfRangeSec, rangeOverWindowPct, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
 import { collectsOnDay, dayOf, readLedgerRows, realizedOnDaySol, workingSol } from "./engine/ledger";
 import { acquireLock, heartbeat, releaseLock, startWatchdog } from "./engine/watchdog";
-import { assertPaperEnv, emptyBook, loadPaperBook, markPool, paperBinRows, paperEnabled, paperEnv, paperHedgeEquityUsd, paperPoolTokenInventory, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
+import { assertPaperEnv, bandsInPool, emptyBook, loadPaperBook, markPool, paperBinRows, paperEnabled, paperEnv, paperHedgeEquityUsd, paperPoolTokenInventory, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
 import { backpack, tickerOfXstock } from "./tools/backpack";
 import { baseInventoryOf } from "./engine/hedge";
 import { runHedgeDesk } from "./engine/hedgeDesk";
@@ -162,6 +173,10 @@ function banner(app: App): void {
   const hedgeGate = backpack().canTrade();
   console.log(`stocks    straddles (BOTH, half quote half token, STOCK_COVER_PCT=${policyEnv().stockCoverPct}% each side x session width); token half hedged short on Backpack: ${app.paper ? "PAPER (virtual fills at the perp mid, funding accrued)" : hedgeGate.ok ? "LIVE post-only orders" : `plan only (${hedgeGate.reason})`}; swaps via Jupiter (${app.paper ? "paper fills" : config.dryRun ? "built + simulated" : "broadcast"})`);
   {
+    const se = pairStockEnv();
+    console.log(
+      `stocks/SOL ${se.on ? `stock pair lane ON (the focus): make our own STOCKx/SOL pool on Meteora for ${se.tickers ? se.tickers.join(", ") : "every xStock on the board"} whose reference holds >= $${se.minRefLiquidityUsd.toLocaleString("en-US")} and whose pools trade >= $${se.minVolume24hUsd.toLocaleString("en-US")} a day; ${se.binStep / 100}%/bin, fee ${se.feeBpsFixed ? `${se.feeBps / 100}%` : `chosen per pool from ${se.feeMenuBps.map((f) => `${f / 100}%`).join("/")}`}, fees in ${se.collectFeeMode === "both" ? "both tokens" : "SOL only"}, seat ${se.seatPct}% of the book as a hedged straddle, max ${se.maxPools} pool(s), ${se.reserveSeats} seat(s) reserved; picked right after held and pinned pools; closes when the reference is off the board ${se.refGoneCycles} cycles` : "stock pair lane off"}`,
+    );
     const pe = pairEnv();
     console.log(`pairs     ${pe.on ? `pair lane ON: make our own Meteora pool for a pump.fun token that clears it (ref liquidity >= $${pe.minRefLiquidityUsd.toLocaleString("en-US")}, 24h >= $${pe.minVolume24hUsd.toLocaleString("en-US")}, 1h >= $${pe.minVolume1hUsd.toLocaleString("en-US")}, turnover >= ${pe.minTurnover}x); ${pe.quote} quote, ${pe.binStep / 100}%/bin, fee ${pe.feeBpsFixed ? `${pe.feeBps / 100}%` : `chosen per pool from ${pe.feeMenuBps.map((f) => `${f / 100}%`).join("/")}`}, seat ${pe.seatPct}% of the book, ${pe.binsEachSide} bins each side, max ${pe.maxPools} pool(s); creation ${app.paper ? "PAPER (virtual pool)" : config.dryRun ? "built + simulated, not sent" : pe.live ? "LIVE" : "built + simulated (PAIR_LIVE is not true)"}` : "pair lane off"}`);
   }
@@ -280,6 +295,48 @@ function fundableQuotes(app: App, sol: number, usdc: number): Set<"SOL" | "USDC"
   return out;
 }
 
+/** The stock pair lane's candidates: the board grouped by ticker, with the hot watch's last-hour volume where it has one. */
+function stockCandidatesOf(app: App): PairStockCandidate[] {
+  return pairStockCandidatesOf(app.screen?.pools ?? [], loadHot()?.rows ?? []);
+}
+
+/** The straddle's bins per side at a stock pair's bin step: a band already open sets its own; else STOCK_COVER_PCT x the US session's width. */
+function stockPairBinsPerSide(app: App, binStep: number, address: string): number {
+  const open = app.paper ? bandsInPool(app.paper, address) : [];
+  const widest = open.reduce((w, b) => Math.max(w, Math.floor((b.upperBinId - b.lowerBinId) / 2)), 0);
+  if (widest > 0) return widest;
+  return stockBinsPerSide(binStep, policyEnv().stockCoverPct, riskLimits.maxBinWidth, sessionWidthMultiplier(sessionClock()));
+}
+
+/** A pair key of the STOCK lane: the loaded spec says so, else the paper book or the state's record, else the board carries the mint as a stock. */
+function isStockPairKey(app: App, address: string): boolean {
+  if (!isPairAddress(address)) return false;
+  const loaded = app.pools.get(address)?.pool;
+  if (loaded && isPairVenuePool(loaded)) return !!loaded.pair.stock;
+  if (app.paper?.pairPools?.[address]?.stock) return true;
+  if (loadState().pairPools?.[address]?.stock) return true;
+  const mint = pairMintOf(address);
+  return !!mint && pairStockCandidateFor(stockCandidatesOf(app), mint) !== null;
+}
+
+/** The Backpack perp mid for a ticker in USD: this cycle's refresh, else basis.json's; null when none is listed. */
+function perpMidForTicker(app: App, ticker: string): number | null {
+  const row = basisForTicker(ticker);
+  if (!row?.perpSymbol) return null;
+  return app.perpMarks.get(row.perpSymbol)?.mid ?? row.perpMid ?? null;
+}
+
+/** The basis row a pool reads: its own (a board pool), else its ticker's (a stock pair of ours is never on the board). */
+function basisRowFor(address: string, snapshot?: PoolSnapshot | null): BasisRow | null {
+  const own = basisForPool(address);
+  if (own) return own;
+  const ticker = snapshot?.pair?.stock?.ticker;
+  return ticker ? basisForTicker(ticker) : null;
+}
+
+/** The seat the stock model sizes for, in SOL: the lane's cap or the max band, whichever binds first. */
+const stockSeatSol = (): number => Math.min(pairStockSeatSol(riskLimits.maxTotalExposureSol, pairStockEnv()), riskLimits.maxPositionSol);
+
 function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">): string[] {
   const set = new Set<string>([...config.pinnedPools, ...withPositions]);
   // One seat per base token. Two pools of the same token move together, so a second seat is
@@ -287,7 +344,8 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const byAddress = new Map((app.screen?.pools ?? []).map((p) => [p.address, p] as const));
   const takenTokens = new Set<string>();
   for (const a of set) {
-    const t = byAddress.get(a)?.baseMint;
+    // a made pair's key names its mint: the token's seat is taken by our own pool
+    const t = byAddress.get(a)?.baseMint ?? pairMintOf(a);
     if (t) takenTokens.add(t);
   }
   const take = (address: string, baseMint: string | undefined): boolean => {
@@ -303,7 +361,11 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const laneBands = loadState().launchBands ?? {};
   const pairsHeld = new Set(Object.values(laneBands).map((b) => b.pool).filter(isPairAddress));
   const reserve = penv.on && penv.reserveSeat && pairsHeld.size < penv.maxPools ? 1 : 0;
-  const ordinaryCap = Math.max(set.size, config.maxActivePools - reserve);
+  // The stock pair lane keeps PAIR_STOCK_RESERVE_SEATS while it holds fewer stock pools than that.
+  const senv = pairStockEnv();
+  const stockPairsHeld = withPositions.filter((a) => isStockPairKey(app, a));
+  const stockReserve = pairStockReserve(senv, stockPairsHeld.length);
+  const ordinaryCap = Math.max(set.size, config.maxActivePools - reserve - stockReserve);
   // The operator's list decides what the desk may put money into; the screener only finds it.
   // Pinned pools and pools already holding a band are added above, so a band can always be managed out.
   const watch = loadWatchlist();
@@ -311,6 +373,67 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0 && funds.has("USDC");
   const quoteOk = (q: string) => (q === "SOL" && funds.has("SOL")) || (q === "USDC" && usdcOk);
   if (funds.size === 0) console.log(`[cycle ${app.cycle}] the wallet cannot fund a seat at the minimum in SOL or USDC; only held and pinned pools are worked`);
+
+  // THE HOUSE TOKEN (PAIR_HOUSE_MINTS): our own launch's pool, right after held and pinned pools, always,
+  // whatever the hot watch says about it; only a watchlist DENY keeps it out. Never counted against PAIR_MAX_POOLS.
+  if (penv.on && penv.houseMints.length && set.size < config.maxActivePools) {
+    const rows = pairCandidatesOf(loadHotFileCached()?.rows ?? [], penv.houseMints);
+    for (const seat of pairHouseSeats(rows, {
+      env: penv,
+      freeSeats: config.maxActivePools - set.size,
+      quoteOk,
+      denied: (row) => watchlistDenial({ address: row.address, baseSymbol: row.baseSymbol, baseMint: row.baseMint, name: row.name }, watch),
+      hasPool: (address) => set.has(address),
+      hasToken: (mint) => takenTokens.has(mint),
+    })) {
+      if (!take(seat.address, seat.row.baseMint)) continue;
+      console.log(
+        `[cycle ${app.cycle}] pair lane: house token ${seat.row.baseSymbol} (${seat.row.baseMint.slice(0, 6)}): ${seat.verdict.note ?? "always seated"}; making ${seat.row.baseSymbol}/${penv.quote}` +
+          `${seat.row.address ? ` from its ${seat.row.venue} pool ${seat.row.address.slice(0, 6)} ($${Math.round(seat.row.liquidityUsd ?? 0).toLocaleString("en-US")} liquidity, $${Math.round(seat.row.vol24hUsd ?? 0).toLocaleString("en-US")} in 24h)` : " with no reference pool yet (the model reads n/a until one exists)"}; ` +
+          `seat ${pairHouseSeatSol(riskLimits.maxTotalExposureSol, penv).toFixed(4)} SOL, ${penv.binStep / 100}%/bin; the ordinary ${riskLimits.stopLossPct}% stop, no maximum hold, no fade exit`,
+      );
+    }
+  }
+
+  // The STOCK PAIR lane, FIRST after held and pinned pools (it is the focus): for each tokenized stock
+  // the lane admits, a STOCKx/SOL pool of OUR OWN (key pair-<mint>), best by the stock routing model
+  // first, up to PAIR_STOCK_MAX_POOLS counting the ones held, one per ticker. Other pools never refuse
+  // it; the existing SOL-quoted ones only split the routed flow with us as competing depth.
+  if (senv.on && set.size < config.maxActivePools) {
+    const px = solPriceOf(app);
+    const seatUsd = px ? stockSeatSol() * px : 0;
+    const seats = pairStockSeats(stockCandidatesOf(app), {
+      env: senv,
+      freeSeats: config.maxActivePools - set.size,
+      poolsTaken: stockPairsHeld.length,
+      quoteOk: () => quoteOk("SOL"),
+      denied: (c) => watchlistDenial({ address: c.reference.address, baseSymbol: c.symbol, baseMint: c.mint, name: c.name }, watch),
+      hasPool: (address) => set.has(address),
+      hasToken: (mint) => takenTokens.has(mint),
+      // best first by the model at this seat with the fee it would pick; a ticker the model routes nothing to is skipped
+      worth: (c) => {
+        if (!(seatUsd > 0)) return c.vol24hUsd ?? 0;
+        const ref = { liquidityUsd: c.refLiquidityUsd, vol24hUsd: c.vol24hUsd, vol1hUsd: c.vol1hUsd, refFeePct: c.refFeePct, refQuoteIsSol: c.refQuoteIsSol };
+        const bins = stockPairBinsPerSide(app, senv.binStep, pairPoolAddress(c.mint));
+        return stockPairModel(ref, senv, seatUsd, bins, c.competingDepthUsd, { feeBps: chooseStockFeeBps(ref, senv, seatUsd, bins) }).feesPerDayUsd;
+      },
+    });
+    if (seats.length === 0 && !quoteOk("SOL")) {
+      const clears = stockCandidatesOf(app).filter((c) => pairStockSeats([c], { env: senv, freeSeats: 1, quoteOk: () => true }).length > 0);
+      if (clears.length) console.log(`[cycle ${app.cycle}] stock pair lane: ${clears.map((c) => c.ticker).join(", ")} clear${clears.length === 1 ? "s" : ""} the lane, but the wallet cannot fund a SOL seat at the minimum`);
+    }
+    for (const seat of seats) {
+      if (!take(seat.address, seat.candidate.mint)) continue;
+      const c = seat.candidate;
+      const v = seat.verdict;
+      console.log(
+        `[cycle ${app.cycle}] stock pair lane: making ${c.symbol}/SOL for ${c.ticker} (${c.issuer}); reference ${c.reference.venue} ${c.symbol}/${c.reference.quoteSymbol} (${c.reference.address.slice(0, 6)}) with $${Math.round(v.refLiquidityUsd).toLocaleString("en-US")} of liquidity at ${v.refFeePct}% fee, ` +
+          `$${Math.round(v.vol24hUsd).toLocaleString("en-US")} traded in 24h across ${c.pools.length} pool(s)${c.vol1hUsd !== null ? `, $${Math.round(c.vol1hUsd).toLocaleString("en-US")} in the last hour` : ""}` +
+          `${v.competingDepthUsd > 0 ? `, $${Math.round(v.competingDepthUsd).toLocaleString("en-US")} of competing SOL-quoted depth in ${v.competitors.length} pool(s)` : ""}; ` +
+          `seat ${stockSeatSol().toFixed(4)} SOL as a straddle, ${senv.binStep / 100}%/bin, fee ${senv.feeBpsFixed ? `${senv.feeBps / 100}%` : `the best of ${senv.feeMenuBps.map((f) => `${f / 100}%`).join("/")} by the model`}${seat.worthUsdPerDay !== null ? `, about $${seat.worthUsdPerDay.toFixed(2)}/day by the model` : ""}; the ordinary ${riskLimits.stopLossPct}% stop, no maximum hold`,
+      );
+    }
+  }
   // The stock book: tokenized stocks first, by fee/TVL, then the rest of the picker.
   if (bookEnv() === "stocks") {
     for (const p of stockBookPools(app.screen?.pools ?? [], usdcOk)) {
@@ -378,7 +501,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     const hot = loadHotFileCached();
     const rows = hot?.rows ?? [];
     const screenRows = (app.screen?.pools ?? []).map((p) => ({ address: p.address, venue: p.venue, baseMint: p.baseMint, quoteSymbol: p.quoteSymbol, liquidityUsd: p.tvlUsd }));
-    const seats = pairSeats(pairCandidatesOf(rows), {
+    const seats = pairSeats(pairCandidatesOf(rows, penv.houseMints), {
       env: penv,
       freeSeats: config.maxActivePools - set.size,
       poolsTaken: pairsHeld.size,
@@ -487,6 +610,31 @@ function launchContext(app: App, address: string, row: HotRow, launch: { ok: tru
  */
 function pairContext(app: App, address: string, snapshot: PoolSnapshot, s: ScreenResult, state?: RiskState): ScreenContext {
   const info = snapshot.pair;
+  if (info?.stock) {
+    // a STOCK pair: the reference is a board row; the context is a stock pool's (the straddle path) AND a pair's (our own pool)
+    const c = pairStockCandidateFor(stockCandidatesOf(app), info.mint);
+    const ref = c?.reference;
+    const turnover = c && c.vol24hUsd !== null && c.refLiquidityUsd ? Math.round((c.vol24hUsd / c.refLiquidityUsd) * 100) / 100 : 0;
+    return {
+      rank: 0,
+      rankedPools: s.rankedPools,
+      score: 0,
+      feeToTvl24hPct: null,
+      volume24hUsd: info.refVol24hUsd ?? c?.vol24hUsd ?? null,
+      tvlUsd: info.refLiquidityUsd ?? c?.refLiquidityUsd ?? null,
+      ageHours: ref?.ageHours ?? info.refAgeHours ?? null,
+      priceChange24hPct: ref?.priceChange24hPct ?? null,
+      flags: [],
+      watchlisted: false,
+      launch: null,
+      pair: { ok: true, ageHours: ref?.ageHours ?? info.refAgeHours ?? 0, turnover },
+      recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
+      generatedAt: s.generatedAt,
+      stock: { ticker: info.stock.ticker, issuer: info.stock.issuer },
+      alternatives: [],
+      hot: hotContext(address),
+    };
+  }
   const row = hotRowForPool(loadHotFileCached(), address);
   const verdict = row ? pairVerdict(pairCandidatesOf([row])[0] ?? { ...row, origin: row.origin }, pairEnv(), null) : null;
   const ageHours = verdict?.ok ? verdict.ageHours : (info?.refAgeHours ?? row?.ageHours ?? 0);
@@ -609,6 +757,7 @@ function updateState(state: RiskState, exec: ExecutionResult, positions: Positio
       lbPair: exec.created.lbPair,
       mint: snapshot.pair.mint,
       symbol: snapshot.pair.symbol,
+      ...(snapshot.pair.stock ? { stock: snapshot.pair.stock } : {}),
       quote: snapshot.pair.quote,
       binStep: snapshot.binStep,
       feeBps: Math.round(snapshot.baseFeePct * 100),
@@ -675,10 +824,18 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // band even in a cycle where the pool no longer clears the lane -- that IS the fade exit.
   // A pair pool carries the launch lane's exits with the pair's stop and hold; its "last hour" is the
   // reference pool's, and a reference row that has gone cold reads as 0 so the fade exit fires.
+  // A STOCK pair carries none of the launch lane's exits (no maximum hold, no volume-fade EXPIRE): the
+  // ordinary stop, the cost-based re-centre, the stock policy's closes and the reference-gone guard apply.
+  // A HOUSE token's pool (PAIR_HOUSE_MINTS) carries none of them either: it is our own token and the pool stays up.
+  const isStockPair = isPair && !!snapshot.pair!.stock;
+  const isHousePair = isPair && !!snapshot.pair!.house;
+  const noLaneExits = isStockPair || isHousePair;
   const lenv = launchEnv();
-  const laneEnv = isPair ? pairLaunchEnv(pairEnv(), lenv) : lenv;
+  const laneEnv = isPair && !noLaneExits ? pairLaunchEnv(pairEnv(), lenv) : lenv;
   const laneVol1h = isPair ? (snapshot.pair!.stale ? 0 : snapshot.pair!.refVol1hUsd) : (hotRowOf(o.address)?.vol1hUsd ?? null);
-  const launchWatch = laneEnv.on ? { env: laneEnv, vol1hUsd: laneVol1h } : null;
+  const launchWatch = laneEnv.on && !noLaneExits ? { env: laneEnv, vol1hUsd: laneVol1h } : null;
+  const senv = pairStockEnv();
+  const pairStockWatch = isStockPair ? { ticker: snapshot.pair!.stock!.ticker, refGoneCycles: snapshot.pair!.refGoneCycles ?? 0, maxCycles: senv.refGoneCycles } : undefined;
   const ledgerRows = readLedgerRows();
   const collectsToday = collectsOnDay(ledgerRows, mode, dayOf(now));
   const knife = knifeReason(state.priceHistory?.[o.address], now, cfg.knifePct);
@@ -691,23 +848,33 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     oorSec[p.address] = outOfRangeSec(state.outOfRangeSince, p.address, now);
   }
   // Stock pools carry a basis row (src/basis): the US session clock and the gap to Backpack's perp.
-  const basisRow = basisForPool(o.address);
+  // A stock pair of ours reads its ticker's row, and its basis is OUR pool's price against the perp
+  // (near zero when the synthetic price is the perp itself; real when the pool exists on chain).
+  const basisRow = basisRowFor(o.address, snapshot);
   const clock = sessionClock();
-  const basisCheck = basisRow ? basisVerdict(basisRow.basisPct ?? null, clock) : null;
+  const perpMidNow = basisRow ? ((basisRow.perpSymbol ? app.perpMarks.get(basisRow.perpSymbol)?.mid : undefined) ?? basisRow.perpMid ?? null) : null;
+  const ownPriceUsd = quoteIsSol ? snapshot.tokenPriceInSol * (solPriceOf(app) ?? 0) : quoteOf(snapshot).tokenPriceInQuote;
+  const basisPctNow = isPair ? (perpMidNow && perpMidNow > 0 && ownPriceUsd > 0 ? (ownPriceUsd / perpMidNow - 1) * 100 : null) : (basisRow?.basisPct ?? null);
+  const basisCheck = basisRow ? basisVerdict(basisPctNow, clock) : null;
   const basisObs: EngineObservation["basis"] = basisRow
     ? {
         session: clock.session,
         minutesToOpen: clock.minutesToOpen,
-        basisPct: basisRow.basisPct ?? null,
+        basisPct: basisPctNow,
         perpSymbol: basisRow.perpSymbol ?? null,
-        perpMid: (basisRow.perpSymbol ? app.perpMarks.get(basisRow.perpSymbol)?.mid : undefined) ?? basisRow.perpMid ?? null,
+        perpMid: perpMidNow,
         widthMultiplier: sessionWidthMultiplier(clock),
         reason: basisCheck && !basisCheck.ok ? basisCheck.reason : null,
       }
     : undefined;
   // How long a band here should sit out of range before moving it pays for itself: the venue's
   // unrecoverable rent plus the swap fees, against what the band earns when it is in range.
-  const poolFeesPerDayUsd = screen?.tvlUsd && screen?.feeToTvl24hPct !== null && screen?.feeToTvl24hPct !== undefined ? (screen.tvlUsd * screen.feeToTvl24hPct) / 100 : null;
+  // (a made pair's fees per day are the routing model's: the pool has no board row)
+  const poolFeesPerDayUsd = isPair
+    ? (snapshot.pair!.feesPerDayUsd > 0 ? snapshot.pair!.feesPerDayUsd : null)
+    : screen?.tvlUsd && screen?.feeToTvl24hPct !== null && screen?.feeToTvl24hPct !== undefined
+      ? (screen.tvlUsd * screen.feeToTvl24hPct) / 100
+      : null;
   // Our share of the quote side of the observed bins, both in QUOTE units (a band's valueInSol
   // converts at the quote's SOL price; liquidityBelowY/AboveX are already in the quote token).
   // Live bins already contain our own liquidity; paper bands are virtual and are not in them.
@@ -715,7 +882,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   const heldQuote = positions.reduce((t, p) => t + p.valueInSol, 0) / Math.max(1e-12, qv.priceInSol);
   const sideDepthQuote = qv.side === "Y" ? snapshot.liquidityBelowY : snapshot.liquidityAboveX;
   const shareDenom = app.paper ? heldQuote + sideDepthQuote : Math.max(sideDepthQuote, heldQuote);
-  const heldShare = positions.length > 0 && snapshot.bins.length > 0 && shareDenom > 0 ? Math.min(0.5, heldQuote / shareDenom) : 0;
+  const heldShare = isPair && snapshot.pair!.ourShare !== null ? (positions.length > 0 ? snapshot.pair!.ourShare : 0) : positions.length > 0 && snapshot.bins.length > 0 && shareDenom > 0 ? Math.min(0.5, heldQuote / shareDenom) : 0;
   const bandFeesPerDayUsd = poolFeesPerDayUsd !== null && heldShare > 0 ? poolFeesPerDayUsd * heldShare * 0.5 : null;
   const cost = o.venue.openCostSol(snapshot);
   const px = solPriceOf(app);
@@ -763,7 +930,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   );
 
   // The engine decides first. When it has a directive the LLM is not asked this cycle.
-  const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined });
+  const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined, pairStock: pairStockWatch });
   // Then an approved outside proposal, oldest first: "agents propose, the operator decides, the desk
   // executes through its own guards". Otherwise Mr Bands proposes.
   const proposal = directive ? null : (approvedProposals(o.address)[0] ?? null);
@@ -833,7 +1000,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     const quoteLeg = quoteIsSol || typeof row.quoteDelta !== "number" ? "" : ` (${row.quoteDelta.toFixed(4)} ${q.symbol})`;
     console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)}${quoteLeg} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
   }
-  updateState(state, execution, positions, snapshot, screen?.launch?.ok || screen?.pair?.ok ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null);
+  updateState(state, execution, positions, snapshot, (screen?.launch?.ok || screen?.pair?.ok) && !noLaneExits ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null);
 
   // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
   let hedgeJournal: JournalHedge | undefined;
@@ -915,9 +1082,13 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
             lbPair: snapshot.pair.lbPair,
             exists: snapshot.pair.exists,
             ours: snapshot.pair.ours,
-            seatCapSol: pairSeatSol(riskLimits.maxTotalExposureSol, pairEnv()),
-            stopPct: laneEnv.stopPct,
-            maxHoldMin: laneEnv.maxHoldMin,
+            seatCapSol: isStockPair ? pairStockSeatSol(riskLimits.maxTotalExposureSol, senv) : isHousePair ? pairHouseSeatSol(riskLimits.maxTotalExposureSol, pairEnv()) : pairSeatSol(riskLimits.maxTotalExposureSol, pairEnv()),
+            stopPct: noLaneExits ? riskLimits.stopLossPct : laneEnv.stopPct,
+            maxHoldMin: noLaneExits ? 0 : laneEnv.maxHoldMin,
+            ...(isHousePair ? { house: true } : {}),
+            ...(isStockPair
+              ? { stock: snapshot.pair.stock ?? null, priceSource: snapshot.pair.priceSource ?? null, refGoneCycles: snapshot.pair.refGoneCycles ?? 0, feesPerDayUsd: snapshot.pair.feesPerDayUsd }
+              : {}),
           },
         }
       : {}),
@@ -1017,7 +1188,13 @@ async function runSkim(app: App): Promise<void> {
 async function refreshPerpMarks(app: App, pools: string[]): Promise<void> {
   const symbols = new Set<string>();
   for (const address of pools) {
-    const sym = basisForPool(address)?.perpSymbol;
+    let sym = basisForPool(address)?.perpSymbol;
+    if (!sym && isStockPairKey(app, address)) {
+      const mint = pairMintOf(address);
+      const c = mint ? pairStockCandidateFor(stockCandidatesOf(app), mint) : null;
+      const ticker = c?.ticker ?? app.paper?.pairPools?.[address]?.stock?.ticker ?? loadState().pairPools?.[address]?.stock?.ticker;
+      sym = ticker ? (basisForTicker(ticker)?.perpSymbol ?? undefined) : undefined;
+    }
     if (sym) symbols.add(sym);
   }
   for (const p of app.paper?.hedge?.positions ?? []) symbols.add(p.symbol);
@@ -1189,11 +1366,16 @@ async function main(): Promise<void> {
     // the seat the model sizes for: the pair's cap or the max band, whichever binds first
     seatSol: () => Math.min(pairSeatSol(riskLimits.maxTotalExposureSol, pairEnv()), riskLimits.maxPositionSol),
     solPriceUsd: () => (appRef ? solPriceOf(appRef) : null),
-    screenRows: () => (appRef?.screen?.pools ?? []).map((p) => ({ address: p.address, venue: p.venue, baseMint: p.baseMint, quoteSymbol: p.quoteSymbol, liquidityUsd: p.tvlUsd })),
+    screenRows: () => (appRef?.screen?.pools ?? []).map((p) => ({ address: p.address, venue: p.venue, baseMint: p.baseMint, quoteSymbol: p.quoteSymbol, liquidityUsd: p.tvlUsd, priceUsd: p.priceUsd })),
     ourBins: (address, activeBinId, binsEachSide, spec) => {
       const book = appRef?.paper ?? paper;
       return book ? paperBinRows(book, address, activeBinId, binsEachSide, { binStep: spec.binStep, xDecimals: spec.decimals, yDecimals: spec.quoteDecimals }) : null;
     },
+    // the STOCK pair lane: the board's candidate for a mint, the perp mid for its ticker, the seat and the straddle's width
+    stockRef: (mint) => (appRef ? pairStockCandidateFor(stockCandidatesOf(appRef), mint) : null),
+    perpMidUsd: (ticker) => (appRef ? perpMidForTicker(appRef, ticker) : null),
+    stockSeatSol,
+    stockBinsPerSide: (binStep, address) => (appRef ? stockPairBinsPerSide(appRef, binStep, address) : stockBinsPerSide(binStep, policyEnv().stockCoverPct, riskLimits.maxBinWidth, sessionWidthMultiplier(sessionClock()))),
   });
   const app: App = {
     connection,

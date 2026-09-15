@@ -36,11 +36,15 @@
     <key>PAPER_SOL</key><string>100</string>
     <key>PAPER_USDC</key><string>10000</string>
     <key>BOOK</key><string>all</string>
-    <key>MAX_ACTIVE_POOLS</key><string>5</string>
+    <!-- Venue focus (Zach, 2026-09-15): opens on Meteora DLMM only. Held Raydium bands keep being managed:
+         discovery covers every adapter venue and the guards gate OPENS only. Six seats: three for the
+         stock pair lane (PAIR_STOCK_MAX_POOLS, two reserved), one for the pump.fun pair lane, the rest ordinary. -->
+    <key>TRADABLE_VENUES</key><string>meteora-dlmm</string>
+    <key>MAX_ACTIVE_POOLS</key><string>6</string>
     <key>MAX_POSITION_SOL</key><string>44</string>
     <key>MAX_TOTAL_EXPOSURE_SOL</key><string>175</string>
     <key>GAS_RESERVE_SOL</key><string>1</string>
-    <key>MAX_TX_PER_DAY</key><string>48</string>
+    <key>MAX_TX_PER_DAY</key><string>240</string>
     <key>CYCLE_INTERVAL_SEC</key><string>300</string>
     <key>SCREEN_INTERVAL_SEC</key><string>1800</string>
     <key>AUTO_DEPLOY</key><string>true</string>

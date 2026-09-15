@@ -2,6 +2,7 @@ import DLMM, { LbPosition, StrategyType } from "@meteora-ag/dlmm";
 import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import BN from "bn.js";
 import { config } from "../config";
+import type { StockTag } from "../screener/types";
 import { binPrice, type BandSide, type PriceModel } from "./bins";
 import type { VenueId } from "../venues/types";
 
@@ -139,6 +140,22 @@ export interface PairSnapshotInfo {
   creationRentSol: number;
   /** the seat the model was sized for, USD */
   seatUsd: number;
+  /** a STOCK pair (src/screener/pairStock.ts): the tokenized stock our pool quotes in SOL; absent on pump.fun pairs */
+  stock?: StockTag | null;
+  /** stock pairs: where the synthetic price came from (the perp mid, the reference pool's USD price, or the last one seen) */
+  priceSource?: "perp" | "reference" | "last" | "pool";
+  /** stock pairs: consecutive snapshots the reference has been off the board (the lane closes at PAIR_STOCK_REF_GONE_CYCLES) */
+  refGoneCycles?: number;
+  /** stock pairs: the reference pool's fee the model priced the two-hop route with, percent */
+  refFeePct?: number;
+  /** stock pairs: fees per day before the split with competing SOL-quoted depth */
+  feesPerDayGrossUsd?: number;
+  /** stock pairs: the bins per side the model priced our depth at */
+  modelBinsPerSide?: number;
+  /** a HOUSE token's pool (PAIR_HOUSE_MINTS, src/screener/pair.ts): always seated, no launch-style exits */
+  house?: boolean;
+  /** false when the model had no reference row to read (a house token before its first pool): share n/a, nothing accrues */
+  refKnown?: boolean;
 }
 
 /** What a CLMM snapshot keeps of the pool's tick state, enough to size a band's rent without the chain. */

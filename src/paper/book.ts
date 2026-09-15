@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { dataPath } from "../lib/ledger";
 import type { PriceModel } from "../tools/bins";
+import type { StockTag } from "../screener/types";
 import { BIN_ARRAY_RENT_SOL, OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, type QuoteSymbol } from "../tools/dlmm";
 import { paperCostToBuy, paperSwap } from "../tools/jupiter";
 import { emptyHedgeBook, normalizeHedgeBook, type PaperHedgeBook } from "./hedge";
@@ -132,10 +133,14 @@ export interface PaperClosed {
   emergency: boolean;
 }
 
-/** A pool the paper desk made for a pump.fun token (the pair lane). The virtual address is pair-<mint>. */
+/** A pool the paper desk made for a pump.fun token or a tokenized stock (the pair lanes). The virtual address is pair-<mint>. */
 export interface PaperPairPool {
   mint: string;
   symbol: string;
+  /** a STOCK pair (src/screener/pairStock.ts): the ticker and issuer; absent on pump.fun pairs */
+  stock?: StockTag | null;
+  /** a HOUSE token's pool (PAIR_HOUSE_MINTS): always seated, no launch-style exits */
+  house?: boolean;
   refPool: string | null;
   refVenue: string | null;
   quote: QuoteSymbol;
@@ -151,6 +156,8 @@ export interface PaperPairPool {
   lastPrice?: number;
   lastMarkAt?: number;
   lastRefStale?: boolean;
+  /** false when the last mark had no reference row to model from (a house token before its first pool) */
+  lastRefKnown?: boolean;
 }
 
 export interface PaperWallet {
@@ -318,6 +325,8 @@ export interface CreatePairPoolInput {
   address: string;
   mint: string;
   symbol: string;
+  stock?: StockTag | null;
+  house?: boolean;
   refPool: string | null;
   refVenue: string | null;
   quote: QuoteSymbol;
@@ -340,7 +349,7 @@ export function createPairPool(book: PaperBook, i: CreatePairPoolInput): PaperPa
   if (book.wallet.sol < i.rentSol) throw new Error(`paper wallet holds ${book.wallet.sol.toFixed(4)} SOL, needs ${i.rentSol.toFixed(4)} to create the pool`);
   book.wallet.sol = r9(book.wallet.sol - i.rentSol);
   book.rentSpentSol = r9(book.rentSpentSol + i.rentSol);
-  const pool: PaperPairPool = { mint: i.mint, symbol: i.symbol, refPool: i.refPool, refVenue: i.refVenue, quote: i.quote, binStep: i.binStep, feeBps: i.feeBps, createdAt: i.now, rentSol: i.rentSol };
+  const pool: PaperPairPool = { mint: i.mint, symbol: i.symbol, ...(i.stock ? { stock: i.stock } : {}), ...(i.house ? { house: true } : {}), refPool: i.refPool, refVenue: i.refVenue, quote: i.quote, binStep: i.binStep, feeBps: i.feeBps, createdAt: i.now, rentSol: i.rentSol };
   (book.pairPools ??= {})[i.address] = pool;
   return pool;
 }
@@ -407,11 +416,17 @@ export function openBand(book: PaperBook, i: OpenBandInput): OpenBandResult {
   const solCost = rentChargedSol + (i.quoteSymbol === "SOL" ? quoteCost : 0);
   if (book.wallet.sol < solCost) throw new Error(`paper wallet holds ${book.wallet.sol.toFixed(4)} SOL, needs ${solCost.toFixed(4)} (deposit, slippage and rent)`);
   if (i.quoteSymbol === "USDC" && book.wallet.usdc < quoteCost) throw new Error(`paper wallet holds ${book.wallet.usdc.toFixed(2)} USDC, needs ${quoteCost.toFixed(2)}`);
-  // 1e-9 of tolerance: a token half that a paper swap just brought in is kept at 9 decimals
-  if (tokenCost > 0 && paperTokenBalance(book, i.tokenMint) + 1e-9 < tokenCost) throw new Error(`paper wallet holds ${paperTokenBalance(book, i.tokenMint)} ${i.tokenSymbol}, needs ${tokenCost}`);
+  // One raw unit of tolerance (review C7): the shortfall a paper swap brings in is rounded to the token's
+  // decimals and the wallet is kept at 9, so a residue a few raw units short of the leg must not throw
+  // after the swap fee was paid. The band takes what the wallet holds, and that is what it records.
+  const tokenDec = i.quoteSide === "Y" ? i.xDecimals : i.yDecimals;
+  const tokenTol = Math.max(1e-9, 10 ** -Math.min(tokenDec, 9));
+  const tokenHeld = paperTokenBalance(book, i.tokenMint);
+  if (tokenCost > 0 && tokenHeld + tokenTol < tokenCost) throw new Error(`paper wallet holds ${tokenHeld} ${i.tokenSymbol}, needs ${tokenCost}`);
+  const tokenTaken = tokenCost > 0 ? Math.min(tokenCost, tokenHeld) : 0;
 
   creditQuote(book, i.quoteSymbol, -quoteCost);
-  if (tokenCost > 0) creditToken(book, i.tokenMint, -Math.min(tokenCost, paperTokenBalance(book, i.tokenMint)), i.tokenPriceInQuote * i.quotePriceInSol);
+  if (tokenTaken > 0) creditToken(book, i.tokenMint, -tokenTaken, i.tokenPriceInQuote * i.quotePriceInSol);
   book.wallet.sol = r9(book.wallet.sol - rentChargedSol);
   book.rentLockedSol = r9(book.rentLockedSol + rentRefundableSol);
   book.rentSpentSol = r9(book.rentSpentSol + (rentChargedSol - rentRefundableSol));
@@ -442,11 +457,11 @@ export function openBand(book: PaperBook, i: OpenBandInput): OpenBandResult {
     strategyNote,
     side: i.side,
     quoteDeposit: i.amountQuote,
-    tokenDeposit: i.amountToken,
+    tokenDeposit: tokenTaken,
     openedAt: i.now,
     openedBinId: i.activeBinId,
     openedPrice: i.activePrice,
-    entryValueSol: (i.amountQuote + i.amountToken * i.tokenPriceInQuote) * i.quotePriceInSol + slippageSol,
+    entryValueSol: (i.amountQuote + tokenTaken * i.tokenPriceInQuote) * i.quotePriceInSol + slippageSol,
     feeQuote: 0,
     feeToken: 0,
     lastMarkAt: i.now,

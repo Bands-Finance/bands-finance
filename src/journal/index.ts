@@ -158,7 +158,15 @@ export interface JournalEngine {
     ours: boolean;
     seatCapSol: number;
     stopPct: number;
+    /** 0 on a stock pair: no maximum hold */
     maxHoldMin: number;
+    /** a STOCK pair (src/screener/pairStock.ts): the ticker and issuer, and where the price came from */
+    stock?: { ticker: string; issuer: string } | null;
+    /** a HOUSE token's pool (PAIR_HOUSE_MINTS) */
+    house?: boolean;
+    priceSource?: string | null;
+    refGoneCycles?: number;
+    feesPerDayUsd?: number;
   } | null;
 }
 

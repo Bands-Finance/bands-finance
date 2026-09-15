@@ -12,9 +12,10 @@
  * PER STOCK table folds, per ticker, band P&L (open marks + closed realized + claimed fees),
  * swap costs, hedge P&L (unrealized + realized - fees), funding, and the net.
  *
- * MADE PAIRS (the pair lane, src/venues/pair.ts): every pool the paper desk created, with its age,
+ * MADE PAIRS (the pair lanes, src/venues/pair.ts): every pool the paper desk created, with its age,
  * the routing model's share at the last mark, the fees its bands earned, the rent the pool cost and
- * the net of bands, rent and swaps.
+ * the net of bands, rent and swaps. A STOCK pair (src/screener/pairStock.ts) also shows its ticker,
+ * its reference pool and the state of its hedge (the virtual perp short, or "unhedged").
  */
 import type { JournalEntry } from "../journal";
 import { tickerOfXstock } from "../tools/backpack";
@@ -112,6 +113,16 @@ export interface PaperPairLine {
   address: string;
   label: string;
   symbol: string;
+  /** a STOCK pair: the ticker; null on pump.fun pairs */
+  ticker: string | null;
+  /** the reference pool the lane priced from ("raydium-clmm/USDC 6truu3"), when known */
+  reference: string | null;
+  /** a STOCK pair's hedge state: the virtual short on the perp, or unhedged; null on pump.fun pairs */
+  hedge: { symbol: string; shortQty: number; netUsd: number } | "unhedged" | null;
+  /** a house token's pool (PAIR_HOUSE_MINTS) */
+  house: boolean;
+  /** the last mark had no reference to model from: routed reads n/a */
+  refUnknown: boolean;
   quote: string;
   binStep: number;
   feeBps: number;
@@ -275,10 +286,16 @@ export function paperSummary(book: PaperBook, entries: readonly JournalEntry[], 
     const feesEarnedSol = open.reduce((t, b) => t + (b.lastMark?.feeSol ?? 0), 0) + closedHere.reduce((t, c) => t + c.feeSol, 0) + (book.feesClaimedByPool?.[address] ?? 0);
     const bandPnlSol = open.reduce((t, b) => t + ((b.lastMark?.valueInSol ?? b.entryValueSol) - b.entryValueSol), 0) + closedHere.reduce((t, c) => t + c.realizedSol, 0) + (book.feesClaimedByPool?.[address] ?? 0);
     const swapCostSol = book.swapCostByMint?.[p.mint] ?? 0;
+    const h = hedgeByPool[address];
     return {
       address,
       label: `${p.symbol}/${p.quote}`,
       symbol: p.symbol,
+      ticker: p.stock?.ticker ?? null,
+      reference: p.refPool ? `${p.refVenue ?? "?"} ${p.refPool.slice(0, 6)}` : (p.refVenue ?? null),
+      hedge: p.stock ? (h && (h.qty > 0 || h.realizedUsd !== 0 || h.feesPaidUsd !== 0) ? { symbol: h.symbol, shortQty: h.qty, netUsd: h.netUsd } : "unhedged") : null,
+      house: !!p.house,
+      refUnknown: p.lastRefKnown === false,
       quote: p.quote,
       binStep: p.binStep,
       feeBps: p.feeBps,
@@ -415,11 +432,13 @@ export function renderPaperReport(s: PaperSummary): string {
     out.push(`  ${pad(c.address, 20)} ${pad(c.label, 14)} realized ${moneySigned(c.realizedSol)} (${signed(c.realizedPct, 2)}%)  fees ${money(c.feeSol, 6)}  held ${hrs(c.holdHours)}  ${c.emergency ? "ENGINE/GUARD: " : ""}${c.reason}`);
   }
   out.push("");
-  out.push(`MADE PAIRS (${s.pairs.length})  pools the desk created for pump.fun tokens (the pair lane); routed = the model's share of the reference pool's flow at the last mark (after | before competing depth)`);
+  out.push(`MADE PAIRS (${s.pairs.length})  pools the desk created (pump.fun tokens: the pair lane; tokenized stocks in SOL: the stock pair lane); routed = the model's share of the reference flow at the last mark (net after competing depth | gross before it)`);
   if (!s.pairs.length) out.push("  none");
   for (const p of s.pairs) {
-    const routed = p.routedShare === null ? "n/a" : `${(p.routedShare * 100).toFixed(1)}%${p.routedShareGross !== null ? ` | ${(p.routedShareGross * 100).toFixed(1)}%` : ""}`;
-    out.push(`  ${pad(p.address, 20)} ${pad(p.label, 14)} ${(p.binStep / 100).toFixed(2)}%/bin fee ${(p.feeBps / 100).toFixed(2)}%  age ${hrs(p.ageHours)}  ${p.openBands} open/${p.closedBands} closed  routed ${routed}${p.feesPerDayUsd !== null ? ` (${usdFmt(p.feesPerDayUsd)}/day)` : ""}${p.stale ? "  REFERENCE GONE" : ""}  fees ${money(p.feesEarnedSol, 6)}  rent ${money(p.rentSol, 6)}  swaps ${money(p.swapCostSol, 6)}  P&L ${moneySigned(p.netSol, 6)}`);
+    const routed = p.refUnknown ? "n/a (no reference yet)" : p.routedShare === null ? "n/a" : `${(p.routedShare * 100).toFixed(1)}%${p.routedShareGross !== null ? ` | ${(p.routedShareGross * 100).toFixed(1)}%` : ""}`;
+    const hedge = p.hedge === "unhedged" ? "unhedged" : p.hedge ? (p.hedge.shortQty > 0 ? `hedged short ${p.hedge.shortQty.toFixed(4)} ${p.hedge.symbol} (${usdSigned(p.hedge.netUsd)})` : `hedge flat (${usdSigned(p.hedge.netUsd)})`) : "no hedge";
+    const stock = p.ticker ? `${p.ticker} stock, ref ${p.reference ?? "n/a"}, ${hedge}  ` : p.house ? "HOUSE TOKEN  " : "";
+    out.push(`  ${pad(p.address, 20)} ${pad(p.label, 14)} ${stock}${(p.binStep / 100).toFixed(2)}%/bin fee ${(p.feeBps / 100).toFixed(2)}%  age ${hrs(p.ageHours)}  ${p.openBands} open/${p.closedBands} closed  routed ${routed}${p.feesPerDayUsd !== null && !p.refUnknown ? ` (${usdFmt(p.feesPerDayUsd)}/day)` : ""}${p.stale && !p.house ? "  REFERENCE GONE" : ""}  fees ${money(p.feesEarnedSol, 6)}  rent ${money(p.rentSol, 6)}  swaps ${money(p.swapCostSol, 6)}  P&L ${moneySigned(p.netSol, 6)}`);
   }
   out.push("");
   const h = s.hedge;

@@ -20,6 +20,14 @@
  *           journaled as "would create ... and seat ...". Created pools are recorded in
  *           RiskState.pairPools so a restart knows the real address is one of ours.
  *
+ * STOCK PAIRS (src/screener/pairStock.ts): the same venue, the same key, a different reference. When
+ * the mint is a tokenized stock the board carries (deps.stockRef), the spec is STOCKx/SOL at
+ * PAIR_STOCK_BIN_STEP with the fee the stock model picks and PAIR_STOCK_COLLECT_FEE_MODE; the
+ * synthetic price is the Backpack perp mid (deps.perpMidUsd) when the ticker has one, else the
+ * reference pool's USD price, divided by the SOL price; the model is the stock lane's at the pool's
+ * OWN fee and bin step; and the snapshot counts the consecutive cycles the reference has been off the
+ * board (refGoneCycles), which the engine turns into a liquidating close.
+ *
  * RENT (the SDK's own figures, @meteora-ag/dlmm 1.9.14, 6960 lamports per byte including the 128-byte
  * account overhead): lb pair 0.00718272 SOL (POOL_FEE), two reserve token accounts 0.00203928 each
  * (TOKEN_ACCOUNT_FEE), the oracle 0.0011136 (8 + 24 bytes of metadata; observations are only added by
@@ -51,12 +59,17 @@ import DLMM, {
 import { getMint } from "@solana/spl-token";
 import { PublicKey, type Connection } from "@solana/web3.js";
 import BN from "bn.js";
-import { config } from "../config";
 import { loadHotFileCached } from "../hot/store";
 import type { HotFile, HotRow } from "../hot/types";
 import type { PaperBook } from "../paper/book";
 import type { PairPoolRecord } from "../risk/state";
-import { activeIdFromPrice, competitionFor, isPairAddress, pairEnv, pairMintOf, pairModel, pairPoolAddress, pairSeatSol, type PairEnv, chooseFeeBps } from "../screener/pair";
+import { activeIdFromPrice, competitionFor, isHouseMint, isPairAddress, pairEnv, pairMintOf, pairModel, pairPoolAddress, pairSeatSol, type PairEnv, chooseFeeBps } from "../screener/pair";
+import { chooseStockFeeBps, pairStockEnv, pairStockSeatSol, stockPairModel, type PairStockCandidate, type PairStockEnv } from "../screener/pairStock";
+import type { StockTag } from "../screener/types";
+import { policyEnv, stockBinsPerSide } from "../agent/policy";
+import { sessionClock } from "../basis/session";
+import { sessionWidthMultiplier } from "../basis/verdict";
+import { config, riskLimits } from "../config";
 import { binPrice } from "../tools/bins";
 import {
   buildClaimFeesTxs,
@@ -224,18 +237,21 @@ export function pairBroadcastRefusal(env: PairEnv = pairEnv(), dryRun: boolean =
 
 /* ---------- the reference row ---------- */
 
-/** The reference PumpSwap row for a mint in a hot file: the deepest pumpswap pool of the token, else any pump.fun row for it. */
-export function referenceRowFor(hot: HotFile | null, mint: string): HotRow | null {
+/**
+ * The reference PumpSwap row for a mint in a hot file: the deepest pumpswap pool of the token, else any
+ * pump.fun row for it; for a HOUSE mint (`house`), any row at all (the bonding curve, a Meteora pool, whatever).
+ */
+export function referenceRowFor(hot: HotFile | null, mint: string, house = false): HotRow | null {
   if (!hot) return null;
   const rows = hot.rows.filter((r) => r.baseMint === mint);
   const pump = rows.filter((r) => r.venue === "pumpswap").sort((a, b) => (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0));
-  return pump[0] ?? rows.find((r) => r.origin === "pump.fun") ?? null;
+  return pump[0] ?? rows.find((r) => r.origin === "pump.fun") ?? (house ? [...rows].sort((a, b) => (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0))[0] ?? null : null);
 }
 
 /** The hot row the loop should read for a pool: the reference row for a made pair, the pool's own row otherwise. */
-export function hotRowForPool(hot: HotFile | null, address: string): HotRow | undefined {
+export function hotRowForPool(hot: HotFile | null, address: string, env: PairEnv = pairEnv()): HotRow | undefined {
   const mint = pairMintOf(address);
-  if (mint) return referenceRowFor(hot, mint) ?? undefined;
+  if (mint) return referenceRowFor(hot, mint, isHouseMint(mint, env)) ?? undefined;
   return hot?.rows.find((r) => r.address === address);
 }
 
@@ -255,6 +271,10 @@ export interface PairSpec {
   collectFeeMode: "quote" | "both";
   /** the real pool address the SDK derives for the pair */
   lbPair: string;
+  /** a STOCK pair: the tokenized stock this pool quotes in SOL (src/screener/pairStock.ts); absent on pump.fun pairs */
+  stock?: StockTag | null;
+  /** a HOUSE token's pool (PAIR_HOUSE_MINTS): always seated, no launch-style exits */
+  house?: boolean;
 }
 
 export interface PairPool extends VenuePool {
@@ -276,12 +296,21 @@ export interface PairVenueDeps {
   /** the seat the routing model sizes for, in SOL */
   seatSol: () => number;
   solPriceUsd: () => number | null;
-  /** the board's rows, for the competing concentrated depth */
-  screenRows: () => readonly { address: string; venue: string; baseMint: string; quoteSymbol: string; liquidityUsd: number | null }[];
+  /** the board's rows, for the competing concentrated depth (and a house token's price of last resort) */
+  screenRows: () => readonly { address: string; venue: string; baseMint: string; quoteSymbol: string; liquidityUsd: number | null; priceUsd?: number | null }[];
   /** the bins our own paper deposits occupy, for the synthetic snapshot; absent = empty bins */
   ourBins?: (address: string, activeBinId: number, binsEachSide: number, spec: PairSpec) => BinRow[] | null;
   env?: () => PairEnv;
   hot?: () => HotFile | null;
+  /** STOCK pairs: the board's candidate for a mint (src/screener/pairStock.ts pairStockCandidatesOf), null when the board does not carry the ticker */
+  stockRef?: (mint: string) => PairStockCandidate | null;
+  stockEnv?: () => PairStockEnv;
+  /** STOCK pairs: the Backpack perp mid for a ticker in USD (this cycle's, else basis.json's), null when none is listed */
+  perpMidUsd?: (ticker: string) => number | null;
+  /** STOCK pairs: the seat the stock model sizes for, in SOL (default PAIR_STOCK_SEAT_PCT of the book, capped by the max band) */
+  stockSeatSol?: () => number;
+  /** STOCK pairs: bins per side the model prices our depth at (default: the straddle's width at this bin step for the current US session; a band already open sets its own) */
+  stockBinsPerSide?: (binStep: number, address: string) => number;
   /** chain reads, injectable for tests */
   accountExists?: (connection: Connection, address: string) => Promise<boolean>;
   mintDecimals?: (connection: Connection, mint: string) => Promise<number>;
@@ -295,6 +324,10 @@ const decimalsCache = new Map<string, number>();
 const existsCache = new Set<string>();
 /** mint -> the last reference price seen, so a pool marks at it when the reference row goes cold */
 const lastRef = new Map<string, { price: number; priceUsd: number | null; at: number; row: HotRow }>();
+/** STOCK pairs: mint -> the last price seen (SOL per stock) and the candidate it came from */
+const lastStock = new Map<string, { price: number; at: number; candidate: PairStockCandidate }>();
+/** STOCK pairs: mint -> consecutive snapshots the reference has been off the board */
+const refGone = new Map<string, number>();
 
 async function defaultAccountExists(connection: Connection, address: string): Promise<boolean> {
   const info = await connection.getAccountInfo(new PublicKey(address), "confirmed");
@@ -311,6 +344,8 @@ export function clearPairCaches(): void {
   decimalsCache.clear();
   existsCache.clear();
   lastRef.clear();
+  lastStock.clear();
+  refGone.clear();
 }
 
 /** The pair venue: a Venue whose handles are PairPools, plus the create-transaction builder. */
@@ -326,6 +361,50 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
   const now = () => deps.now?.() ?? Date.now();
   const accountExists = deps.accountExists ?? defaultAccountExists;
   const mintDecimals = deps.mintDecimals ?? defaultMintDecimals;
+  const senv = () => deps.stockEnv?.() ?? pairStockEnv();
+  const stockRef = (mint: string): PairStockCandidate | null => deps.stockRef?.(mint) ?? null;
+  const stockSeatSol = (): number => deps.stockSeatSol?.() ?? Math.min(pairStockSeatSol(riskLimits.maxTotalExposureSol, senv()), riskLimits.maxPositionSol);
+  /** the straddle's bins per side at OUR bin step: STOCK_COVER_PCT x the US session's width, inside MAX_BIN_WIDTH */
+  const stockBins = (binStep: number, address: string): number =>
+    deps.stockBinsPerSide?.(binStep, address) ?? stockBinsPerSide(binStep, policyEnv().stockCoverPct, riskLimits.maxBinWidth, sessionWidthMultiplier(sessionClock(new Date(now()))));
+
+  /**
+   * STOCK pairs: the price in SOL per stock (the perp mid when the ticker has one, else the reference
+   * pool's USD price, else the last one seen), and the consecutive cycles the reference has been gone.
+   */
+  const stockPrice = (spec: PairSpec, solPriceUsd: number | null): { price: number; source: "perp" | "reference" | "last"; stale: boolean; candidate: PairStockCandidate | null; refGoneCycles: number } | null => {
+    const c = stockRef(spec.mint);
+    const gone = c ? 0 : (refGone.get(spec.mint) ?? 0) + 1;
+    refGone.set(spec.mint, gone);
+    const sol = solPriceUsd && solPriceUsd > 0 ? solPriceUsd : null;
+    const perp = spec.stock ? deps.perpMidUsd?.(spec.stock.ticker) ?? null : null;
+    let price: number | null = null;
+    let source: "perp" | "reference" | "last" = "last";
+    if (sol && perp && perp > 0) {
+      price = perp / sol;
+      source = "perp";
+    } else if (sol && c?.priceUsd && c.priceUsd > 0) {
+      price = c.priceUsd / sol;
+      source = "reference";
+    }
+    if (price !== null) {
+      const remembered = c ?? lastStock.get(spec.mint)?.candidate ?? null;
+      if (remembered) lastStock.set(spec.mint, { price, at: now(), candidate: remembered });
+      return { price, source, stale: !c, candidate: c ?? remembered, refGoneCycles: gone };
+    }
+    const last = lastStock.get(spec.mint);
+    return last ? { price: last.price, source: "last", stale: true, candidate: c ?? last.candidate, refGoneCycles: gone } : null;
+  };
+
+  /** STOCK pairs: the model at the pool's OWN fee and bin step, for the seat the lane sizes, against the board's reference */
+  const stockModelFor = (spec: PairSpec, candidate: PairStockCandidate | null, solPriceUsd: number | null, binStep: number, feeBps: number) => {
+    const seatUsd = solPriceUsd && solPriceUsd > 0 ? stockSeatSol() * solPriceUsd : 0;
+    const bins = stockBins(binStep, spec.address);
+    const ref = candidate
+      ? { liquidityUsd: candidate.refLiquidityUsd, vol24hUsd: candidate.vol24hUsd, vol1hUsd: candidate.vol1hUsd, refFeePct: candidate.refFeePct, refQuoteIsSol: candidate.refQuoteIsSol }
+      : { liquidityUsd: null, vol24hUsd: null, vol1hUsd: null, refFeePct: 0.25 };
+    return { model: stockPairModel(ref, senv(), seatUsd, bins, candidate?.competingDepthUsd ?? 0, { feeBps, binStep }), seatUsd, bins };
+  };
 
   const quoteInfo = (q: QuoteSymbol): { mint: string; decimals: number } => (q === "USDC" ? { mint: USDC_MINT, decimals: 6 } : { mint: SOL_MINT, decimals: 9 });
 
@@ -376,12 +455,111 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
     return last ? { price: last.price, stale: true, row: last.row } : null;
   };
 
+  /** the bins and the tokens of a synthetic snapshot: our own deposits around the active bin, nothing else */
+  const syntheticBins = (spec: PairSpec, activeBinId: number, binsEachSide: number): { bins: BinRow[]; tokenX: TokenInfo; tokenY: TokenInfo; activePrice: number } => {
+    const geometry = { binStep: spec.binStep, tokenX: { decimals: spec.decimals }, tokenY: { decimals: spec.quoteDecimals } };
+    const own = deps.ourBins?.(spec.address, activeBinId, binsEachSide, spec) ?? null;
+    const bins: BinRow[] = [];
+    for (let b = activeBinId - binsEachSide; b <= activeBinId + binsEachSide; b++) {
+      const mine = own?.find((r) => r.binId === b);
+      bins.push({ binId: b, price: binPrice(geometry, b), xAmount: mine?.xAmount ?? 0, yAmount: mine?.yAmount ?? 0, isActive: b === activeBinId });
+    }
+    const tokenX: TokenInfo = { mint: spec.mint, symbol: spec.symbol, decimals: spec.decimals, reserve: bins.reduce((t, b) => t + b.xAmount, 0) };
+    const tokenY: TokenInfo = { mint: spec.quoteMint, symbol: spec.quote, decimals: spec.quoteDecimals, reserve: bins.reduce((t, b) => t + b.yAmount, 0) };
+    return { bins, tokenX, tokenY, activePrice: binPrice(geometry, activeBinId) };
+  };
+
+  /** STOCK pairs: the synthetic snapshot priced from the perp (or the reference), modelled by the stock lane. */
+  const syntheticStock = (pool: PairPool, binsEachSide: number, solPriceUsd: number | null): PoolSnapshot => {
+    const spec = pool.pair;
+    const px = stockPrice(spec, solPriceUsd);
+    if (!px) throw new Error(`${spec.address}: no price for ${spec.symbol}: no Backpack perp mid, no reference pool on the board, none remembered${solPriceUsd ? "" : " (and no SOL price to convert one)"}: the pool cannot be priced this cycle`);
+    const activeBinId = activeIdFromPrice(px.price, spec.binStep, spec.decimals, spec.quoteDecimals);
+    const { bins, tokenX, tokenY, activePrice } = syntheticBins(spec, activeBinId, binsEachSide);
+    const label = `${spec.symbol}/${spec.quote}`;
+    const rq = resolveQuote({ address: spec.address, label, tokenX, tokenY, activePrice, solPriceUsd });
+    const c = px.candidate;
+    const { model, seatUsd, bins: modelBins } = stockModelFor(spec, px.stale ? null : c, solPriceUsd, spec.binStep, spec.feeBps);
+    const isThere = exists(pool);
+    const pair: PairSnapshotInfo = {
+      address: spec.address,
+      mint: spec.mint,
+      symbol: spec.symbol,
+      quote: spec.quote,
+      lbPair: spec.lbPair,
+      exists: isThere,
+      ours: ours(pool),
+      synthetic: true,
+      stale: px.stale,
+      refPool: c?.reference.address ?? null,
+      refVenue: c ? `${c.reference.venue}/${c.reference.quoteSymbol}` : null,
+      refLiquidityUsd: c?.refLiquidityUsd ?? null,
+      refVol24hUsd: px.stale ? null : (c?.vol24hUsd ?? null),
+      refVol1hUsd: px.stale ? null : (c?.vol1hUsd ?? null),
+      refAgeHours: c?.reference.ageHours ?? null,
+      competingDepthUsd: c?.competingDepthUsd ?? 0,
+      // a reference nobody reports routes nothing: the share reads 0 while it is gone, like the pump.fun lane's
+      routedShareGross: px.stale ? 0 : model.routedShareGross,
+      routedShare: px.stale ? 0 : model.routedShare,
+      routedVolume24hUsd: px.stale ? 0 : model.routedVolume24hUsd,
+      feesPerDayUsd: px.stale ? 0 : model.feesPerDayUsd,
+      feesPerDayGrossUsd: px.stale ? 0 : model.feesPerDayGrossUsd,
+      ourShare: 1,
+      collectFeeMode: spec.collectFeeMode,
+      creationRentSol: isThere ? 0 : PAIR_CREATION_RENT_SOL,
+      seatUsd,
+      stock: spec.stock ?? null,
+      priceSource: px.source,
+      refGoneCycles: px.refGoneCycles,
+      refFeePct: c?.refFeePct,
+      modelBinsPerSide: modelBins,
+    };
+    return {
+      address: spec.address,
+      label,
+      tokenX,
+      tokenY,
+      solSide: rq.solSide,
+      baseToken: rq.baseToken,
+      binStep: spec.binStep,
+      activeBinId,
+      activePrice,
+      priceLabel: `${spec.quote} per ${spec.symbol}`,
+      tokenPriceInSol: rq.tokenPriceInSol,
+      quoteSide: rq.quoteSide,
+      quoteToken: rq.quoteToken,
+      quoteSymbol: rq.quoteSymbol,
+      quotePriceInSol: rq.quotePriceInSol,
+      tokenPriceInQuote: rq.tokenPriceInQuote,
+      solPriceUsd: rq.solPriceUsd,
+      baseFeePct: spec.feeBps / 100,
+      maxFeePct: 10,
+      dynamicFeePct: spec.feeBps / 100,
+      bins,
+      liquidityBelowY: bins.filter((b) => b.binId < activeBinId).reduce((t, b) => t + b.yAmount, 0),
+      liquidityAboveX: bins.filter((b) => b.binId > activeBinId).reduce((t, b) => t + b.xAmount, 0),
+      fetchedAt: new Date(now()).toISOString(),
+      priceModel: "meteora-dlmm",
+      venue: "meteora-dlmm",
+      pair,
+    };
+  };
+
   const synthetic = (pool: PairPool, binsEachSide: number, solPriceUsd: number | null): PoolSnapshot => {
     const spec = pool.pair;
+    if (spec.stock) return syntheticStock(pool, binsEachSide, solPriceUsd);
     const h = hot();
-    const ref = referencePrice(referenceRowFor(h, spec.mint), spec);
-    if (!ref) throw new Error(`${spec.address}: no reference price for ${spec.symbol} in hot.json and none remembered: the pool cannot be priced this cycle`);
     const e = env();
+    const house = !!spec.house;
+    let ref = referencePrice(referenceRowFor(h, spec.mint, house), spec);
+    if (!ref && house) {
+      // a house token with no hot row: the board's USD price for the mint is the price of last resort (nothing else to open at)
+      const boardRow = deps.screenRows().find((r) => r.baseMint === spec.mint && typeof r.priceUsd === "number" && r.priceUsd! > 0);
+      const sol = deps.solPriceUsd();
+      const px = boardRow ? (spec.quote === "USDC" ? boardRow.priceUsd! : sol && sol > 0 ? boardRow.priceUsd! / sol : null) : null;
+      if (px !== null && px > 0) ref = { price: px, stale: true, row: null };
+    }
+    if (!ref) throw new Error(`${spec.address}: no reference price for ${spec.symbol} in hot.json and none remembered${house ? " (a house token still needs a price to open at: a hot row or a board row for the mint)" : ""}: the pool cannot be priced this cycle`);
     const activeBinId = activeIdFromPrice(ref.price, spec.binStep, spec.decimals, spec.quoteDecimals);
     const geometry = { binStep: spec.binStep, tokenX: { decimals: spec.decimals }, tokenY: { decimals: spec.quoteDecimals } };
     const activePrice = binPrice(geometry, activeBinId);
@@ -399,6 +577,8 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
     const seatUsd = solPriceUsd && solPriceUsd > 0 ? deps.seatSol() * solPriceUsd : 0;
     const competition = competitionFor(spec.mint, [...(h?.rows ?? []), ...deps.screenRows()], spec.address);
     // the model at the pool's OWN fee and bin step (the spec chose them), not the env's default
+    // a house token's reference may be nothing at all: then the model has nothing to read (share n/a)
+    const refKnown = !!row && !ref.stale && row.liquidityUsd !== null;
     const model = pairModel({ liquidityUsd: row?.liquidityUsd ?? null, vol24hUsd: row?.vol24hUsd ?? null, vol1hUsd: row?.vol1hUsd ?? null }, { ...e, feeBps: spec.feeBps, binStep: spec.binStep }, seatUsd, competition.depthUsd);
     const isThere = exists(pool);
     const pair: PairSnapshotInfo = {
@@ -418,14 +598,15 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
       refVol1hUsd: ref.stale ? null : (row?.vol1hUsd ?? null),
       refAgeHours: row?.ageHours ?? null,
       competingDepthUsd: competition.depthUsd,
-      routedShareGross: ref.stale ? 0 : model.routedShareGross,
-      routedShare: ref.stale ? 0 : model.routedShare,
-      routedVolume24hUsd: ref.stale ? 0 : model.routedVolume24hUsd,
-      feesPerDayUsd: ref.stale ? 0 : model.feesPerDayUsd,
+      routedShareGross: refKnown ? model.routedShareGross : 0,
+      routedShare: refKnown ? model.routedShare : 0,
+      routedVolume24hUsd: refKnown ? model.routedVolume24hUsd : 0,
+      feesPerDayUsd: refKnown ? model.feesPerDayUsd : 0,
       ourShare: 1,
       collectFeeMode: spec.collectFeeMode,
       creationRentSol: isThere ? 0 : PAIR_CREATION_RENT_SOL,
       seatUsd,
+      ...(house ? { house: true, refKnown } : {}),
     };
     return {
       address: spec.address,
@@ -466,8 +647,49 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
       const mint = pairMintOf(address);
       if (!mint) throw new Error(`${address} is not a pair key (pair-<mint>)`);
       const e = env();
+      // A STOCK pair: the board carries the ticker (or the desk remembers it), the pool is STOCKx/SOL at the stock lane's terms.
+      const stock = stockRef(mint) ?? lastStock.get(mint)?.candidate ?? null;
+      if (stock) {
+        const se = senv();
+        const sq = quoteInfo("SOL");
+        let decimals = decimalsCache.get(mint);
+        if (decimals === undefined) {
+          try {
+            decimals = await mintDecimals(connection, mint);
+          } catch {
+            decimals = stock.baseDecimals;
+          }
+          decimalsCache.set(mint, decimals);
+        }
+        const solPrice = deps.solPriceUsd?.() ?? null;
+        const seatUsd = solPrice && solPrice > 0 ? stockSeatSol() * solPrice : 0;
+        const spec: PairSpec = {
+          address: pairPoolAddress(mint),
+          mint,
+          symbol: stock.symbol,
+          decimals,
+          quote: "SOL",
+          quoteMint: sq.mint,
+          quoteDecimals: sq.decimals,
+          binStep: se.binStep,
+          // the fee the stock model likes for this seat against this reference (or PAIR_STOCK_FEE_BPS as set)
+          feeBps: chooseStockFeeBps(
+            { liquidityUsd: stock.refLiquidityUsd, vol24hUsd: stock.vol24hUsd, vol1hUsd: stock.vol1hUsd, refFeePct: stock.refFeePct, refQuoteIsSol: stock.refQuoteIsSol },
+            se,
+            seatUsd,
+            stockBins(se.binStep, pairPoolAddress(mint)),
+          ),
+          collectFeeMode: se.collectFeeMode,
+          lbPair: pairLbPairAddress(mint, sq.mint),
+          stock: { ticker: stock.ticker, issuer: stock.issuer },
+        };
+        const pool: PairPool = { venue: "meteora-dlmm", address: spec.address, pair: spec, dlmm: null, connection };
+        await ensureLoaded(pool);
+        return pool;
+      }
       const q = quoteInfo(e.quote);
-      const row = referenceRowFor(hot(), mint);
+      const house = isHouseMint(mint, e);
+      const row = referenceRowFor(hot(), mint, house);
       let decimals = decimalsCache.get(mint);
       if (decimals === undefined) {
         try {
@@ -494,6 +716,7 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
         ),
         collectFeeMode: e.collectFeeMode,
         lbPair: pairLbPairAddress(mint, q.mint),
+        ...(house ? { house: true } : {}),
       };
       const pool: PairPool = { venue: "meteora-dlmm", address: spec.address, pair: spec, dlmm: null, connection };
       await ensureLoaded(pool);
@@ -506,8 +729,51 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
       if (!p.dlmm) return synthetic(p, binsEachSide, opts.solPriceUsd);
       // the real pool: Meteora's read, keyed by the pair alias, with the model riding along
       const real = await getPoolSnapshot(p.dlmm, binsEachSide, { solPriceUsd: opts.solPriceUsd });
+      if (p.pair.stock) {
+        // a STOCK pair that exists on chain: the real bins and parameters, the stock model at them, the reference-gone count kept
+        const spec = p.pair;
+        const px = stockPrice(spec, opts.solPriceUsd);
+        const c = px?.candidate ?? null;
+        const stale = !c || !!px?.stale;
+        const feeBps = Math.round(real.baseFeePct * 100);
+        const { model, seatUsd, bins: modelBins } = stockModelFor(spec, stale ? null : c, opts.solPriceUsd, real.binStep, feeBps);
+        const pair: PairSnapshotInfo = {
+          address: spec.address,
+          mint: spec.mint,
+          symbol: spec.symbol,
+          quote: spec.quote,
+          lbPair: spec.lbPair,
+          exists: true,
+          ours: ours(p),
+          synthetic: false,
+          stale,
+          refPool: c?.reference.address ?? null,
+          refVenue: c ? `${c.reference.venue}/${c.reference.quoteSymbol}` : null,
+          refLiquidityUsd: c?.refLiquidityUsd ?? null,
+          refVol24hUsd: c?.vol24hUsd ?? null,
+          refVol1hUsd: c?.vol1hUsd ?? null,
+          refAgeHours: c?.reference.ageHours ?? null,
+          competingDepthUsd: c?.competingDepthUsd ?? 0,
+          routedShareGross: stale ? 0 : model.routedShareGross,
+          routedShare: stale ? 0 : model.routedShare,
+          routedVolume24hUsd: stale ? 0 : model.routedVolume24hUsd,
+          feesPerDayUsd: stale ? 0 : model.feesPerDayUsd,
+          feesPerDayGrossUsd: stale ? 0 : model.feesPerDayGrossUsd,
+          // a real pool may hold other LPs: the bin arithmetic decides our share
+          ourShare: null,
+          collectFeeMode: spec.collectFeeMode,
+          creationRentSol: 0,
+          seatUsd,
+          stock: spec.stock,
+          priceSource: "pool",
+          refGoneCycles: px?.refGoneCycles ?? (refGone.get(spec.mint) ?? 0),
+          refFeePct: c?.refFeePct,
+          modelBinsPerSide: modelBins,
+        };
+        return { ...real, address: spec.address, label: `${spec.symbol}/${spec.quote}`, pair };
+      }
       const h = hot();
-      const row = referenceRowFor(h, p.pair.mint);
+      const row = referenceRowFor(h, p.pair.mint, !!p.pair.house);
       const e = env();
       const seatUsd = opts.solPriceUsd && opts.solPriceUsd > 0 ? deps.seatSol() * opts.solPriceUsd : 0;
       const competition = competitionFor(p.pair.mint, [...(h?.rows ?? []), ...deps.screenRows()], p.pair.address);
@@ -538,6 +804,7 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
         collectFeeMode: p.pair.collectFeeMode,
         creationRentSol: 0,
         seatUsd,
+        ...(p.pair.house ? { house: true, refKnown: !!row && row.liquidityUsd !== null } : {}),
       };
       return { ...real, address: p.pair.address, label: `${p.pair.symbol}/${p.pair.quote}`, pair };
     },

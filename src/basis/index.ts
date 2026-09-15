@@ -350,6 +350,17 @@ export function basisForPool(pool: string, basis: BasisFile | null = loadBasis()
   return basis?.rows.find((r) => r.pool === pool) ?? null;
 }
 
+/**
+ * The basis row for a TICKER: what a pool of our own for that stock (the stock pair lane, keyed
+ * pair-<mint> and so never on the board) reads for its perp, funding and session. The row with a
+ * perp mid is preferred; failing one, any row for the ticker (it still says no perp is listed).
+ */
+export function basisForTicker(ticker: string, basis: BasisFile | null = loadBasis()): BasisRow | null {
+  const t = ticker.trim().toUpperCase();
+  const rows = basis?.rows.filter((r) => r.ticker.toUpperCase() === t) ?? [];
+  return rows.find((r) => r.perpSymbol && r.perpMid !== null && r.perpMid > 0) ?? rows.find((r) => r.perpSymbol) ?? rows[0] ?? null;
+}
+
 /** GET /api/basis: the file as written; 404 with a plain reason when it has not been produced. */
 export function basisRoutes(app: Hono, file: string = basisFile()): void {
   app.get("/api/basis", (c) => {

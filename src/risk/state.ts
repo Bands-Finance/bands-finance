@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config";
 import type { LaunchBand } from "../screener/launch";
+import type { StockTag } from "../screener/types";
 
 /** A pool the desk CREATED on Meteora for a pump.fun token (the pair lane, src/venues/pair.ts). Keyed by the loop's pair-<mint> alias. */
 export interface PairPoolRecord {
@@ -9,6 +10,8 @@ export interface PairPoolRecord {
   lbPair: string;
   mint: string;
   symbol: string;
+  /** a STOCK pair (src/screener/pairStock.ts): the ticker and issuer; absent on pump.fun pairs */
+  stock?: StockTag | null;
   quote: "SOL" | "USDC";
   binStep: number;
   feeBps: number;

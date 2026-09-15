@@ -57,6 +57,14 @@
  * Nobody else is in our pool, so the depth caps do not apply; the routing model decides whether
  * the pool's rent (never refunded) is paid back inside POLICY_MAX_PAYBACK_HOURS. With a band open:
  * HOLD in range, re-centre out of range when the gates allow, else CLOSE and sell the token back.
+ * STOCK PAIR pools (src/screener/pairStock.ts; snapshot.pair.stock, observation.screen.stock AND
+ * screen.pair) are our own STOCKx/SOL pools on Meteora: a stock pool IS a stock pool, so they take
+ * the straddle path above (sizeStraddle at OUR bin step, coverPctFor x the session width, the basis
+ * and session gates, stockBandDecide's re-centre and liquidating close) with three differences: the
+ * seat is capped at PAIR_STOCK_SEAT_PCT of the book, the depth cap does not apply (the pool is ours),
+ * and the seat is worth taking when the stock routing model's fees pay the pool's rent and the swap
+ * round trip back inside POLICY_MAX_PAYBACK_HOURS (the yield floor is not applied, as in the pump.fun
+ * lane: a seat in a pool of our own is judged by payback). None of the launch lane's exits apply.
  * Venues: the open cost comes from the venue (extras.openCostSol; Meteora's estimate by default).
  * On a CLMM pool a quote-only band rests one bin under the price by construction, so one bin of
  * distance on the quote side is "resting", not idle (non-stock pools).
@@ -67,7 +75,8 @@ import type { HotRow } from "../hot/types";
 import { bandDepthQuote, shareOfBand } from "../paper/mark";
 import type { RiskLimits } from "../risk/limits";
 import { launchEnv, launchSeatSol, type LaunchEnv } from "../screener/launch";
-import { pairEnv, pairSeatSol, type PairEnv } from "../screener/pair";
+import { pairEnv, pairHouseSeatSol, pairSeatSol, type PairEnv } from "../screener/pair";
+import { pairStockEnv, pairStockSeatSol, type PairStockEnv } from "../screener/pairStock";
 import { OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, quoteOf, type PositionSnapshot, type QuoteView } from "../tools/dlmm";
 import { jupiterEnv } from "../tools/jupiter";
 import { bookEnv, type Book } from "../venues/env";
@@ -148,6 +157,8 @@ export interface PolicyExtras {
   launch?: LaunchEnv;
   /** the pair lane's settings; defaults to pairEnv(). The seat cap, the bins each side and the exit terms are read here. */
   pair?: PairEnv;
+  /** the stock pair lane's settings; defaults to pairStockEnv(). Only the seat cap is read here. */
+  pairStock?: PairStockEnv;
 }
 
 export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
@@ -174,14 +185,21 @@ export const isStockPool = (o: Pick<Observation, "screen" | "engine">): boolean 
 /** Whether the launch lane admitted this pool (src/screener/launch.ts). */
 export const isLaunchPool = (o: Pick<Observation, "screen">): boolean => o.screen?.launch?.ok === true;
 
-/** Whether this is a pair-lane pool: our own Meteora pool for a pump.fun token (src/screener/pair.ts, src/venues/pair.ts). */
+/** Whether this is a pair-lane pool: our own Meteora pool for a pump.fun token or a tokenized stock (src/screener/pair.ts, src/venues/pair.ts). */
 export const isPairPool = (o: Pick<Observation, "screen" | "snapshot">): boolean => o.screen?.pair?.ok === true && !!o.snapshot.pair;
+
+/** Whether this is a STOCK pair pool: our own STOCKx/SOL pool (src/screener/pairStock.ts). A stock pool is a stock pool: it straddles. */
+export const isStockPairPool = (o: Pick<Observation, "screen" | "engine" | "snapshot">): boolean => isPairPool(o) && (!!o.snapshot.pair?.stock || isStockPool(o));
 
 /** The lanes that admit by rule: they share the exemptions from the score, the new/wild flags and the 1h move. */
 const lanePool = (o: Pick<Observation, "screen" | "snapshot">): boolean => isLaunchPool(o) || isPairPool(o);
 
-/** A launch band is quote-only: the straddle is a stock instrument, and a launch is never a stock. A pair band is its own two-sided shape. */
-const straddlePool = (o: Pick<Observation, "screen" | "engine" | "snapshot">): boolean => isStockPool(o) && !lanePool(o);
+/**
+ * A launch band is quote-only: the straddle is a stock instrument, and a launch is never a stock. A
+ * pump.fun pair band is its own two-sided shape. A STOCK pair is a stock pool in a pool of our own:
+ * it straddles like every other stock pool.
+ */
+const straddlePool = (o: Pick<Observation, "screen" | "engine" | "snapshot">): boolean => isStockPool(o) && (!lanePool(o) || isStockPairPool(o));
 
 /** Bins on EACH side of a stock straddle: coverPct of price x the width multiplier, capped so 2 x bins + 1 fits maxBinWidth, at least 1. */
 export function stockBinsPerSide(binStep: number, coverPct: number, maxBinWidth: number, widthMultiplier = 1): number {
@@ -448,12 +466,20 @@ function sizeStraddle(o: Observation, x: PolicyExtras, q: QuoteView, env: Policy
   const effectiveMaxSol = Math.min(limits.maxPositionSol, o.engine?.effectiveMaxPositionSol ?? limits.maxPositionSol);
   const thisPoolExposure = o.positions.reduce((t, pp) => t + pp.valueInSol, 0);
   const roomSol = limits.maxTotalExposureSol - o.portfolio.otherExposureSol - thisPoolExposure + closingSol;
+  // A STOCK pair: the pool is ours, so the depth cap (share <= 50% of somebody else's band) does not
+  // apply, and the seat is the lane's cap on top of everything else.
+  const stockPair = isStockPairPool(o);
+  const senv = x.pairStock ?? pairStockEnv();
   const caps: { name: string; quote: number }[] = [
     { name: `max band ${r(effectiveMaxSol)} SOL`, quote: effectiveMaxSol / q.priceInSol },
     { name: `the wallet's ${r(walletQuote, quoteIsSol ? 4 : 2)} ${q.symbol} and ${r(heldToken, 4)} ${s.baseToken.symbol} (95%, the token half bought at ${limits.maxSlippagePct}% slippage${quoteIsSol ? `, after rent, the ${limits.gasReserveSol} SOL gas reserve and ${r(rentBudget, 3)} SOL of rent kept for ${otherSeats} more seat(s)` : ""})`, quote: Math.max(0, walletCap) },
-    { name: `half the band's depth on both sides (${r(depthQuote, 2)} ${q.symbol})`, quote: depthQuote },
+    ...(stockPair ? [] : [{ name: `half the band's depth on both sides (${r(depthQuote, 2)} ${q.symbol})`, quote: depthQuote }]),
     { name: `exposure room ${r(roomSol)} SOL`, quote: roomSol / q.priceInSol },
   ];
+  if (stockPair) {
+    const seatCapSol = pairStockSeatSol(limits.maxTotalExposureSol, senv);
+    caps.push({ name: `stock pair lane seat ${r(seatCapSol)} SOL (${senv.seatPct}% of the ${limits.maxTotalExposureSol} SOL book)`, quote: seatCapSol / q.priceInSol });
+  }
   let none: string | null = null;
   if (!quoteIsSol && o.wallet.sol - openCost < limits.gasReserveSol) none = `wallet holds ${r(o.wallet.sol)} SOL: rent ~${openCost.toFixed(3)} would breach the ${limits.gasReserveSol} SOL gas reserve`;
   if (!(p > 0)) none = "no price for the base token";
@@ -470,7 +496,9 @@ function sizeStraddle(o: Observation, x: PolicyExtras, q: QuoteView, env: Policy
   const minSeatSol = Math.max(MIN_BAND_SOL, (limits.maxTotalExposureSol * env.minSeatPct) / 100);
   if (!none && seatSol < minSeatSol) none = `size ${r(seatSol)} SOL (bound by ${bound.name}) is under the minimum seat ${r(minSeatSol)} SOL (${env.minSeatPct}% of the ${limits.maxTotalExposureSol} SOL book)`;
   if (!none && (amountQuote <= 0 || amountToken <= 0)) none = `a straddle needs both halves: ${r(amountQuote, qDec)} ${q.symbol} + ${r(amountToken, tDec)} ${s.baseToken.symbol}`;
-  const sharePct = shareOfBand(seatQuote, depthQuote) * 100;
+  // our share of our own pool is what the snapshot says (1 while nobody else is in it); of somebody else's, the bin arithmetic
+  const ownShare = s.pair?.ourShare;
+  const sharePct = stockPair && typeof ownShare === "number" && Number.isFinite(ownShare) ? Math.min(1, Math.max(0, ownShare)) * 100 : shareOfBand(seatQuote, depthQuote) * 100;
   return { seatQuote, seatSol, amountQuote, amountToken, acquireToken, surplusToken, bins, widthMultiplier, widthFrom: cover.from,
     coverage: coveragePct(s.binStep, bins), depthQuote, sharePct, boundBy: bound.name, none };
 }
@@ -502,9 +530,10 @@ function sizePair(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
   const effectiveMaxSol = Math.min(limits.maxPositionSol, o.engine?.effectiveMaxPositionSol ?? limits.maxPositionSol);
   const thisPoolExposure = o.positions.reduce((t, pp) => t + pp.valueInSol, 0);
   const roomSol = limits.maxTotalExposureSol - o.portfolio.otherExposureSol - thisPoolExposure + closingSol;
-  const seatCapSol = pairSeatSol(limits.maxTotalExposureSol, penv);
+  const house = !!s.pair?.house;
+  const seatCapSol = house ? pairHouseSeatSol(limits.maxTotalExposureSol, penv) : pairSeatSol(limits.maxTotalExposureSol, penv);
   const caps: { name: string; quote: number }[] = [
-    { name: `pair lane seat ${r(seatCapSol)} SOL (${penv.seatPct}% of the ${limits.maxTotalExposureSol} SOL book)`, quote: seatCapSol / q.priceInSol },
+    { name: `${house ? "house token seat" : "pair lane seat"} ${r(seatCapSol)} SOL (${house ? penv.houseSeatPct : penv.seatPct}% of the ${limits.maxTotalExposureSol} SOL book)`, quote: seatCapSol / q.priceInSol },
     { name: `max band ${r(effectiveMaxSol)} SOL`, quote: effectiveMaxSol / q.priceInSol },
     { name: `the wallet's ${r(walletQuote, quoteIsSol ? 4 : 2)} ${q.symbol} and ${r(heldToken, 4)} ${s.baseToken.symbol} (95%, the token half bought at ${limits.maxSlippagePct}% slippage${quoteIsSol ? `, after ${r(openCost, 4)} SOL of rent, the ${limits.gasReserveSol} SOL gas reserve and ${r(rentBudget, 3)} SOL of rent kept for ${otherSeats} more seat(s)` : ""})`, quote: Math.max(0, walletCap) },
     { name: `exposure room ${r(roomSol)} SOL`, quote: roomSol / q.priceInSol },
@@ -550,6 +579,9 @@ function legClause(sz: StraddleSizing, o: Observation, closing: PositionSnapshot
 
 const perpClause = (o: Observation): string => (o.engine?.basis?.perpSymbol ? `The ${o.snapshot.baseToken.symbol} half is hedged short on Backpack ${o.engine.basis.perpSymbol}.` : `No Backpack perp is listed for ${o.snapshot.baseToken.symbol}: the token half runs unhedged.`);
 
+/** The last word of every straddle headline: "Hedged." only when Backpack lists a perp for the stock, "Unhedged." otherwise (never a hedge that does not exist). */
+export const hedgeWord = (o: Pick<Observation, "engine">): "Hedged." | "Unhedged." => (o.engine?.basis?.perpSymbol ? "Hedged." : "Unhedged.");
+
 /** Bins a quote-only band spans: the active bin plus `bins` past it on Meteora; `bins` strictly past it on a CLMM (src/tools/bins.ts). */
 const bandBins = (o: Pick<Observation, "snapshot">, bins: number): number => (o.snapshot.priceModel === "clmm" ? bins : bins + 1);
 /** where the band starts: the active bin on Meteora, the bin next to it on a CLMM */
@@ -575,6 +607,7 @@ function openParams(q: QuoteView, sz: Sizing): OpenParams {
 /** The routing model as one sentence: what our depth per bin does to the reference flow, and what it pays. */
 function routingClause(o: Observation, penv: PairEnv): string {
   const p = o.snapshot.pair!;
+  if (p.house && p.refKnown === false) return "Routing model: no reference pool for the mint yet, so the share is n/a and nothing accrues on paper until one exists.";
   const pct1 = (x: number) => `${(x * 100).toFixed(1)}%`;
   const perBin = p.seatUsd > 0 ? p.seatUsd / 2 / penv.binsEachSide : 0;
   return (
@@ -583,6 +616,27 @@ function routingClause(o: Observation, penv: PairEnv): string {
   );
 }
 
+/** The STOCK routing model as one sentence: the single hop against the two-hop reference, and what it pays (gross | net). */
+function stockRoutingClause(o: Observation): string {
+  const p = o.snapshot.pair!;
+  const pct1 = (x: number) => `${(x * 100).toFixed(1)}%`;
+  const bins = p.modelBinsPerSide ?? 0;
+  const perBin = p.seatUsd > 0 && bins > 0 ? p.seatUsd / 2 / bins : 0;
+  const ref = `${p.refVenue ?? "the reference"}${p.refPool ? ` ${p.refPool.slice(0, 6)}` : ""} (${usd0(p.refLiquidityUsd)} TVL, ${p.refFeePct !== undefined && p.refFeePct !== null ? `${r(p.refFeePct, 2)}%` : "0.25%"} fee)`;
+  const gross = p.feesPerDayGrossUsd ?? p.feesPerDayUsd;
+  return (
+    `Stock routing model: ${usd0(perBin)} per ${r(o.snapshot.binStep / 100, 2)}% bin over ${bins} bins a side makes our single-hop ${o.snapshot.label} pool the cheaper route for ${pct1(p.routedShareGross)} of ${p.stock?.ticker ?? o.snapshot.baseToken.symbol}'s flow by value against the two-hop route through ${ref}` +
+    `${p.competingDepthUsd > 0 ? `, ${pct1(p.routedShare)} after sharing with ${usd0(p.competingDepthUsd)} of other SOL-quoted depth` : ""}: about ${usd0(gross)} a day gross, ${usd0(p.feesPerDayUsd)} net, at our ${r(o.snapshot.baseFeePct, 2)}% fee.`
+  );
+}
+
+/** The stock pair lane's terms, said out loud: the seat cap, the ordinary stop (no launch exits), the reference-gone guard, every close liquidates. */
+const stockPairTermsClause = (o: Observation, senv: PairStockEnv, limits: RiskLimits): string => {
+  const p = o.snapshot.pair!;
+  const rent = p.exists ? "" : ` Pool rent ${r(p.creationRentSol, 4)} SOL never comes back.`;
+  return `${rent} Stock pair lane: capped at ${r(pairStockSeatSol(limits.maxTotalExposureSol, senv))} SOL (${senv.seatPct}% of the ${limits.maxTotalExposureSol} SOL book); the ordinary ${limits.stopLossPct}% stop, no maximum hold; closed when ${p.stock?.ticker ?? "the stock"}'s reference pool is off the board for ${senv.refGoneCycles} cycles; every close sells the ${o.snapshot.baseToken.symbol} back to ${quoteOf(o.snapshot).symbol}.`;
+};
+
 /** "Made the pair" / "Joined the pair": whether the first open creates the pool or seats in one that exists. */
 const pairVerb = (o: Observation): string => (o.snapshot.pair?.exists ? (o.snapshot.pair.ours ? "Our pair" : "Joined the pair") : "Made the pair");
 
@@ -590,6 +644,7 @@ const pairVerb = (o: Observation): string => (o.snapshot.pair?.exists ? (o.snaps
 const pairTermsClause = (o: Observation, penv: PairEnv, lenv: LaunchEnv, limits: RiskLimits): string => {
   const p = o.snapshot.pair!;
   const rent = p.exists ? "" : ` Pool rent ${r(p.creationRentSol, 4)} SOL never comes back.`;
+  if (p.house) return `${rent} House token: always seated, capped at ${r(pairHouseSeatSol(limits.maxTotalExposureSol, penv))} SOL (${penv.houseSeatPct}% of the ${limits.maxTotalExposureSol} SOL book); the ordinary ${limits.stopLossPct}% stop, no maximum hold, no volume-fade exit: the pool stays up; every close sells the ${o.snapshot.baseToken.symbol} back to ${quoteOf(o.snapshot).symbol}.`;
   return `${rent} Pair lane: capped at ${r(pairSeatSol(limits.maxTotalExposureSol, penv))} SOL (${penv.seatPct}% of the ${limits.maxTotalExposureSol} SOL book); stop rolled at ${penv.stopPct}% instead of ${limits.stopLossPct}%, closed after ${penv.maxHoldMin} min or when the reference pool's last hour falls under $${lenv.fadeVolume1hUsd.toLocaleString("en-US")}; every close sells the ${o.snapshot.baseToken.symbol} back to ${quoteOf(o.snapshot).symbol}.`;
 };
 
@@ -628,7 +683,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
 
   // ---- a band is open in this pool -------------------------------------------------------------
   const band = [...o.positions].sort((a, b) => b.valueInSol - a.valueInSol)[0];
-  if (band && isPairPool(o)) return pairBandDecide(o, x, env, q, band, now);
+  if (band && isPairPool(o) && !straddlePool(o)) return pairBandDecide(o, x, env, q, band, now);
   if (band && straddlePool(o)) return stockBandDecide(o, x, env, q, band, now);
   if (band) {
     const addr = band.address.slice(0, 6);
@@ -757,8 +812,10 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
     return hold(`No band in ${o.poolLabel} (${priceLine}). The pool is flagged ${flags.join(", ")}; ${poolClause(o, hot)}. Not a market to make.`, `Flagged ${flags.join(", ")}. Not touching it.`, "flagged", `flagged ${flags.join(", ")}`);
   }
   // Volume is what pays the fees: a pool that barely trades cannot pay a seat, whatever its yield looks like.
+  // (A house token clears every floor by definition: its pool is made whatever it trades.)
   const vol24h = o.screen?.volume24hUsd ?? null;
-  if (env.minVolume24hUsd > 0 && vol24h !== null && vol24h < env.minVolume24hUsd) {
+  const house = !!o.snapshot.pair?.house;
+  if (env.minVolume24hUsd > 0 && vol24h !== null && vol24h < env.minVolume24hUsd && !house) {
     return hold(
       `No band in ${o.poolLabel} (${priceLine}). The pool traded $${r(vol24h, 0)} in 24h, under the $${r(env.minVolume24hUsd, 0)} the policy will make a market in: fees come from volume, and there is not enough here to pay a seat. ${poolClause(o, hot)}.`,
       clip(`Only $${r(vol24h / 1000, 0)}k traded here in a day. Passing.`),
@@ -791,8 +848,30 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       `1h move ${pct(hot.priceChange1hPct)} outside +/-${POLICY_MAX_1H_MOVE_PCT}%`,
     );
   }
-  // A pair pool: our own shape, our own arithmetic (the routing model), and the lane's terms.
-  if (pair) return pairOpenDecide(o, x, env, q, now, hot, pair);
+  // A pump.fun pair pool: our own shape, our own arithmetic (the routing model), and the lane's terms.
+  // A STOCK pair is a stock pool: it takes the straddle path below with the lane's cap and the stock model's payback.
+  if (pair && !straddleHere) return pairOpenDecide(o, x, env, q, now, hot, pair);
+  const stockPair = !!pair && straddleHere;
+  const senv = x.pairStock ?? pairStockEnv();
+  if (stockPair && !szPreview.none) {
+    // The pool's rent never comes back and the token half costs two swaps: the stock model's fees must earn that back in time.
+    const p = s.pair!;
+    const solPrice = s.solPriceUsd ?? null;
+    if (solPrice && solPrice > 0 && env.maxPaybackHours > 0) {
+      const seatSol = (szPreview as StraddleSizing).seatSol;
+      const costUsd = p.creationRentSol * solPrice + ((seatSol * solPrice) / 2) * (jupiterEnv().feePct / 100) * 2;
+      const payback = p.feesPerDayUsd > 0 ? costUsd / (p.feesPerDayUsd / 24) : null;
+      if (costUsd > 0 && (payback === null || payback > env.maxPaybackHours)) {
+        const why = payback === null ? `the stock routing model sends none of ${p.stock?.ticker ?? s.baseToken.symbol}'s flow to a ${usd0(p.seatUsd)} pool` : `payback ${r(payback, 1)}h over the ${env.maxPaybackHours}h limit`;
+        return hold(
+          `No band in our ${o.poolLabel} pool (${priceLine}). ${p.exists ? "Seating" : "Making the pool"} costs about $${r(costUsd, 2)} (${p.exists ? "" : `rent ${r(p.creationRentSol, 4)} SOL that never comes back and `}the ${s.baseToken.symbol} half's swap round trip) and ${stockRoutingClause(o)} ${payback === null ? "Nothing routes here at this size: the hop we save is smaller than the walk across our bins." : `That pays the cost back in ${r(payback, 1)}h, past the ${env.maxPaybackHours}h the policy will wait.`} ${poolClause(o, hot)}.`,
+          clip(payback === null ? "The model routes nothing to a pool this size. Passing." : `${r(payback, 0)}h to earn the pool's rent back. Passing.`),
+          "not-worth",
+          why,
+        );
+      }
+    }
+  }
   // Is the seat worth taking? What it earns, against what it costs.
   const seatSolPreview = straddleHere ? (szPreview as StraddleSizing).seatSol : (szPreview as Sizing).amountSol;
   const earn = szPreview.none ? null : seatEarnings(o, x, seatSolPreview, szPreview.sharePct, straddleHere);
@@ -829,6 +908,24 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
     }
     const tDec = Math.min(s.baseToken.decimals, 6);
     const width = 2 * sz.bins + 1;
+    if (stockPair) {
+      // our own STOCKx/SOL pool: the pool is made (or joined) by this open, priced from the perp, judged by the stock model
+      const p = s.pair!;
+      const making = p.exists ? (p.ours ? "our own pool" : "a Meteora pool for the pair that already exists (the program allows one per pair), so the desk seats in it") : `a Meteora DLMM pool of our own at ${r(s.binStep / 100, 2)}% per bin and ${r(s.baseFeePct, 2)}% fee, fees collected in ${p.collectFeeMode === "quote" ? `${q.symbol} only` : "both tokens"}`;
+      const stockWorth = `stock pair lane: ${p.stock?.ticker ?? s.baseToken.symbol} (${p.stock?.issuer ?? "xstocks"}) trades ${usd0(p.refVol24hUsd)} a day across its pools, the deepest on ${p.refVenue ?? "the reference"} with ${usd0(p.refLiquidityUsd)}; a SOL holder buys it through two pools today and through ours in one`;
+      return {
+        decision: {
+          action: "OPEN_POSITION",
+          open: straddleParams(sz),
+          positionAddress: null,
+          reasoning: `${o.poolLabel}: ${stockWorth}. ${priceLine[0].toUpperCase() + priceLine.slice(1)} (${p.priceSource === "perp" ? "the Backpack perp mid in SOL" : p.priceSource === "reference" ? "the reference pool's price in SOL" : "the last price seen"}): ${making}, seating a ${width}-bin Spot straddle from bin ${s.activeBinId - sz.bins} to ${s.activeBinId + sz.bins} (${sz.bins} bins each side, ${r(sz.coverage, 2)}% of price each way${straddleWidthClause(sz, o)}). Seat ${r(sz.seatQuote, 4)} ${q.symbol} (${r(sz.seatSol)} SOL): ${r(sz.amountQuote, 4)} ${q.symbol} + ${r(sz.amountToken, tDec)} ${s.baseToken.symbol}, ${legClause(sz, o, null, q)}; bound by ${sz.boundBy}. ${stockRoutingClause(o)} ${perpClause(o)}${stockPairTermsClause(o, senv, limits)}`,
+          confidence: 0.6,
+          headline: clip(`${pairVerb(o)}: ${s.baseToken.symbol}/${q.symbol} on Meteora, ${r(sz.amountQuote, 2)} ${q.symbol} + ${r(sz.amountToken, 4)} ${s.baseToken.symbol}, ${width} bins. ${hedgeWord(o)}`),
+        },
+        reason: `stock pair straddle ${r(sz.amountQuote, 4)} ${q.symbol} + ${r(sz.amountToken, tDec)} ${s.baseToken.symbol} across ${width} bins in our own pool${sz.acquireToken > 0 ? `, buying ${r(sz.acquireToken, tDec)}` : ""} (routed ${(p.routedShare * 100).toFixed(1)}%, ${usd0(p.feesPerDayUsd)}/day; ${hedgeWord(o).toLowerCase().replace(".", "")})`,
+        branch: "open",
+      };
+    }
     return {
       decision: {
         action: "OPEN_POSITION",
@@ -836,7 +933,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
         positionAddress: null,
         reasoning: `${o.poolLabel}: ${worth}; ${poolClause(o, hot)}. ${priceLine[0].toUpperCase() + priceLine.slice(1)}; a ${width}-bin Spot straddle from bin ${s.activeBinId - sz.bins} to ${s.activeBinId + sz.bins} (${sz.bins} bins each side, ${r(sz.coverage, 2)}% of price each way${straddleWidthClause(sz, o)}) against ${r(sz.depthQuote, 2)} ${q.symbol} of depth on both sides. Seat ${r(sz.seatQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} (${r(sz.seatSol)} SOL): ${r(sz.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} + ${r(sz.amountToken, tDec)} ${s.baseToken.symbol}, ${legClause(sz, o, null, q)}; bound by ${sz.boundBy}; our share of the band ${r(sz.sharePct, 1)}%. ${perpClause(o)}`,
         confidence: isHotPick ? 0.6 : 0.55,
-        headline: clip(`Straddling ${o.poolLabel}: ${r(sz.amountQuote, 2)} ${q.symbol} + ${r(sz.amountToken, 4)} ${s.baseToken.symbol} across ${width} bins. Hedged.`),
+        headline: clip(`Straddling ${o.poolLabel}: ${r(sz.amountQuote, 2)} ${q.symbol} + ${r(sz.amountToken, 4)} ${s.baseToken.symbol} across ${width} bins. ${hedgeWord(o)}`),
       },
       reason: `straddle ${r(sz.amountQuote, 2)} ${q.symbol} + ${r(sz.amountToken, tDec)} ${s.baseToken.symbol} across ${width} bins${sz.acquireToken > 0 ? `, buying ${r(sz.acquireToken, tDec)}` : ""} (${worth})`,
       branch: "open",
@@ -875,10 +972,11 @@ function stockBandDecide(o: Observation, x: PolicyExtras, env: PolicyEnv, q: Quo
   const oor = Math.round(o.engine?.outOfRangeSec?.[band.address] ?? 0);
   const sym = s.baseToken.symbol;
   const tDec = Math.min(s.baseToken.decimals, 6);
+  const own = isStockPairPool(o) ? ` in our own ${o.poolLabel} pool` : "";
   if (band.inRange) {
     return hold(
-      `Straddle ${addr} covers bins ${range} and the ${priceLine} sits inside it. It ${bandClause(o, band, q)}. In range is where the fees are, in both directions; the ${sym} half is the hedge desk's to cover. Nothing to move.`,
-      "In range. Fees ticking both ways. Nothing to do.",
+      `Straddle ${addr} covers bins ${range}${own} and the ${priceLine} sits inside it. It ${bandClause(o, band, q)}. In range is where the fees are, in both directions; the ${sym} half is the ${o.engine?.basis?.perpSymbol ? "hedge desk's to cover" : "book's own risk: no Backpack perp is listed, so it runs unhedged"}. Nothing to move.`,
+      own ? "In range in our own pool. Fees ticking both ways. Nothing to do." : "In range. Fees ticking both ways. Nothing to do.",
       "in-range",
       `straddle ${addr} in range at bin ${s.activeBinId}`,
     );
@@ -917,7 +1015,7 @@ function stockBandDecide(o: Observation, x: PolicyExtras, env: PolicyEnv, q: Quo
       action: "REBALANCE",
       open: straddleParams(sz),
       positionAddress: band.address,
-      reasoning: `Price is ${dist} bins ${where} straddle ${addr} ${range} (${priceLine}) for ${oor}s, past the ${minSec}s minimum; the band ${bandClause(o, band, q)} and earns nothing there. Re-centring: close it, then lay ${r(sz.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} + ${r(sz.amountToken, tDec)} ${sym} as a ${width}-bin straddle from bin ${s.activeBinId - sz.bins} to ${s.activeBinId + sz.bins} (${r(sz.coverage, 2)}% of price each way${straddleWidthClause(sz, o)}), ${legClause(sz, o, band, q)}; size bound by ${sz.boundBy}, our share of the band ${r(sz.sharePct, 1)}%. ${perpClause(o)}`,
+      reasoning: `Price is ${dist} bins ${where} straddle ${addr} ${range}${own} (${priceLine}) for ${oor}s, past the ${minSec}s minimum; the band ${bandClause(o, band, q)} and earns nothing there. Re-centring: close it, then lay ${r(sz.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} + ${r(sz.amountToken, tDec)} ${sym} as a ${width}-bin straddle from bin ${s.activeBinId - sz.bins} to ${s.activeBinId + sz.bins} (${r(sz.coverage, 2)}% of price each way${straddleWidthClause(sz, o)}), ${legClause(sz, o, band, q)}; size bound by ${sz.boundBy}, our share of the band ${r(sz.sharePct, 1)}%. ${own ? `${stockRoutingClause(o)} ` : ""}${perpClause(o)}`,
       confidence: 0.65,
       headline: clip(`${dist} bins ${where} the straddle for ${oor}s. Re-centring ${r(sz.amountQuote, 2)} ${q.symbol} + ${r(sz.amountToken, 4)} ${sym} on bin ${s.activeBinId}.`),
     },
@@ -944,8 +1042,9 @@ function pairOpenDecide(o: Observation, x: PolicyExtras, env: PolicyEnv, q: Quot
     return hold(`No band in our ${o.poolLabel} pool (${priceLine}); ${poolClause(o, hot)}. No size for a pair seat: ${sz.none}.`, "No size for the pair. Holding.", "no-size", sz.none);
   }
   // The pool's rent never comes back and the token half costs two swaps: the model's fees must earn that back in time.
+  // A house token is made whatever the model says: it is our own pool, and its payback is not the point.
   const solPrice = s.solPriceUsd ?? null;
-  if (solPrice && solPrice > 0 && env.maxPaybackHours > 0) {
+  if (!p.house && solPrice && solPrice > 0 && env.maxPaybackHours > 0) {
     const costUsd = p.creationRentSol * solPrice + (sz.seatSol * solPrice) / 2 * (jupiterEnv().feePct / 100) * 2;
     const payback = p.feesPerDayUsd > 0 ? costUsd / (p.feesPerDayUsd / 24) : null;
     if (costUsd > 0 && (payback === null || payback > env.maxPaybackHours)) {
@@ -959,7 +1058,9 @@ function pairOpenDecide(o: Observation, x: PolicyExtras, env: PolicyEnv, q: Quot
     }
   }
   const width = 2 * sz.bins + 1;
-  const worth = `pair lane: ${sym} graduated ${r(admitted.ageHours, 1)}h ago and its ${p.refVenue ?? "PumpSwap"} pool trades ${usd0(p.refVol24hUsd)} a day (${usd0(p.refVol1hUsd)} in the last hour) on ${usd0(p.refLiquidityUsd)} of constant-product depth, turnover ${r(admitted.turnover, 1)}x`;
+  const worth = p.house
+    ? `house token: ${sym} is our own launch, always seated${p.refKnown === false ? "; no reference pool yet" : `; its ${p.refVenue ?? "reference"} pool trades ${usd0(p.refVol24hUsd)} a day on ${usd0(p.refLiquidityUsd)} of depth`}`
+    : `pair lane: ${sym} graduated ${r(admitted.ageHours, 1)}h ago and its ${p.refVenue ?? "PumpSwap"} pool trades ${usd0(p.refVol24hUsd)} a day (${usd0(p.refVol1hUsd)} in the last hour) on ${usd0(p.refLiquidityUsd)} of constant-product depth, turnover ${r(admitted.turnover, 1)}x`;
   const making = p.exists ? (p.ours ? "our own pool" : "a Meteora pool for the pair that already exists (the program allows one per pair), so the desk seats in it") : `a Meteora DLMM pool of our own at ${r(s.binStep / 100, 2)}% per bin and ${r(s.baseFeePct, 2)}% fee, fees collected in ${p.collectFeeMode === "quote" ? `${q.symbol} only` : "both tokens"}`;
   return {
     decision: {
@@ -991,7 +1092,8 @@ function pairBandDecide(o: Observation, x: PolicyExtras, env: PolicyEnv, q: Quot
   const oor = Math.round(o.engine?.outOfRangeSec?.[band.address] ?? 0);
   const sym = s.baseToken.symbol;
   const tDec = Math.min(s.baseToken.decimals, 6);
-  const stale = s.pair?.stale ? " The reference row has gone cold: the fade exit is the engine's to call." : "";
+  const house = !!s.pair?.house;
+  const stale = s.pair?.stale ? (house ? " No reference row right now; a house pool stays up." : " The reference row has gone cold: the fade exit is the engine's to call.") : "";
   if (band.inRange) {
     return hold(
       `Band ${addr} covers bins ${range} of our own ${o.poolLabel} pool and the ${priceLine} sits inside it. It ${bandClause(o, band, q)}. Every fee the pool earns is ours while nobody else is in it; nothing to move.${stale}`,
@@ -1012,7 +1114,8 @@ function pairBandDecide(o: Observation, x: PolicyExtras, env: PolicyEnv, q: Quot
   }
   const gate = openGate(o, limits, now);
   const sz = gate ? null : sizePair(o, x, q, env, penv, band);
-  if (gate || !sz || sz.none || s.pair?.stale) {
+  // a cold reference closes a pump.fun pair (its fade exit is coming anyway); a house pool re-centres regardless
+  if (gate || !sz || sz.none || (s.pair?.stale && !house)) {
     const why = gate ?? sz?.none ?? "the reference row has gone cold";
     return {
       decision: {

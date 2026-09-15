@@ -63,6 +63,24 @@ stock token short on Backpack's perp: live only with keys, `HEDGE_LIVE=true` and
 every cycle, funding accrued from the basis row, and the report nets band P&L, swap costs, hedge P&L
 and funding per stock, in USD first when the book started with USDC.
 
+### Our own STOCKx/SOL pools (the stock pair lane)
+
+Every tokenized-stock pool on the board but one sits on Raydium or Orca, mostly USDC-quoted, so a SOL
+holder buys a stock through two pools. The stock pair lane (src/screener/pairStock.ts) makes a
+STOCKx/SOL pool of the desk's own on Meteora DLMM for each xStock it admits (reference liquidity
+>= `PAIR_STOCK_MIN_REF_LIQUIDITY_USD`, the ticker's pools trading >= `PAIR_STOCK_MIN_VOLUME_24H_USD` a
+day; `PAIR_STOCK_TICKERS` narrows it), priced from the Backpack perp mid, and seats a straddle in it
+hedged on Backpack where a perp is listed. A stock routing MODEL (the single hop against the two-hop
+USDC route, split with the existing SOL-quoted pools by depth) picks the fee from `PAIR_STOCK_FEE_MENU`
+and orders the candidates; the picker takes the lane right after held and pinned pools, up to
+`PAIR_STOCK_MAX_POOLS` with `PAIR_STOCK_RESERVE_SEATS` kept from ordinary picks. Same venue, same
+`pair-<mint>` key, same create path and live gate as the pump.fun pair lane; no launch-lane exits.
+
+```bash
+npm run pair-stock                                                              # read-only: what the lane admits right now, and the model's numbers
+npm run test:pair-stock                                                         # the lane end to end
+```
+
 ```bash
 PAPER_SOL=2 PAPER_USDC=10000 DATA_DIR=data-paper-stock BOOK=stocks npm start   # a stock paper book
 DATA_DIR=data-paper-stock npm run paper:report                                  # per stock: bands, hedge, funding, net

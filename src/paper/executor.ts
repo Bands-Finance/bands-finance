@@ -227,6 +227,8 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
           address: s.address,
           mint: s.pair.mint,
           symbol: s.pair.symbol,
+          stock: s.pair.stock ?? null,
+          house: !!s.pair.house,
           refPool: s.pair.refPool,
           refVenue: s.pair.refVenue,
           quote: q.symbol,
@@ -239,7 +241,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         push({
           label: `create pool ${s.label}`,
           ok: true,
-          skipped: `paper: made ${s.address} on Meteora DLMM, bin step ${s.binStep} (${(s.binStep / 100).toFixed(2)}%/bin), base fee ${s.baseFeePct}%, fees collected in ${s.pair.collectFeeMode === "quote" ? `the ${q.symbol} only` : "both tokens"}; creation rent ${made.rentSol.toFixed(6)} SOL charged, none of it refundable; active bin ${s.activeBinId} from the ${s.pair.refVenue ?? "reference"} price ${s.activePrice.toPrecision(6)}`,
+          skipped: `paper: made ${s.address} on Meteora DLMM${s.pair.stock ? ` for ${s.pair.stock.ticker} (${s.pair.stock.issuer})` : ""}, bin step ${s.binStep} (${(s.binStep / 100).toFixed(2)}%/bin), base fee ${s.baseFeePct}%, fees collected in ${s.pair.collectFeeMode === "quote" ? `the ${q.symbol} only` : "both tokens"}; creation rent ${made.rentSol.toFixed(6)} SOL charged, none of it refundable; active bin ${s.activeBinId} from the ${s.pair.priceSource === "perp" ? "Backpack perp mid" : (s.pair.refVenue ?? "reference") + " price"} ${s.activePrice.toPrecision(6)}`,
         });
         ledger({
           ...baseRow(s, "rent", null, now),

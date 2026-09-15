@@ -21,6 +21,16 @@
  *   PAIR_MIN_VOLUME_1H_USD; turnover >= PAIR_MIN_TURNOVER; not being dumped (the launch lane's
  *   rule); a reference price to open at. A watchlist DENY wins; at most PAIR_MAX_POOLS of ours open.
  *
+ * THE HOUSE TOKEN. Zach's own launch (the AnsemHack Clawrena entry, a token launched on ClawPump,
+ * which launches on pump.fun) is a mint on PAIR_HOUSE_MINTS: ALWAYS admitted by this lane whatever
+ * its age, volume or liquidity (only an explicit watchlist DENY refuses it), seated at
+ * PAIR_HOUSE_SEAT_PCT of the book, never counted against PAIR_MAX_POOLS, and carrying NONE of the
+ * launch-style exits (no maximum hold, no volume-fade EXPIRE: it is our own token and the pool
+ * stays up; the ordinary stop and the re-centre apply). Its reference for the model is whatever row
+ * the hot watch or the board has for the mint (the bonding curve, PumpSwap, anything); with none,
+ * the pool is still made once a price is known and the model reports share n/a (nothing accrues on
+ * paper until a reference exists).
+ *
  * OTHER POOLS ARE NOT A REFUSAL. Zach: "we simply need to supplement additional liquidity
  * ourselves." A token that clears the criteria gets our liquidity whatever else exists. What
  * exists still matters twice: (1) Meteora derives a customizable-permissionless pool's address from
@@ -91,6 +101,10 @@ export interface PairEnv {
   tradeMaxUsd: number;
   /** PUMPSWAP_FEE_PCT: what PumpSwap charges a trader */
   pumpswapFeePct: number;
+  /** PAIR_HOUSE_MINTS: our own tokens, always seated (see THE HOUSE TOKEN above); default none */
+  houseMints: string[];
+  /** PAIR_HOUSE_SEAT_PCT: a house seat is this percent of MAX_TOTAL_EXPOSURE_SOL */
+  houseSeatPct: number;
 }
 
 const num = (v: string | undefined, d: number): number => {
@@ -127,13 +141,34 @@ export function pairEnv(env: NodeJS.ProcessEnv = process.env): PairEnv {
     tradeMinUsd: Math.max(1, num(env.PAIR_TRADE_MIN_USD, 50)),
     tradeMaxUsd: Math.max(1, num(env.PAIR_TRADE_MAX_USD, 5_000)),
     pumpswapFeePct: Math.max(0, num(env.PUMPSWAP_FEE_PCT, 0.25)),
+    houseMints: parseMintList(env.PAIR_HOUSE_MINTS),
+    houseSeatPct: Math.max(0, num(env.PAIR_HOUSE_SEAT_PCT, 10)),
   };
 }
 
-/** "25,50,100" -> [25, 50, 100]: whole bps in (0, 1000], deduplicated, ascending; unset or empty -> the default menu. */
-export function feeMenu(raw: string | undefined): number[] {
+/** "mintA, mintB" -> ["mintA", "mintB"], deduplicated; unset or empty -> none. */
+export function parseMintList(raw: string | undefined): string[] {
+  const out: string[] = [];
+  for (const part of (raw ?? "").split(",")) {
+    const m = part.trim();
+    if (m && !out.includes(m)) out.push(m);
+  }
+  return out;
+}
+
+/** A mint on PAIR_HOUSE_MINTS: our own token. */
+export const isHouseMint = (mint: string | null | undefined, env: PairEnv): boolean => !!mint && env.houseMints.includes(mint);
+
+/** The SOL a house seat may hold: PAIR_HOUSE_SEAT_PCT of the book's total exposure limit. */
+export const pairHouseSeatSol = (maxTotalExposureSol: number, env: PairEnv): number => Math.max(0, (maxTotalExposureSol * env.houseSeatPct) / 100);
+
+/** What the verdict says of a house mint. */
+export const HOUSE_NOTE = "house token: always seated";
+
+/** "25,50,100" -> [25, 50, 100]: whole bps in (0, 1000], deduplicated, ascending; unset or empty -> the default menu (the pump.fun lane's unless the caller passes its own). */
+export function feeMenu(raw: string | undefined, defaults: readonly number[] = [25, 50, 100]): number[] {
   const src = (raw ?? "").trim();
-  const parts = src === "" ? ["25", "50", "100"] : src.split(",");
+  const parts = src === "" ? defaults.map(String) : src.split(",");
   const out = new Set<number>();
   for (const p of parts) {
     const n = Math.floor(Number(p.trim()));
@@ -211,7 +246,7 @@ export interface Competition {
 }
 
 export type PairVerdict =
-  | { ok: true; ageHours: number; turnover: number; refLiquidityUsd: number; competingDepthUsd: number; competitors: CompetingPool[] }
+  | { ok: true; ageHours: number; turnover: number; refLiquidityUsd: number; competingDepthUsd: number; competitors: CompetingPool[]; house?: boolean; note?: string }
   | { ok: false; reason: string };
 
 /** The venues whose SOL/USDC pools count as competing concentrated depth (every venue with a bin model). */
@@ -223,6 +258,21 @@ export const CONCENTRATED_VENUES: readonly string[] = ["meteora-dlmm", "raydium-
  */
 export function pairVerdict(row: PairRow, env: PairEnv, competition: Competition | null = null): PairVerdict {
   if (!env.on) return { ok: false, reason: "the pair lane is off (PAIR_LANE is not true)" };
+  // THE HOUSE TOKEN: our own mint clears every floor by definition; only a watchlist DENY (the seating rule's) refuses it.
+  if (isHouseMint(row.baseMint, env)) {
+    const liq = row.liquidityUsd !== null && Number.isFinite(row.liquidityUsd) ? row.liquidityUsd : 0;
+    const v24 = row.vol24hUsd !== null && Number.isFinite(row.vol24hUsd) ? row.vol24hUsd : 0;
+    return {
+      ok: true,
+      house: true,
+      note: HOUSE_NOTE,
+      ageHours: row.ageHours !== null && Number.isFinite(row.ageHours) ? row.ageHours : 0,
+      turnover: liq > 0 ? Math.round((v24 / liq) * 100) / 100 : 0,
+      refLiquidityUsd: liq,
+      competingDepthUsd: competition?.depthUsd ?? 0,
+      competitors: competition?.pools ?? [],
+    };
+  }
   if (row.origin !== "pump.fun") return { ok: false, reason: "not a pump.fun token: the pair lane makes markets in graduated pump.fun tokens only" };
   if (row.venue !== "pumpswap") return { ok: false, reason: `the reference pool is on ${row.venue}, not PumpSwap: the lane wants the token graduated and trading on pump.fun's AMM` };
   if (row.quoteSymbol !== "SOL" && row.quoteSymbol !== "USDC") return { ok: false, reason: `the reference pool is quoted in ${row.quoteSymbol}, and the pair lane prices its pool from a SOL or USDC reference` };
@@ -335,37 +385,43 @@ export function theirCostPct(tradeUsd: number, i: Pick<RoutedShareInput, "theirF
 export function routedShareBreakdown(i: RoutedShareInput): { gross: number; net: number; ourDepthUsd: number } {
   const bins = i.ourBins ?? 5;
   const ourDepthUsd = Math.max(0, i.ourDepthPerBinUsd) * Math.max(0, bins) * 2;
-  const clamp = (n: number) => Math.min(1, Math.max(0, Number.isFinite(n) ? n : 0));
   if (!(i.ourDepthPerBinUsd > 0) || !(bins > 0) || !(i.tradeMaxUsd > 0)) return { gross: 0, net: 0, ourDepthUsd };
+  const gross = valueWeightedShare(i, (d) => {
+    const ours = ourCostPct(d, i);
+    return ours !== null && ours < theirCostPct(d, i);
+  });
+  return { gross, net: splitWithCompetingDepth(gross, ourDepthUsd, i.competingConcentratedDepthUsd), ourDepthUsd };
+}
+
+/**
+ * MODEL. The fraction, by value, of log-uniform trade sizes on [tradeMinUsd, tradeMaxUsd] for which
+ * `wins(D)` holds: value-weighted, trapezoid rule over `steps` (default 400). Shared by every lane's
+ * routing model; what "wins" means (which route is cheaper) is the caller's.
+ */
+export function valueWeightedShare(i: Pick<RoutedShareInput, "tradeMinUsd" | "tradeMaxUsd" | "steps">, wins: (tradeUsd: number) => boolean): number {
+  const clamp = (n: number) => Math.min(1, Math.max(0, Number.isFinite(n) ? n : 0));
+  if (!(i.tradeMaxUsd > 0)) return 0;
   const lo = Math.log(Math.max(1e-9, Math.min(i.tradeMinUsd, i.tradeMaxUsd)));
   const hi = Math.log(Math.max(1e-9, i.tradeMaxUsd));
   const steps = Math.max(1, Math.floor(i.steps ?? 400));
+  if (hi <= lo) return wins(Math.exp(hi)) ? 1 : 0;
   let won = 0;
   let total = 0;
-  const wins = (d: number) => {
-    const ours = ourCostPct(d, i);
-    return ours !== null && ours < theirCostPct(d, i);
-  };
-  if (hi <= lo) {
-    const d = Math.exp(hi);
-    const gross = wins(d) ? 1 : 0;
-    return { gross, net: split(gross, ourDepthUsd, i.competingConcentratedDepthUsd), ourDepthUsd };
-  }
   for (let k = 0; k <= steps; k++) {
     const d = Math.exp(lo + ((hi - lo) * k) / steps);
     const w = d * (k === 0 || k === steps ? 0.5 : 1); // value-weighted, trapezoid ends
     total += w;
     if (wins(d)) won += w;
   }
-  const gross = clamp(total > 0 ? won / total : 0);
-  return { gross, net: clamp(split(gross, ourDepthUsd, i.competingConcentratedDepthUsd)), ourDepthUsd };
+  return clamp(total > 0 ? won / total : 0);
 }
 
-/** The flow that leaves the reference pool is split with competing concentrated depth in proportion to depth. */
-function split(share: number, ourDepthUsd: number, competingUsd: number | undefined): number {
+/** The flow that leaves the reference pool is split with competing concentrated depth in proportion to depth. Shared by every lane. */
+export function splitWithCompetingDepth(share: number, ourDepthUsd: number, competingUsd: number | undefined): number {
   const c = competingUsd !== undefined && Number.isFinite(competingUsd) && competingUsd > 0 ? competingUsd : 0;
   if (c <= 0) return share;
-  return ourDepthUsd + c > 0 ? (share * ourDepthUsd) / (ourDepthUsd + c) : 0;
+  const net = ourDepthUsd + c > 0 ? (share * ourDepthUsd) / (ourDepthUsd + c) : 0;
+  return Math.min(1, Math.max(0, Number.isFinite(net) ? net : 0));
 }
 
 /** MODEL. routedShareBreakdown's net share in [0, 1]. */
@@ -457,10 +513,10 @@ export interface PairCandidate extends PairRow {
   heat?: number;
 }
 
-/** Every hot row the lane could judge: the pump.fun rows. The verdict does the rest. */
-export const pairCandidatesOf = (rows: readonly HotRow[]): PairCandidate[] =>
+/** Every hot row the lane could judge: the pump.fun rows, and any row of a house mint whatever its venue. The verdict does the rest. */
+export const pairCandidatesOf = (rows: readonly HotRow[], houseMints: readonly string[] = []): PairCandidate[] =>
   rows
-    .filter((r) => r.origin === "pump.fun")
+    .filter((r) => r.origin === "pump.fun" || houseMints.includes(r.baseMint))
     .map((r) => ({
       address: r.address,
       baseMint: r.baseMint,
@@ -511,6 +567,49 @@ export interface PairSeat {
   verdict: Extract<PairVerdict, { ok: true }>;
   /** our pool's key: pair-<mint> */
   address: string;
+  /** a house token's seat: never counted against PAIR_MAX_POOLS */
+  house?: boolean;
+}
+
+/** A house mint with no row anywhere: the seat is still made; the model has nothing to read until a row appears. */
+export const houseCandidateOf = (mint: string, env: PairEnv): PairCandidate => ({
+  address: "",
+  baseMint: mint,
+  baseSymbol: `${mint.slice(0, 4)}…${mint.slice(-4)}`,
+  name: "house token",
+  venue: "none",
+  quoteSymbol: env.quote,
+  origin: null,
+  ageHours: null,
+  liquidityUsd: null,
+  vol24hUsd: null,
+  vol1hUsd: null,
+  priceNative: null,
+  priceUsd: null,
+});
+
+/**
+ * PURE. The house tokens' seats (PAIR_HOUSE_MINTS): every house mint not already seated, denied or
+ * out of room, with its row from `rows` when one exists and a bare candidate when none does. They
+ * never count against PAIR_MAX_POOLS; the picker takes them right after held and pinned pools.
+ */
+export function pairHouseSeats(rows: readonly PairCandidate[], o: Pick<PairSeatOptions, "env" | "freeSeats" | "quoteOk" | "denied" | "hasPool" | "hasToken">): PairSeat[] {
+  const out: PairSeat[] = [];
+  if (!o.env.on) return out;
+  let free = Math.max(0, o.freeSeats);
+  for (const mint of o.env.houseMints) {
+    if (free <= 0) break;
+    const address = pairPoolAddress(mint);
+    if (o.hasPool?.(address) || o.hasToken?.(mint)) continue;
+    if (!o.quoteOk(o.env.quote)) continue;
+    const row = rows.filter((r) => r.baseMint === mint).sort((a, b) => (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0))[0] ?? houseCandidateOf(mint, o.env);
+    if (o.denied?.(row)) continue;
+    const verdict = pairVerdict(row, o.env, null);
+    if (!verdict.ok) continue;
+    out.push({ row, verdict, address, house: true });
+    free--;
+  }
+  return out;
 }
 
 /**
@@ -520,16 +619,17 @@ export interface PairSeat {
  * other lane has had its chance.
  */
 export function pairSeats(rows: readonly PairCandidate[], o: PairSeatOptions): PairSeat[] {
-  const out: PairSeat[] = [];
-  if (!o.env.on) return out;
+  if (!o.env.on) return [];
+  // the house tokens first: always seated, never counted against PAIR_MAX_POOLS
+  const out: PairSeat[] = pairHouseSeats(rows, o);
   let pools = Math.max(0, o.poolsTaken ?? 0);
-  let free = Math.max(0, o.freeSeats);
-  const takenTokens = new Set<string>();
+  let free = Math.max(0, o.freeSeats - out.length);
+  const takenTokens = new Set<string>(out.map((h) => h.row.baseMint));
   const worthOf = (row: PairCandidate): number => (o.worth ? o.worth(row) : (row.vol1hUsd ?? 0));
   const ordered = [...rows].sort((a, b) => worthOf(b) - worthOf(a) || (b.vol1hUsd ?? 0) - (a.vol1hUsd ?? 0) || (b.vol24hUsd ?? 0) - (a.vol24hUsd ?? 0) || (b.heat ?? 0) - (a.heat ?? 0));
   for (const row of ordered) {
     if (pools >= o.env.maxPools || free <= 0) break;
-    if (!row.baseMint) continue;
+    if (!row.baseMint || isHouseMint(row.baseMint, o.env)) continue;
     if (o.worth && !(worthOf(row) > 0)) continue;
     const address = pairPoolAddress(row.baseMint);
     if (o.hasPool?.(address) || o.hasPool?.(row.address)) continue;

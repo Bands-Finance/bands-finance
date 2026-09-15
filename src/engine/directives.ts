@@ -8,6 +8,9 @@
  *   EXPIRE   a LAUNCH-lane band has run out of road: past its maximum hold, or the pool's last hour
  *            has faded. A launch trade is a trade on a moment; when the moment is over the band
  *            comes off and liquidates, in profit or not. Ordinary bands never see this directive.
+ *            A STOCK-pair band (src/screener/pairStock.ts) sees it for one reason only: its reference
+ *            pool has been off the board for PAIR_STOCK_REF_GONE_CYCLES cycles, so nothing prices
+ *            our pool; it is marked at the last price and closed, liquidating.
  *   COLLECT  the collect policy wants a claim, and the guards' rate limits would let it through
  *
  * Precedence FLATTEN > STOP > EXPIRE > COLLECT, one directive per pool per cycle. When a directive exists
@@ -48,6 +51,11 @@ export interface DirectiveContext {
    * judge, which is the case for every pool the lane never seated.
    */
   launch?: { env: LaunchEnv; vol1hUsd: number | null };
+  /**
+   * The stock pair lane's one exit, for its pools only: how many consecutive cycles the reference
+   * pool has been off the board, and the count at which the band comes off (PAIR_STOCK_REF_GONE_CYCLES).
+   */
+  pairStock?: { ticker: string; refGoneCycles: number; maxCycles: number };
 }
 
 const close = (positionAddress: string, reasoning: string, headline: string, liquidate = false): Decision => ({
@@ -117,6 +125,24 @@ export function engineDirective(ctx: DirectiveContext): Directive | null {
         ),
       };
     }
+  }
+
+  // EXPIRE (stock pair): the reference pool has been off the board for the lane's limit. Nothing prices
+  // our pool any more; the band is marked at the last price and comes off, liquidating.
+  const ps = ctx.pairStock;
+  if (ps && ps.maxCycles > 0 && ps.refGoneCycles >= ps.maxCycles && positions.length > 0) {
+    const target = [...positions].sort((a, b) => b.valueInSol - a.valueInSol)[0];
+    const reason = `stock pair: ${ps.ticker}'s reference pool has been off the board for ${ps.refGoneCycles} cycle(s) (limit ${ps.maxCycles}): nothing prices our pool, so it is marked at the last price and closed`;
+    return {
+      kind: "EXPIRE",
+      reason,
+      decision: close(
+        target.address,
+        `Engine directive EXPIRE: ${reason}. The band comes off and its ${ctx.snapshot.baseToken.symbol} is sold back to the quote.`,
+        "Reference gone. Off the table.",
+        true,
+      ),
+    };
   }
 
   // COLLECT: only when the daily cap would let it through, so the cycle is not wasted (claims are not cooled down).
