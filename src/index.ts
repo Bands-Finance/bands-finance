@@ -67,6 +67,9 @@ import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refre
 import { pinRotateMinAgeMin, rotationCandidate, type RotationBand } from "./engine/rotation";
 import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
 import { fetchPoolHistory, historyFresh, historyPhrase, historyRefusal, memeHistoryEnv, type HistoryRecord } from "./screener/memeHistory";
+import { fetchMeteoraStockPools, meteoraStockCandidates, meteoraStockEnv, saveStockMints, stockMintMap, stockTagFromMap, type MeteoraStockPool } from "./screener/meteoraStocks";
+import { verifiedStock } from "./screener/stocks";
+import { dataPath } from "./lib/ledger";
 import { voiceLine } from "./agent/voice";
 import { jupiterEnv as swapEnv, meteoraOnlyRoutes } from "./tools/jupiter";
 import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairHouseSeats, pairHouseSeatSol, pairLaunchEnv, pairMintOf, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict, type PairSeatOptions } from "./screener/pair";
@@ -136,6 +139,8 @@ interface App {
   rotateOut: { pool: string; label: string; reason: string } | null;
   /** a month of each memecoin pool's trading, read from GeckoTerminal (src/screener/memeHistory.ts), by pool address */
   memeHistory: Map<string, HistoryRecord>;
+  /** Meteora's tokenized-stock pools (the RWA category, src/screener/meteoraStocks.ts) and when they were read */
+  meteoraStocks: { at: number; pools: MeteoraStockPool[] } | null;
 }
 
 interface Observed {
@@ -347,6 +352,41 @@ function basisRowFor(address: string, snapshot?: PoolSnapshot | null, pinnedTick
   return ticker ? basisForTicker(ticker) : null;
 }
 
+/** The Meteora stock pool at an address, when the RWA category carries it. */
+function meteoraStockAt(app: App, address: string): MeteoraStockPool | null {
+  return app.meteoraStocks?.pools.find((p) => p.address === address) ?? null;
+}
+
+/**
+ * Read Meteora's tokenized-stock pools (the RWA category) every METEORA_STOCK_REFRESH_MIN: write the stock
+ * tags to DATA_DIR/stock-mints.json for the screener and the basis feed, and tag the board in memory now,
+ * so a Backpack, xStocks or Ondo token is never judged as a memecoin. A failed read keeps the last answer.
+ */
+async function refreshMeteoraStocks(app: App): Promise<void> {
+  const env = meteoraStockEnv();
+  if (!env.on) return;
+  if (app.meteoraStocks && Date.now() - app.meteoraStocks.at < env.refreshMin * 60_000) return;
+  try {
+    const pools = await fetchMeteoraStockPools({ maxPages: 13 });
+    const map = stockMintMap(pools);
+    saveStockMints(dataPath("."), map);
+    app.meteoraStocks = { at: Date.now(), pools };
+    let tagged = 0;
+    for (const p of app.screen?.pools ?? []) {
+      if (p.stock && p.stock.issuer !== "unknown") continue;
+      const t = stockTagFromMap(map, p.baseMint);
+      if (t) {
+        p.stock = t;
+        tagged++;
+      }
+    }
+    const dl = pools.filter((p) => p.poolType === "dlmm" && p.issuer !== "unknown");
+    console.log(`[cycle ${app.cycle}] meteora stocks: ${pools.length} stock pools (${dl.length} DLMM from known issuers, ${Object.keys(map).length} stock mints); ${tagged} board pool(s) newly tagged as stocks`);
+  } catch (err) {
+    console.error(`[cycle ${app.cycle}] meteora stocks: read failed, keeping the last answer: ${(err as Error).message}`);
+  }
+}
+
 /** Discover the pinned stocks' Meteora pools: on start and every PINNED_REFRESH_MS; a failed refresh keeps the last answer. */
 async function refreshPinned(app: App): Promise<void> {
   const tickers = pinnedTickers();
@@ -451,7 +491,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const takenTokens = new Set<string>();
   for (const a of set) {
     // a made pair's key names its mint, and a pinned Meteora pool (off the board) carries its own: the token's seat is taken
-    const t = byAddress.get(a)?.baseMint ?? pairMintOf(a) ?? pinnedPoolAt(app.pinned, a)?.mint;
+    const t = byAddress.get(a)?.baseMint ?? pairMintOf(a) ?? pinnedPoolAt(app.pinned, a)?.mint ?? meteoraStockAt(app, a)?.mint;
     if (t) takenTokens.add(t);
   }
   const take = (address: string, baseMint: string | undefined): boolean => {
@@ -546,6 +586,25 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     );
   }
 
+  // METEORA'S TOKENIZED STOCKS (src/screener/meteoraStocks.ts): the busiest real Meteora DLMM stock pools,
+  // best fee/TVL first, one per ticker, up to METEORA_STOCK_MAX_POOLS counting the ones held. The volume
+  // floor is the policy's own, so the picker never seats a pool the policy would pass on for volume.
+  const mEnv = meteoraStockEnv();
+  if (mEnv.on && app.meteoraStocks) {
+    let room = mEnv.maxPools - [...set].filter((a) => meteoraStockAt(app, a)).length;
+    for (const p of meteoraStockCandidates(app.meteoraStocks.pools, mEnv, { minVolume24hUsd: policyEnv().minVolume24hUsd, quoteOk })) {
+      if (room <= 0 || set.size >= config.maxActivePools) break;
+      if (set.has(p.address) || takenTokens.has(p.mint)) continue;
+      if (watchlistDenial({ address: p.address, baseSymbol: p.symbol, baseMint: p.mint, name: `${p.symbol} / ${p.quoteSymbol}` }, watch)) continue;
+      if (!take(p.address, p.mint)) continue;
+      room--;
+      console.log(
+        `[cycle ${app.cycle}] meteora stocks: ${p.symbol}/${p.quoteSymbol} (${p.ticker}, ${p.issuer}, ${p.address.slice(0, 6)}), ${p.binStep !== null ? `${p.binStep / 100}%/bin, ` : ""}${p.feePct ?? "?"}% fee, ` +
+          `$${Math.round(p.tvlUsd ?? 0).toLocaleString("en-US")} deep, $${Math.round(p.volume24hUsd ?? 0).toLocaleString("en-US")} in 24h, ${(p.feeToTvl24hPct ?? 0).toFixed(2)}% of its depth in fees a day`,
+      );
+    }
+  }
+
   // The STOCK PAIR lane, FIRST after held and pinned pools (it is the focus): for each tokenized stock
   // the lane admits, a STOCKx/SOL pool of OUR OWN (key pair-<mint>), best by the stock routing model
   // first, up to PAIR_STOCK_MAX_POOLS counting the ones held, one per ticker. Other pools never refuse
@@ -596,6 +655,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   for (const r of hotRows(app)) {
     if (set.size >= ordinaryCap) break;
     const row = { address: r.address, baseSymbol: r.baseSymbol, baseMint: r.baseMint, name: r.name };
+    if (r.stock && !verifiedStock(r.stock)) continue;
     if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume && !takenTokens.has(r.baseMint) && memeOk({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours, stock: r.stock }, r.address)) take(r.address, r.baseMint);
   }
   const candidates = (app.screen?.pools ?? []).filter(
@@ -615,6 +675,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   for (const p of byYield) {
     if (set.size >= ordinaryCap) break;
     if (takenTokens.has(p.baseMint) || set.has(p.address)) continue;
+    if (p.stock && !verifiedStock(p.stock)) continue;
     if (!memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock }, p.address)) continue;
     take(p.address, p.baseMint);
   }
@@ -842,6 +903,29 @@ function screenContext(app: App, address: string, state?: RiskState, snapshot?: 
   const launch = launchOf(hotRowOf(address));
   const p = s.pools.find((x) => x.address === address);
   const pin = pinnedPoolAt(app.pinned, address);
+  const met = meteoraStockAt(app, address);
+  if (!p && !pin && met) {
+    // a Meteora stock pool the board does not carry: Meteora's own numbers
+    return {
+      rank: 0,
+      rankedPools: s.rankedPools,
+      score: 0,
+      feeToTvl24hPct: met.feeToTvl24hPct,
+      volume24hUsd: met.volume24hUsd,
+      tvlUsd: met.tvlUsd,
+      ageHours: met.createdAt ? (Date.now() - met.createdAt) / 3_600_000 : null,
+      priceChange24hPct: null,
+      flags: [],
+      watchlisted: false,
+      launch: null,
+      recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
+      generatedAt: new Date(app.meteoraStocks!.at).toISOString(),
+      stock: { ticker: met.ticker, issuer: met.issuer },
+      pinned: null,
+      alternatives: [],
+      hot: hotContext(address),
+    };
+  }
   if (!p && pin) {
     // a Meteora pool of a stock the agent is paired with, too thin for the board: its own numbers, the pin
     return {
@@ -922,6 +1006,8 @@ function paperFeeSource(app: App, address: string): { fees24hUsd: number | null;
   if (row) return { fees24hUsd: row.fees24hUsd, volume24hUsd: row.volume24hUsd };
   const pinned = pinnedPoolAt(app.pinned, address);
   if (pinned) return { fees24hUsd: pinned.fees24hUsd, volume24hUsd: pinned.volume24hUsd };
+  const met = meteoraStockAt(app, address);
+  if (met) return { fees24hUsd: met.fees24hUsd, volume24hUsd: met.volume24hUsd };
   const hot = loadHot()?.rows.find((r) => r.address === address);
   if (hot) return { fees24hUsd: null, volume24hUsd: hot.vol24hUsd };
   return null;
@@ -1052,12 +1138,12 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // A stock pair of ours reads its ticker's row, and its basis is OUR pool's price against the perp
   // (near zero when the synthetic price is the perp itself; real when the pool exists on chain).
   const pinnedTicker = pinnedTickerOf(app, o.address, snapshot);
-  const basisRow = basisRowFor(o.address, snapshot, pinnedTicker);
+  const basisRow = basisRowFor(o.address, snapshot, pinnedTicker ?? meteoraStockAt(app, o.address)?.ticker ?? (screen?.stock && screen.stock.issuer !== "unknown" ? screen.stock.ticker : null));
   const clock = sessionClock();
   const perpMidNow = basisRow ? ((basisRow.perpSymbol ? app.perpMarks.get(basisRow.perpSymbol)?.mid : undefined) ?? basisRow.perpMid ?? null) : null;
   const ownPriceUsd = quoteIsSol ? snapshot.tokenPriceInSol * (solPriceOf(app) ?? 0) : quoteOf(snapshot).tokenPriceInQuote;
   // our own pool's price against the perp for a pair of ours or a pinned Meteora pool (their basis row belongs to another pool)
-  const ownBasis = isPair || (!!pinnedTicker && basisRow?.pool !== o.address);
+  const ownBasis = isPair || (!!basisRow && basisRow.pool !== o.address);
   const basisPctNow = ownBasis ? (perpMidNow && perpMidNow > 0 && ownPriceUsd > 0 ? (ownPriceUsd / perpMidNow - 1) * 100 : null) : (basisRow?.basisPct ?? null);
   const basisCheck = basisRow ? basisVerdict(basisPctNow, clock) : null;
   const basisObs: EngineObservation["basis"] = basisRow
@@ -1397,6 +1483,8 @@ async function refreshPerpMarks(app: App, pools: string[]): Promise<void> {
     let sym = basisForPool(address)?.perpSymbol;
     const pinnedPool = pinnedPoolAt(app.pinned, address);
     if (!sym && pinnedPool) sym = basisForTicker(pinnedPool.ticker)?.perpSymbol ?? undefined;
+    const metPool = meteoraStockAt(app, address);
+    if (!sym && metPool) sym = basisForTicker(metPool.ticker)?.perpSymbol ?? undefined;
     if (!sym && isStockPairKey(app, address)) {
       const mint = pairMintOf(address);
       const c = mint ? pairStockCandidateFor(stockCandidatesOf(app), mint) : null;
@@ -1449,6 +1537,7 @@ async function runIteration(app: App): Promise<void> {
     }
   }
   const funds = fundableQuotes(app, solAtStart, usdcAtStart);
+  await refreshMeteoraStocks(app);
   await refreshPinned(app);
   await refreshMemeHistory(app, funds);
   const pools = pickPools(app, withPositions, funds);
@@ -1606,6 +1695,7 @@ async function main(): Promise<void> {
     pinnedAt: 0,
     rotateOut: null,
     memeHistory: new Map(),
+    meteoraStocks: null,
   };
   appRef = app;
   if (app.screen) app.screenAt = new Date(app.screen.generatedAt).getTime();

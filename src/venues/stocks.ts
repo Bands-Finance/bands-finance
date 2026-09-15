@@ -4,13 +4,14 @@
  * STOCK_MIN_LIQUIDITY_USD of liquidity and 24h data, best fee/TVL first. Pure.
  */
 import type { ScreenedPool } from "../screener/types";
+import { verifiedStock } from "../screener/stocks";
 import { isTradableVenue, stockMinLiquidityUsd } from "./env";
 
 export function stockBookPools(pools: readonly ScreenedPool[], usdcOk: boolean, minLiquidityUsd: number = stockMinLiquidityUsd(), env: NodeJS.ProcessEnv = process.env): ScreenedPool[] {
   return pools
     .filter(
       (p) =>
-        !!p.stock &&
+        verifiedStock(p.stock) &&
         isTradableVenue(p.venue, env) &&
         (p.quoteSymbol === "SOL" || (p.quoteSymbol === "USDC" && usdcOk)) &&
         (p.tvlUsd ?? 0) >= minLiquidityUsd &&

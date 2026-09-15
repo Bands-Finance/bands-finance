@@ -3,7 +3,28 @@
  * NVDAx; a symbol alone proves nothing (memecoins imitate the pattern), so the mint prefix decides.
  * STOCK_MINTS adds Backpack Securities / Sunrise-listed mints by hand.
  */
+import fs from "node:fs";
+import path from "node:path";
 import type { StockIssuer, StockTag } from "./types";
+
+/**
+ * Meteora's own stock tags (src/screener/meteoraStocks.ts writes DATA_DIR/stock-mints.json from its pool
+ * discovery API): the authority on Backpack Securities, Ondo and pre-IPO tokens, which a mint prefix
+ * cannot tell apart. Re-read when the file changes.
+ */
+let metMints: { mtimeMs: number; map: Record<string, { ticker: string; issuer: StockIssuer }> } | null = null;
+function meteoraMints(): Record<string, { ticker: string; issuer: StockIssuer }> | null {
+  const file = path.resolve(process.cwd(), process.env.DATA_DIR || "data", "stock-mints.json");
+  try {
+    const st = fs.statSync(file);
+    if (metMints && metMints.mtimeMs === st.mtimeMs) return metMints.map;
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { mints?: Record<string, { ticker: string; issuer: StockIssuer }> };
+    metMints = { mtimeMs: st.mtimeMs, map: parsed.mints ?? {} };
+    return metMints.map;
+  } catch {
+    return null;
+  }
+}
 
 /** TICKER + lowercase x, e.g. NVDAx, BRK.Bx */
 const XSTOCK_SYMBOL = /^[A-Z.]{1,6}x$/;
@@ -37,8 +58,10 @@ function tickerFromSymbol(symbol: string): string {
  *  - mint listed in STOCK_MINTS, or a token name the venue API labels "... - Backpack Securities" -> backpack
  *  - symbol matches TICKERx but the mint is nobody's -> "unknown" (shown as unverified, never counted)
  */
-export function stockOf(mint: string, symbol: string, name?: string | null, extra: Map<string, string | null> = listedMints()): StockTag | null {
+export function stockOf(mint: string, symbol: string, name?: string | null, extra: Map<string, string | null> = listedMints(), meteora: Record<string, { ticker: string; issuer: StockIssuer }> | null = meteoraMints()): StockTag | null {
   const sym = (symbol ?? "").trim();
+  const tagged = meteora?.[mint];
+  if (tagged) return { ticker: tagged.ticker, issuer: tagged.issuer };
   if (extra.has(mint)) return { ticker: extra.get(mint) ?? tickerFromSymbol(sym), issuer: "backpack" };
   if (name && /backpack securities/i.test(name) && sym) return { ticker: tickerFromSymbol(sym), issuer: "backpack" };
   const looksLikeStock = XSTOCK_SYMBOL.test(sym);
@@ -53,5 +76,6 @@ export const verifiedStock = (s: StockTag | null | undefined): s is StockTag => 
 export const ISSUER_LABEL: Record<StockIssuer, string> = {
   xstocks: "xStocks",
   backpack: "Backpack",
+  ondo: "Ondo",
   unknown: "unverified",
 };

@@ -32,10 +32,11 @@ export const VENUE_GLOSS: Record<Venue, string> = {
   "raydium-clmm": "Raydium CLMM: concentrated liquidity in ticks of one basis point. Read from Raydium's public API. Shown, not traded.",
   "orca-whirlpool": "Orca Whirlpools: concentrated liquidity in ticks of one basis point. Read from Orca's public API. Shown, not traded.",
 };
-export const ISSUER_LABEL: Record<StockIssuer, string> = { xstocks: "xStocks", backpack: "Backpack", unknown: "unverified" };
+export const ISSUER_LABEL: Record<StockIssuer, string> = { xstocks: "xStocks", backpack: "Backpack", ondo: "Ondo", unknown: "unverified" };
 export const ISSUER_GLOSS: Record<StockIssuer, string> = {
   xstocks: "issued by Backed as an xStock: a token backed one-to-one by the listed share",
   backpack: "issued by Backpack Securities: a token backed one-to-one by the listed share",
+  ondo: "issued by Ondo Global Markets: a token backed by the listed share",
   unknown: "the symbol looks like a stock but the mint belongs to no known issuer: treat it as a lookalike",
 };
 

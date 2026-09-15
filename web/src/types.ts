@@ -166,7 +166,7 @@ export interface RiskLimits {
 
 /** Where a pool lives. Snapshots from before venues carry no venue field: treat them as Meteora. */
 export type Venue = "meteora-dlmm" | "raydium-clmm" | "orca-whirlpool";
-export type StockIssuer = "xstocks" | "backpack" | "unknown";
+export type StockIssuer = "xstocks" | "backpack" | "ondo" | "unknown";
 /** A tokenized stock on the base side of a pool; issuer "unknown" is a stock-shaped symbol on a mint no known issuer owns. */
 export interface StockTag {
   ticker: string;

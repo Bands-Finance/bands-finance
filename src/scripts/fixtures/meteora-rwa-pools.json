@@ -1,0 +1,673 @@
+{
+ "total": 1198,
+ "page_size": 100,
+ "has_more": false,
+ "after_key": null,
+ "data": [
+  {
+   "name": "SKHY-USDC",
+   "pool_address": "DPAU7wDyMXDgNAfzQYMfyNqmTjzcoRsSPA2LeGH71hgi",
+   "pool_type": "dlmm",
+   "tvl": 2389977.464359591,
+   "volume": 2878904.383153163,
+   "fee": 2706.4629738611065,
+   "fee_pct": 0.1,
+   "fee_tvl_ratio": 0.11324219638976052,
+   "volume_tvl_ratio": 120.45738615048336,
+   "volatility": 0.8111236186644264,
+   "pool_price": 173.3661380563044,
+   "pool_created_at": 1783732698000,
+   "dlmm_params": {
+    "bin_step": 80,
+    "collect_fee_mode": "quote"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "SKHYhSjuRWHgikq8eRKbtBbpABgJSkd7ytQV14i9EQ3",
+    "name": "SK Hynix - Backpack Securities",
+    "symbol": "SKHY",
+    "decimals": 6,
+    "price": 174.428855903132,
+    "market_cap": 2197828.410664095,
+    "created_at": 1783389921000,
+    "tags": [
+     "backpack",
+     "token-2022",
+     "verified",
+     "stocks",
+     "rwa"
+    ]
+   },
+   "token_y": {
+    "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "name": "USD Coin",
+    "symbol": "USDC",
+    "decimals": 6,
+    "price": 0.9996962837528272,
+    "market_cap": 7520253680.568641,
+    "created_at": 1717577725527,
+    "tags": [
+     "strict",
+     "verified",
+     "stable",
+     "community",
+     "moonshot-verified"
+    ]
+   }
+  },
+  {
+   "name": "MU-USDC",
+   "pool_address": "13MEx6gjRadJNUdmToaGSzgeWHLH7FzScUQS9Mc5nYF5",
+   "pool_type": "dlmm",
+   "tvl": 3930123.2856795974,
+   "volume": 2234154.288719294,
+   "fee": 4035.894325800375,
+   "fee_pct": 0.2,
+   "fee_tvl_ratio": 0.10269129063981736,
+   "volume_tvl_ratio": 56.846926325695755,
+   "volatility": 0.22224990588278057,
+   "pool_price": 926.1759658672704,
+   "pool_created_at": 1782137569000,
+   "dlmm_params": {
+    "bin_step": 20,
+    "collect_fee_mode": "quote"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "MUxEsUKSMACyw5fZf68wxf5FLnZVhtU9CwH8uNNGay1",
+    "name": "Micron Technology - Backpack Securities",
+    "symbol": "MU",
+    "decimals": 6,
+    "price": 926.9626975941233,
+    "market_cap": 6473956.6999690095,
+    "created_at": 1779942469000,
+    "tags": [
+     "rwa",
+     "backpack",
+     "stocks",
+     "token-2022",
+     "verified"
+    ]
+   },
+   "token_y": {
+    "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "name": "USD Coin",
+    "symbol": "USDC",
+    "decimals": 6,
+    "price": 0.9996962837528272,
+    "market_cap": 7520253680.568641,
+    "created_at": 1717577725527,
+    "tags": [
+     "strict",
+     "verified",
+     "stable",
+     "community",
+     "moonshot-verified"
+    ]
+   }
+  },
+  {
+   "name": "BROS-SOL",
+   "pool_address": "BULJfNyUL4x4ZWUHGFjdtL4mbhZy7znVeQwZci134Mzf",
+   "pool_type": "dlmm",
+   "tvl": 159658.16555445196,
+   "volume": 1346476.4738787024,
+   "fee": 2485.9483853308066,
+   "fee_pct": 0.2,
+   "fee_tvl_ratio": 1.5570443119509385,
+   "volume_tvl_ratio": 843.3495832817156,
+   "volatility": 0.7081964444314404,
+   "pool_price": 0.4317877234343844,
+   "pool_created_at": 1789502617000,
+   "dlmm_params": {
+    "bin_step": 20,
+    "collect_fee_mode": "both"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "BRVaZKg6J9iF2BEsdpsxJ9NyvN9PPxPZuoQUX2v8qqkk",
+    "name": "Dutch Bros - Backpack Securities",
+    "symbol": "BROS",
+    "decimals": 6,
+    "price": 41.88599100871729,
+    "market_cap": 524351.4281223833,
+    "created_at": 1787607838000,
+    "tags": [
+     "stocks",
+     "rwa",
+     "backpack",
+     "token-2022",
+     "verified"
+    ]
+   },
+   "token_y": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL",
+    "decimals": 9,
+    "price": 96.83466589526866,
+    "market_cap": 56844631509.85756,
+    "created_at": 1717577725527,
+    "tags": [
+     "strict",
+     "verified",
+     "major",
+     "community",
+     "moonshot-verified"
+    ]
+   }
+  },
+  {
+   "name": "BROS-USDC",
+   "pool_address": "A6rNCoNzKmSGdqKLqL8MTXZzzWizLc3MK4T9xUmLgk34",
+   "pool_type": "dlmm",
+   "tvl": 21460.245555244954,
+   "volume": 496147.04695911094,
+   "fee": 916.7764001943456,
+   "fee_pct": 0.2,
+   "fee_tvl_ratio": 4.271975350115611,
+   "volume_tvl_ratio": 2311.9355539613152,
+   "volatility": 0.50402112569933,
+   "pool_price": 41.85733190845917,
+   "pool_created_at": 1789502693000,
+   "dlmm_params": {
+    "bin_step": 20,
+    "collect_fee_mode": "both"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "BRVaZKg6J9iF2BEsdpsxJ9NyvN9PPxPZuoQUX2v8qqkk",
+    "name": "Dutch Bros - Backpack Securities",
+    "symbol": "BROS",
+    "decimals": 6,
+    "price": 41.88599100871729,
+    "market_cap": 524351.4281223833,
+    "created_at": 1787607838000,
+    "tags": [
+     "stocks",
+     "rwa",
+     "backpack",
+     "token-2022",
+     "verified"
+    ]
+   },
+   "token_y": {
+    "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "name": "USD Coin",
+    "symbol": "USDC",
+    "decimals": 6,
+    "price": 0.9996962837528272,
+    "market_cap": 7520253680.568641,
+    "created_at": 1717577725527,
+    "tags": [
+     "strict",
+     "verified",
+     "stable",
+     "community",
+     "moonshot-verified"
+    ]
+   }
+  },
+  {
+   "name": "MCDx-SOL",
+   "pool_address": "3AoTmvEZxkRWRbT9tmrKWeD2kBaGXUrYHuHdx79zKXSe",
+   "pool_type": "dlmm",
+   "tvl": 38701.47957777614,
+   "volume": 399893.36960290023,
+   "fee": 549.3827536028386,
+   "fee_pct": 0.15,
+   "fee_tvl_ratio": 1.4195394067525913,
+   "volume_tvl_ratio": 1033.2766963062936,
+   "volatility": 0.19355761103724076,
+   "pool_price": 2.609070716553485,
+   "pool_created_at": 1788502434000,
+   "dlmm_params": {
+    "bin_step": 15,
+    "collect_fee_mode": "quote"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "XsqE9cRRpzxcGKDXj1BJ7Xmg4GRhZoyY1KpmGSxAWT2",
+    "name": "McDonald's xStock",
+    "symbol": "MCDx",
+    "decimals": 8,
+    "price": 252.8212775607708,
+    "market_cap": 14106801.540646682,
+    "created_at": 1749634701000,
+    "tags": [
+     "token-2022",
+     "verified",
+     "xstocks",
+     "stocks",
+     "rwa",
+     "equities"
+    ]
+   },
+   "token_y": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL",
+    "decimals": 9,
+    "price": 96.83466589526866,
+    "market_cap": 56844631509.85756,
+    "created_at": 1717577725527,
+    "tags": [
+     "strict",
+     "verified",
+     "major",
+     "community",
+     "moonshot-verified"
+    ]
+   }
+  },
+  {
+   "name": "MCDx-SOL",
+   "pool_address": "ESVQWv4w2ka6JAbSytCYCkTyeGQT8Yx1kCsB1kbyRFTU",
+   "pool_type": "dlmm",
+   "tvl": 27462.748007304184,
+   "volume": 86519.26894386586,
+   "fee": 780.289280612524,
+   "fee_pct": 1.0,
+   "fee_tvl_ratio": 2.8412643935158735,
+   "volume_tvl_ratio": 315.0422853563474,
+   "volatility": 0.2834890105328436,
+   "pool_price": 2.5991325873186693,
+   "pool_created_at": 1788974377000,
+   "dlmm_params": {
+    "bin_step": 20,
+    "collect_fee_mode": "both"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "XsqE9cRRpzxcGKDXj1BJ7Xmg4GRhZoyY1KpmGSxAWT2",
+    "name": "McDonald's xStock",
+    "symbol": "MCDx",
+    "decimals": 8,
+    "price": 256.6155541919726,
+    "market_cap": 14318512.785614232,
+    "created_at": 1749634701000,
+    "tags": [
+     "rwa",
+     "equities",
+     "token-2022",
+     "verified",
+     "xstocks",
+     "stocks"
+    ]
+   },
+   "token_y": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL",
+    "decimals": 9,
+    "price": 96.84820257328548,
+    "market_cap": 56852577914.862625,
+    "created_at": 1717577725527,
+    "tags": [
+     "strict",
+     "verified",
+     "major",
+     "community",
+     "moonshot-verified"
+    ]
+   }
+  },
+  {
+   "name": "GOOGLx-SOL",
+   "pool_address": "CmcVVxuMMCdsevwThLwU4PdESB5NxiZJU4mGrxB6QDE4",
+   "pool_type": "dlmm",
+   "tvl": 43468.392018694685,
+   "volume": 231854.7895153207,
+   "fee": 421.1288440632177,
+   "fee_pct": 0.2,
+   "fee_tvl_ratio": 0.9688162467157756,
+   "volume_tvl_ratio": 533.3870859902194,
+   "volatility": 0.25788020335245126,
+   "pool_price": 3.5447627635882997,
+   "pool_created_at": 1752080745000,
+   "dlmm_params": {
+    "bin_step": 20,
+    "collect_fee_mode": "both"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "XsCPL9dNWBMvFtTmwcCA5v3xWPSMEBCszbQdiLLq6aN",
+    "name": "Alphabet xStock",
+    "symbol": "GOOGLx",
+    "decimals": 8,
+    "price": 344.74192687759376,
+    "market_cap": 55430379.98645435,
+    "created_at": 1749634603000,
+    "tags": [
+     "token-2022",
+     "verified",
+     "xstocks",
+     "stocks",
+     "rwa",
+     "equities",
+     "moonshot-verified"
+    ]
+   },
+   "token_y": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL",
+    "decimals": 9,
+    "price": 96.83466589526866,
+    "market_cap": 56844631509.85756,
+    "created_at": 1717577725527,
+    "tags": [
+     "strict",
+     "verified",
+     "major",
+     "community",
+     "moonshot-verified"
+    ]
+   }
+  },
+  {
+   "name": "ANTHROPIC-SOL",
+   "pool_address": "EZyszDEx1LZDt7TsSFV8xdPi49sDKC3mdfv2MVMEQLtU",
+   "pool_type": "dlmm",
+   "tvl": 239289.07646160357,
+   "volume": 289116.9365535796,
+   "fee": 2607.49096490134,
+   "fee_pct": 1.0,
+   "fee_tvl_ratio": 1.0083861787059496,
+   "volume_tvl_ratio": 111.7671962237851,
+   "volatility": 0.8247839169213255,
+   "pool_price": 10.002159589338568,
+   "pool_created_at": 1768282694000,
+   "dlmm_params": {
+    "bin_step": 80,
+    "collect_fee_mode": "both"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw",
+    "name": "Anthropic PreStocks",
+    "symbol": "ANTHROPIC",
+    "decimals": 9,
+    "price": 972.5807549689704,
+    "market_cap": 7179601.850971257,
+    "created_at": 1757778013000,
+    "tags": [
+     "stocks",
+     "rwa",
+     "prestocks",
+     "token-2022",
+     "verified"
+    ]
+   },
+   "token_y": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL",
+    "decimals": 9,
+    "price": 96.83466589526866,
+    "market_cap": 56844631509.85756,
+    "created_at": 1717577725527,
+    "tags": [
+     "strict",
+     "verified",
+     "major",
+     "community",
+     "moonshot-verified"
+    ]
+   }
+  },
+  {
+   "name": "tOpenAI-USDC",
+   "pool_address": "2ZWxT3niYjyudmDMDVar9ajNE42RkwYdzZBh6TiMuKQY",
+   "pool_type": "dlmm",
+   "tvl": 571839.8206882467,
+   "volume": 521603.49673356337,
+   "fee": 57.87658742159421,
+   "fee_pct": 0.01,
+   "fee_tvl_ratio": 0.010121118769227356,
+   "volume_tvl_ratio": 91.21496577586696,
+   "volatility": 0.8063937586364032,
+   "pool_price": 923.4102243269042,
+   "pool_created_at": 1782391951000,
+   "dlmm_params": {
+    "bin_step": 80,
+    "collect_fee_mode": "both"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "oPAiAikWTaFj9RYoRFD35ccfwhnMcB3ThgBZRHSkjTZ",
+    "name": "T-OpenAI",
+    "symbol": "tOpenAI",
+    "decimals": 9,
+    "price": 921.1934273973136,
+    "market_cap": 630857.6592008793,
+    "created_at": 1781523754000,
+    "tags": [
+     "tessera",
+     "verified",
+     "token-2022",
+     "stocks",
+     "rwa"
+    ]
+   },
+   "token_y": {
+    "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "name": "USD Coin",
+    "symbol": "USDC",
+    "decimals": 6,
+    "price": 0.9996962837528272,
+    "market_cap": 7520253680.568641,
+    "created_at": 1717577725527,
+    "tags": [
+     "strict",
+     "verified",
+     "stable",
+     "community",
+     "moonshot-verified"
+    ]
+   }
+  },
+  {
+   "name": "MRNAon-USDC",
+   "pool_address": "LaB44xWHpDbghmf5KBMcZWTwjEhAKk8QzEyGdBs9UCi",
+   "pool_type": "dlmm",
+   "tvl": 795.2830777384679,
+   "volume": 22.86334920437798,
+   "fee": 2.057702307530082,
+   "fee_pct": 10.0,
+   "fee_tvl_ratio": 0.258738349290863,
+   "volume_tvl_ratio": 2.8748693194119093,
+   "volatility": 0.0,
+   "pool_price": 128.77149527748918,
+   "pool_created_at": 1787228074000,
+   "dlmm_params": {
+    "bin_step": 125,
+    "collect_fee_mode": "both"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "14VP7DvCAdBCc5XGNZkPt6zhtPzJrWWS64Koxtxyondo",
+    "name": "Moderna (Ondo Tokenized)",
+    "symbol": "MRNAon",
+    "decimals": 9,
+    "price": 137.96651184722992,
+    "market_cap": 9427.857095560805,
+    "created_at": 1767202853000,
+    "tags": [
+     "ondo",
+     "token-2022",
+     "verified",
+     "stocks",
+     "rwa"
+    ]
+   },
+   "token_y": {
+    "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "name": "USD Coin",
+    "symbol": "USDC",
+    "decimals": 6,
+    "price": 0.9996962837528272,
+    "market_cap": 7520253659.947179,
+    "created_at": 1717577725527,
+    "tags": [
+     "community",
+     "moonshot-verified",
+     "strict",
+     "verified",
+     "stable"
+    ]
+   }
+  },
+  {
+   "name": "XAUt0-USDC",
+   "pool_address": "CHrziAKSF7DZ248Kz1j9YFRtYsMmPQNwPQiumKJxnNgn",
+   "pool_type": "dlmm",
+   "tvl": 70101.38671518509,
+   "volume": 231424.5528672366,
+   "fee": 45.46012174095677,
+   "fee_pct": 0.02,
+   "fee_tvl_ratio": 0.06484910480538236,
+   "volume_tvl_ratio": 330.12835224999384,
+   "volatility": 0.10596454291490436,
+   "pool_price": 4293.331515470725,
+   "pool_created_at": 1771434775000,
+   "dlmm_params": {
+    "bin_step": 10,
+    "collect_fee_mode": "both"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "AymATz4TCL9sWNEEV9Kvyz45CHVhDZ6kUgjTJPzLpU9P",
+    "name": "Tether Gold",
+    "symbol": "XAUt0",
+    "decimals": 6,
+    "price": 4301.8316998729615,
+    "market_cap": 9210618.565024303,
+    "created_at": 1757586217000,
+    "tags": [
+     "verified",
+     "rwa",
+     "commodities"
+    ]
+   },
+   "token_y": {
+    "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "name": "USD Coin",
+    "symbol": "USDC",
+    "decimals": 6,
+    "price": 0.9996962837528272,
+    "market_cap": 7520253680.568641,
+    "created_at": 1717577725527,
+    "tags": [
+     "strict",
+     "verified",
+     "stable",
+     "community",
+     "moonshot-verified"
+    ]
+   }
+  },
+  {
+   "name": "NEURALINK-SOL",
+   "pool_address": "7x3ZPM5fH4SNTffTzVVQsJSz9jDNVBvFKRVc6bEu8nUg",
+   "pool_type": "damm_v2",
+   "tvl": 2327.8848502417445,
+   "volume": 3381.6807037346684,
+   "fee": 25.543739329653665,
+   "fee_pct": 0.5,
+   "fee_tvl_ratio": 1.0972939373268835,
+   "volume_tvl_ratio": 145.2683840175123,
+   "volatility": 1.6851209781667758,
+   "pool_price": 3.5140455444565553,
+   "pool_created_at": 1788762584000,
+   "dlmm_params": null,
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "PrekqLJvJ3qVdXmBGDiexvwUTF4rLFDa6HWS4HJbw9S",
+    "name": "Neuralink PreStocks",
+    "symbol": "NEURALINK",
+    "decimals": 9,
+    "price": 341.2733322600344,
+    "market_cap": 885738.341878172,
+    "created_at": 1776275519000,
+    "tags": [
+     "verified",
+     "stocks",
+     "rwa",
+     "prestocks",
+     "token-2022"
+    ]
+   },
+   "token_y": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL",
+    "decimals": 9,
+    "price": 96.84555290658444,
+    "market_cap": 56851022487.1049,
+    "created_at": 1717577725527,
+    "tags": [
+     "strict",
+     "verified",
+     "major",
+     "community",
+     "moonshot-verified"
+    ]
+   }
+  },
+  {
+   "name": "CRCLx-MSTRx",
+   "pool_address": "ExwtCL871L2QhHw7EikDPBHfoEHzadxcepdw1Fs3ofoR",
+   "pool_type": "dlmm",
+   "tvl": 7220.9024401195875,
+   "volume": 6516.278407699926,
+   "fee": 3.130788630291766,
+   "fee_pct": 0.05,
+   "fee_tvl_ratio": 0.043357304107821674,
+   "volume_tvl_ratio": 90.24188405448126,
+   "volatility": 0.4978305314994283,
+   "pool_price": 0.6610234617614695,
+   "pool_created_at": 1785514696000,
+   "dlmm_params": {
+    "bin_step": 50,
+    "collect_fee_mode": "both"
+   },
+   "is_blacklisted": false,
+   "token_x": {
+    "address": "XsueG8BtpquVJX9LVLLEGuViXUungE6WmK5YZ3p3bd1",
+    "name": "Circle xStock",
+    "symbol": "CRCLx",
+    "decimals": 8,
+    "price": 85.28943937908204,
+    "market_cap": 70029360.97307758,
+    "created_at": 1749635849000,
+    "tags": [
+     "moonshot-verified",
+     "token-2022",
+     "verified",
+     "xstocks",
+     "stocks",
+     "rwa"
+    ]
+   },
+   "token_y": {
+    "address": "XsP7xzNPvEHS1m6qfanPUGjNmdnmsLKEoNAnHjdxxyZ",
+    "name": "MicroStrategy xStock",
+    "symbol": "MSTRx",
+    "decimals": 8,
+    "price": 129.09191781151728,
+    "market_cap": 62779493.50320026,
+    "created_at": 1749634782000,
+    "tags": [
+     "token-2022",
+     "verified",
+     "xstocks",
+     "stocks",
+     "rwa",
+     "equities",
+     "moonshot-verified"
+    ]
+   }
+  }
+ ]
+}

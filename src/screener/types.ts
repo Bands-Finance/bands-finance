@@ -7,7 +7,7 @@ export type Venue = "meteora-dlmm" | "raydium-clmm" | "orca-whirlpool";
  */
 export type FeesSource = "onchain" | "estimate" | "api";
 
-export type StockIssuer = "xstocks" | "backpack" | "unknown";
+export type StockIssuer = "xstocks" | "backpack" | "ondo" | "unknown";
 
 /** A tokenized stock on the base side of a pool. issuer "unknown" means the symbol looks like a stock but the mint is not a known issuer's. */
 export interface StockTag {
