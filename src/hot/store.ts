@@ -12,6 +12,30 @@ import type { HotFile, HotHistoryRow } from "./types";
 export const HOT_FILE = (dir: string) => path.resolve(process.cwd(), dir, "hot.json");
 export const HISTORY_FILE = (dir: string) => path.resolve(process.cwd(), dir, "hot-history.jsonl");
 
+let cached: { file: string; mtimeMs: number; size: number; hot: HotFile | null } | null = null;
+
+/**
+ * The latest tick, re-read only when hot.json changed on disk (its mtime and size): a caller that
+ * asks several times per pool per tick gets the same parse back, so the file is read ONCE per tick.
+ */
+export function loadHotFileCached(dir: string = process.env.DATA_DIR?.trim() || "data"): HotFile | null {
+  const file = HOT_FILE(dir);
+  let mtimeMs: number;
+  let size: number;
+  try {
+    const st = fs.statSync(file);
+    mtimeMs = st.mtimeMs;
+    size = st.size;
+  } catch {
+    cached = null;
+    return null;
+  }
+  if (cached && cached.file === file && cached.mtimeMs === mtimeMs && cached.size === size) return cached.hot;
+  const hot = loadHotFile(dir);
+  cached = { file, mtimeMs, size, hot };
+  return hot;
+}
+
 export function loadHotFile(dir: string): HotFile | null {
   try {
     const raw = JSON.parse(fs.readFileSync(HOT_FILE(dir), "utf8")) as HotFile;
@@ -21,9 +45,13 @@ export function loadHotFile(dir: string): HotFile | null {
   }
 }
 
+/** Written whole, temp + rename: a reader (the loop, the site) never sees a torn tick. */
 export function saveHotFile(dir: string, file: HotFile): void {
-  fs.mkdirSync(path.dirname(HOT_FILE(dir)), { recursive: true });
-  fs.writeFileSync(HOT_FILE(dir), JSON.stringify(file));
+  const target = HOT_FILE(dir);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const tmp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(file));
+  fs.renameSync(tmp, target);
 }
 
 export function appendHistory(dir: string, rows: HotHistoryRow[]): void {

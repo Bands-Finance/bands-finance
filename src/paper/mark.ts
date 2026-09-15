@@ -17,9 +17,14 @@
  * half quote / half token at the current price. Our share = deposit / (band depth + deposit),
  * the depth being the snapshot's quote-side liquidity scaled to the band's width, capped at 50%.
  * dt is capped at MAX_MARK_GAP_SEC so a restart never accrues a day of fees in one mark.
+ *
+ * A MADE PAIR (snapshot.pair, src/venues/pair.ts) accrues the same way with two substitutions: the
+ * pool's fees per day are the routing model's (what the reference pool's flow pays us at our fee),
+ * and our share is the snapshot's ourShare (1 while nobody else is in our pool) instead of the bin
+ * arithmetic. With collectFeeMode "quote" every fee lands on the quote side.
  */
 import { binPrice } from "../tools/bins";
-import { quoteMath, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
+import { quoteMath, type BinRow, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
 import type { BandValue, PaperBand, PaperBook, PaperMark } from "./book";
 import { paperHedgeEquityUsd } from "./hedge";
 
@@ -30,7 +35,7 @@ export const UNKNOWN_SPLIT = 0.5;
 
 /** The fields of a snapshot the mark reads; a test can build one without the rest. */
 export type MarkSnapshot = Pick<PoolSnapshot, "activeBinId" | "activePrice" | "binStep" | "bins" | "liquidityBelowY" | "liquidityAboveX" | "dynamicFeePct" | "solSide" | "tokenPriceInSol"> &
-  Partial<Pick<PoolSnapshot, "quoteSide" | "quotePriceInSol" | "tokenPriceInQuote" | "solPriceUsd" | "priceModel">> & {
+  Partial<Pick<PoolSnapshot, "quoteSide" | "quotePriceInSol" | "tokenPriceInQuote" | "solPriceUsd" | "priceModel" | "pair">> & {
     tokenX: Pick<PoolSnapshot["tokenX"], "decimals">;
     tokenY: Pick<PoolSnapshot["tokenY"], "decimals">;
   };
@@ -163,17 +168,23 @@ export function accrueFees(band: PaperBand, s: MarkSnapshot, ctx: MarkContext, q
   const inRange = s.activeBinId >= band.lowerBinId && s.activeBinId <= band.upperBinId;
   const depthQuote = bandDepthQuote(band, s);
   const depositQuote = band.quoteDeposit + band.tokenDeposit * q.tokenPriceInQuote;
-  const share = shareOfBand(depositQuote, depthQuote);
-  const perDay = feesPerDayUsd(ctx.fees, s.dynamicFeePct);
+  // A made pair: our share of our own pool is what the snapshot says (1 while nobody else is in it),
+  // and the fees per day are the routing model's, not a screen figure the pool does not have.
+  const pair = s.pair;
+  const share = pair && pair.ourShare !== null ? Math.min(1, Math.max(0, pair.ourShare)) : shareOfBand(depositQuote, depthQuote);
+  const perDay = pair ? Math.max(0, pair.feesPerDayUsd) : feesPerDayUsd(ctx.fees, s.dynamicFeePct);
   const base: Omit<FeeAccrual, "feeQuoteTotal" | "feeQuote" | "feeToken" | "note"> = { dtSec, inRange, shareOfBand: share, depthQuote, feesPerDayUsd: perDay };
   if (!inRange || dtSec <= 0 || perDay <= 0) {
-    return { ...base, feeQuoteTotal: 0, feeQuote: 0, feeToken: 0, note: !inRange ? "out of range: no fees" : perDay <= 0 ? "no 24h fee figure for this pool: nothing accrued" : null };
+    const why = !inRange ? "out of range: no fees" : perDay <= 0 ? (pair ? "the routing model sends no flow to our pool: nothing accrued" : "no 24h fee figure for this pool: nothing accrued") : null;
+    return { ...base, feeQuoteTotal: 0, feeQuote: 0, feeToken: 0, note: why };
   }
   const feeUsd = perDay * share * 0.5 * (dtSec / 86400);
   let feeQuoteTotal: number;
   if (quoteSymbol === "USDC") feeQuoteTotal = feeUsd;
   else if (ctx.solPriceUsd && ctx.solPriceUsd > 0) feeQuoteTotal = feeUsd / ctx.solPriceUsd;
   else return { ...base, feeQuoteTotal: 0, feeQuote: 0, feeToken: 0, note: "no SOL price to convert fees: nothing accrued" };
+  // a made pair collecting in the quote only takes every fee on the quote side
+  if (pair?.collectFeeMode === "quote") return { ...base, feeQuoteTotal, feeQuote: feeQuoteTotal, feeToken: 0, note: null };
   const feeQuote = feeQuoteTotal / 2;
   const feeToken = q.tokenPriceInQuote > 0 ? feeQuote / q.tokenPriceInQuote : 0;
   return { ...base, feeQuoteTotal, feeQuote, feeToken: q.tokenPriceInQuote > 0 ? feeToken : 0, note: null };
@@ -268,7 +279,48 @@ export function markPool(book: PaperBook, s: PoolSnapshot, ctx: MarkContext): Po
   if (ctx.solPriceUsd && ctx.solPriceUsd > 0) book.solPriceUsd = ctx.solPriceUsd;
   else if (s.solPriceUsd && s.solPriceUsd > 0) book.solPriceUsd = s.solPriceUsd;
   book.lastMarkAt = ctx.now;
+  // a made pair remembers what the model said at this mark, for the offline report
+  const made = s.pair ? book.pairPools?.[s.address] : undefined;
+  if (made && s.pair) {
+    made.lastRoutedShare = s.pair.routedShare;
+    made.lastRoutedShareGross = s.pair.routedShareGross;
+    made.lastFeesPerDayUsd = s.pair.feesPerDayUsd;
+    made.lastPrice = s.activePrice;
+    made.lastMarkAt = ctx.now;
+    made.lastRefStale = s.pair.stale;
+  }
   return book.bands.filter((b) => b.pool === s.address).map((b) => markBand(b, s, ctx).position);
+}
+
+/**
+ * The bin rows our own paper bands occupy in a pool, at an active bin: what a made pair's synthetic
+ * snapshot shows as its liquidity (nobody else is in the pool). Quote-side bins hold quote, token-side
+ * bins hold token at their own bin price, the active bin splits UNKNOWN_SPLIT.
+ */
+export function paperBinRows(book: PaperBook, pool: string, activeBinId: number, binsEachSide: number, geometry: { binStep: number; xDecimals: number; yDecimals: number }): BinRow[] {
+  const rows = new Map<number, BinRow>();
+  const price = (i: number) => binPrice({ binStep: geometry.binStep, tokenX: { decimals: geometry.xDecimals }, tokenY: { decimals: geometry.yDecimals } }, i);
+  for (let i = activeBinId - binsEachSide; i <= activeBinId + binsEachSide; i++) rows.set(i, { binId: i, price: price(i), xAmount: 0, yAmount: 0, isActive: i === activeBinId });
+  for (const band of book.bands) {
+    if (band.pool !== pool) continue;
+    const quoteBelow = band.quoteSide === "Y";
+    for (const [i, n] of binNotionals(band)) {
+      if (n <= 0) continue;
+      const row = rows.get(i);
+      if (!row) continue;
+      const per = quotePerTokenAt(i, band);
+      const quoteHere = i === activeBinId ? n * UNKNOWN_SPLIT : (quoteBelow ? i < activeBinId : i > activeBinId) ? n : 0;
+      const tokenHere = per > 0 ? (n - quoteHere) / per : 0;
+      if (quoteBelow) {
+        row.yAmount += quoteHere;
+        row.xAmount += tokenHere;
+      } else {
+        row.xAmount += quoteHere;
+        row.yAmount += tokenHere;
+      }
+    }
+  }
+  return [...rows.values()];
 }
 
 /**

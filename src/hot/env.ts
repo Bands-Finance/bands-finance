@@ -23,6 +23,8 @@ export interface HotEnv {
   siblingLookups: number;
   /** how long a token's sibling list is good for, in minutes */
   siblingTtlMin: number;
+  /** pages of GeckoTerminal's top PumpSwap pools (20 rows each) read per tick; 0 turns the source off */
+  pumpswapPages: number;
 }
 
 const num = (v: string | undefined, d: number): number => {
@@ -43,5 +45,6 @@ export function hotEnv(env: NodeJS.ProcessEnv = process.env): HotEnv {
     siblingMinVol24hUsd: num(env.HOT_SIBLING_MIN_VOL_24H_USD, 500_000),
     siblingLookups: num(env.HOT_SIBLING_LOOKUPS, 6),
     siblingTtlMin: num(env.HOT_SIBLING_TTL_MIN, 30),
+    pumpswapPages: Math.max(0, Math.floor(num(env.HOT_PUMPSWAP_PAGES, 1))),
   };
 }

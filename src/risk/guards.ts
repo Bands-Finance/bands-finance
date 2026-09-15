@@ -317,12 +317,15 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
         if (quoteBelow ? o.binsAboveActive !== 0 : o.binsBelowActive !== 0) {
           violations.push(`${sideName} band must sit ${quoteBelow ? "at/below" : "at/above"} the active bin`);
         }
+        // a CLMM single-sided band cannot include the active bin, so with no bins on its side there is no band at all
+        if ((quoteBelow ? o.binsBelowActive : o.binsAboveActive) < 1) violations.push(`${sideName} band needs at least one bin ${quoteBelow ? "below" : "above"} the active bin`);
       } else if (o.side === "TOKEN_ONLY") {
         if (o.amountSol !== 0) violations.push(`TOKEN_ONLY band must not deposit ${q.symbol}`);
         if (o.amountToken <= 0) violations.push("TOKEN_ONLY band needs amountToken > 0");
         if (quoteBelow ? o.binsBelowActive !== 0 : o.binsAboveActive !== 0) {
           violations.push(`TOKEN_ONLY band must sit ${quoteBelow ? "at/above" : "at/below"} the active bin`);
         }
+        if ((quoteBelow ? o.binsAboveActive : o.binsBelowActive) < 1) violations.push(`TOKEN_ONLY band needs at least one bin ${quoteBelow ? "above" : "below"} the active bin`);
       } else if (o.side === "BOTH") {
         // a straddle: both tokens, at least one bin on each side of the active bin
         if (o.amountSol <= 0 || o.amountToken <= 0) violations.push(`BOTH band needs amountSol > 0 (${q.symbol}) and amountToken > 0 (${s.baseToken.symbol})`);

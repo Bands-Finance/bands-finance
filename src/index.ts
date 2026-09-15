@@ -25,6 +25,13 @@
  * other kind of pick has had its chance. It pays for the exemption with a capped seat, a tighter
  * rolled stop, a maximum hold and a volume-fade exit (the engine's EXPIRE directive).
  *
+ * The pair lane (src/screener/pair.ts, src/venues/pair.ts): for a pump.fun token that clears the
+ * lane's criteria on its PumpSwap reference pool, the desk makes a Meteora DLMM pool of its own and
+ * seats a two-sided band in it, worked under the key pair-<mint> through the pair venue (a synthetic
+ * snapshot priced from the reference row until the pool exists; the real pool once it does). It is
+ * picked LAST, after the launch lane, one pool at a time, and its band carries the launch lane's
+ * exits with the pair's stop and hold.
+ *
  * The stock book: a stock pool's band is a straddle (src/agent/policy.ts) whose token half the hedge
  * desk (src/engine/hedgeDesk.ts) carries short on Backpack's perp after every execution; the perp
  * mids of the symbols in play are refreshed once per cycle, and an engine close in a stock pool
@@ -47,6 +54,9 @@ import { appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool }
 import { loadScreen, runScreen, tradableVenue } from "./screener";
 import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
+import { competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairLaunchEnv, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict } from "./screener/pair";
+import { createPairVenue, hotRowForPool } from "./venues/pair";
+import { loadHotFileCached } from "./hot/store";
 import type { ScreenResult } from "./screener/types";
 import { KNOWN_TOKENS, PoolSnapshot, PositionSnapshot, quoteOf, QuotePriceUnknownError, setSolPriceUsd, UnsupportedQuoteError } from "./tools/dlmm";
 import { bookEnv, isTradableVenue, liveVenues, loadVenuePool, poolsWithPositions, stockBookPools, stockMinLiquidityUsd, tradableVenues, type Venue, type VenueId, type VenuePool } from "./venues";
@@ -73,7 +83,7 @@ import { engineDirective } from "./engine/directives";
 import { forgetBand, knifeReason, moveAfterSec, outOfRangeSec, rangeOverWindowPct, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
 import { collectsOnDay, dayOf, readLedgerRows, realizedOnDaySol, workingSol } from "./engine/ledger";
 import { acquireLock, heartbeat, releaseLock, startWatchdog } from "./engine/watchdog";
-import { assertPaperEnv, emptyBook, loadPaperBook, markPool, paperEnabled, paperEnv, paperHedgeEquityUsd, paperPoolTokenInventory, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
+import { assertPaperEnv, emptyBook, loadPaperBook, markPool, paperBinRows, paperEnabled, paperEnv, paperHedgeEquityUsd, paperPoolTokenInventory, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
 import { backpack, tickerOfXstock } from "./tools/backpack";
 import { baseInventoryOf } from "./engine/hedge";
 import { runHedgeDesk } from "./engine/hedgeDesk";
@@ -100,6 +110,8 @@ interface App {
   hedgedThisCycle: Map<string, number>;
   /** base mints whose wallet balance has been attributed to a pool's hedge this cycle */
   mintAttributed: Set<string>;
+  /** the pair lane's venue: our own pools for pump.fun tokens, keyed pair-<mint> (src/venues/pair.ts) */
+  pairVenue: ReturnType<typeof createPairVenue>;
 }
 
 interface Observed {
@@ -149,6 +161,10 @@ function banner(app: App): void {
   if (app.paper) console.log(`paper     book ${app.paper.startedAt}: ${app.paper.wallet.sol.toFixed(4)} SOL, ${app.paper.wallet.usdc.toFixed(2)} USDC, ${app.paper.bands.length} band(s) open, ${app.paper.closed.length} closed; slippage ${app.paperEnv.slippagePct}% per open/close; report: DATA_DIR=${config.dataDir} npm run paper:report`);
   const hedgeGate = backpack().canTrade();
   console.log(`stocks    straddles (BOTH, half quote half token, STOCK_COVER_PCT=${policyEnv().stockCoverPct}% each side x session width); token half hedged short on Backpack: ${app.paper ? "PAPER (virtual fills at the perp mid, funding accrued)" : hedgeGate.ok ? "LIVE post-only orders" : `plan only (${hedgeGate.reason})`}; swaps via Jupiter (${app.paper ? "paper fills" : config.dryRun ? "built + simulated" : "broadcast"})`);
+  {
+    const pe = pairEnv();
+    console.log(`pairs     ${pe.on ? `pair lane ON: make our own Meteora pool for a pump.fun token that clears it (ref liquidity >= $${pe.minRefLiquidityUsd.toLocaleString("en-US")}, 24h >= $${pe.minVolume24hUsd.toLocaleString("en-US")}, 1h >= $${pe.minVolume1hUsd.toLocaleString("en-US")}, turnover >= ${pe.minTurnover}x); ${pe.quote} quote, ${pe.binStep / 100}%/bin, fee ${pe.feeBps / 100}%, seat ${pe.seatPct}% of the book, ${pe.binsEachSide} bins each side, max ${pe.maxPools} pool(s); creation ${app.paper ? "PAPER (virtual pool)" : config.dryRun ? "built + simulated, not sent" : pe.live ? "LIVE" : "built + simulated (PAIR_LIVE is not true)"}` : "pair lane off"}`);
+  }
   console.log(`model     ${config.model}`);
   console.log(`interval  ${config.cycleIntervalSec}s cycles, screen every ${config.screen.intervalSec}s`);
   console.log("limits");
@@ -323,9 +339,10 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // admitted by rule rather than by name, so the watchlist's ALLOW mode cannot block it (nobody can
   // list a token that did not exist yesterday) but an explicit DENY still wins.
   const lenv = launchEnv();
+  const laneBands = loadState().launchBands ?? {};
   if (lenv.on && set.size < config.maxActivePools) {
-    const held = loadState().launchBands ?? {};
-    const heldPools = new Set(Object.values(held).map((b) => b.pool));
+    const held = laneBands;
+    const heldPools = new Set(Object.values(held).map((b) => b.pool).filter((p) => !isPairAddress(p)));
     const seats = launchSeats(launchCandidates(), {
       env: lenv,
       freeSeats: config.maxActivePools - set.size,
@@ -346,6 +363,37 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
       );
     }
   }
+
+  // The pair lane, LAST of all: a pump.fun token that clears the lane on its PumpSwap reference pool
+  // gets a pool of OUR OWN (key pair-<mint>), one at a time, after every other lane has had its chance.
+  // Other pools never refuse it; they only feed the routing model as competing depth.
+  const penv = pairEnv();
+  if (penv.on && set.size < config.maxActivePools) {
+    const hot = loadHotFileCached();
+    const rows = hot?.rows ?? [];
+    const screenRows = (app.screen?.pools ?? []).map((p) => ({ address: p.address, venue: p.venue, baseMint: p.baseMint, quoteSymbol: p.quoteSymbol, liquidityUsd: p.tvlUsd }));
+    const pairsHeld = new Set(Object.values(laneBands).map((b) => b.pool).filter(isPairAddress));
+    const seats = pairSeats(pairCandidatesOf(rows), {
+      env: penv,
+      freeSeats: config.maxActivePools - set.size,
+      poolsTaken: pairsHeld.size,
+      quoteOk,
+      denied: (row) => watchlistDenial({ address: row.address, baseSymbol: row.baseSymbol, baseMint: row.baseMint, name: row.name }, watch),
+      hasPool: (address) => set.has(address),
+      hasToken: (mint) => takenTokens.has(mint),
+      competition: (mint) => competitionFor(mint, [...rows, ...screenRows], pairPoolAddress(mint)),
+    });
+    for (const seat of seats) {
+      if (!take(seat.address, seat.row.baseMint)) continue;
+      const v = seat.verdict;
+      console.log(
+        `[cycle ${app.cycle}] pair lane: making ${seat.row.baseSymbol}/${penv.quote} for ${seat.row.name} on ${seat.row.venue} (${seat.row.address.slice(0, 6)}), ${v.ageHours.toFixed(1)}h old, ` +
+          `$${Math.round(v.refLiquidityUsd).toLocaleString("en-US")} reference liquidity, $${Math.round(seat.row.vol24hUsd ?? 0).toLocaleString("en-US")} in 24h (turnover ${v.turnover.toFixed(1)}x), ` +
+          `$${Math.round(seat.row.vol1hUsd ?? 0).toLocaleString("en-US")} in the last hour${v.competingDepthUsd > 0 ? `, $${Math.round(v.competingDepthUsd).toLocaleString("en-US")} of competing concentrated depth in ${v.competitors.length} pool(s)` : ""}; ` +
+          `seat ${pairSeatSol(riskLimits.maxTotalExposureSol, penv).toFixed(4)} SOL, ${penv.binStep / 100}%/bin, fee ${penv.feeBps / 100}%, stop ${penv.stopPct}%, max hold ${penv.maxHoldMin} min`,
+      );
+    }
+  }
   return [...set];
 }
 
@@ -353,8 +401,13 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
 async function getVenuePool(app: App, address: string): Promise<{ venue: Venue; pool: VenuePool }> {
   let vp = app.pools.get(address);
   if (!vp) {
-    const hint: VenueId | undefined = app.screen?.pools.find((p) => p.address === address)?.venue;
-    vp = await loadVenuePool(app.connection, address, hint);
+    if (isPairAddress(address)) {
+      // a made pair: the pair venue, which derives the real pool and finds it on chain when it exists
+      vp = { venue: app.pairVenue, pool: await app.pairVenue.loadPool(app.connection, address) };
+    } else {
+      const hint: VenueId | undefined = app.screen?.pools.find((p) => p.address === address)?.venue;
+      vp = await loadVenuePool(app.connection, address, hint);
+    }
     app.pools.set(address, vp);
   }
   return vp;
@@ -405,9 +458,43 @@ function launchContext(app: App, address: string, row: HotRow, launch: { ok: tru
   };
 }
 
-function screenContext(app: App, address: string, state?: RiskState): ScreenContext | null {
+/**
+ * The context for a PAIR pool: our own pool for a pump.fun token, off every board. The reference
+ * PumpSwap row's figures stand in for the pool's, and `pair` says the lane admitted it and on what.
+ * A pool holding a band stays a pair pool whether or not the reference still clears the lane: the
+ * exits are the engine's, and the policy must keep managing the band.
+ */
+function pairContext(app: App, address: string, snapshot: PoolSnapshot, s: ScreenResult, state?: RiskState): ScreenContext {
+  const info = snapshot.pair;
+  const row = hotRowForPool(loadHotFileCached(), address);
+  const verdict = row ? pairVerdict(pairCandidatesOf([row])[0] ?? { ...row, origin: row.origin }, pairEnv(), null) : null;
+  const ageHours = verdict?.ok ? verdict.ageHours : (info?.refAgeHours ?? row?.ageHours ?? 0);
+  const turnover = verdict?.ok ? verdict.turnover : row && row.vol24hUsd !== null && row.liquidityUsd ? Math.round((row.vol24hUsd / row.liquidityUsd) * 100) / 100 : 0;
+  return {
+    rank: 0,
+    rankedPools: s.rankedPools,
+    score: 0,
+    feeToTvl24hPct: null,
+    volume24hUsd: info?.refVol24hUsd ?? row?.vol24hUsd ?? null,
+    tvlUsd: info?.refLiquidityUsd ?? row?.liquidityUsd ?? null,
+    ageHours,
+    priceChange24hPct: row?.priceChange24hPct ?? null,
+    flags: row?.flags ?? [],
+    watchlisted: false,
+    launch: null,
+    pair: { ok: true, ageHours, turnover },
+    recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
+    generatedAt: s.generatedAt,
+    stock: null,
+    alternatives: [],
+    hot: hotContext(address),
+  };
+}
+
+function screenContext(app: App, address: string, state?: RiskState, snapshot?: PoolSnapshot): ScreenContext | null {
   const s = app.screen;
   if (!s) return null;
+  if (snapshot?.pair) return pairContext(app, address, snapshot, s, state);
   const launch = launchOf(hotRowOf(address));
   const p = s.pools.find((x) => x.address === address);
   if (!p) return launch ? launchContext(app, address, hotRowOf(address)!, launch, s, state) : null;
@@ -485,7 +572,9 @@ function updateState(state: RiskState, exec: ExecutionResult, positions: Positio
     state.actionsToday += 1;
     state.lastActionAt = Date.now();
     // Band moves start this pool's cooldown; a fee claim does not.
-    if (exec.opened || exec.closed) (state.lastMoveByPool ??= {})[snapshot.address] = Date.now();
+    // a move that landed, and a move that was SENT and failed: both start the per-pool cooldown, so a
+    // failing open is not re-sent every cycle until the daily cap (fees are paid either way)
+    if (exec.opened || exec.closed || exec.txs.some((t) => !t.ok)) (state.lastMoveByPool ??= {})[snapshot.address] = Date.now();
   }
   if (exec.ok && exec.opened) {
     state.entryValueSol[exec.opened.address] = exec.opened.entryValueSol;
@@ -493,8 +582,30 @@ function updateState(state: RiskState, exec: ExecutionResult, positions: Positio
     if (launch) (state.launchBands ??= {})[exec.opened.address] = { pool: snapshot.address, openedAt: Date.now(), vol1hUsd: launch.vol1hUsd };
   }
   if (exec.ok && exec.closed) forgetBand(state, exec.closed);
+  // a made pair's pool landed on chain: remember it is ours, and which real address the alias stands for
+  if (exec.created && snapshot.pair) {
+    (state.pairPools ??= {})[exec.created.pool] = {
+      lbPair: exec.created.lbPair,
+      mint: snapshot.pair.mint,
+      symbol: snapshot.pair.symbol,
+      quote: snapshot.pair.quote,
+      binStep: snapshot.binStep,
+      feeBps: Math.round(snapshot.baseFeePct * 100),
+      createdAt: Date.now(),
+      rentSol: exec.created.rentSol,
+      refPool: snapshot.pair.refPool,
+      refVenue: snapshot.pair.refVenue,
+      sig: exec.created.sig,
+    };
+  }
   saveState(state);
 }
+
+/** What the journal calls this run: a paper book says so, a dry run says so, and only DRY_RUN=false says live. */
+const journalMode = (app: App): JournalEntry["mode"] => (app.paper ? "paper" : config.dryRun ? "dry-run" : "live");
+
+/** The out-of-range wait when the cost-based threshold has nothing to work with (src/engine/exit.ts moveAfterSec). */
+const OUT_OF_RANGE_FALLBACK_SEC = 600;
 
 async function runPool(app: App, o: Observed, all: Observed[], sol: number): Promise<JournalEntry> {
   const ts = new Date().toISOString();
@@ -534,14 +645,19 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     maxActivePools: config.maxActivePools,
     otherExposureSol: others.reduce((s, x) => s + x.positions.reduce((t, p) => t + p.valueInSol, 0), 0),
   };
-  const screen = screenContext(app, o.address, state);
+  const screen = screenContext(app, o.address, state, snapshot);
+  const isPair = !!snapshot.pair;
 
   // The engine's view of this pool: breakers, bench, regime, knife, collects.
   // The launch lane's view of this pool: its settings and what the last hour is trading right now.
   // Present whenever the lane is on, because the EXPIRE directive must be able to close a launch
   // band even in a cycle where the pool no longer clears the lane -- that IS the fade exit.
+  // A pair pool carries the launch lane's exits with the pair's stop and hold; its "last hour" is the
+  // reference pool's, and a reference row that has gone cold reads as 0 so the fade exit fires.
   const lenv = launchEnv();
-  const launchWatch = lenv.on ? { env: lenv, vol1hUsd: hotRowOf(o.address)?.vol1hUsd ?? null } : null;
+  const laneEnv = isPair ? pairLaunchEnv(pairEnv(), lenv) : lenv;
+  const laneVol1h = isPair ? (snapshot.pair!.stale ? 0 : snapshot.pair!.refVol1hUsd) : (hotRowOf(o.address)?.vol1hUsd ?? null);
+  const launchWatch = laneEnv.on ? { env: laneEnv, vol1hUsd: laneVol1h } : null;
   const ledgerRows = readLedgerRows();
   const collectsToday = collectsOnDay(ledgerRows, mode, dayOf(now));
   const knife = knifeReason(state.priceHistory?.[o.address], now, cfg.knifePct);
@@ -571,12 +687,22 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // How long a band here should sit out of range before moving it pays for itself: the venue's
   // unrecoverable rent plus the swap fees, against what the band earns when it is in range.
   const poolFeesPerDayUsd = screen?.tvlUsd && screen?.feeToTvl24hPct !== null && screen?.feeToTvl24hPct !== undefined ? (screen.tvlUsd * screen.feeToTvl24hPct) / 100 : null;
-  const heldShare = positions.length > 0 && snapshot.bins.length > 0 ? Math.min(0.5, positions.reduce((t, p) => t + p.valueInSol, 0) / Math.max(1e-9, positions.reduce((t, p) => t + p.valueInSol, 0) + (quoteOf(snapshot).side === "Y" ? snapshot.liquidityBelowY : snapshot.liquidityAboveX))) : 0;
+  // Our share of the quote side of the observed bins, both in QUOTE units (a band's valueInSol
+  // converts at the quote's SOL price; liquidityBelowY/AboveX are already in the quote token).
+  // Live bins already contain our own liquidity; paper bands are virtual and are not in them.
+  const qv = quoteOf(snapshot);
+  const heldQuote = positions.reduce((t, p) => t + p.valueInSol, 0) / Math.max(1e-12, qv.priceInSol);
+  const sideDepthQuote = qv.side === "Y" ? snapshot.liquidityBelowY : snapshot.liquidityAboveX;
+  const shareDenom = app.paper ? heldQuote + sideDepthQuote : Math.max(sideDepthQuote, heldQuote);
+  const heldShare = positions.length > 0 && snapshot.bins.length > 0 && shareDenom > 0 ? Math.min(0.5, heldQuote / shareDenom) : 0;
   const bandFeesPerDayUsd = poolFeesPerDayUsd !== null && heldShare > 0 ? poolFeesPerDayUsd * heldShare * 0.5 : null;
   const cost = o.venue.openCostSol(snapshot);
   const px = solPriceOf(app);
   const moveCostUsd = px ? Math.max(0, cost.total - cost.refundable) * px : 0;
-  const moveSec = Math.round(moveAfterSec(moveCostUsd, bandFeesPerDayUsd, cfg.outOfRangeSec));
+  // The cost-based threshold needs both the move's cost and the band's earning rate; without either
+  // (a pool off the board, no SOL price) it falls back to a fixed wait rather than the bare floor,
+  // so a choppy pool cannot churn a paid re-lay every two minutes on missing data.
+  const moveSec = bandFeesPerDayUsd !== null && moveCostUsd > 0 ? Math.round(moveAfterSec(moveCostUsd, bandFeesPerDayUsd, cfg.outOfRangeSec)) : Math.max(cfg.outOfRangeSec, OUT_OF_RANGE_FALLBACK_SEC);
   const engineObs: EngineObservation = {
     halt: view.haltedUntil !== null ? { until: view.haltedUntil, stage: view.haltStage, reason: view.haltReason } : null,
     standDown: view.standDownUntil !== null ? { until: view.standDownUntil, reason: view.standDownReason } : null,
@@ -620,13 +746,17 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // Then an approved outside proposal, oldest first: "agents propose, the operator decides, the desk
   // executes through its own guards". Otherwise Mr Bands proposes.
   const proposal = directive ? null : (approvedProposals(o.address)[0] ?? null);
-  // An engine close in a stock pool liquidates: the book returns to the quote, the hedge comes off with it.
-  const directiveDecision = directive && basisRow && directive.decision.action === "CLOSE_POSITION" ? { ...directive.decision, liquidate: true } : directive?.decision;
-  const llm = directive
+  // An engine close in a stock pool or a pair pool liquidates: the book returns to the quote (the hedge comes off with it; the token is never kept).
+  const directiveDecision = directive && (basisRow || isPair) && directive.decision.action === "CLOSE_POSITION" ? { ...directive.decision, liquidate: true } : directive?.decision;
+  let llm = directive
     ? engineDecideResult(directiveDecision!, `${directive.kind}: ${directive.reason}`)
     : proposal
       ? proposalDecideResult(proposalDecision(proposal), `proposal ${proposal.id} by ${proposal.proposerName} (${proposal.proposerId})`)
       : await decide(observation, { hot: hotRows(app, 8, true), openCostSol: openCostDefault });
+  // Every close sells the token back to the quote, whoever proposed it (the model, a proposal, the
+  // guards, a directive): the book is quote-denominated, and a token left in the wallet is capital
+  // nothing can size a band from. This is the mechanism the 7f5b49b fix belonged in.
+  if (llm.decision.action === "CLOSE_POSITION" && llm.decision.liquidate !== true) llm = { ...llm, decision: { ...llm.decision, liquidate: true } };
   console.log(`${tag} ${directive ? `engine directive ${directive.kind}` : proposal ? `proposal ${proposal.id}` : `${config.agentName} proposes`} ${llm.decision.action} (${llm.source}): "${llm.decision.headline}"`);
 
   const engineCtx: EngineGuardContext = {
@@ -642,7 +772,19 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     outOfRangeSec: moveSec,
     basisReason: basisObs?.reason ?? null,
   };
-  const openCostSol = llm.decision.open ? o.venue.openCostSol(snapshot, toOpenPlan(llm.decision.open, snapshot)).total : openCostDefault;
+  // Cost the proposed plan for the guards. A plan the venue cannot even cost (a NaN amount, a
+  // single-sided CLMM band with no bins on its side) is not a crash for the whole pool cycle: the
+  // guards see the default cost and refuse the plan on its shape.
+  let openCostSol = openCostDefault;
+  let planFault: string | null = null;
+  if (llm.decision.open) {
+    try {
+      openCostSol = o.venue.openCostSol(snapshot, toOpenPlan(llm.decision.open, snapshot)).total;
+    } catch (err) {
+      planFault = `the venue could not cost this plan: ${(err as Error).message}`;
+      console.log(`${tag} ${planFault}`);
+    }
+  }
   const verdict = evaluate(
     llm.decision,
     { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol },
@@ -670,7 +812,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     const quoteLeg = quoteIsSol || typeof row.quoteDelta !== "number" ? "" : ` (${row.quoteDelta.toFixed(4)} ${q.symbol})`;
     console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)}${quoteLeg} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
   }
-  updateState(state, execution, positions, snapshot, screen?.launch?.ok ? { env: lenv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null);
+  updateState(state, execution, positions, snapshot, screen?.launch?.ok || screen?.pair?.ok ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null);
 
   // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
   let hedgeJournal: JournalHedge | undefined;
@@ -737,6 +879,27 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     ...(screen?.launch?.ok
       ? { launch: { ageHours: screen.launch.ageHours, turnover: screen.launch.turnover, seatCapSol: (riskLimits.maxTotalExposureSol * lenv.seatPct) / 100, stopPct: lenv.stopPct, maxHoldMin: lenv.maxHoldMin } }
       : {}),
+    ...(snapshot.pair
+      ? {
+          pair: {
+            refPool: snapshot.pair.refPool,
+            refVenue: snapshot.pair.refVenue,
+            refLiquidityUsd: snapshot.pair.refLiquidityUsd,
+            routedShare: snapshot.pair.routedShare,
+            routedShareGross: snapshot.pair.routedShareGross,
+            competingDepthUsd: snapshot.pair.competingDepthUsd,
+            feeBps: Math.round(snapshot.baseFeePct * 100),
+            binStep: snapshot.binStep,
+            rentSol: snapshot.pair.creationRentSol,
+            lbPair: snapshot.pair.lbPair,
+            exists: snapshot.pair.exists,
+            ours: snapshot.pair.ours,
+            seatCapSol: pairSeatSol(riskLimits.maxTotalExposureSol, pairEnv()),
+            stopPct: laneEnv.stopPct,
+            maxHoldMin: laneEnv.maxHoldMin,
+          },
+        }
+      : {}),
   };
 
   const { decision: _d, ...llmMeta } = llm;
@@ -744,7 +907,8 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     id: `${ts}-${app.cycle}-${o.address.slice(0, 6)}`,
     ts,
     cycle: app.cycle,
-    mode,
+    // the journal says paper when the book is paper; the ledger keeps its own two-valued mode
+    mode: journalMode(app),
     agent: { id: config.agentId, name: config.agentName },
     pool: toJournalPool(snapshot),
     wallet: observation.wallet,
@@ -860,6 +1024,9 @@ async function runIteration(app: App): Promise<void> {
     withPositions = poolsWithBands(paper);
   } else {
     withPositions = (await poolsWithPositions(app.connection, app.wallet.publicKey, (s) => console.error(`[cycle ${app.cycle}] ${s}`))).map((p) => p.address);
+    // a pool the desk created for a pair is found by its real address: the loop works it under its pair-<mint> key
+    const alias = new Map(Object.entries(loadState().pairPools ?? {}).map(([key, rec]) => [rec.lbPair, key] as const));
+    withPositions = [...new Set(withPositions.map((a) => alias.get(a) ?? a))];
   }
   // What the wallet can fund decides which quotes the picker may take: a USDC book must not be handed
   // SOL-quoted pools it cannot seat, and a seat must clear the policy's minimum.
@@ -994,6 +1161,19 @@ async function main(): Promise<void> {
     releaseLock();
     process.exit(143);
   });
+  let appRef: App | null = null;
+  const pairVenue = createPairVenue({
+    paper: () => appRef?.paper ?? paper,
+    created: () => loadState().pairPools ?? {},
+    // the seat the model sizes for: the pair's cap or the max band, whichever binds first
+    seatSol: () => Math.min(pairSeatSol(riskLimits.maxTotalExposureSol, pairEnv()), riskLimits.maxPositionSol),
+    solPriceUsd: () => (appRef ? solPriceOf(appRef) : null),
+    screenRows: () => (appRef?.screen?.pools ?? []).map((p) => ({ address: p.address, venue: p.venue, baseMint: p.baseMint, quoteSymbol: p.quoteSymbol, liquidityUsd: p.tvlUsd })),
+    ourBins: (address, activeBinId, binsEachSide, spec) => {
+      const book = appRef?.paper ?? paper;
+      return book ? paperBinRows(book, address, activeBinId, binsEachSide, { binStep: spec.binStep, xDecimals: spec.decimals, yDecimals: spec.quoteDecimals }) : null;
+    },
+  });
   const app: App = {
     connection,
     wallet,
@@ -1008,7 +1188,9 @@ async function main(): Promise<void> {
     perpMarks: new Map(),
     hedgedThisCycle: new Map(),
     mintAttributed: new Set(),
+    pairVenue,
   };
+  appRef = app;
   if (app.screen) app.screenAt = new Date(app.screen.generatedAt).getTime();
   setSolPriceUsd(solPriceOf(app));
   banner(app);

@@ -17,6 +17,12 @@ export interface HotRow {
   quoteMint: string;
   /** "SOL" | "USDC" | the quote's own symbol */
   quoteSymbol: string;
+  /** the base token in USD, as the sources report it; null when nobody priced it */
+  priceUsd: number | null;
+  /** QUOTE per base, UI units (DexScreener's priceNative, else GeckoTerminal's base_token_price_quote_token): the reference price a made pair opens at */
+  priceNative: number | null;
+  /** "pump.fun" when the base mint ends in "pump" or the pool lives on pump.fun's venues (pumpswap, pump-fun); null otherwise */
+  origin: "pump.fun" | null;
   /** the pool sits on the screener's board (data/screen.json) */
   onBoard: boolean;
   screenRank: number | null;
@@ -73,6 +79,8 @@ export interface HotSources {
   siblingLookups?: number;
   /** pools the sibling lookups added to this tick that trending never mentioned */
   siblingRows?: number;
+  /** rows GeckoTerminal's top-PumpSwap-pools pages returned (HOT_PUMPSWAP_PAGES; 0 when off) */
+  pumpswap?: number;
   /** what failed, in plain words; empty when every source answered */
   errors: string[];
 }
@@ -102,8 +110,11 @@ export interface HotHistoryRow {
 
 /** A pool as a short-window source reports it. Nulls are what the source did not say. */
 export interface PoolSample {
-  /** "siblings": GeckoTerminal's other pools for a token that trended somewhere we cannot trade */
-  source: "trending" | "dexscreener" | "siblings";
+  /**
+   * "siblings": GeckoTerminal's other pools for a token that trended somewhere we cannot trade;
+   * "pumpswap": GeckoTerminal's top PumpSwap pools by 24h volume (the pair lane's reference pools)
+   */
+  source: "trending" | "dexscreener" | "siblings" | "pumpswap";
   address: string;
   name: string | null;
   /** the source's dex id, already mapped through venueOfDex */
@@ -115,6 +126,8 @@ export interface PoolSample {
   priceUsd: number | null;
   /** USD price of the quote token (GeckoTerminal only): prices SOL when the quote is SOL */
   quotePriceUsd: number | null;
+  /** quote per base, UI units: DexScreener priceNative, GeckoTerminal base_token_price_quote_token */
+  priceNative: number | null;
   liquidityUsd: number | null;
   vol5mUsd: number | null;
   vol1hUsd: number | null;

@@ -66,7 +66,7 @@ export interface JournalEntry {
   id: string;
   ts: string;
   cycle: number;
-  mode: "dry-run" | "live";
+  mode: "dry-run" | "live" | "paper";
   agent: { id: string; name: string };
   pool: JournalPool;
   /** quote / quoteSymbol: the wallet's balance of the pool's quote token; absent on old entries (SOL pools: = sol) */
@@ -136,6 +136,30 @@ export interface JournalEngine {
    * board, the score and the watchlist was allowed a band at all.
    */
   launch?: { ageHours: number; turnover: number; seatCapSol: number; stopPct: number; maxHoldMin: number } | null;
+  /**
+   * The pair lane worked this pool this cycle (src/screener/pair.ts, src/venues/pair.ts): our own
+   * Meteora pool for a pump.fun token, the reference PumpSwap pool it prices from, what the routing
+   * model said, and what the pool cost. Present only on pair pools.
+   */
+  pair?: {
+    refPool: string | null;
+    refVenue: string | null;
+    refLiquidityUsd: number | null;
+    /** the model's share of the reference flow: after and before the split with competing concentrated depth */
+    routedShare: number;
+    routedShareGross: number;
+    competingDepthUsd: number;
+    feeBps: number;
+    binStep: number;
+    /** creation rent that never comes back (0 once the pool exists) */
+    rentSol: number;
+    lbPair: string | null;
+    exists: boolean;
+    ours: boolean;
+    seatCapSol: number;
+    stopPct: number;
+    maxHoldMin: number;
+  } | null;
 }
 
 export function toJournalPool(s: PoolSnapshot): JournalPool {

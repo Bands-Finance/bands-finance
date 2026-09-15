@@ -13,6 +13,12 @@
  * BOTH band closes, then buys the shortfall or sells the surplus (only what the band returned) so
  * both halves match, then deposits. A close that feeds a swap or a re-laid straddle charges no
  * PAPER_SLIPPAGE_PCT on its token leg (the swap fee is that cost); a plain close keeps it.
+ *
+ * A MADE PAIR (snapshot.pair, src/venues/pair.ts): the first open in a pool that does not exist yet
+ * creates it in the book first, charging the creation rent (lb pair + reserves + oracle + the
+ * seed's bin arrays, none of it refundable) as its own "rent" ledger row; the seed position then
+ * pays the refundable position rent only. A pool that already exists (ours from an earlier open,
+ * or someone else's on chain) pays the ordinary open cost.
  */
 import type { OpenParams } from "../agent/schema";
 import { LedgerRow, recordLedger } from "../engine/ledger";
@@ -22,7 +28,7 @@ import { binPrice, clmmBandTicks, priceModelOf } from "../tools/bins";
 import { PoolSnapshot, POSITION_RENT_SOL, PositionSnapshot, quoteOf } from "../tools/dlmm";
 import { jupiterEnv } from "../tools/jupiter";
 import type { OpenCost } from "../venues/types";
-import { bandRentRefund, bandsInPool, buyToken, chargeTxFee, claimFees, closeBand, openBand, paperTokenBalance, sellToken, OPEN_COST_ESTIMATE_SOL, PAPER_TX_FEE_SOL, type PaperBook, type PaperSwapResult } from "./book";
+import { bandRentRefund, bandsInPool, buyToken, chargeTxFee, claimFees, closeBand, createPairPool, openBand, paperTokenBalance, sellToken, OPEN_COST_ESTIMATE_SOL, PAPER_TX_FEE_SOL, type PaperBook, type PaperSwapResult } from "./book";
 import { valueBand } from "./mark";
 
 export { PAPER_TX_FEE_SOL };
@@ -212,6 +218,40 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
     if (d.action === "OPEN_POSITION" || d.action === "REBALANCE") {
       if (!d.open) throw new Error("open parameters missing");
       const o: OpenParams = d.open;
+      const cost = ctx.openCost ?? { total: OPEN_COST_ESTIMATE_SOL, refundable: POSITION_RENT_SOL };
+      // A made pair that does not exist yet is created first: its rent is the pool's, not the band's.
+      let creationRent = 0;
+      if (s.pair && !book.pairPools?.[s.address] && s.pair.creationRentSol > 0) {
+        creationRent = Math.min(s.pair.creationRentSol, cost.total);
+        const made = createPairPool(book, {
+          address: s.address,
+          mint: s.pair.mint,
+          symbol: s.pair.symbol,
+          refPool: s.pair.refPool,
+          refVenue: s.pair.refVenue,
+          quote: q.symbol,
+          binStep: s.binStep,
+          feeBps: Math.round(s.baseFeePct * 100),
+          rentSol: creationRent,
+          now,
+        });
+        chargeTxFee(book);
+        push({
+          label: `create pool ${s.label}`,
+          ok: true,
+          skipped: `paper: made ${s.address} on Meteora DLMM, bin step ${s.binStep} (${(s.binStep / 100).toFixed(2)}%/bin), base fee ${s.baseFeePct}%, fees collected in ${s.pair.collectFeeMode === "quote" ? `the ${q.symbol} only` : "both tokens"}; creation rent ${made.rentSol.toFixed(6)} SOL charged, none of it refundable; active bin ${s.activeBinId} from the ${s.pair.refVenue ?? "reference"} price ${s.activePrice.toPrecision(6)}`,
+        });
+        ledger({
+          ...baseRow(s, "rent", null, now),
+          quoteDelta: 0,
+          solDelta: 0,
+          tokenDelta: 0,
+          rentSol: -creationRent,
+          txFeeSol: -PAPER_TX_FEE_SOL,
+          basis: "marked",
+          note: `paper: create pair pool ${s.label} (lb pair + 2 reserves + oracle + 2 bin arrays), not refundable`,
+        });
+      }
       // the straddle's legs: buy the shortfall (declared as acquireToken, or whatever a re-centre needs), sell a re-centre's surplus
       if (o.side === "BOTH" && o.amountToken > 0) {
         const have = paperTokenBalance(book, s.baseToken.mint);
@@ -223,7 +263,6 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
       const { lowerBinId, upperBinId, note: geometryNote } = paperBandBins(s, o);
       const xDec = s.tokenX.decimals;
       const yDec = s.tokenY.decimals;
-      const cost = ctx.openCost ?? { total: OPEN_COST_ESTIMATE_SOL, refundable: POSITION_RENT_SOL };
       const opened = openBand(book, {
         pool: s.address,
         label: s.label,
@@ -250,7 +289,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         slippagePct,
         now,
         ...(priceModelOf(s) === "clmm" ? { priceModel: "clmm" as const } : {}),
-        ...(ctx.openCost ? { rentChargedSol: cost.total, rentRefundableSol: cost.refundable } : {}),
+        ...(ctx.openCost || creationRent > 0 ? { rentChargedSol: cost.total - creationRent, rentRefundableSol: cost.refundable } : {}),
       });
       chargeTxFee(book);
       const b = opened.band;
@@ -269,7 +308,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         rentSol: -opened.rentChargedSol,
         txFeeSol: -PAPER_TX_FEE_SOL,
         basis: "marked",
-        note: `paper: open ${o.side} band (a deposit, no slippage); rent charged at the open estimate (${ctx.openCost?.note ?? "position + 2 bin arrays"})`,
+        note: `paper: open ${o.side} band (a deposit, no slippage); rent charged at the open estimate (${creationRent > 0 ? "position rent; the pool's own rent is the row above" : (ctx.openCost?.note ?? "position + 2 bin arrays")})`,
       });
     }
   } catch (err) {

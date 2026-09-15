@@ -22,12 +22,15 @@ import {
   hotPicks,
   hotRoutes,
   identityOf,
+  originOf,
   inputsOf,
   loadHot,
   orient,
   parseDexScreener,
   parseHistory,
+  parsePumpSwapPools,
   parseTrending,
+  PUMPSWAP_URL,
   quoteSymbolOf,
   readHistoryTail,
   runHotTick,
@@ -79,6 +82,12 @@ const SOL_USDC = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2";
 const TRENDING_5M = {"data":[{"id":"solana_8myc52qh4zCDWXBnW9UxbJMs1cu6aNMcsa4VCK5Hw9R3","type":"pool","attributes":{"base_token_price_usd":"0.001949414","base_token_price_native_currency":"1.95378e-05","quote_token_price_usd":"1100.6517594239","quote_token_price_native_currency":"11.0090670855","base_token_price_quote_token":"1.7747e-06","quote_token_price_base_token":"563474.983287909","address":"8myc52qh4zCDWXBnW9UxbJMs1cu6aNMcsa4VCK5Hw9R3","name":"JubJub / ZEC","pool_created_at":"2026-09-13T00:51:59Z","fdv_usd":"1949406.558","market_cap_usd":null,"price_change_percentage":{"m5":"6.989","m15":"9.789","m30":"12.198","h1":"-20.075","h6":"75.721","h24":"4344.788"},"transactions":{"m5":{"buys":37,"sells":17,"buyers":30,"sellers":14},"m15":{"buys":117,"sells":102,"buyers":69,"sellers":79},"m30":{"buys":335,"sells":297,"buyers":163,"sellers":176},"h1":{"buys":633,"sells":565,"buyers":283,"sellers":318},"h6":{"buys":4154,"sells":3535,"buyers":1430,"sellers":1387},"h24":{"buys":15906,"sells":12356,"buyers":4472,"sellers":3583}},"volume_usd":{"m5":"6986.0499791446","m15":"30397.9164778589","m30":"95241.560595001","h1":"218692.710494242","h6":"1367239.16189016","h24":"4682215.73334546"},"reserve_in_usd":"128242.2069"},"relationships":{"base_token":{"data":{"id":"solana_7tFbGa9wt4Q4yxNAdaDcTKahv4WPrJtXh6ty7gjWyKx3","type":"token"}},"quote_token":{"data":{"id":"solana_A7bdiYdS5GjqGFtxf17ppRHtDKPkkRqbKtR27dxvQXaS","type":"token"}},"dex":{"data":{"id":"raydium","type":"dex"}}}},{"id":"solana_zxTpi4BtaWX3mgdAPoezkMD1hxx8CdeCfrqXMWvSCLX","type":"pool","attributes":{"base_token_price_usd":"0.2673600539","base_token_price_native_currency":"0.0026903635","quote_token_price_usd":"99.7757213356","quote_token_price_native_currency":"1.0","base_token_price_quote_token":"0.0026903635","quote_token_price_base_token":"371.696984389","address":"zxTpi4BtaWX3mgdAPoezkMD1hxx8CdeCfrqXMWvSCLX","name":"STONK / SOL","pool_created_at":"2026-08-12T10:51:40Z","fdv_usd":"228044657.419344","market_cap_usd":"228068021.886748","price_change_percentage":{"m5":"0.203","m15":"0.045","m30":"-0.89","h1":"-2.495","h6":"-12.675","h24":"-2.431"},"transactions":{"m5":{"buys":85,"sells":28,"buyers":45,"sellers":26},"m15":{"buys":229,"sells":79,"buyers":133,"sellers":68},"m30":{"buys":426,"sells":166,"buyers":217,"sellers":128},"h1":{"buys":705,"sells":245,"buyers":315,"sellers":187},"h6":{"buys":4037,"sells":2533,"buyers":1473,"sellers":1240},"h24":{"buys":23822,"sells":20786,"buyers":7257,"sellers":6676}},"volume_usd":{"m5":"37110.6689539281","m15":"245075.819658367","m30":"462450.596541977","h1":"721653.293601921","h6":"3388454.84578009","h24":"26867197.6298484"},"reserve_in_usd":"2825964.6374"},"relationships":{"base_token":{"data":{"id":"solana_6GmAFSYs4gk3FDao5FzzySQpPZaWsa4rUJHacpMpUNgx","type":"token"}},"quote_token":{"data":{"id":"solana_So11111111111111111111111111111111111111112","type":"token"}},"dex":{"data":{"id":"meteora","type":"dex"}}}},{"id":"solana_G2pNaeFEUaq8ArWbCYe1wv8vRfd2ZL8LjPN8mcJqGeop","type":"pool","attributes":{"base_token_price_usd":"0.000286061","base_token_price_native_currency":"2.8991e-06","quote_token_price_usd":"99.7764834138","quote_token_price_native_currency":"1.0","base_token_price_quote_token":"2.8991e-06","quote_token_price_base_token":"344937.942953021","address":"G2pNaeFEUaq8ArWbCYe1wv8vRfd2ZL8LjPN8mcJqGeop","name":"MIZO / SOL","pool_created_at":"2026-09-13T08:53:28Z","fdv_usd":"308669.5927","market_cap_usd":null,"price_change_percentage":{"m5":"10.628","m15":"-3.632","m30":"-41.935","h1":"-21.988","h6":"639.654","h24":"639.654"},"transactions":{"m5":{"buys":272,"sells":216,"buyers":200,"sellers":147},"m15":{"buys":948,"sells":705,"buyers":550,"sellers":468},"m30":{"buys":1822,"sells":1221,"buyers":918,"sellers":791},"h1":{"buys":3062,"sells":2337,"buyers":1438,"sellers":1294},"h6":{"buys":16768,"sells":13224,"buyers":5612,"sellers":4456},"h24":{"buys":16768,"sells":13224,"buyers":5612,"sellers":4456}},"volume_usd":{"m5":"39386.7934316454","m15":"124952.864512644","m30":"213187.533460992","h1":"354580.661998471","h6":"1922829.00327039","h24":"1922829.00327039"},"reserve_in_usd":"48958.9209"},"relationships":{"base_token":{"data":{"id":"solana_5Zspimi8VD6LctJLtaSjLqaSUvmh3Rs849iPtGocpump","type":"token"}},"quote_token":{"data":{"id":"solana_So11111111111111111111111111111111111111112","type":"token"}},"dex":{"data":{"id":"pumpswap","type":"dex"}}}}]};
 const TRENDING_1H = {"data":[{"id":"solana_6e4ewHhGZrBMiSkKat7QCx28dytJdnYrobNXWrPL5WFN","type":"pool","attributes":{"base_token_price_usd":"0.0362818436","base_token_price_native_currency":"0.0003667223","quote_token_price_usd":"0.9997574114","quote_token_price_native_currency":"0.0100260982","base_token_price_quote_token":"0.036576769","quote_token_price_base_token":"27.3397576271","address":"6e4ewHhGZrBMiSkKat7QCx28dytJdnYrobNXWrPL5WFN","name":"EMBER / USDC","pool_created_at":"2026-09-10T05:53:50Z","fdv_usd":"36278935.0507101","market_cap_usd":"36282444.6716125","price_change_percentage":{"m5":"-2.945","m15":"-2.012","m30":"1.069","h1":"4.62","h6":"3.841","h24":"66.151"},"transactions":{"m5":{"buys":218,"sells":52,"buyers":141,"sellers":41},"m15":{"buys":371,"sells":155,"buyers":234,"sellers":123},"m30":{"buys":692,"sells":503,"buyers":385,"sellers":334},"h1":{"buys":935,"sells":775,"buyers":526,"sellers":491},"h6":{"buys":5187,"sells":3816,"buyers":2506,"sellers":1988},"h24":{"buys":20977,"sells":17185,"buyers":8740,"sellers":7864}},"volume_usd":{"m5":"67725.6713662553","m15":"183067.336686509","m30":"534721.682163583","h1":"793996.91072468","h6":"3409869.67946854","h24":"14085600.3429266"},"reserve_in_usd":"1072260.5508"},"relationships":{"base_token":{"data":{"id":"solana_5dvXTZ5qwgafnHtwu3Ls3QrWx1U4LQsFeCuJgkk4QEC6","type":"token"}},"quote_token":{"data":{"id":"solana_EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","type":"token"}},"dex":{"data":{"id":"meteora","type":"dex"}}}},{"id":"solana_BTccxxTFi7a9xJTE1exKn38Jgie35s6gNeRxd8DM61Rc","type":"pool","attributes":{"base_token_price_usd":"1097.9754036536","base_token_price_native_currency":"11.0090670676","quote_token_price_usd":"0.0942681156","quote_token_price_native_currency":"0.0009451979","base_token_price_quote_token":"11647.367682632","quote_token_price_base_token":"8.58563e-05","address":"BTccxxTFi7a9xJTE1exKn38Jgie35s6gNeRxd8DM61Rc","name":"ZEC / ZCAT","pool_created_at":"2026-08-30T23:29:55Z","fdv_usd":"106556863.22979","market_cap_usd":"106213877.588181","price_change_percentage":{"m5":"-0.279","m15":"0.291","m30":"0.515","h1":"-0.086","h6":"-4.415","h24":"-4.766"},"transactions":{"m5":{"buys":4,"sells":11,"buyers":4,"sellers":9},"m15":{"buys":19,"sells":16,"buyers":17,"sellers":11},"m30":{"buys":27,"sells":26,"buyers":22,"sellers":18},"h1":{"buys":39,"sells":42,"buyers":32,"sellers":26},"h6":{"buys":217,"sells":179,"buyers":154,"sellers":110},"h24":{"buys":3453,"sells":3650,"buyers":1523,"sellers":1754}},"volume_usd":{"m5":"1109.9433817948","m15":"19906.7950218769","m30":"22447.8538722611","h1":"54259.8121367021","h6":"187971.228105984","h24":"4061000.79528906"},"reserve_in_usd":"1449156.0667"},"relationships":{"base_token":{"data":{"id":"solana_A7bdiYdS5GjqGFtxf17ppRHtDKPkkRqbKtR27dxvQXaS","type":"token"}},"quote_token":{"data":{"id":"solana_HcRLc9VDgjLeK154xDawfb1dmVJ98DoSqcwTHGqiDeJR","type":"token"}},"dex":{"data":{"id":"raydium-clmm","type":"dex"}}}},{"id":"solana_58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2","type":"pool","attributes":{"base_token_price_usd":"99.7431304767","base_token_price_native_currency":"1.0","quote_token_price_usd":"1.0000041521","quote_token_price_native_currency":"0.0100261071","base_token_price_quote_token":"99.739608683","quote_token_price_base_token":"0.0100261071","address":"58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2","name":"SOL / USDC","pool_created_at":"2022-04-28T09:46:08Z","fdv_usd":"1260170497.56257","market_cap_usd":"1261497962.50081","price_change_percentage":{"m5":"-0.268","m15":"-0.1","m30":"-0.116","h1":"-0.231","h6":"-2.319","h24":"-2.255"},"transactions":{"m5":{"buys":334,"sells":477,"buyers":130,"sellers":182},"m15":{"buys":1318,"sells":1418,"buyers":553,"sellers":553},"m30":{"buys":2917,"sells":3244,"buyers":1149,"sellers":1153},"h1":{"buys":7412,"sells":8352,"buyers":2325,"sellers":2426},"h6":{"buys":38023,"sells":38653,"buyers":7539,"sellers":7672},"h24":{"buys":566546,"sells":588975,"buyers":37488,"sellers":49510}},"volume_usd":{"m5":"30902.8879795444","m15":"149567.860082818","m30":"392930.081528201","h1":"1042451.67184295","h6":"4743370.84710272","h24":"81777827.2609474"},"reserve_in_usd":"30781349.7989"},"relationships":{"base_token":{"data":{"id":"solana_So11111111111111111111111111111111111111112","type":"token"}},"quote_token":{"data":{"id":"solana_EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","type":"token"}},"dex":{"data":{"id":"raydium","type":"dex"}}}}]};
 
+/* ---------- fixture: GeckoTerminal GET /networks/solana/dexes/pumpswap/pools?page=1&sort=h24_volume_usd_desc (2026-09-14, three of twenty rows) ---------- */
+const NIKE_PUMP = "DEjtpp7WwmPV3pUYtcRbkdSgtdc1o9XdzURFKhQJHCKW";
+const CLAUDE_PUMP = "E59Az3Dg62mxTK1RitxqLsWoSYY8HjmzKJgFQMyNrJZt";
+const NVIDA_PUMP = "4ynjBnDoFaFqG18rzHAb4qUWHvLDYRcQu2Vcw4f4kJov";
+const PUMPSWAP_P1 = {"data":[{"id":"solana_4ynjBnDoFaFqG18rzHAb4qUWHvLDYRcQu2Vcw4f4kJov","type":"pool","attributes":{"base_token_price_usd":"0.00332180857656177758726853214664855149082568612934751115469452462","base_token_price_native_currency":"0.000000794100493902803","quote_token_price_usd":"102.786869790566661724357325006868517330927878358","base_token_price_quote_token":"0.0000007941004939","address":"4ynjBnDoFaFqG18rzHAb4qUWHvLDYRcQu2Vcw4f4kJov","name":"NVIDA / SOL","pool_created_at":"2026-09-14T01:48:12Z","price_change_percentage":{"m5":"0","h1":"0","h24":"49208.989"},"transactions":{"m5":{"buys":0,"sells":0,"buyers":0,"sellers":0},"h1":{"buys":0,"sells":1,"buyers":0,"sellers":1}},"volume_usd":{"m5":"0.0","h1":"0.0005179430369","h24":"153213664.826206"},"reserve_in_usd":"0.0005194151104"},"relationships":{"base_token":{"data":{"id":"solana_4K6DVWbekNpa9DL4pwwguLPrYpoq7DuTyzC5Y42yrhFc","type":"token"}},"quote_token":{"data":{"id":"solana_So11111111111111111111111111111111111111112","type":"token"}},"dex":{"data":{"id":"pumpswap","type":"dex"}}}},{"id":"solana_E59Az3Dg62mxTK1RitxqLsWoSYY8HjmzKJgFQMyNrJZt","type":"pool","attributes":{"base_token_price_usd":"0.0000562818192667101029620173993567489123250083042780882759143088352","base_token_price_native_currency":"0.000000547514903244825","quote_token_price_usd":"102.795045273029428904061259366770158778061127648","base_token_price_quote_token":"0.0000005475149032","address":"E59Az3Dg62mxTK1RitxqLsWoSYY8HjmzKJgFQMyNrJZt","name":"Claude / SOL","pool_created_at":"2026-09-14T19:10:21Z","price_change_percentage":{"m5":"0","h1":"6.097","h24":"728.106"},"transactions":{"m5":{"buys":0,"sells":0,"buyers":0,"sellers":0},"h1":{"buys":4467,"sells":3197,"buyers":1289,"sellers":19}},"volume_usd":{"m5":"0.0","h1":"6436833.1549629","h24":"71088783.0427548"},"reserve_in_usd":"0.000000775549427174192"},"relationships":{"base_token":{"data":{"id":"solana_DJaLFMuqBa4JupES5KzRV5YHLRPMTQM2spm1jurt6Fa9","type":"token"}},"quote_token":{"data":{"id":"solana_So11111111111111111111111111111111111111112","type":"token"}},"dex":{"data":{"id":"pumpswap","type":"dex"}}}},{"id":"solana_DEjtpp7WwmPV3pUYtcRbkdSgtdc1o9XdzURFKhQJHCKW","type":"pool","attributes":{"base_token_price_usd":"0.0000300682119094559366707264239441141554599365040231325574430639619","base_token_price_native_currency":"0.000000291245474866189","quote_token_price_usd":"102.723849419367223889107022861340069400336547591","base_token_price_quote_token":"0.0000002912454749","address":"DEjtpp7WwmPV3pUYtcRbkdSgtdc1o9XdzURFKhQJHCKW","name":"NIKE / SOL","pool_created_at":"2026-09-14T19:48:27Z","price_change_percentage":{"m5":"0.515","h1":"6.998","h24":"225.558"},"transactions":{"m5":{"buys":114,"sells":114,"buyers":20,"sellers":20},"h1":{"buys":6365,"sells":6333,"buyers":22,"sellers":21}},"volume_usd":{"m5":"223412.523150477","h1":"12394850.3308151","h24":"48129456.0489997"},"reserve_in_usd":"343798.9297"},"relationships":{"base_token":{"data":{"id":"solana_FHDQkQtKVhjRMMTDDNfSyQq5tg5ADbQ1zmEv1k88V9pd","type":"token"}},"quote_token":{"data":{"id":"solana_So11111111111111111111111111111111111111112","type":"token"}},"dex":{"data":{"id":"pumpswap","type":"dex"}}}}]};
+
 /* ---------- fixture: DexScreener GET /latest/dex/pairs/solana/<addrs> (2026-09-13, `info` and `url` dropped) ---------- */
 type DexPair = { pairAddress: string; volume: Record<string, number>; [k: string]: unknown };
 const DEX: { schemaVersion: string; pairs: DexPair[] } = {"schemaVersion":"1.0.0","pairs":[{"chainId":"solana","dexId":"orca","pairAddress":"D3P1NfTww6ib5bW885XypnHTho1BmtyAq9saFgfzjbyw","labels":["wp"],"baseToken":{"address":"5dvXTZ5qwgafnHtwu3Ls3QrWx1U4LQsFeCuJgkk4QEC6","name":"embercurve","symbol":"EMBER"},"quoteToken":{"address":"So11111111111111111111111111111111111111112","name":"Wrapped SOL","symbol":"SOL"},"priceNative":"0.0003605","priceUsd":"0.03596","txns":{"m5":{"buys":0,"sells":13},"h1":{"buys":105,"sells":30},"h6":{"buys":539,"sells":295},"h24":{"buys":3287,"sells":2363}},"volume":{"h24":3671325.07,"h6":400531.37,"h1":87330.71,"m5":12273.7},"priceChange":{"m5":-2.46,"h1":1.74,"h6":2.13,"h24":62.2},"liquidity":{"usd":426872.27,"base":5462307,"quote":2309.5789},"fdv":35968075,"marketCap":35968075,"pairCreatedAt":1788996264000},{"chainId":"solana","dexId":"raydium","pairAddress":"BzqqgCeFMxJ45rYhneXnVGwkZw5SHdPcSEc4qyY6ygFg","labels":["CLMM"],"baseToken":{"address":"DKNGQFNGQmoBdXSRGKJ8tTu7uPDasw5JDcfMmWniNfow","name":"DraftKings - Backpack Securities","symbol":"DKNG"},"quoteToken":{"address":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","name":"USD Coin","symbol":"USDC"},"priceNative":"23.8823","priceUsd":"23.88","txns":{"m5":{"buys":0,"sells":0},"h1":{"buys":0,"sells":9},"h6":{"buys":6,"sells":64},"h24":{"buys":1354,"sells":1344}},"volume":{"h24":407530.99,"h6":1072.33,"h1":130.22,"m5":0},"priceChange":{"h1":-0.1,"h6":-0.46,"h24":-0.97},"liquidity":{"usd":2315.23,"base":73.08838,"quote":569.7196},"pairCreatedAt":1789159663000},{"chainId":"solana","dexId":"meteora","pairAddress":"6e7V9eegCHw997T72MxgwwJipZ6GJyZF8NvjkzT1rvpN","labels":["DLMM"],"baseToken":{"address":"9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump","name":"The Black Bull","symbol":"ANSEM"},"quoteToken":{"address":"So11111111111111111111111111111111111111112","name":"Wrapped SOL","symbol":"SOL"},"priceNative":"0.001570","priceUsd":"0.1567","txns":{"m5":{"buys":3,"sells":6},"h1":{"buys":95,"sells":47},"h6":{"buys":938,"sells":693},"h24":{"buys":11283,"sells":8810}},"volume":{"h24":4025807.71,"h6":371583.39,"h1":33949.51,"m5":653.24},"priceChange":{"m5":-0.03,"h1":-0.84,"h6":-3.83,"h24":3.96},"liquidity":{"usd":1413896.92,"base":5453269,"quote":5607.1343},"fdv":156700307,"marketCap":156700307,"pairCreatedAt":1782628736000},{"chainId":"solana","dexId":"meteora","pairAddress":"zxTpi4BtaWX3mgdAPoezkMD1hxx8CdeCfrqXMWvSCLX","labels":["DLMM"],"baseToken":{"address":"6GmAFSYs4gk3FDao5FzzySQpPZaWsa4rUJHacpMpUNgx","name":"STONK","symbol":"STONK"},"quoteToken":{"address":"So11111111111111111111111111111111111111112","name":"Wrapped SOL","symbol":"SOL"},"priceNative":"0.002711","priceUsd":"0.2704","txns":{"m5":{"buys":87,"sells":57},"h1":{"buys":725,"sells":288},"h6":{"buys":4032,"sells":2546},"h24":{"buys":23857,"sells":20833}},"volume":{"h24":26876791.39,"h6":3388780.51,"h1":753610.54,"m5":48624.1},"priceChange":{"m5":0.76,"h1":-1.49,"h6":-11.77,"h24":-1.27},"liquidity":{"usd":2841734.9,"base":4067952,"quote":17462},"fdv":270457059,"marketCap":237118849,"pairCreatedAt":1786531900000},{"chainId":"solana","dexId":"meteora","pairAddress":"6e4ewHhGZrBMiSkKat7QCx28dytJdnYrobNXWrPL5WFN","labels":["DLMM"],"baseToken":{"address":"5dvXTZ5qwgafnHtwu3Ls3QrWx1U4LQsFeCuJgkk4QEC6","name":"embercurve","symbol":"EMBER"},"quoteToken":{"address":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","name":"USD Coin","symbol":"USDC"},"priceNative":"0.03607","priceUsd":"0.03607","txns":{"m5":{"buys":91,"sells":67},"h1":{"buys":970,"sells":803},"h6":{"buys":5274,"sells":3906},"h24":{"buys":21300,"sells":17617}},"volume":{"h24":14097354.03,"h6":3413128.05,"h1":795383.42,"m5":42580.61},"priceChange":{"m5":-1.06,"h1":6.74,"h6":3.27,"h24":62.51},"liquidity":{"usd":1066950.47,"base":10325294,"quote":694416},"fdv":36079711,"marketCap":35923137,"pairCreatedAt":1789019630000},{"chainId":"solana","dexId":"raydium","pairAddress":"8myc52qh4zCDWXBnW9UxbJMs1cu6aNMcsa4VCK5Hw9R3","labels":["CPMM"],"baseToken":{"address":"7tFbGa9wt4Q4yxNAdaDcTKahv4WPrJtXh6ty7gjWyKx3","name":"Zcash Official Mascot","symbol":"JubJub"},"quoteToken":{"address":"A7bdiYdS5GjqGFtxf17ppRHtDKPkkRqbKtR27dxvQXaS","name":"Zcash","symbol":"ZEC"},"priceNative":"0.000001719","priceUsd":"0.001888","txns":{"m5":{"buys":35,"sells":20},"h1":{"buys":623,"sells":565},"h6":{"buys":4056,"sells":3501},"h24":{"buys":15892,"sells":12418}},"volume":{"h24":4696972.71,"h6":1368191.17,"h1":221686.37,"m5":10088.85},"priceChange":{"m5":-1.12,"h1":-23.07,"h6":103,"h24":4726},"liquidity":{"usd":125803.76,"base":33308462,"quote":57.2735},"fdv":1888465,"marketCap":1888465,"pairCreatedAt":1789260719000}]};
@@ -108,7 +117,7 @@ const SCREEN: ScreenResult = {
 };
 
 /* ---------- a fake fetch: serves the fixtures by URL, refuses anything else, never touches the network ---------- */
-function fakeFetch(o: { calls?: string[]; h1Override?: Record<string, number>; failTrending?: boolean; firstTrending429?: boolean } = {}): typeof fetch {
+function fakeFetch(o: { calls?: string[]; h1Override?: Record<string, number>; failTrending?: boolean; firstTrending429?: boolean; failPumpswap?: boolean } = {}): typeof fetch {
   let trendingCalls = 0;
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   return (async (input: string | URL | Request) => {
@@ -121,6 +130,10 @@ function fakeFetch(o: { calls?: string[]; h1Override?: Record<string, number>; f
       if (o.firstTrending429 && trendingCalls === 1) return json({ errors: [{ status: "429" }] }, 429);
       const d = u.searchParams.get("duration");
       return json(d === "5m" ? TRENDING_5M : d === "1h" ? TRENDING_1H : { data: [] });
+    }
+    if (u.host === "api.geckoterminal.com" && u.pathname.endsWith("/dexes/pumpswap/pools")) {
+      if (o.failPumpswap) return json({ errors: [{ status: "500" }] }, 500);
+      return json(u.searchParams.get("page") === "1" ? PUMPSWAP_P1 : { data: [] });
     }
     if (u.host === "api.dexscreener.com") {
       const want = new Set(u.pathname.split("/").pop()!.split(","));
@@ -142,7 +155,7 @@ async function main(): Promise<void> {
   /* ---------- env ---------- */
   await test("hotEnv: defaults, overrides, blanks and junk fall back", () => {
     const d = hotEnv({});
-    assert.deepEqual(d, { intervalSec: 120, minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150, onchainReads: 8, siblingMinVol24hUsd: 500_000, siblingLookups: 6, siblingTtlMin: 30 });
+    assert.deepEqual(d, { intervalSec: 120, minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150, onchainReads: 8, siblingMinVol24hUsd: 500_000, siblingLookups: 6, siblingTtlMin: 30, pumpswapPages: 1 });
     const e = hotEnv({ HOT_INTERVAL_SEC: "30", HOT_MIN_LIQUIDITY_USD: "", HOT_MAX_ROWS: "abc", HOT_ONCHAIN_READS: "2", HOT_SIBLING_LOOKUPS: "0", HOT_SIBLING_TTL_MIN: "junk" });
     assert.equal(e.intervalSec, 30);
     assert.equal(e.minLiquidityUsd, 20_000);
@@ -288,7 +301,7 @@ async function main(): Promise<void> {
 
   /* ---------- hotPicks ---------- */
   const hotRow = (o: Partial<HotRow> & Pick<HotRow, "address" | "venue" | "heat">): HotRow => ({
-    name: o.address, baseMint: "", baseSymbol: "", quoteMint: SOL, quoteSymbol: "SOL", onBoard: false, screenRank: null, stock: null, vol1hUsd: 1, vol5mUsd: 1, vol24hUsd: 1, liquidityUsd: 100_000, feePct: 1, feeSource: "board", fees1hUsd: 1,
+    name: o.address, baseMint: "", baseSymbol: "", quoteMint: SOL, quoteSymbol: "SOL", priceUsd: null, priceNative: null, origin: null, onBoard: false, screenRank: null, stock: null, vol1hUsd: 1, vol5mUsd: 1, vol24hUsd: 1, liquidityUsd: 100_000, feePct: 1, feeSource: "board", fees1hUsd: 1,
     feeToTvl1hPct: 1, feeToTvlDailyPct: 24, turnover1h: 1, acceleration: 1, buys1h: 1, sells1h: 1, buys5m: 1, sells5m: 1, sellShare1h: 0.5, sellShare5m: 0.5, priceChange5mPct: 0, priceChange1hPct: 0, priceChange24hPct: 0, ageHours: 100,
     flags: [], surge: false, surgeAt: null, firstSeenAt: "", lastSeenAt: "", ...o,
   });
@@ -457,8 +470,9 @@ async function main(): Promise<void> {
 
   /* ---------- a whole tick, twice, on a fake fetch ---------- */
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-bands-hot-"));
-  // siblingLookups 0: these tests pin the tick's exact call budget. Sibling discovery has its own tests (npm run test:launch).
-  const env = { minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150, onchainReads: 2, siblingLookups: 0 };
+  // siblingLookups 0 and pumpswapPages 0: these tests pin the tick's exact call budget. Sibling discovery has its own
+  // tests (npm run test:launch); the PumpSwap source is pinned on its own below, with its call counted.
+  const env = { minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150, onchainReads: 2, siblingLookups: 0, pumpswapPages: 0 };
   const feeCache = new Map<string, FeeCacheEntry>();
   const feeReads: string[] = [];
   const readFee = async (address: string, solPriceUsd: number | null) => {
@@ -477,7 +491,11 @@ async function main(): Promise<void> {
     assert.equal(calls.length, 3, "two trending calls and one DexScreener batch (8 addresses < 30)");
     assert.equal(calls[2], DEXSCREENER_URL([EMBER_SOL, DKNG_USDC, ANSEM_SOL, JUBJUB_ZEC, STONK_SOL, MIZO_SOL, EMBER_USDC, ZEC_ZCAT, SOL_USDC]), "board first, then held, then trending, deduplicated");
     assert.equal(first.generatedAt, new Date(NOW).toISOString());
-    assert.deepEqual(first.sources, { trending: 6, dexscreener: 6, onchainReads: 2, siblingLookups: 0, siblingRows: 0, errors: [] });
+    assert.deepEqual(first.sources, { trending: 6, dexscreener: 6, onchainReads: 2, siblingLookups: 0, siblingRows: 0, pumpswap: 0, errors: [] });
+    const stonkRow = first.rows.find((r) => r.address === STONK_SOL)!;
+    assert.equal(stonkRow.priceNative, 0.002711, "quote per base from DexScreener's priceNative");
+    assert.equal(stonkRow.priceUsd, 0.2704);
+    assert.equal(stonkRow.origin, null, "STONK is not a pump.fun token");
     assert.deepEqual(feeReads, [EMBER_USDC, STONK_SOL], "the two highest-turnover Meteora pools off the board; ANSEM waits for the cap");
 
     const names = first.rows.map((r) => r.name);
@@ -577,6 +595,52 @@ async function main(): Promise<void> {
     assert.ok(logs.some((l) => l.includes("[hot] trending 5m: ECONNRESET")));
     assert.ok(logs.some((l) => l.includes("2 source errors")));
     fs.rmSync(d2, { recursive: true, force: true });
+  });
+  await test("the PumpSwap source: one page is one more GeckoTerminal call, its rows merge like trending rows, carry origin pump.fun and the quote price", async () => {
+    const d3 = fs.mkdtempSync(path.join(os.tmpdir(), "mr-bands-hot-"));
+    const calls: string[] = [];
+    const r = await runHotTick({ dataDir: d3, env: { ...env, pumpswapPages: 1 }, screen: SCREEN, held: [ANSEM_SOL], now: NOW, fetchImpl: fakeFetch({ calls }), sleep: async () => {}, readFee: async () => 0.5, log: () => {} });
+    assert.deepEqual(calls.slice(0, 3), [TRENDING_URL("5m"), TRENDING_URL("1h"), PUMPSWAP_URL(1)], "trending, then the PumpSwap page, before DexScreener");
+    assert.equal(calls.length, 4, "two trending calls, one PumpSwap page and one DexScreener batch (12 addresses < 30)");
+    assert.equal(calls[3], DEXSCREENER_URL([EMBER_SOL, DKNG_USDC, ANSEM_SOL, JUBJUB_ZEC, STONK_SOL, MIZO_SOL, EMBER_USDC, ZEC_ZCAT, SOL_USDC, NVIDA_PUMP, CLAUDE_PUMP, NIKE_PUMP]), "the PumpSwap rows join the DexScreener refresh after the trending rows");
+    assert.equal(r.sources.pumpswap, 3);
+    assert.equal(r.sources.trending, 6, "PumpSwap rows are counted on their own, not as trending");
+    const nike = r.rows.find((x) => x.address === NIKE_PUMP)!;
+    assert.ok(nike, "the $344k NIKE/SOL PumpSwap pool reaches the board");
+    assert.equal(nike.venue, "pumpswap");
+    assert.equal(nike.origin, "pump.fun", "a pool on PumpSwap holds a pump.fun token even when the mint does not end in `pump`");
+    assert.equal(nike.quoteSymbol, "SOL");
+    assert.equal(nike.priceNative, 0.0000002912454749, "GeckoTerminal's base_token_price_quote_token fills in when DexScreener has no pair");
+    assert.equal(nike.priceUsd, 3.0068211909455936e-05);
+    assert.equal(nike.vol1hUsd, 12_394_850.3308151);
+    assert.ok(nike.flags.includes("new"), "an hour old: the hot watch still flags it new");
+    assert.ok(!r.rows.some((x) => x.address === NVIDA_PUMP || x.address === CLAUDE_PUMP), "drained pools (reserve under the liquidity floor) are excluded as ever");
+    assert.equal(r.sources.errors.length, 0);
+    // pages 2+ are paced and merged; a failing page is named and the tick still lands
+    const calls2: string[] = [];
+    const waits: number[] = [];
+    const r2 = await runHotTick({ dataDir: d3, env: { ...env, pumpswapPages: 2 }, screen: SCREEN, held: [], now: NOW + 60e3, fetchImpl: fakeFetch({ calls: calls2 }), sleep: async (ms) => void waits.push(ms), readFee: async () => 0.5, log: () => {} });
+    assert.deepEqual(calls2.slice(2, 4), [PUMPSWAP_URL(1), PUMPSWAP_URL(2)]);
+    assert.ok(waits.includes(2200), "pages are paced like the trending calls");
+    assert.equal(r2.sources.pumpswap, 3, "the empty second page adds nothing");
+    const r3 = await runHotTick({ dataDir: d3, env: { ...env, pumpswapPages: 1 }, screen: SCREEN, held: [], now: NOW + 120e3, fetchImpl: fakeFetch({ failPumpswap: true }), sleep: async () => {}, readFee: async () => 0.5, log: () => {} });
+    assert.deepEqual(r3.sources.errors, ["pumpswap page 1: HTTP 500"]);
+    assert.equal(r3.sources.pumpswap, 0);
+    assert.ok(r3.rows.length > 0, "the rest of the tick still lands");
+    fs.rmSync(d3, { recursive: true, force: true });
+  });
+  await test("parsePumpSwapPools and originOf: the PumpSwap page is trending's shape, and origin follows the mint suffix or the venue", () => {
+    const rows = parsePumpSwapPools(PUMPSWAP_P1);
+    assert.equal(rows.length, 3);
+    for (const r of rows) assert.equal(r.source, "pumpswap");
+    assert.equal(rows[2].venue, "pumpswap");
+    assert.equal(rows[2].priceNative, 0.0000002912454749);
+    assert.equal(rows[2].quotePriceUsd, 102.72384941936723);
+    assert.equal(originOf("9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump", "meteora-dlmm"), "pump.fun", "the mint suffix");
+    assert.equal(originOf("FHDQkQtKVhjRMMTDDNfSyQq5tg5ADbQ1zmEv1k88V9pd", "pumpswap"), "pump.fun", "the venue");
+    assert.equal(originOf("FHDQkQtKVhjRMMTDDNfSyQq5tg5ADbQ1zmEv1k88V9pd", "pump-fun"), "pump.fun");
+    assert.equal(originOf("6GmAFSYs4gk3FDao5FzzySQpPZaWsa4rUJHacpMpUNgx", "meteora-dlmm"), null);
+    assert.equal(originOf(null, "raydium"), null);
   });
   await test("fetchTrending: a 429 waits 20 s and retries the same call", async () => {
     const waits: number[] = [];

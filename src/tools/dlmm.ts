@@ -94,6 +94,51 @@ export interface PoolSnapshot {
   hasDynamicFee?: boolean;
   /** CLMM only: the tick state behind the bins (src/venues/raydium.ts) */
   clmm?: ClmmState;
+  /** a pool the desk made (or will make) for a pump.fun token, the PAIR LANE (src/venues/pair.ts, src/screener/pair.ts); absent elsewhere */
+  pair?: PairSnapshotInfo;
+}
+
+/**
+ * What a made pair's snapshot knows beyond the bins: where its price comes from, what the routing
+ * model says, and what it costs to bring into being. The paper mark reads ourShare, feesPerDayUsd and
+ * collectFeeMode; the policy and the journal read the rest.
+ */
+export interface PairSnapshotInfo {
+  /** the loop's key for the pool: pair-<mint> */
+  address: string;
+  mint: string;
+  symbol: string;
+  quote: QuoteSymbol;
+  /** the customizable-permissionless pool address Meteora derives for (token, quote); the real pool once it exists */
+  lbPair: string | null;
+  /** the pool exists: on chain, or in the paper book */
+  exists: boolean;
+  /** the desk created it (a pair created by someone else is seated, not made) */
+  ours: boolean;
+  /** the snapshot was made from the reference price rather than read from a pool */
+  synthetic: boolean;
+  /** the reference row has gone cold: the price is the last one seen, and the fade exit is on its way */
+  stale: boolean;
+  refPool: string | null;
+  refVenue: string | null;
+  refLiquidityUsd: number | null;
+  refVol24hUsd: number | null;
+  refVol1hUsd: number | null;
+  refAgeHours: number | null;
+  /** competing concentrated depth for the mint, USD */
+  competingDepthUsd: number;
+  /** the routing model: before and after the split with competitors, and what it pays */
+  routedShareGross: number;
+  routedShare: number;
+  routedVolume24hUsd: number;
+  feesPerDayUsd: number;
+  /** our share of the pool's fees: 1 while nobody else is in it, null to fall back to the bin arithmetic */
+  ourShare: number | null;
+  collectFeeMode: "quote" | "both";
+  /** rent that never comes back when the pool must be created first (0 when it exists) */
+  creationRentSol: number;
+  /** the seat the model was sized for, USD */
+  seatUsd: number;
 }
 
 /** What a CLMM snapshot keeps of the pool's tick state, enough to size a band's rent without the chain. */

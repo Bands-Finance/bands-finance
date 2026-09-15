@@ -9,6 +9,8 @@
  *   claim  wallet += the band's accrued fees; feesClaimedSol tallies them
  *   buy / sell  a paper Jupiter leg (src/tools/jupiter.ts paperSwap): quote <-> base token at the pool's price less the
  *          swap fee; swapCostSol tallies the fee (the stock straddle's acquire and liquidate legs)
+ *   create a made pair (src/venues/pair.ts): the wallet pays the pool's creation rent, none of it refundable
+ *          (rentSpentSol); the pool is recorded in pairPools so a later open there pays the seed's rent only
  *
  * Every SOL figure is SOL-equivalent at the mark passed in; a USDC pool's quote converts at
  * quotePriceInSol. The entry value of a band is the deposit at the open mark, and the wallet's
@@ -130,6 +132,27 @@ export interface PaperClosed {
   emergency: boolean;
 }
 
+/** A pool the paper desk made for a pump.fun token (the pair lane). The virtual address is pair-<mint>. */
+export interface PaperPairPool {
+  mint: string;
+  symbol: string;
+  refPool: string | null;
+  refVenue: string | null;
+  quote: QuoteSymbol;
+  binStep: number;
+  feeBps: number;
+  createdAt: number;
+  /** creation rent charged to the wallet, SOL, never refunded */
+  rentSol: number;
+  /** what the last mark saw of the routing model and the reference price */
+  lastRoutedShare?: number;
+  lastRoutedShareGross?: number;
+  lastFeesPerDayUsd?: number;
+  lastPrice?: number;
+  lastMarkAt?: number;
+  lastRefStale?: boolean;
+}
+
 export interface PaperWallet {
   sol: number;
   usdc: number;
@@ -174,6 +197,8 @@ export interface PaperBook {
   hedge?: PaperHedgeBook;
   /** marked network fees charged on paper transactions (PAPER_TX_FEE_SOL each), SOL; absent on older books: 0 */
   txFeesSol?: number;
+  /** pools the paper desk made (the pair lane), by their pair-<mint> address; absent on older books: none */
+  pairPools?: Record<string, PaperPairPool>;
 }
 
 /** marked network fee per paper transaction, as the real dry-run rows carry */
@@ -209,6 +234,7 @@ export function emptyBook(startSol: number, startUsdc: number, now = Date.now())
     feesClaimedByPool: {},
     hedge: emptyHedgeBook(),
     txFeesSol: 0,
+    pairPools: {},
   };
 }
 
@@ -234,15 +260,19 @@ export function loadPaperBook(file: string = paperBookFile()): PaperBook | null 
       feesClaimedByPool: raw.feesClaimedByPool ?? {},
       hedge: normalizeHedgeBook(raw.hedge),
       txFeesSol: typeof raw.txFeesSol === "number" && Number.isFinite(raw.txFeesSol) ? raw.txFeesSol : 0,
+      pairPools: raw.pairPools ?? {},
     };
   } catch {
     return null;
   }
 }
 
+/** Written temp + rename: a kill mid-write leaves the previous book intact instead of torn JSON and a silently fresh start. */
 export function savePaperBook(book: PaperBook, file: string = paperBookFile()): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(book, null, 2));
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(book, null, 2));
+  fs.renameSync(tmp, file);
 }
 
 export const bandsInPool = (book: PaperBook, pool: string): PaperBand[] => book.bands.filter((b) => b.pool === pool);
@@ -281,6 +311,38 @@ function creditToken(book: PaperBook, mint: string, amount: number, priceInSol: 
     book.wallet.tokens[mint] = next;
     book.tokenBasisSol[mint] = r9(nextBasis);
   }
+}
+
+export interface CreatePairPoolInput {
+  /** the virtual address: pair-<mint> */
+  address: string;
+  mint: string;
+  symbol: string;
+  refPool: string | null;
+  refVenue: string | null;
+  quote: QuoteSymbol;
+  binStep: number;
+  feeBps: number;
+  /** creation rent, SOL, none of it refundable */
+  rentSol: number;
+  now: number;
+}
+
+/**
+ * Make a pair pool in the paper book: the wallet pays the creation rent (lb pair + reserves + oracle,
+ * and the seed's bin arrays when the caller folds them in), none of it refundable, and the pool is
+ * recorded so the report can show what it earned against what it cost. Throws when the wallet cannot
+ * pay or the pool already exists.
+ */
+export function createPairPool(book: PaperBook, i: CreatePairPoolInput): PaperPairPool {
+  if (book.pairPools?.[i.address]) throw new Error(`paper pair pool ${i.address} already exists`);
+  if (!(i.rentSol >= 0) || !Number.isFinite(i.rentSol)) throw new Error(`paper pair pool: bad rent ${i.rentSol}`);
+  if (book.wallet.sol < i.rentSol) throw new Error(`paper wallet holds ${book.wallet.sol.toFixed(4)} SOL, needs ${i.rentSol.toFixed(4)} to create the pool`);
+  book.wallet.sol = r9(book.wallet.sol - i.rentSol);
+  book.rentSpentSol = r9(book.rentSpentSol + i.rentSol);
+  const pool: PaperPairPool = { mint: i.mint, symbol: i.symbol, refPool: i.refPool, refVenue: i.refVenue, quote: i.quote, binStep: i.binStep, feeBps: i.feeBps, createdAt: i.now, rentSol: i.rentSol };
+  (book.pairPools ??= {})[i.address] = pool;
+  return pool;
 }
 
 export interface OpenBandInput {

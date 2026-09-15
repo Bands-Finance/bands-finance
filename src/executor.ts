@@ -34,6 +34,13 @@
  * shortfall or sells the surplus (only what the band returned), then deposits. Each leg is one
  * Jupiter VersionedTransaction run like any other: simulated in dry-run, broadcast live, ledgered
  * as a "swap" row (quote leg exact when measured, token leg from the quote).
+ *
+ * A made pair (src/venues/pair.ts) whose pool does not exist yet is CREATED before the seed: the
+ * venue builds the create transaction; in DRY_RUN it is simulated and the journal says "would
+ * create ... and seat ..." (the seed cannot be built until the pool is on chain); with DRY_RUN=false
+ * it is sent only when PAIR_LIVE=true and meteora-dlmm is in LIVE_VENUES, else built, simulated and
+ * kept; when it lands the pool handle is reloaded and the ordinary open (swap, then deposit) follows.
+ * The creation is ledgered as a "rent" row and reported in `created` for RiskState.pairPools.
  */
 import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { config, riskLimits } from "./config";
@@ -46,7 +53,8 @@ import { fromRawUnits, jupiter, toRawUnits, type JupiterQuote } from "./tools/ju
 import type { AnyTransaction, Wallet } from "./tools/wallet";
 import { executePaper, type PaperExecutionContext } from "./paper/executor";
 import { isLiveVenue, liveVenues } from "./venues/env";
-import type { OpenCost, Venue, VenuePool } from "./venues/types";
+import { isPairPool, PAIR_CREATION_RENT_SOL, PAIR_POOL_ACCOUNTS_RENT_SOL, pairBroadcastRefusal, type PairPool } from "./venues/pair";
+import type { BuiltTx, OpenCost, Venue, VenuePool } from "./venues/types";
 
 export interface TxReport {
   label: string;
@@ -65,6 +73,8 @@ export interface ExecutionResult {
   txs: TxReport[];
   opened?: { address: string; entryValueSol: number };
   closed?: string;
+  /** a made pair's pool was created (broadcast) this execution: what RiskState.pairPools records */
+  created?: { pool: string; lbPair: string; rentSol: number; sig: string | null };
   notes: string[];
   /** attribution rows written for this execution (src/engine/ledger.ts) */
   ledger?: LedgerRow[];
@@ -423,6 +433,82 @@ async function runSwapLeg(ctx: ExecutionContext, leg: SwapLeg, tokenUi: number, 
   }
 }
 
+/**
+ * A made pair whose pool is not on chain: build the create transaction and, when the gates allow,
+ * send it and reload the pool so the seed can follow. Returns true only when the pool now exists.
+ */
+async function createPairFirst(ctx: ExecutionContext, o: OpenParams, result: ExecutionResult, ledger: (row: LedgerRow) => void, quoteMint: string): Promise<boolean> {
+  const pool = ctx.pool as PairPool;
+  const s = ctx.snapshot;
+  const q = quoteOf(s);
+  const seatSol = (o.amountSol + o.amountToken * q.tokenPriceInQuote) * q.priceInSol;
+  const would = `would create ${s.label} on Meteora DLMM (${pool.pair.lbPair}, bin step ${pool.pair.binStep}, fee ${pool.pair.feeBps} bps; rent ${PAIR_CREATION_RENT_SOL.toFixed(4)} SOL, none of it refundable) and seat ${seatSol.toFixed(4)} SOL (${o.amountSol} ${q.symbol} + ${o.amountToken} ${s.baseToken.symbol})`;
+  const venue = ctx.venue as Venue & { buildCreate?: (pool: PairPool, owner: PublicKey, snapshot: PoolSnapshot) => Promise<BuiltTx> };
+  if (typeof venue.buildCreate !== "function") {
+    result.ok = false;
+    result.notes.push(`create pool: the venue cannot build a pool creation; ${would}`);
+    return false;
+  }
+  let built: BuiltTx;
+  try {
+    built = await venue.buildCreate(pool, ctx.wallet.publicKey, s);
+  } catch (err) {
+    result.ok = false;
+    result.notes.push(`create pool: ${(err as Error).message}; ${would}`);
+    return false;
+  }
+  if (built.notes?.length) result.notes.push(...built.notes);
+  if (config.dryRun) {
+    // built, simulated with a real key, never sent; the seed cannot be built until the pool is on chain
+    await runTx(ctx.wallet, built.label, built.tx, built.signers, result.txs, quoteMint);
+    result.notes.push(would, "dry-run: the seed position follows once the pool exists on chain");
+    return false;
+  }
+  const refusal = pairBroadcastRefusal();
+  if (refusal) {
+    try {
+      const sim = await ctx.wallet.simulate(built.tx, built.signers);
+      result.txs.push({ label: built.label, ok: sim.ok, error: sim.ok ? undefined : JSON.stringify(sim.err), unitsConsumed: sim.unitsConsumed, logsTail: sim.logsTail, skipped: `not sent: ${refusal}` });
+    } catch (err) {
+      result.txs.push({ label: built.label, ok: false, error: (err as Error).message, skipped: `not sent: ${refusal}` });
+    }
+    result.notes.push(would, refusal);
+    return false;
+  }
+  const out = await runTx(ctx.wallet, built.label, built.tx, built.signers, result.txs, quoteMint);
+  if (!out.ok) {
+    result.ok = false;
+    result.notes.push("create pool failed: no seed position this cycle");
+    return false;
+  }
+  // the pool's own accounts are paid now; the seed's bin arrays land with the open below
+  const rentSol = out.cash ? out.cash.walletDeltaSol - out.cash.txFeeSol : -PAIR_POOL_ACCOUNTS_RENT_SOL;
+  ledger({
+    ...baseRow(ctx, "rent", out.signature, null),
+    ...quoteLeg(0, q),
+    tokenDelta: 0,
+    rentSol,
+    txFeeSol: out.cash ? out.cash.txFeeSol : -MARKED_TX_FEE_SOL,
+    basis: out.cash ? "exact" : "marked",
+    note: `create pair pool ${s.label} (lb pair + 2 reserves + oracle), not refundable`,
+  });
+  result.created = { pool: s.address, lbPair: pool.pair.lbPair, rentSol: -rentSol, sig: out.signature };
+  try {
+    const reloaded = await ctx.venue.loadPool(ctx.wallet.connection, s.address);
+    Object.assign(pool, reloaded);
+  } catch (err) {
+    result.ok = false;
+    result.notes.push(`the pool was created but could not be reloaded for the seed: ${(err as Error).message}`);
+    return false;
+  }
+  if (!pool.dlmm) {
+    result.ok = false;
+    result.notes.push("the pool was created but is not readable yet: the seed follows next cycle");
+    return false;
+  }
+  return true;
+}
+
 export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<ExecutionResult> {
   const d = verdict.decision;
   if (!verdict.allowed) return { mode: "none", ok: true, txs: [], notes: ["blocked by guards"] };
@@ -510,6 +596,12 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
     if (d.action === "OPEN_POSITION" || d.action === "REBALANCE") {
       if (!d.open) throw new Error("open parameters missing");
       let o: OpenParams = d.open;
+      // A made pair whose pool is not on chain yet: create it first (src/venues/pair.ts). Anything short
+      // of a landed creation (dry-run, the PAIR_LIVE gate, a failure) is journaled and ends the cycle here.
+      if (isPairPool(ctx.pool) && !ctx.pool.dlmm) {
+        const made = await createPairFirst(ctx, o, result, ledger, quoteMint);
+        if (!made) return result;
+      }
       // the straddle's legs: buy the shortfall (declared as acquireToken, or whatever a re-centre needs), sell a re-centre's surplus
       if (o.side === "BOTH" && o.amountToken > 0) {
         const before = ctx.walletToken ?? 0;

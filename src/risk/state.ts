@@ -3,6 +3,25 @@ import path from "node:path";
 import { config } from "../config";
 import type { LaunchBand } from "../screener/launch";
 
+/** A pool the desk CREATED on Meteora for a pump.fun token (the pair lane, src/venues/pair.ts). Keyed by the loop's pair-<mint> alias. */
+export interface PairPoolRecord {
+  /** the real lb pair address the SDK derived and the create transaction initialised */
+  lbPair: string;
+  mint: string;
+  symbol: string;
+  quote: "SOL" | "USDC";
+  binStep: number;
+  feeBps: number;
+  /** epoch ms the create transaction landed (or was journaled in dry-run) */
+  createdAt: number;
+  /** rent that never comes back, SOL (lb pair + reserves + oracle + the seed's bin arrays) */
+  rentSol: number;
+  refPool: string | null;
+  refVenue: string | null;
+  /** the create signature, or null when nothing was broadcast */
+  sig: string | null;
+}
+
 /** One price sample for the knife check (src/engine/exit.ts). */
 export interface PriceSample {
   ts: number;
@@ -40,6 +59,12 @@ export interface RiskState {
    * Cleared with the rest of the band's bookkeeping in forgetBand().
    */
   launchBands?: Record<string, LaunchBand>;
+  /**
+   * pair-<mint> alias -> the pool the desk created for that token (src/venues/pair.ts). What a
+   * restart reads to know a real Meteora pool is one of ours, and what maps its real address back
+   * to the alias the loop works it under.
+   */
+  pairPools?: Record<string, PairPoolRecord>;
 }
 
 const STATE_FILE = () => path.resolve(process.cwd(), config.dataDir, "state.json");
@@ -61,6 +86,7 @@ export function emptyState(day = todayUtc()): RiskState {
     priceHistory: {},
     lastMoveByPool: {},
     launchBands: {},
+    pairPools: {},
   };
 }
 
@@ -78,6 +104,7 @@ export function loadState(): RiskState {
       priceHistory: parsed.priceHistory ?? {},
       lastMoveByPool: parsed.lastMoveByPool ?? {},
       launchBands: parsed.launchBands ?? {},
+      pairPools: parsed.pairPools ?? {},
     };
     if (s.day !== todayUtc()) {
       s.day = todayUtc();
@@ -89,10 +116,13 @@ export function loadState(): RiskState {
   }
 }
 
+/** Written temp + rename: a kill mid-write never leaves a torn state file behind. */
 export function saveState(s: RiskState): void {
   const file = STATE_FILE();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(s, null, 2));
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(s, null, 2));
+  fs.renameSync(tmp, file);
 }
 
 /** A file named STOP in the project root (or KILL_SWITCH=true) blocks all new exposure. */

@@ -1,6 +1,8 @@
 /**
  * Short-window sources for the hot watch.
  *   GeckoTerminal trending  GET /networks/solana/trending_pools?page=1&duration=5m|1h  what is moving now, no address list needed
+ *   GeckoTerminal PumpSwap  GET /networks/solana/dexes/pumpswap/pools?page=N&sort=h24_volume_usd_desc  (20 per page)
+ *                           the biggest graduated pump.fun tokens: the pair lane's reference pools (src/screener/pair.ts)
  *   DexScreener batch       GET /latest/dex/pairs/solana/<a>,<b>,...  (30 per call)   fresh 5m/1h numbers for pools we name
  * Parsers are pure and take the raw JSON. Fetchers take an injectable fetch and sleep so tests run
  * with no network. GeckoTerminal allows ~30 calls/min: a 429 waits 20 s and retries, like the
@@ -46,6 +48,16 @@ export function venueOfDex(dexId: string, labels: string[] = []): string {
   }
 }
 
+/**
+ * Where a token came from, as far as the row can tell: pump.fun mints end in "pump" (the launchpad's
+ * vanity suffix), and a pool on pumpswap or pump-fun holds a pump.fun token by construction.
+ */
+export function originOf(baseMint: string | null, venue: string): "pump.fun" | null {
+  if (baseMint && baseMint.endsWith("pump")) return "pump.fun";
+  const v = venue.toLowerCase();
+  return v === "pumpswap" || v === "pump-fun" || v === "pumpfun" ? "pump.fun" : null;
+}
+
 /** "SOL" | "USDC" by mint, else the symbol the source gave (or the shortened mint). */
 export function quoteSymbolOf(mint: string | null, symbol: string | null): string {
   if (mint === SOL_MINT) return "SOL";
@@ -70,7 +82,7 @@ export function splitName(name: string | null): { base: string | null; quote: st
  * endpoints return the same `data[].attributes` and `data[].relationships`, so one parser serves
  * both and a sibling row is indistinguishable from a trending row downstream.
  */
-export function parseGeckoPools(json: unknown, source: "trending" | "siblings"): PoolSample[] {
+export function parseGeckoPools(json: unknown, source: "trending" | "siblings" | "pumpswap"): PoolSample[] {
   const out: PoolSample[] = [];
   for (const item of (obj(json).data as unknown[]) ?? []) {
     const d = obj(item);
@@ -100,6 +112,7 @@ export function parseGeckoPools(json: unknown, source: "trending" | "siblings"):
       quoteSymbol: quoteSymbolOf(quoteMint, sym.quote),
       priceUsd: num(at.base_token_price_usd),
       quotePriceUsd: num(at.quote_token_price_usd),
+      priceNative: num(at.base_token_price_quote_token),
       liquidityUsd: num(at.reserve_in_usd),
       vol5mUsd: num(vol.m5),
       vol1hUsd: num(vol.h1),
@@ -120,6 +133,8 @@ export function parseGeckoPools(json: unknown, source: "trending" | "siblings"):
 export const parseTrending = (json: unknown): PoolSample[] => parseGeckoPools(json, "trending");
 /** GET /networks/solana/tokens/{mint}/pools: up to 20 pools for one token, same shape as trending. */
 export const parseTokenPools = (json: unknown): PoolSample[] => parseGeckoPools(json, "siblings");
+/** GET /networks/solana/dexes/pumpswap/pools: a page of PumpSwap pools, same shape as trending. */
+export const parsePumpSwapPools = (json: unknown): PoolSample[] => parseGeckoPools(json, "pumpswap");
 
 export function parseDexScreener(json: unknown): PoolSample[] {
   const out: PoolSample[] = [];
@@ -150,6 +165,7 @@ export function parseDexScreener(json: unknown): PoolSample[] {
       quoteSymbol,
       priceUsd: num(p.priceUsd),
       quotePriceUsd: null,
+      priceNative: num(p.priceNative),
       liquidityUsd: num(obj(p.liquidity).usd),
       vol5mUsd: num(vol.m5),
       vol1hUsd: num(vol.h1),
@@ -188,6 +204,7 @@ export interface SourceResult {
 
 export const TRENDING_URL = (duration: string, page = 1) => `https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=${page}&duration=${duration}`;
 export const TOKEN_POOLS_URL = (mint: string, page = 1) => `https://api.geckoterminal.com/api/v2/networks/solana/tokens/${mint}/pools?page=${page}`;
+export const PUMPSWAP_URL = (page = 1) => `https://api.geckoterminal.com/api/v2/networks/solana/dexes/pumpswap/pools?page=${page}&sort=h24_volume_usd_desc`;
 export const DEXSCREENER_URL = (addresses: string[]) => `https://api.dexscreener.com/latest/dex/pairs/solana/${addresses.join(",")}`;
 
 async function getJson(url: string, o: Required<Pick<SourceOpts, "fetchImpl" | "sleep" | "backoffMs" | "log">>, counter: { calls: number }, retries = 2): Promise<unknown> {
@@ -220,6 +237,31 @@ export async function fetchTrending(durations: string[] = ["5m", "1h"], opts: So
       o.log(`[hot] ${msg}`);
     }
     if (i + 1 < durations.length) await o.sleep(o.paceMs);
+  }
+  return { samples, calls: counter.calls, errors };
+}
+
+/**
+ * GeckoTerminal's top PumpSwap pools by 24h volume, `pages` pages of 20, paced like the trending
+ * calls and sharing their 429 backoff. A page that fails is named and the rest still count. These
+ * rows are the pair lane's REFERENCE pools: a graduated pump.fun token trades here in TOKEN/SOL,
+ * and the lane decides whether that flow is worth a concentrated pool of our own.
+ */
+export async function fetchPumpSwap(pages = 1, opts: SourceOpts = {}): Promise<SourceResult> {
+  const o = { fetchImpl: opts.fetchImpl ?? fetch, sleep: opts.sleep ?? defaultSleep, backoffMs: opts.backoffMs ?? 20_000, log: opts.log ?? (() => {}), paceMs: opts.paceMs ?? 2200 };
+  const counter = { calls: 0 };
+  const samples: PoolSample[] = [];
+  const errors: string[] = [];
+  const n = Math.max(0, Math.floor(pages));
+  for (let page = 1; page <= n; page++) {
+    try {
+      samples.push(...parsePumpSwapPools(await getJson(PUMPSWAP_URL(page), o, counter)));
+    } catch (err) {
+      const msg = `pumpswap page ${page}: ${(err as Error).message}`;
+      errors.push(msg);
+      o.log(`[hot] ${msg}`);
+    }
+    if (page < n) await o.sleep(o.paceMs);
   }
   return { samples, calls: counter.calls, errors };
 }

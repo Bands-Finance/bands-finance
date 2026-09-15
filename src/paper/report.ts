@@ -11,6 +11,10 @@
  * The stock book (src/paper/hedge.ts): the hedge section lists the virtual perp shorts and the
  * PER STOCK table folds, per ticker, band P&L (open marks + closed realized + claimed fees),
  * swap costs, hedge P&L (unrealized + realized - fees), funding, and the net.
+ *
+ * MADE PAIRS (the pair lane, src/venues/pair.ts): every pool the paper desk created, with its age,
+ * the routing model's share at the last mark, the fees its bands earned, the rent the pool cost and
+ * the net of bands, rent and swaps.
  */
 import type { JournalEntry } from "../journal";
 import { tickerOfXstock } from "../tools/backpack";
@@ -103,6 +107,36 @@ export interface PaperStockLine {
   netUsd: number;
 }
 
+/** One pool the paper desk made for a pump.fun token, folded from its bands. */
+export interface PaperPairLine {
+  address: string;
+  label: string;
+  symbol: string;
+  quote: string;
+  binStep: number;
+  feeBps: number;
+  ageHours: number;
+  openBands: number;
+  closedBands: number;
+  /** the routing model at the last mark: after and before the split with competing depth */
+  routedShare: number | null;
+  routedShareGross: number | null;
+  feesPerDayUsd: number | null;
+  lastPrice: number | null;
+  /** the reference row has gone cold: marking at the last price seen */
+  stale: boolean;
+  /** fees the pool's bands earned: claimed, realized on close, unclaimed at mark, SOL */
+  feesEarnedSol: number;
+  /** creation rent, never refunded, SOL */
+  rentSol: number;
+  /** swap fees on the token half's acquire and liquidate legs, SOL */
+  swapCostSol: number;
+  /** open marks + closed realized + claimed fees, SOL */
+  bandPnlSol: number;
+  /** bandPnl - rent - swap cost */
+  netSol: number;
+}
+
 export interface PaperSummary {
   startedAt: string;
   ageHours: number;
@@ -157,6 +191,8 @@ export interface PaperSummary {
     fills: number;
   };
   stocks: PaperStockLine[];
+  /** the pools the paper desk made (the pair lane) */
+  pairs: PaperPairLine[];
   equity: { sol: number; usd: number | null; vsStartSol: number; vsStartPct: number; vsStartUsd: number | null; bandsSol: number; tokensSol: number; usdcSol: number; hedgeSol: number };
   tally: DecisionTally;
 }
@@ -232,6 +268,36 @@ export function paperSummary(book: PaperBook, entries: readonly JournalEntry[], 
   }
   for (const l of stocks.values()) l.netUsd = l.bandPnlUsd - l.swapCostUsd + l.hedgePnlUsd - l.fundingUsd;
 
+  // made pairs: the pool's bands, its rent and the swaps on its token
+  const pairs: PaperPairLine[] = Object.entries(book.pairPools ?? {}).map(([address, p]) => {
+    const open = book.bands.filter((b) => b.pool === address);
+    const closedHere = book.closed.filter((c) => c.pool === address);
+    const feesEarnedSol = open.reduce((t, b) => t + (b.lastMark?.feeSol ?? 0), 0) + closedHere.reduce((t, c) => t + c.feeSol, 0) + (book.feesClaimedByPool?.[address] ?? 0);
+    const bandPnlSol = open.reduce((t, b) => t + ((b.lastMark?.valueInSol ?? b.entryValueSol) - b.entryValueSol), 0) + closedHere.reduce((t, c) => t + c.realizedSol, 0) + (book.feesClaimedByPool?.[address] ?? 0);
+    const swapCostSol = book.swapCostByMint?.[p.mint] ?? 0;
+    return {
+      address,
+      label: `${p.symbol}/${p.quote}`,
+      symbol: p.symbol,
+      quote: p.quote,
+      binStep: p.binStep,
+      feeBps: p.feeBps,
+      ageHours: Math.max(0, (now - p.createdAt) / 3600e3),
+      openBands: open.length,
+      closedBands: closedHere.length,
+      routedShare: p.lastRoutedShare ?? null,
+      routedShareGross: p.lastRoutedShareGross ?? null,
+      feesPerDayUsd: p.lastFeesPerDayUsd ?? null,
+      lastPrice: p.lastPrice ?? null,
+      stale: p.lastRefStale ?? false,
+      feesEarnedSol,
+      rentSol: p.rentSol,
+      swapCostSol,
+      bandPnlSol,
+      netSol: bandPnlSol - p.rentSol - swapCostSol,
+    };
+  });
+
   const startUsd = usdFirst ? book.startSol * solPrice! + book.startUsdc : toUsd(startEquity);
   return {
     startedAt: book.startedAt,
@@ -294,6 +360,7 @@ export function paperSummary(book: PaperBook, entries: readonly JournalEntry[], 
       fills: book.hedge?.fills ?? 0,
     },
     stocks: [...stocks.values()].sort((a, b) => b.netUsd - a.netUsd),
+    pairs: pairs.sort((a, b) => b.netSol - a.netSol),
     equity: {
       sol: eq.equitySol,
       usd: toUsd(eq.equitySol),
@@ -346,6 +413,13 @@ export function renderPaperReport(s: PaperSummary): string {
   if (!s.closed.length) out.push("  none");
   for (const c of s.closed) {
     out.push(`  ${pad(c.address, 20)} ${pad(c.label, 14)} realized ${moneySigned(c.realizedSol)} (${signed(c.realizedPct, 2)}%)  fees ${money(c.feeSol, 6)}  held ${hrs(c.holdHours)}  ${c.emergency ? "ENGINE/GUARD: " : ""}${c.reason}`);
+  }
+  out.push("");
+  out.push(`MADE PAIRS (${s.pairs.length})  pools the desk created for pump.fun tokens (the pair lane); routed = the model's share of the reference pool's flow at the last mark (after | before competing depth)`);
+  if (!s.pairs.length) out.push("  none");
+  for (const p of s.pairs) {
+    const routed = p.routedShare === null ? "n/a" : `${(p.routedShare * 100).toFixed(1)}%${p.routedShareGross !== null ? ` | ${(p.routedShareGross * 100).toFixed(1)}%` : ""}`;
+    out.push(`  ${pad(p.address, 20)} ${pad(p.label, 14)} ${(p.binStep / 100).toFixed(2)}%/bin fee ${(p.feeBps / 100).toFixed(2)}%  age ${hrs(p.ageHours)}  ${p.openBands} open/${p.closedBands} closed  routed ${routed}${p.feesPerDayUsd !== null ? ` (${usdFmt(p.feesPerDayUsd)}/day)` : ""}${p.stale ? "  REFERENCE GONE" : ""}  fees ${money(p.feesEarnedSol, 6)}  rent ${money(p.rentSol, 6)}  swaps ${money(p.swapCostSol, 6)}  P&L ${moneySigned(p.netSol, 6)}`);
   }
   out.push("");
   const h = s.hedge;

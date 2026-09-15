@@ -101,8 +101,24 @@ export type LaunchVerdict = { ok: true; ageHours: number; turnover: number } | {
 export const LAUNCH_MAX_SELL_SHARE_1H = 0.66;
 export const LAUNCH_MAX_FALL_1H_PCT = -10;
 
-const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
-const h = (n: number) => `${n < 1 ? `${Math.round(n * 60)} min` : `${n.toFixed(1)}h`}`;
+/** "$12,400" -- the lanes name every number they refuse on, in one spelling. */
+export const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+/** "24 min" under an hour, "2.4h" above it. */
+export const h = (n: number) => `${n < 1 ? `${Math.round(n * 60)} min` : `${n.toFixed(1)}h`}`;
+
+/**
+ * PURE. The lane's dumping rule as one sentence, or null: two-thirds sells INTO a fall (heavy selling
+ * into a rally is two-sided flow; a fall on balanced flow is volatility), or the hot watch's own flag.
+ * Shared with the pair lane (src/screener/pair.ts), which inherits the launch lane's terms.
+ */
+export function dumpingReason(sells: number | null | undefined, move: number | null | undefined, flags: readonly string[] = []): string | null {
+  const dumping = typeof sells === "number" && sells >= LAUNCH_MAX_SELL_SHARE_1H && !(typeof move === "number" && move > LAUNCH_MAX_FALL_1H_PCT);
+  if (dumping) {
+    return `${(sells! * 100).toFixed(0)}% of the last hour's trades were sells (limit ${(LAUNCH_MAX_SELL_SHARE_1H * 100).toFixed(0)}%) and the hour is ${move === null || move === undefined ? "unpriced" : `${move.toFixed(1)}%`}, not above ${LAUNCH_MAX_FALL_1H_PCT}%: it is being dumped`;
+  }
+  if (flags.includes("dumping")) return "the hot watch flags it `dumping`";
+  return null;
+}
 
 /**
  * PURE. Whether the launch lane admits this pool, or the number that stopped it.
@@ -136,16 +152,8 @@ export function launchVerdict(row: LaunchRow, env: LaunchEnv): LaunchVerdict {
   if (v1 === null || !Number.isFinite(v1)) return { ok: false, reason: "last hour's volume unknown: the launch lane will not trade a 24h number on its own" };
   if (v1 < env.minVolume1hUsd) return { ok: false, reason: `the last hour traded ${usd(v1)}, under the ${usd(env.minVolume1hUsd)} launch floor: the 24h figure has already happened` };
 
-  const sells = row.sellShare1h;
-  const move = row.priceChange1hPct;
-  const dumping = typeof sells === "number" && sells >= LAUNCH_MAX_SELL_SHARE_1H && !(typeof move === "number" && move > LAUNCH_MAX_FALL_1H_PCT);
-  if (dumping) {
-    return {
-      ok: false,
-      reason: `${(sells! * 100).toFixed(0)}% of the last hour's trades were sells (limit ${(LAUNCH_MAX_SELL_SHARE_1H * 100).toFixed(0)}%) and the hour is ${move === null || move === undefined ? "unpriced" : `${move.toFixed(1)}%`}, not above ${LAUNCH_MAX_FALL_1H_PCT}%: it is being dumped`,
-    };
-  }
-  if ((row.flags ?? []).includes("dumping")) return { ok: false, reason: "the hot watch flags it `dumping`" };
+  const dumping = dumpingReason(row.sellShare1h, row.priceChange1hPct, row.flags ?? []);
+  if (dumping) return { ok: false, reason: dumping };
 
   return { ok: true, ageHours: age, turnover: Math.round(turnover * 100) / 100 };
 }

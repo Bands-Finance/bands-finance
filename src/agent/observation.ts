@@ -20,6 +20,12 @@ export interface ScreenContext {
    * null or absent means the ordinary rules apply.
    */
   launch?: { ok: true; ageHours: number; turnover: number } | null;
+  /**
+   * The PAIR LANE (src/screener/pair.ts): this pool is OUR OWN pool for a pump.fun token (or the one
+   * the desk seats in when the pair already exists), admitted on the reference PumpSwap pool's
+   * numbers. The snapshot's `pair` carries the model; this says the lane admitted it, and on what.
+   */
+  pair?: { ok: true; ageHours: number; turnover: number } | null;
   /** how far the price travelled in the last hour, high to low, in percent: what the band must survive */
   recentMovePct?: number | null;
   generatedAt: string;
@@ -184,6 +190,19 @@ export function formatObservation(o: Observation): string {
     lines.push(
       `- LAUNCH LANE: this pool is ${r(o.screen.launch.ageHours, 1)}h old and turning over ${r(o.screen.launch.turnover, 1)}x its liquidity a day. It is admitted by rule, not by score or watchlist. ` +
         `A launch seat is capped, stopped tighter, held for a limited time and closed when the volume fades: size it small and do not argue with the exit.`,
+    );
+  }
+  if (o.screen?.pair?.ok && s.pair) {
+    const p = s.pair;
+    const pctOf = (x: number) => `${(x * 100).toFixed(1)}%`;
+    const state = p.exists ? (p.ours ? "created by this desk" : "an existing Meteora pool for the pair, which the desk seats in instead of creating one") : `not created yet: the first OPEN creates it, paying ${r(p.creationRentSol, 4)} SOL of rent that never comes back`;
+    lines.push(
+      `- PAIR LANE: this is OUR OWN pool for ${p.symbol} (${state}), ${r(s.binStep / 100, 2)}% per bin, ${r(s.baseFeePct, 2)}% fee, fees collected in ${p.collectFeeMode === "quote" ? `${p.quote} only` : "both tokens"}. ` +
+        `The reference market is ${p.refVenue ?? "PumpSwap"}${p.refPool ? ` ${p.refPool.slice(0, 6)}` : ""}: ${usdShort(p.refLiquidityUsd)} of liquidity, ${usdShort(p.refVol24hUsd)} traded in 24h, ${usdShort(p.refVol1hUsd)} in the last hour, ${r(o.screen.pair.ageHours, 1)}h old, turning over ${r(o.screen.pair.turnover, 1)}x a day` +
+        `${p.stale ? " (the reference row has gone cold: this price is the last one seen and the fade exit is on its way)" : ""}. ` +
+        `Routing model: a ${usdShort(p.seatUsd)} seat is the cheaper route for ${pctOf(p.routedShareGross)} of that flow by value` +
+        `${p.competingDepthUsd > 0 ? ` (${pctOf(p.routedShare)} after sharing with ${usdShort(p.competingDepthUsd)} of other concentrated depth)` : ""}, about ${usdShort(p.feesPerDayUsd)} a day at our fee, all of it ours while nobody else is in the pool. ` +
+        `A pair seat is a two-sided band around the active bin, half ${p.quote} half ${p.symbol} (the ${p.symbol} half bought through Jupiter first); it is capped, stopped tighter, held for a limited time and closed when the reference volume fades, and every close sells the ${p.symbol} back to ${p.quote}.`,
     );
   }
   lines.push("");

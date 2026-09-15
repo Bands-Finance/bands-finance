@@ -46,6 +46,7 @@
     <key>AUTO_DEPLOY</key><string>true</string>
     <key>AUTO_DEPLOY_MIN_MINUTES</key><string>30</string>
     <key>HEDGE_MIN_REBALANCE_USD</key><string>5</string>
+    <key>PAIR_SEAT_PCT</key><string>20</string>
     <key>SERVE_PORT</key><string>3100</string>
   </dict>
 </dict>

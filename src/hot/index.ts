@@ -9,8 +9,10 @@
  *   startHotWatch(opts)   a self-scheduling timer that never overlaps ticks and catches every error
  *   hotPicks(hot, opts)   the tradable surges, best heat first, for pickPools
  *
- * Sources: GeckoTerminal trending (5m + 1h) finds what moves; DexScreener refreshes the board's top
- * rows, every held pool and the trending candidates in one pass. Fee rates come from our own board
+ * Sources: GeckoTerminal trending (5m + 1h) finds what moves; GeckoTerminal's top PumpSwap pools
+ * (HOT_PUMPSWAP_PAGES pages of 20) bring the biggest graduated pump.fun tokens, which the pair lane
+ * (src/screener/pair.ts) reads as REFERENCE pools; DexScreener refreshes the board's top rows, every
+ * held pool, the trending and the PumpSwap candidates in one pass. Fee rates come from our own board
  * row when the pool is on it; a trending Meteora DLMM pool off the board is read live once (capped
  * per tick, cached an hour); anything else off the board has no fee and is shown by turnover.
  * Nothing here edits src/config.ts: knobs are HOT_* in the environment (src/hot/env.ts).
@@ -35,7 +37,7 @@ import { launchEnv, launchVerdict, type LaunchEnv } from "../screener/launch";
 import { isTradableVenue } from "../venues/env";
 import { hotEnv, type HotEnv } from "./env";
 import { heatOf, hotMetrics, type HotInputs } from "./score";
-import { fetchDexScreener, fetchTokenPools, fetchTrending, SOL_MINT, USDC_MINT, type SourceOpts } from "./sources";
+import { fetchDexScreener, fetchPumpSwap, fetchTokenPools, fetchTrending, originOf, SOL_MINT, USDC_MINT, type SourceOpts } from "./sources";
 import { appendHistory, heldPools, loadHotFile, readHistoryTail, saveHotFile } from "./store";
 import { detectSurges, SURGE_STICKY_MS, SURGE_WINDOW_MS } from "./surge";
 import type { HotFile, HotHistoryRow, HotRow, PoolSample } from "./types";
@@ -45,12 +47,16 @@ export { FADING_MIN_VOL1H, FADING_SHARE, heatOf, hotMetrics, NOMINAL_FEE_PCT, ty
 export {
   DEXSCREENER_URL,
   fetchDexScreener,
+  fetchPumpSwap,
   fetchTokenPools,
   fetchTrending,
+  originOf,
   parseDexScreener,
   parseGeckoPools,
+  parsePumpSwapPools,
   parseTokenPools,
   parseTrending,
+  PUMPSWAP_URL,
   quoteSymbolOf,
   splitName,
   TOKEN_POOLS_URL,
@@ -93,11 +99,20 @@ export function flipPct(p: number | null): number | null {
   return 100 / (1 + p / 100) - 100;
 }
 
-/** Price changes oriented to our base token; volume, liquidity and counts are symmetric. */
+/** Price changes and prices oriented to our base token; volume, liquidity and counts are symmetric. */
 export function orient(s: PoolSample, baseMint: string): PoolSample {
   const flipped = s.quoteMint !== null && s.quoteMint === baseMint && s.baseMint !== baseMint;
   if (!flipped) return s;
-  return { ...s, priceChange5mPct: flipPct(s.priceChange5mPct), priceChange1hPct: flipPct(s.priceChange1hPct), priceChange24hPct: flipPct(s.priceChange24hPct) };
+  return {
+    ...s,
+    priceChange5mPct: flipPct(s.priceChange5mPct),
+    priceChange1hPct: flipPct(s.priceChange1hPct),
+    priceChange24hPct: flipPct(s.priceChange24hPct),
+    // the source priced ITS base in our token; our base in its units is the reciprocal
+    priceNative: s.priceNative !== null && s.priceNative > 0 ? 1 / s.priceNative : null,
+    priceUsd: s.quotePriceUsd,
+    quotePriceUsd: s.priceUsd,
+  };
 }
 
 export interface Identity {
@@ -322,11 +337,17 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
   const trendByAddr = new Map<string, PoolSample>();
   for (const s of trending.samples) if (!trendByAddr.has(s.address)) trendByAddr.set(s.address, s);
   const errors = [...trending.errors];
+  // The top PumpSwap pools by 24h volume: the pair lane's reference pools. They merge like trending
+  // rows (same shape, same DexScreener refresh), and their tokens seed the sibling lookups below, which
+  // is how the lane learns what concentrated pools already compete for the token's flow.
+  const pump = env.pumpswapPages > 0 ? await fetchPumpSwap(env.pumpswapPages, so) : { samples: [], calls: 0, errors: [] };
+  for (const s of pump.samples) if (!trendByAddr.has(s.address)) trendByAddr.set(s.address, s);
+  errors.push(...pump.errors);
 
   // Sibling pools. A token that trended (or sits high on the board) in a pool we cannot trade gets
   // its other pools looked up, so the desk sees the WET/SOL it could have quoted and not only the
   // WET/PTN it could not. Board rows join the search as untradable trending rows would.
-  const siblingSeed: PoolSample[] = [...trending.samples];
+  const siblingSeed: PoolSample[] = [...trending.samples, ...pump.samples];
   for (const p of board.values()) {
     siblingSeed.push({
       source: "trending",
@@ -339,6 +360,7 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
       quoteSymbol: p.quoteSymbol,
       priceUsd: p.priceUsd,
       quotePriceUsd: null,
+      priceNative: p.price > 0 ? p.price : null,
       liquidityUsd: p.tvlUsd,
       vol5mUsd: null,
       vol1hUsd: null,
@@ -394,7 +416,7 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
   const dexByAddr = new Map(dex.samples.map((s) => [s.address, s] as const));
   errors.push(...dex.errors);
 
-  const solPriceUsd = screen?.solPriceUsd ?? solPriceFromSamples(trending.samples);
+  const solPriceUsd = screen?.solPriceUsd ?? solPriceFromSamples([...trending.samples, ...pump.samples]);
   const screenAgeHours = screen ? Math.max(0, (now - Date.parse(screen.generatedAt)) / 3600e3) : 0;
 
   // Candidates: identity + inputs; fee from the board where we have it.
@@ -485,6 +507,7 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
     const prevSurgeAt = p?.surgeAt ? Date.parse(p.surgeAt) : NaN;
     const surgeAt = firedNow ? nowIso : Number.isFinite(prevSurgeAt) && now - prevSurgeAt < SURGE_STICKY_MS ? p!.surgeAt : null;
     const firstTape = firstSeenTape.get(c.address);
+    const pick = <T>(a: T | null | undefined, b: T | null | undefined): T | null => (a !== null && a !== undefined ? a : b ?? null);
     return {
       address: c.address,
       name: c.id.name,
@@ -493,6 +516,9 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
       baseSymbol: c.id.baseSymbol,
       quoteMint: c.id.quoteMint,
       quoteSymbol: c.id.quoteSymbol,
+      priceUsd: pick(c.dex?.priceUsd, pick(c.trend?.priceUsd, c.board?.priceUsd)),
+      priceNative: pick(c.dex?.priceNative, pick(c.trend?.priceNative, c.board && c.board.price > 0 ? c.board.price : null)),
+      origin: originOf(c.id.baseMint, c.id.venue),
       onBoard: !!c.board,
       screenRank: c.board?.rank ?? null,
       stock: c.board?.stock ?? null,
@@ -529,7 +555,7 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
   const file: HotFile = {
     generatedAt: nowIso,
     tickMs: Date.now() - t0,
-    sources: { trending: trending.samples.length, dexscreener: dex.samples.length, onchainReads, siblingLookups, siblingRows: rows.filter((r) => siblingByAddr.has(r.address)).length, errors },
+    sources: { trending: trending.samples.length, dexscreener: dex.samples.length, onchainReads, siblingLookups, siblingRows: rows.filter((r) => siblingByAddr.has(r.address)).length, pumpswap: pump.samples.length, errors },
     rows,
   };
   saveHotFile(dir, file);
@@ -544,7 +570,7 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
 
   const top = rows[0];
   log(
-    `[hot] ${rows.length} rows · trending ${trending.samples.length} · dexscreener ${dex.samples.length}/${universe.length} · onchain ${onchainReads}` +
+    `[hot] ${rows.length} rows · trending ${trending.samples.length}${env.pumpswapPages > 0 ? ` · pumpswap ${pump.samples.length}` : ""} · dexscreener ${dex.samples.length}/${universe.length} · onchain ${onchainReads}` +
       `${siblingByAddr.size ? ` · siblings ${file.sources.siblingRows}/${siblingByAddr.size} from ${siblingLookups} lookup${siblingLookups === 1 ? "" : "s"}` : ""} · ${surges.length} surge${surges.length === 1 ? "" : "s"}` +
       `${errors.length ? ` · ${errors.length} source error${errors.length === 1 ? "" : "s"}` : ""} · ${(file.tickMs / 1000).toFixed(1)}s` +
       (top ? ` · top ${top.name} ${fmtPct(top.feeToTvlDailyPct)}/day` : ""),

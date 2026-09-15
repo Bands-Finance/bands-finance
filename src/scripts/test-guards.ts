@@ -142,6 +142,14 @@ test("SOL_ONLY band must sit at/below active when SOL is Y", () => {
   assert.match(v.violations.join(), /at\/below/);
 });
 
+test("a single-sided band with no bins on its side is refused on its shape (a CLMM cannot even cost it)", () => {
+  const none = evaluate(open({ binsBelowActive: 0, binsAboveActive: 0 }), ctx(), limits);
+  assert.equal(none.allowed, false);
+  assert.match(none.violations.join(), /SOL_ONLY band needs at least one bin below the active bin/);
+  const tok = evaluate(open({ side: "TOKEN_ONLY", amountSol: 0, amountToken: 1, binsBelowActive: 0, binsAboveActive: 0 }), ctx({ walletToken: 10 }), limits);
+  assert.match(tok.violations.join(), /TOKEN_ONLY band needs at least one bin above the active bin/);
+});
+
 test("TOKEN_ONLY needs token balance", () => {
   const v = evaluate(open({ side: "TOKEN_ONLY", amountSol: 0, amountToken: 100, binsBelowActive: 0, binsAboveActive: 10 }), ctx({ walletToken: 10 }), limits);
   assert.equal(v.allowed, false);

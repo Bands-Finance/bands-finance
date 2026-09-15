@@ -231,6 +231,27 @@ test("a price that walks across bins gets the band re-centred, repeatedly, and t
   console.log(`     fees claimed ${book.feesClaimedSol.toFixed(6)} SOL, rent spent ${book.rentSpentSol.toFixed(4)} SOL, equity ${bookEquitySol(book).equitySol.toFixed(4)} SOL`);
 });
 
+test("a crash through the band trips the stop-loss: the guards' forced close sells the token back, nothing is stranded", () => {
+  const book = emptyBook(100, 0);
+  const state: RiskState = emptyState();
+  let now = Date.UTC(2026, 8, 14, 12, 0, 0);
+  let active = 1000;
+  const first = cycle(book, snapAt(active, now), state, now, 3600, 1.2);
+  assert.equal(first.action, "OPEN_POSITION", first.violations.join("; "));
+  assert.equal(book.bands.length, 1);
+  // the price falls a third in six minutes: the band is crossed, all token, and that token is worth
+  // far less than the SOL that went in, past any stop the desk rolls
+  for (let i = 0; i < 6; i++) {
+    now += 60e3;
+    active -= 35; // 35 bins of 0.2% a minute at binStep 20: ~34% in all
+  }
+  const crash = cycle(book, snapAt(active, now), state, now, 3600, 34);
+  assert.equal(crash.action, "CLOSE_POSITION", `expected the stop to close, got ${crash.action}: ${crash.reason}; ${crash.violations.join("; ")}`);
+  assert.equal(book.bands.length, 0, "the band came off");
+  const strandedTokenSol = (book.wallet.tokens[TOKEN] ?? 0) * price(active);
+  assert.ok(strandedTokenSol < 0.01, `the stop left ${strandedTokenSol.toFixed(4)} SOL of SIM in the wallet: a forced close must sell it back`);
+});
+
 test("a band that never leaves its range is never moved: no churn when the price sits still", () => {
   const book = emptyBook(100, 0);
   const state: RiskState = emptyState();
