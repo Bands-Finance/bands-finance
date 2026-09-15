@@ -806,6 +806,10 @@ async function main(): Promise<void> {
     assert.ok(bare.ok && bare.house && bare.refLiquidityUsd === 0 && bare.ageHours === 0, "no row at all: still admitted");
     assert.ok(!pair.pairVerdict(houseRow(), env()).ok, "the same row without the house list is refused");
     assert.match((pair.pairVerdict(houseRow(), env({ houseMints: [HOUSE], on: false })) as { reason: string }).reason, /the pair lane is off/);
+    // the seating rule still seats the house token with PAIR_LANE off: the switch governs pump.fun picks, not our own launch
+    const offSeats = pair.pairHouseSeats([houseRow()], { env: env({ houseMints: [HOUSE], on: false }), freeSeats: 2, quoteOk: () => true });
+    assert.equal(offSeats.length, 1);
+    assert.equal(offSeats[0].house, true);
   });
   await test("pairSeats: the house token is seated first, with or without a row, never counted against PAIR_MAX_POOLS; a DENY still wins", () => {
     const rows = [cand({ address: "a", baseMint: "mA", vol1hUsd: 900_000 })];

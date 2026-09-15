@@ -595,7 +595,7 @@ export const houseCandidateOf = (mint: string, env: PairEnv): PairCandidate => (
  */
 export function pairHouseSeats(rows: readonly PairCandidate[], o: Pick<PairSeatOptions, "env" | "freeSeats" | "quoteOk" | "denied" | "hasPool" | "hasToken">): PairSeat[] {
   const out: PairSeat[] = [];
-  if (!o.env.on) return out;
+  // the house token is our own launch, not a lane pick: it is seated even with the pump.fun pair lane off
   let free = Math.max(0, o.freeSeats);
   for (const mint of o.env.houseMints) {
     if (free <= 0) break;
@@ -604,7 +604,8 @@ export function pairHouseSeats(rows: readonly PairCandidate[], o: Pick<PairSeatO
     if (!o.quoteOk(o.env.quote)) continue;
     const row = rows.filter((r) => r.baseMint === mint).sort((a, b) => (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0))[0] ?? houseCandidateOf(mint, o.env);
     if (o.denied?.(row)) continue;
-    const verdict = pairVerdict(row, o.env, null);
+    // judged with the lane on: the lane switch governs pump.fun picks, not our own token
+    const verdict = pairVerdict(row, { ...o.env, on: true }, null);
     if (!verdict.ok) continue;
     out.push({ row, verdict, address, house: true });
     free--;

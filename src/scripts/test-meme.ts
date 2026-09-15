@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { memeFloorEnv, memeFloorLine, memeRefusal } from "../screener/memeFloor";
 import { parseDexScreener, parseGeckoPools } from "../hot/sources";
 import { orient } from "../hot/index";
+import { fetchPoolHistory, historyFresh, historyMetrics, historyPhrase, historyRefusal, memeHistoryEnv, OHLCV_URL, parseOhlcv } from "../screener/memeHistory";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -74,6 +75,70 @@ async function main(): Promise<void> {
     assert.equal(orient(sample, "BATONmint").marketCapUsd, 11_744_325, "our token is the base: kept");
     const flipped = { ...sample, baseMint: SOL, quoteMint: "BATONmint" };
     assert.equal(orient(flipped, "BATONmint").marketCapUsd, null, "the source sized SOL, not our token");
+  });
+
+  console.log("a month of training data");
+  const DAY = 86_400;
+  const T0 = 1_789_000_000;
+  /** GeckoTerminal's shape: [ts, open, high, low, close, volume], newest first */
+  const ohlcv = (days: number, f: (i: number) => [number, number, number, number, number]) => ({
+    data: { attributes: { ohlcv_list: Array.from({ length: days }, (_, i) => [T0 + i * DAY, ...f(i)]).reverse() } },
+  });
+  await test("memeHistoryEnv: 30 days by default, 0 turns the rule off, a 24h cache, a few pools a cycle", () => {
+    assert.deepEqual(memeHistoryEnv({}), { minDays: 30, ttlHours: 24, lookupsPerCycle: 4 });
+    assert.equal(memeHistoryEnv({ MEME_MIN_HISTORY_DAYS: "0" }).minDays, 0);
+    assert.equal(memeHistoryEnv({ MEME_HISTORY_TTL_HOURS: "0" }).ttlHours, 1, "never an unbounded refetch loop");
+  });
+  await test("parseOhlcv and historyMetrics: oldest first, only days that traded count, the window's change, the worst drawdown from a peak, the median day", () => {
+    // up 1% a day for 20 days, then down 3% a day for 10, and 5 dead days with no volume
+    const series = ohlcv(35, (i) => {
+      if (i < 5) return [1, 1, 1, 1, 0];
+      const k = i - 5;
+      const close = k < 20 ? 1.01 ** (k + 1) : 1.01 ** 20 * 0.97 ** (k - 19);
+      const open = k < 20 ? 1.01 ** k : 1.01 ** 20 * 0.97 ** (k - 20);
+      return [open, Math.max(open, close) * 1.02, Math.min(open, close) * 0.98, close, 50_000];
+    });
+    const candles = parseOhlcv(series);
+    assert.equal(candles.length, 35);
+    assert.ok(candles[0].ts < candles[34].ts, "oldest first");
+    const m = historyMetrics(candles);
+    assert.equal(m.days, 30, "the five days with no volume do not count");
+    assert.ok(Math.abs(m.changePct! - ((1.01 ** 20) * (0.97 ** 10) - 1) * 100) < 0.05, `window change ${m.changePct}`);
+    assert.ok(Math.abs(m.maxDrawdownPct! - ((0.97 ** 10) - 1) * 100) < 0.05, `drawdown ${m.maxDrawdownPct}`);
+    assert.ok(m.medianDailyRangePct! > 4 && m.medianDailyRangePct! < 6, `median day ${m.medianDailyRangePct}`);
+    assert.equal(m.avgDailyVolumeUsd, 50_000);
+    assert.match(historyPhrase(m), /^30d of history: -\d/);
+    assert.deepEqual(parseOhlcv({}), []);
+    assert.equal(historyMetrics([]).days, 0);
+  });
+  await test("historyRefusal is strict: not read yet, unreadable, or under 30 days refuses; 30 days passes; off passes", () => {
+    const env30 = memeHistoryEnv({});
+    const now = T0 * 1000;
+    const rec = (days: number) => ({ at: now, metrics: historyMetrics(parseOhlcv(ohlcv(days, () => [1, 1.1, 0.9, 1, 10_000]))), error: null });
+    assert.equal(historyRefusal("ZCAT", undefined, env30, now), "ZCAT: its trading history has not been read yet, and the desk wants 30 days of it first");
+    assert.equal(historyRefusal("ZCAT", rec(10), env30, now), "ZCAT has 10 days of trading history, under the 30 days the desk wants before entering a memecoin");
+    assert.equal(historyRefusal("baton", rec(6), env30, now), "baton has 6 days of trading history, under the 30 days the desk wants before entering a memecoin");
+    assert.match(historyRefusal("X", { at: now, metrics: null, error: "GeckoTerminal HTTP 429" }, env30, now)!, /could not be read \(GeckoTerminal HTTP 429\)/);
+    assert.equal(historyRefusal("STONK", rec(30), env30, now), null);
+    assert.equal(historyRefusal("X", undefined, memeHistoryEnv({ MEME_MIN_HISTORY_DAYS: "0" }), now), null);
+    assert.equal(historyFresh(rec(30), env30, now + 23 * 3600e3), true);
+    assert.equal(historyFresh(rec(30), env30, now + 25 * 3600e3), false);
+    const failed = { at: now, metrics: null, error: "GeckoTerminal HTTP 429" };
+    assert.equal(historyFresh(failed, env30, now + 10 * 60e3), true, "a failed read waits 15 minutes");
+    assert.equal(historyFresh(failed, env30, now + 16 * 60e3), false, "then it is read again, not blocked for a day");
+  });
+  await test("fetchPoolHistory: one GeckoTerminal OHLCV call for the pool, a month plus a day; a failure is a record, never a throw", async () => {
+    const urls: string[] = [];
+    const ok = await fetchPoolHistory("POOL1", 30, { fetch: async (u) => { urls.push(String(u)); return new Response(JSON.stringify(ohlcv(31, () => [1, 1.1, 0.9, 1, 10_000])), { status: 200 }); }, now: 5 });
+    assert.equal(urls[0], OHLCV_URL("POOL1", 30));
+    assert.match(urls[0], /\/pools\/POOL1\/ohlcv\/day\?aggregate=1&limit=31&currency=usd&token=base$/);
+    assert.equal(ok.metrics!.days, 31);
+    assert.equal(ok.at, 5);
+    const limited = await fetchPoolHistory("POOL1", 30, { fetch: async () => new Response("slow down", { status: 429 }) });
+    assert.equal(limited.metrics, null);
+    assert.equal(limited.error, "GeckoTerminal HTTP 429");
+    const broken = await fetchPoolHistory("POOL1", 30, { fetch: async () => { throw new Error("socket hang up"); } });
+    assert.equal(broken.error, "socket hang up");
   });
 
   console.log(`\n${passed} memecoin floor tests passed`);

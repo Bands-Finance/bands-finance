@@ -66,6 +66,7 @@ import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type Launc
 import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
 import { pinRotateMinAgeMin, rotationCandidate, type RotationBand } from "./engine/rotation";
 import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
+import { fetchPoolHistory, historyFresh, historyPhrase, historyRefusal, memeHistoryEnv, type HistoryRecord } from "./screener/memeHistory";
 import { voiceLine } from "./agent/voice";
 import { jupiterEnv as swapEnv, meteoraOnlyRoutes } from "./tools/jupiter";
 import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairHouseSeats, pairHouseSeatSol, pairLaunchEnv, pairMintOf, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict, type PairSeatOptions } from "./screener/pair";
@@ -133,6 +134,8 @@ interface App {
   pinnedAt: number;
   /** the band the picker named this cycle to make room for a pin (src/engine/rotation.ts); null when none */
   rotateOut: { pool: string; label: string; reason: string } | null;
+  /** a month of each memecoin pool's trading, read from GeckoTerminal (src/screener/memeHistory.ts), by pool address */
+  memeHistory: Map<string, HistoryRecord>;
 }
 
 interface Observed {
@@ -397,6 +400,38 @@ function rotationBands(app: App, held: string[]): RotationBand[] {
   return held.map((pool) => ({ pool, label: pool.slice(0, 6), venue: venueOf(pool), openedAt: null, valueSol: 0, feesPerDaySol: null, ...flags(pool) }));
 }
 
+/**
+ * Read a month of trading for the memecoin pools the picker could seat (src/screener/memeHistory.ts):
+ * tradable, quoted in a fundable quote, trading enough, not a stock, past the memecoin floor, and not
+ * read in the last MEME_HISTORY_TTL_HOURS. Best by fee yield first, a few a cycle, paced for GeckoTerminal.
+ */
+async function refreshMemeHistory(app: App, funds: Set<"SOL" | "USDC">): Promise<void> {
+  const hist = memeHistoryEnv();
+  if (hist.minDays <= 0 || hist.lookupsPerCycle <= 0) return;
+  const meme = memeFloorEnv();
+  const minVolume = Number(process.env.POLICY_MIN_VOLUME_24H_USD ?? 250_000);
+  const now = Date.now();
+  const quoteOk = (q: string) => (q === "SOL" && funds.has("SOL")) || (q === "USDC" && funds.has("USDC"));
+  const wanted = new Map<string, { symbol: string; yieldPct: number }>();
+  for (const p of app.screen?.pools ?? []) {
+    if (p.stock || !tradableVenue(p) || !quoteOk(p.quoteSymbol) || (p.volume24hUsd ?? 0) < minVolume) continue;
+    if (memeRefusal({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours }, meme)) continue;
+    wanted.set(p.address, { symbol: p.baseSymbol, yieldPct: p.feeToTvl24hPct ?? 0 });
+  }
+  for (const r of loadHotFileCached()?.rows ?? []) {
+    if (r.stock || !isTradableVenue(r.venue) || !quoteOk(r.quoteSymbol) || (r.vol24hUsd ?? 0) < minVolume) continue;
+    if (memeRefusal({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours }, meme)) continue;
+    if (!wanted.has(r.address)) wanted.set(r.address, { symbol: r.baseSymbol, yieldPct: r.feeToTvlDailyPct ?? 0 });
+  }
+  const due = [...wanted.entries()].filter(([a]) => !historyFresh(app.memeHistory.get(a), hist, now)).sort((a, b) => b[1].yieldPct - a[1].yieldPct).slice(0, hist.lookupsPerCycle);
+  for (const [i, [address, w]] of due.entries()) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 2500));
+    const rec = await fetchPoolHistory(address, hist.minDays);
+    app.memeHistory.set(address, rec);
+    console.log(`[cycle ${app.cycle}] memecoin history ${w.symbol} (${address.slice(0, 6)}): ${rec.metrics ? historyPhrase(rec.metrics) : `unreadable (${rec.error})`}${rec.metrics && rec.metrics.days < hist.minDays ? `; under the ${hist.minDays} days the desk wants` : ""}`);
+  }
+}
+
 /** The pinned ticker a pool belongs to: a pinned Meteora pool, or our own stock pair for a pinned ticker. */
 function pinnedTickerOf(app: App, address: string, snapshot?: PoolSnapshot | null): string | null {
   const pool = pinnedPoolAt(app.pinned, address);
@@ -444,8 +479,10 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // in. Checked only on a token the lane would otherwise seat, so the log names what it actually kept out.
   const meme = memeFloorEnv();
   const memeRefused: string[] = [];
-  const memeOk = (c: MemeCandidate): boolean => {
-    const why = memeRefusal(c, meme);
+  const hist = memeHistoryEnv();
+  // the floor, then the strict rule: a memecoin pool needs a month of its own trading on record
+  const memeOk = (c: MemeCandidate, address: string): boolean => {
+    const why = memeRefusal(c, meme) ?? (c.stock || c.house ? null : historyRefusal(c.symbol, app.memeHistory.get(address), hist, Date.now()));
     if (why && !memeRefused.includes(why)) memeRefused.push(why);
     return why === null;
   };
@@ -460,7 +497,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
 
   // THE HOUSE TOKEN (PAIR_HOUSE_MINTS): our own launch's pool, right after held and pinned pools, always,
   // whatever the hot watch says about it; only a watchlist DENY keeps it out. Never counted against PAIR_MAX_POOLS.
-  if (penv.on && penv.houseMints.length && set.size < config.maxActivePools) {
+  if (penv.houseMints.length && set.size < config.maxActivePools) {
     const rows = pairCandidatesOf(loadHotFileCached()?.rows ?? [], penv.houseMints);
     for (const seat of pairHouseSeats(rows, {
       env: penv,
@@ -559,7 +596,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   for (const r of hotRows(app)) {
     if (set.size >= ordinaryCap) break;
     const row = { address: r.address, baseSymbol: r.baseSymbol, baseMint: r.baseMint, name: r.name };
-    if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume && !takenTokens.has(r.baseMint) && memeOk({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours, stock: r.stock })) take(r.address, r.baseMint);
+    if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume && !takenTokens.has(r.baseMint) && memeOk({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours, stock: r.stock }, r.address)) take(r.address, r.baseMint);
   }
   const candidates = (app.screen?.pools ?? []).filter(
     (p) =>
@@ -578,7 +615,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   for (const p of byYield) {
     if (set.size >= ordinaryCap) break;
     if (takenTokens.has(p.baseMint) || set.has(p.address)) continue;
-    if (!memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock })) continue;
+    if (!memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock }, p.address)) continue;
     take(p.address, p.baseMint);
   }
 
@@ -602,7 +639,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     let launchRows = launchCandidates();
     let seats = launchSeats(launchRows, launchOpts);
     for (let pass = 0; pass < 8; pass++) {
-      const kept = seats.filter((s) => memeOk({ symbol: s.row.baseSymbol, ...hotMeme(s.row.address) }));
+      const kept = seats.filter((s) => memeOk({ symbol: s.row.baseSymbol, ...hotMeme(s.row.address) }, s.row.address));
       if (kept.length === seats.length) break;
       const drop = new Set(seats.filter((s) => !kept.includes(s)).map((s) => s.row.address));
       launchRows = launchRows.filter((r) => !drop.has(r.address));
@@ -649,7 +686,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     };
     let seats = pairSeats(pairRows, pairOpts);
     for (let pass = 0; pass < 8; pass++) {
-      const kept = seats.filter((s) => memeOk({ symbol: s.row.baseSymbol, ...hotMeme(s.row.address) }));
+      const kept = seats.filter((s) => memeOk({ symbol: s.row.baseSymbol, ...hotMeme(s.row.address) }, s.row.address));
       if (kept.length === seats.length) break;
       const drop = new Set(seats.filter((s) => !kept.includes(s)).map((s) => s.row.baseMint));
       pairRows = pairRows.filter((r) => !drop.has(r.baseMint));
@@ -1413,6 +1450,7 @@ async function runIteration(app: App): Promise<void> {
   }
   const funds = fundableQuotes(app, solAtStart, usdcAtStart);
   await refreshPinned(app);
+  await refreshMemeHistory(app, funds);
   const pools = pickPools(app, withPositions, funds);
   if (pools.length === 0) {
     console.log(`[cycle ${app.cycle}] nothing to work: no pinned pools, no bands held, no screen picks`);
@@ -1567,6 +1605,7 @@ async function main(): Promise<void> {
     pinned: null,
     pinnedAt: 0,
     rotateOut: null,
+    memeHistory: new Map(),
   };
   appRef = app;
   if (app.screen) app.screenAt = new Date(app.screen.generatedAt).getTime();

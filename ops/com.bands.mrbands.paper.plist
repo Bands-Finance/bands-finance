@@ -35,7 +35,11 @@
     <key>DRY_RUN</key><string>true</string>
     <key>PAPER_SOL</key><string>100</string>
     <key>PAPER_USDC</key><string>10000</string>
-    <key>BOOK</key><string>all</string>
+    <key>BOOK</key><string>stocks</string>
+    <key>LAUNCH_LANE</key><string>false</string>
+    <key>PAIR_LANE</key><string>false</string>
+    <key>MEME_MIN_AGE_HOURS</key><string>720</string>
+    <key>MEME_MIN_HISTORY_DAYS</key><string>30</string>
     <!-- Venue focus (Zach, 2026-09-15): opens on Meteora DLMM only. Held Raydium bands keep being managed:
          discovery covers every adapter venue and the guards gate OPENS only. Six seats: three for the
          stock pair lane (PAIR_STOCK_MAX_POOLS, two reserved), one for the pump.fun pair lane, the rest ordinary. -->
