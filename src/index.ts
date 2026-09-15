@@ -163,7 +163,7 @@ function banner(app: App): void {
   console.log(`stocks    straddles (BOTH, half quote half token, STOCK_COVER_PCT=${policyEnv().stockCoverPct}% each side x session width); token half hedged short on Backpack: ${app.paper ? "PAPER (virtual fills at the perp mid, funding accrued)" : hedgeGate.ok ? "LIVE post-only orders" : `plan only (${hedgeGate.reason})`}; swaps via Jupiter (${app.paper ? "paper fills" : config.dryRun ? "built + simulated" : "broadcast"})`);
   {
     const pe = pairEnv();
-    console.log(`pairs     ${pe.on ? `pair lane ON: make our own Meteora pool for a pump.fun token that clears it (ref liquidity >= $${pe.minRefLiquidityUsd.toLocaleString("en-US")}, 24h >= $${pe.minVolume24hUsd.toLocaleString("en-US")}, 1h >= $${pe.minVolume1hUsd.toLocaleString("en-US")}, turnover >= ${pe.minTurnover}x); ${pe.quote} quote, ${pe.binStep / 100}%/bin, fee ${pe.feeBps / 100}%, seat ${pe.seatPct}% of the book, ${pe.binsEachSide} bins each side, max ${pe.maxPools} pool(s); creation ${app.paper ? "PAPER (virtual pool)" : config.dryRun ? "built + simulated, not sent" : pe.live ? "LIVE" : "built + simulated (PAIR_LIVE is not true)"}` : "pair lane off"}`);
+    console.log(`pairs     ${pe.on ? `pair lane ON: make our own Meteora pool for a pump.fun token that clears it (ref liquidity >= $${pe.minRefLiquidityUsd.toLocaleString("en-US")}, 24h >= $${pe.minVolume24hUsd.toLocaleString("en-US")}, 1h >= $${pe.minVolume1hUsd.toLocaleString("en-US")}, turnover >= ${pe.minTurnover}x); ${pe.quote} quote, ${pe.binStep / 100}%/bin, fee ${pe.feeBpsFixed ? `${pe.feeBps / 100}%` : `chosen per pool from ${pe.feeMenuBps.map((f) => `${f / 100}%`).join("/")}`}, seat ${pe.seatPct}% of the book, ${pe.binsEachSide} bins each side, max ${pe.maxPools} pool(s); creation ${app.paper ? "PAPER (virtual pool)" : config.dryRun ? "built + simulated, not sent" : pe.live ? "LIVE" : "built + simulated (PAIR_LIVE is not true)"}` : "pair lane off"}`);
   }
   console.log(`model     ${config.model}`);
   console.log(`interval  ${config.cycleIntervalSec}s cycles, screen every ${config.screen.intervalSec}s`);
@@ -388,6 +388,12 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
       hasToken: (mint) => takenTokens.has(mint),
       competition: (mint) => competitionFor(mint, [...rows, ...screenRows], pairPoolAddress(mint)),
     });
+    if (seats.length === 0 && !quoteOk(penv.quote)) {
+      const clears = pairCandidatesOf(rows).filter((r) => r.baseMint && pairVerdict(r, penv, competitionFor(r.baseMint, [...rows, ...screenRows], pairPoolAddress(r.baseMint))).ok);
+      if (clears.length) {
+        console.log(`[cycle ${app.cycle}] pair lane: ${[...new Set(clears.map((r) => r.baseSymbol))].join(", ")} clear${clears.length === 1 ? "s" : ""} the lane, but the wallet cannot fund a ${penv.quote} seat at the minimum (free some ${penv.quote}, or set PAIR_QUOTE to the other quote)`);
+      }
+    }
     for (const seat of seats) {
       if (!take(seat.address, seat.row.baseMint)) continue;
       const v = seat.verdict;
@@ -395,7 +401,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
         `[cycle ${app.cycle}] pair lane: making ${seat.row.baseSymbol}/${penv.quote} for ${seat.row.name} on ${seat.row.venue} (${seat.row.address.slice(0, 6)}), ${v.ageHours.toFixed(1)}h old, ` +
           `$${Math.round(v.refLiquidityUsd).toLocaleString("en-US")} reference liquidity, $${Math.round(seat.row.vol24hUsd ?? 0).toLocaleString("en-US")} in 24h (turnover ${v.turnover.toFixed(1)}x), ` +
           `$${Math.round(seat.row.vol1hUsd ?? 0).toLocaleString("en-US")} in the last hour${v.competingDepthUsd > 0 ? `, $${Math.round(v.competingDepthUsd).toLocaleString("en-US")} of competing concentrated depth in ${v.competitors.length} pool(s)` : ""}; ` +
-          `seat ${pairSeatSol(riskLimits.maxTotalExposureSol, penv).toFixed(4)} SOL, ${penv.binStep / 100}%/bin, fee ${penv.feeBps / 100}%, stop ${penv.stopPct}%, max hold ${penv.maxHoldMin} min`,
+          `seat ${pairSeatSol(riskLimits.maxTotalExposureSol, penv).toFixed(4)} SOL, ${penv.binStep / 100}%/bin, fee ${penv.feeBpsFixed ? `${penv.feeBps / 100}%` : `the best of ${penv.feeMenuBps.map((f) => `${f / 100}%`).join("/")} by the model`}, stop ${penv.stopPct}%, max hold ${penv.maxHoldMin} min`,
       );
     }
   }

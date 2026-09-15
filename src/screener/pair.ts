@@ -70,6 +70,10 @@ export interface PairEnv {
   binStep: number;
   /** PAIR_FEE_BPS: the base fee our pool charges */
   feeBps: number;
+  /** PAIR_FEE_BPS was set explicitly: use it as is instead of choosing from the menu */
+  feeBpsFixed: boolean;
+  /** PAIR_FEE_MENU: the fees (bps) the lane may pick from per pool, by the routing model; default 25, 50, 100 */
+  feeMenuBps: number[];
   /** PAIR_COLLECT_FEE_MODE: "quote" collects every fee in the quote token (the SDK's OnlyY), "both" in whichever token came in */
   collectFeeMode: "quote" | "both";
   /** PAIR_SEAT_PCT: the seat is this percent of MAX_TOTAL_EXPOSURE_SOL, half quote half token */
@@ -112,6 +116,8 @@ export function pairEnv(env: NodeJS.ProcessEnv = process.env): PairEnv {
     quote: quote === "USDC" ? "USDC" : "SOL",
     binStep: Math.min(400, Math.max(1, Math.floor(num(env.PAIR_BIN_STEP, 100)))),
     feeBps: Math.max(1, Math.floor(num(env.PAIR_FEE_BPS, 50))),
+    feeBpsFixed: (env.PAIR_FEE_BPS ?? "").trim() !== "",
+    feeMenuBps: feeMenu(env.PAIR_FEE_MENU),
     collectFeeMode: mode === "both" ? "both" : "quote",
     seatPct: Math.max(0, num(env.PAIR_SEAT_PCT, 10)),
     binsEachSide: Math.max(1, Math.floor(num(env.PAIR_BINS_EACH_SIDE, 2))),
@@ -122,6 +128,40 @@ export function pairEnv(env: NodeJS.ProcessEnv = process.env): PairEnv {
     tradeMaxUsd: Math.max(1, num(env.PAIR_TRADE_MAX_USD, 5_000)),
     pumpswapFeePct: Math.max(0, num(env.PUMPSWAP_FEE_PCT, 0.25)),
   };
+}
+
+/** "25,50,100" -> [25, 50, 100]: whole bps in (0, 1000], deduplicated, ascending; unset or empty -> the default menu. */
+export function feeMenu(raw: string | undefined): number[] {
+  const src = (raw ?? "").trim();
+  const parts = src === "" ? ["25", "50", "100"] : src.split(",");
+  const out = new Set<number>();
+  for (const p of parts) {
+    const n = Math.floor(Number(p.trim()));
+    if (Number.isFinite(n) && n >= 1 && n <= 1000) out.add(n);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+/**
+ * MODEL. The base fee for a pool we are about to make: with PAIR_FEE_BPS unset, the fee on the menu
+ * that earns the most under the routing model for THIS seat against THIS reference; a higher fee
+ * buys more per trade and loses the small trades to PumpSwap, a lower fee wins them back, and which
+ * side of that trade pays depends on how deep the reference pool is next to our seat. A fixed
+ * PAIR_FEE_BPS is honoured as is. Competing depth scales every fee's take alike, so it does not move
+ * the choice and is left out.
+ */
+export function chooseFeeBps(ref: { liquidityUsd: number | null; vol24hUsd: number | null; vol1hUsd: number | null }, env: PairEnv, seatUsd: number): number {
+  if (env.feeBpsFixed || env.feeMenuBps.length === 0 || !(seatUsd > 0)) return env.feeBps;
+  let best = env.feeBps;
+  let bestFees = -1;
+  for (const feeBps of env.feeMenuBps) {
+    const fees = pairModel(ref, { ...env, feeBps }, seatUsd).feesPerDayUsd;
+    if (fees > bestFees + 1e-9) {
+      best = feeBps;
+      bestFees = fees;
+    }
+  }
+  return bestFees > 0 ? best : env.feeBps;
 }
 
 /* ---------- the address of a made pair ---------- */

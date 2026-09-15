@@ -139,7 +139,7 @@ async function main(): Promise<void> {
   await test("pairEnv: the documented defaults; PAIR_LANE closes the lane; quote and fee mode are validated", () => {
     assert.deepEqual(pair.pairEnv({}), {
       on: true, minAgeMin: 30, maxAgeHours: 48, minRefLiquidityUsd: 30_000, minVolume24hUsd: 1_000_000, minVolume1hUsd: 100_000, minTurnover: 5,
-      maxPools: 1, reserveSeat: true, quote: "SOL", binStep: 100, feeBps: 50, collectFeeMode: "quote", seatPct: 10, binsEachSide: 2, stopPct: 10, maxHoldMin: 240,
+      maxPools: 1, reserveSeat: true, quote: "SOL", binStep: 100, feeBps: 50, feeBpsFixed: false, feeMenuBps: [25, 50, 100], collectFeeMode: "quote", seatPct: 10, binsEachSide: 2, stopPct: 10, maxHoldMin: 240,
       live: false, tradeMinUsd: 50, tradeMaxUsd: 5000, pumpswapFeePct: 0.25,
     });
     for (const v of ["false", "no", "0", "yes"]) assert.equal(pair.pairEnv({ PAIR_LANE: v }).on, false, `PAIR_LANE=${v}`);
@@ -339,6 +339,19 @@ async function main(): Promise<void> {
     near(d.net, b.gross / 10, 1e-9, "nine times our depth: a tenth");
     assert.equal(pair.routedShare(model({ competingConcentratedDepthUsd: 31_500 })), d.net);
   });
+  await test("chooseFeeBps: a deep reference next to a small seat wants PumpSwap's own fee, a thin one lets a bigger seat charge more; a fixed PAIR_FEE_BPS is honoured", () => {
+    assert.deepEqual(pair.feeMenu(undefined), [25, 50, 100]);
+    assert.deepEqual(pair.feeMenu(" 100, 25 ,25, 0, 2000, x "), [25, 100]);
+    const nike = { liquidityUsd: 294_117, vol24hUsd: 59_384_404, vol1hUsd: 13_205_642 };
+    assert.equal(pair.chooseFeeBps(nike, env(), 3_605), 25, "$3.6k against a $294k pool: only PumpSwap's fee wins any flow");
+    assert.equal(pair.pairModel(nike, env(), 3_605).routedShare, 0, "at the 50 bps default that seat routes nothing");
+    assert.ok(pair.pairModel(nike, env({ feeBps: 25 }), 3_605).routedShare > 0.3);
+    const thin = { liquidityUsd: 30_000, vol24hUsd: 1_000_000, vol1hUsd: 100_000 };
+    assert.equal(pair.chooseFeeBps(thin, env(), 10_000), 100, "$10k against a $30k pool: the walk is cheap, charge the most");
+    assert.equal(pair.chooseFeeBps(nike, env({ feeBps: 50, feeBpsFixed: true }), 3_605), 50, "a fixed fee is used as set");
+    assert.equal(pair.chooseFeeBps(nike, env(), 0), env().feeBps, "no seat, the default");
+    assert.equal(pair.chooseFeeBps({ liquidityUsd: null, vol24hUsd: null, vol1hUsd: null }, env(), 3_605), env().feeBps, "no reference, the default");
+  });
   await test("fees per day: min(vol24h, vol1h x 24) x share x fee; pairModel puts the seat through it", () => {
     near(pair.pairFeesPerDayUsd(48_000_000, 1_000_000, 0.5, 1), 24_000_000 * 0.5 * 0.01, 1e-9, "the last hour's pace is lower");
     near(pair.pairFeesPerDayUsd(1_000_000, 100_000, 0.5, 1), 1_000_000 * 0.5 * 0.01, 1e-9, "the 24h figure is lower");
@@ -452,7 +465,7 @@ async function main(): Promise<void> {
   console.log("\npair lane / paper");
   venue.clearPairCaches();
   // the walk pins the worked example's geometry (1% fee, five 1% bins a side) so its figures read straight off the model
-  const penv = env({ seatPct: 50, feeBps: 100, binsEachSide: 5 });
+  const penv = env({ seatPct: 50, feeBps: 100, feeBpsFixed: true, binsEachSide: 5 });
   const REF = { liquidityUsd: 40_000, vol24hUsd: 2_000_000, vol1hUsd: 150_000 };
   const refRow = (over: Partial<HotRow> = {}): HotRow => hotRowOf({ ...REF, ...over });
   const book = paper.emptyBook(100, 0, NOW);

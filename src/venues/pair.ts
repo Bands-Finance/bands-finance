@@ -56,7 +56,7 @@ import { loadHotFileCached } from "../hot/store";
 import type { HotFile, HotRow } from "../hot/types";
 import type { PaperBook } from "../paper/book";
 import type { PairPoolRecord } from "../risk/state";
-import { activeIdFromPrice, competitionFor, isPairAddress, pairEnv, pairMintOf, pairModel, pairPoolAddress, pairSeatSol, type PairEnv } from "../screener/pair";
+import { activeIdFromPrice, competitionFor, isPairAddress, pairEnv, pairMintOf, pairModel, pairPoolAddress, pairSeatSol, type PairEnv, chooseFeeBps } from "../screener/pair";
 import { binPrice } from "../tools/bins";
 import {
   buildClaimFeesTxs,
@@ -485,7 +485,12 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
         quoteMint: q.mint,
         quoteDecimals: q.decimals,
         binStep: e.binStep,
-        feeBps: e.feeBps,
+        // the fee the model likes for this seat against this reference (or PAIR_FEE_BPS as set)
+        feeBps: chooseFeeBps(
+          { liquidityUsd: row?.liquidityUsd ?? null, vol24hUsd: row?.vol24hUsd ?? null, vol1hUsd: row?.vol1hUsd ?? null },
+          e,
+          (deps.seatSol?.() ?? 0) * (deps.solPriceUsd?.() ?? 0),
+        ),
         collectFeeMode: e.collectFeeMode,
         lbPair: pairLbPairAddress(mint, q.mint),
       };
