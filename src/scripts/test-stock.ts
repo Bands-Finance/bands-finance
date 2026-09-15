@@ -399,6 +399,14 @@ async function main(): Promise<void> {
     const q = await client.quote({ inputMint: "A", outputMint: "B", amount: 1000 });
     near(q.priceImpactPct, 0.31, 1e-12);
     assert.deepEqual(q.routeLabels, ["PumpSwap"]);
+    // SWAP_DEXES rides on the quote as Jupiter's `dexes` parameter; unset sends none
+    const urls: string[] = [];
+    const meteoraOnly = new jup.JupiterClient({ dexes: ["Meteora DLMM"], fetch: async (u) => { urls.push(String(u)); return new Response(JSON.stringify(wire), { status: 200 }); } });
+    await meteoraOnly.quote({ inputMint: "A", outputMint: "B", amount: 1000 });
+    assert.equal(new URL(urls[0]).searchParams.get("dexes"), "Meteora DLMM");
+    const anyRoute = new jup.JupiterClient({ dexes: null, fetch: async (u) => { urls.push(String(u)); return new Response(JSON.stringify(wire), { status: 200 }); } });
+    await anyRoute.quote({ inputMint: "A", outputMint: "B", amount: 1000 });
+    assert.equal(new URL(urls[1]).searchParams.get("dexes"), null);
   });
 
   console.log("paperSwap and the paper wallet's legs");
@@ -412,8 +420,11 @@ async function main(): Promise<void> {
     near(jup.paperSwap(2, 767, 0.1).amountOut, 2 * 767 * 0.999, 1e-12, "sell 2 tokens");
     assert.throws(() => jup.paperSwap(-1, 1, 0.1), /bad amountIn/);
     assert.throws(() => jup.paperSwap(1, 0, 0.1), /bad rate/);
-    assert.deepEqual(jup.jupiterEnv({}), { apiUrl: "https://lite-api.jup.ag/swap/v1", slippageBps: 50, feePct: 0.1 });
-    assert.deepEqual(jup.jupiterEnv({ JUPITER_API_URL: "https://x.test/v1/", SWAP_SLIPPAGE_BPS: "25.7", SWAP_FEE_PCT: "0.3" }), { apiUrl: "https://x.test/v1", slippageBps: 25, feePct: 0.3 });
+    assert.deepEqual(jup.jupiterEnv({}), { apiUrl: "https://lite-api.jup.ag/swap/v1", slippageBps: 50, feePct: 0.1, dexes: null });
+    assert.deepEqual(jup.jupiterEnv({ JUPITER_API_URL: "https://x.test/v1/", SWAP_SLIPPAGE_BPS: "25.7", SWAP_FEE_PCT: "0.3", SWAP_DEXES: " Meteora DLMM ,Meteora DLMM, " }), { apiUrl: "https://x.test/v1", slippageBps: 25, feePct: 0.3, dexes: ["Meteora DLMM"] });
+    assert.equal(jup.meteoraOnlyRoutes(["Meteora DLMM", "Meteora DAMM v2"]), true);
+    assert.equal(jup.meteoraOnlyRoutes(["Meteora DLMM", "Raydium CLMM"]), false);
+    assert.equal(jup.meteoraOnlyRoutes(null), false);
     assert.equal(jup.toRawUnits(1.5, 8).toString(), "150000000");
     assert.equal(jup.toRawUnits(0.1234567891, 8).toString(), "12345679");
     near(jup.fromRawUnits(13048663n, 8), 0.13048663, 1e-15);

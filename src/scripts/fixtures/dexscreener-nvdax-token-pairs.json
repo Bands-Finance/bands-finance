@@ -1,0 +1,623 @@
+[
+ {
+  "chainId": "solana",
+  "dexId": "raydium",
+  "labels": [
+   "CLMM"
+  ],
+  "pairAddress": "49iMatQtoyabsYAQc8GafVq6aeBFVDxSRH44oiatyyw6",
+  "baseToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "quoteToken": {
+   "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+   "name": "USD Coin",
+   "symbol": "USDC"
+  },
+  "priceNative": "212.6925",
+  "priceUsd": "212.69",
+  "volume": {
+   "h24": 1806156.08,
+   "h6": 609711.62,
+   "h1": 182263.44,
+   "m5": 5086.69
+  },
+  "liquidity": {
+   "usd": 2141081.92,
+   "base": 5262.4976,
+   "quote": 1021787
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "orca",
+  "labels": [
+   "wp"
+  ],
+  "pairAddress": "6R4r93V5fcMzc13CL2enEepDSYcr4Qx3ptZBDwudTXCo",
+  "baseToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "quoteToken": {
+   "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+   "name": "USD Coin",
+   "symbol": "USDC"
+  },
+  "priceNative": "212.7821",
+  "priceUsd": "212.78",
+  "volume": {
+   "h24": 1198739.65,
+   "h6": 505907.83,
+   "h1": 202637.48,
+   "m5": 7615.51
+  },
+  "liquidity": {
+   "usd": 140237.05,
+   "base": 530.5352,
+   "quote": 27348
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "raydium",
+  "labels": [
+   "CLMM"
+  ],
+  "pairAddress": "38rXq2BuwdNcfnwydw6S2srpNK9N4gVzf39f69suPMsF",
+  "baseToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "quoteToken": {
+   "address": "So11111111111111111111111111111111111111112",
+   "name": "Wrapped SOL",
+   "symbol": "SOL"
+  },
+  "priceNative": "2.1511",
+  "priceUsd": "213.048",
+  "volume": {
+   "h24": 1417966.5,
+   "h6": 1213414.33,
+   "h1": 368138.28,
+   "m5": 7840.55
+  },
+  "liquidity": {
+   "usd": 73473.74,
+   "base": 179.8067,
+   "quote": 355.07031
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "orca",
+  "labels": [
+   "wp"
+  ],
+  "pairAddress": "8Vy5Rjb9vg5nLb8L1r4Di8p9py5BTkp8UJSMHG8AD2zs",
+  "baseToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "quoteToken": {
+   "address": "So11111111111111111111111111111111111111112",
+   "name": "Wrapped SOL",
+   "symbol": "SOL"
+  },
+  "priceNative": "2.1521",
+  "priceUsd": "213.38",
+  "volume": {
+   "h24": 107821.39,
+   "h6": 46906.44,
+   "h1": 15624.73,
+   "m5": 193.87
+  },
+  "liquidity": {
+   "usd": 16940.54,
+   "base": 34.9302,
+   "quote": 95.6815
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "meteora",
+  "labels": [
+   "DLMM"
+  ],
+  "pairAddress": "F4inHs4RQARpASmvLpj45QjGLdkukeGQrtQ22pimVy2a",
+  "baseToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "quoteToken": {
+   "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+   "name": "USD Coin",
+   "symbol": "USDC"
+  },
+  "priceNative": "212.5590",
+  "priceUsd": "212.55",
+  "volume": {
+   "h24": 12443.11,
+   "h6": 6802.36,
+   "h1": 1105.57,
+   "m5": 0
+  },
+  "liquidity": {
+   "usd": 20733.25,
+   "base": 61.05175,
+   "quote": 7756.1569
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "meteora",
+  "labels": [
+   "DLMM"
+  ],
+  "pairAddress": "FCn5zw4gAcfRpQgst5ThFuzBGXbbJ6RocVErgC4vJ9j1",
+  "baseToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "quoteToken": {
+   "address": "So11111111111111111111111111111111111111112",
+   "name": "Wrapped SOL",
+   "symbol": "SOL"
+  },
+  "priceNative": "2.1432",
+  "priceUsd": "212.50",
+  "volume": {
+   "h24": 26670.68,
+   "h6": 15511.28,
+   "h1": 10720.87,
+   "m5": 49.63
+  },
+  "liquidity": {
+   "usd": 4119.74,
+   "base": 9.7387,
+   "quote": 20.6777
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "orca",
+  "labels": [
+   "wp"
+  ],
+  "pairAddress": "EBJyPRtXTiUtjKZ5JDNLPmdjTyat48jEpmSD5VDLrHyq",
+  "baseToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "quoteToken": {
+   "address": "SKHYhSjuRWHgikq8eRKbtBbpABgJSkd7ytQV14i9EQ3",
+   "name": "SK Hynix - Backpack Securities",
+   "symbol": "SKHY"
+  },
+  "priceNative": "1.2032",
+  "priceUsd": "213.43",
+  "volume": {
+   "h24": 460.39,
+   "h6": 218.34,
+   "h1": 61.61,
+   "m5": 5.01
+  },
+  "liquidity": {
+   "usd": 6785.59,
+   "base": 16.8857,
+   "quote": 17.9358
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "pumpfun",
+  "labels": null,
+  "pairAddress": "JBMNtwtzzki52ezfT8MSNgvsK1cK4W1AUbxKsVsHiZxw",
+  "baseToken": {
+   "address": "mtEDvwqMUkQy48ZgQmp8MitkEG72ovBNkL1YqKymFQk",
+   "name": "Jackcat",
+   "symbol": "Jackcat"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.00000002443",
+  "priceUsd": null,
+  "volume": {
+   "h24": 0,
+   "h6": 0,
+   "h1": 0,
+   "m5": 0
+  },
+  "liquidity": null
+ },
+ {
+  "chainId": "solana",
+  "dexId": "raydium",
+  "labels": [
+   "CPMM"
+  ],
+  "pairAddress": "J1hNX1YwsDeYXpsGAozPz1wpBBkxdN8LhBeS1wCCUjAS",
+  "baseToken": {
+   "address": "GBLYwo4vvqGDPkVJqwWfrvtPavEWb5zALmPphxQbJaLG",
+   "name": "Artificial Giga Inu",
+   "symbol": "AGI"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.0000008370",
+  "priceUsd": "0.0001780",
+  "volume": {
+   "h24": 323842.65,
+   "h6": 80750.48,
+   "h1": 8197.4,
+   "m5": 99.25
+  },
+  "liquidity": {
+   "usd": 36325.1,
+   "base": 102003866,
+   "quote": 85.3873
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "raydium",
+  "labels": [
+   "CLMM"
+  ],
+  "pairAddress": "DVRW4Yubp3ZKbm45BNtSAJdbCfWZwKgp39WtbNGHEYCi",
+  "baseToken": {
+   "address": "CgBR5onYw5Z37YdCq2t77oxzQu4wVpof8GngowGzsHnL",
+   "name": "SHOGGOTH",
+   "symbol": "SHOGGOTH"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.0000006810",
+  "priceUsd": "0.0001451",
+  "volume": {
+   "h24": 20582.02,
+   "h6": 4585.66,
+   "h1": 6.19,
+   "m5": 0
+  },
+  "liquidity": {
+   "usd": 49195.61,
+   "base": 186120700,
+   "quote": 104.1397
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "raydium",
+  "labels": [
+   "CLMM"
+  ],
+  "pairAddress": "F8iTCJuExa87GReBhQX4QMQZRrvvXVDbCKA66fS9jc7G",
+  "baseToken": {
+   "address": "GFrfZPCUX5PtMagFu7Zws9eKhHCUAGyZX98iXbA83bnm",
+   "name": "Just a jacket",
+   "symbol": "JACKET"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.000004618",
+  "priceUsd": "0.0009823",
+  "volume": {
+   "h24": 339716.32,
+   "h6": 339716.32,
+   "h1": 285345.35,
+   "m5": 9508.69
+  },
+  "liquidity": {
+   "usd": 20899.54,
+   "base": 10937016,
+   "quote": 47.7466
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "raydium",
+  "labels": [
+   "CLMM"
+  ],
+  "pairAddress": "Aq4jqjq4gQuxFoB4cVMZZLVPhBE8Q1yum7y9YKestqM4",
+  "baseToken": {
+   "address": "6SjVTj1VGwFSXn7wEjwFm77LvACeTqB7sQUebYKX8Ds5",
+   "name": "Solrouter",
+   "symbol": "ROUTER"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.000005284",
+  "priceUsd": "0.001123",
+  "volume": {
+   "h24": 11436.36,
+   "h6": 3245.73,
+   "h1": 1899.62,
+   "m5": 0
+  },
+  "liquidity": {
+   "usd": 21850.78,
+   "base": 9725698,
+   "quote": 51.4023
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "raydium",
+  "labels": [
+   "CLMM"
+  ],
+  "pairAddress": "CaqNsANwXUgsV1BcALfsHv2bdqMppuzVF4iZ93FpNRtM",
+  "baseToken": {
+   "address": "BjcRmwm8e25RgjkyaFE56fc7bxRgGPw96JUkXRJFEroT",
+   "name": "IdleMine",
+   "symbol": "IDLE"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.000008276",
+  "priceUsd": "0.001757",
+  "volume": {
+   "h24": 2185.92,
+   "h6": 893.94,
+   "h1": 61.32,
+   "m5": 0
+  },
+  "liquidity": {
+   "usd": 12699.64,
+   "base": 3860405,
+   "quote": 27.8636
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "pumpfun",
+  "labels": null,
+  "pairAddress": "89u2pFBiE82ccqBGJvsQrhEPmmneQuFndfzD5sBBrGc5",
+  "baseToken": {
+   "address": "2hKQbTHgqZvRWguKcrZbXJCkJ1daCzDGhe2TgSnBpump",
+   "name": "Frog Brain",
+   "symbol": "PEPE"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.00000005398",
+  "priceUsd": null,
+  "volume": {
+   "h24": 0,
+   "h6": 0,
+   "h1": 0,
+   "m5": 0
+  },
+  "liquidity": null
+ },
+ {
+  "chainId": "solana",
+  "dexId": "pumpfun",
+  "labels": null,
+  "pairAddress": "8fGkHFiYCNiZGZghUjQz3XDd2BjoTWW9HE1sXAwew7cY",
+  "baseToken": {
+   "address": "5fgYxdhdc5fKLQ85jDTSCUdxucERh2BSto57UcYqpump",
+   "name": "jack it",
+   "symbol": "JACKIT"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.00000003723",
+  "priceUsd": null,
+  "volume": {
+   "h24": 0,
+   "h6": 0,
+   "h1": 0,
+   "m5": 0
+  },
+  "liquidity": null
+ },
+ {
+  "chainId": "solana",
+  "dexId": "pumpfun",
+  "labels": null,
+  "pairAddress": "Cy1TjTToUc2yt5DRkMYbqwD3KEDKxpdJs28H5cxv9nAD",
+  "baseToken": {
+   "address": "9J4tfEFR31QW8JHHGnPb8yrsew5MpwkSFtQz1nyapump",
+   "name": "Nvidia Stonk",
+   "symbol": "NVDAx"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.00000002047",
+  "priceUsd": null,
+  "volume": {
+   "h24": 0,
+   "h6": 0,
+   "h1": 0,
+   "m5": 0
+  },
+  "liquidity": null
+ },
+ {
+  "chainId": "solana",
+  "dexId": "pumpfun",
+  "labels": null,
+  "pairAddress": "7gAvrd8i1JTZZiUw6KGcPKrH89upRDBEyeDrmooHQHDV",
+  "baseToken": {
+   "address": "8UcQRjugumGS6B58LjPqy9jvrSMwZqVNJ3aeoHsb4Tgi",
+   "name": "Artificial Inu",
+   "symbol": "Ainu"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.00000001798",
+  "priceUsd": null,
+  "volume": {
+   "h24": 0,
+   "h6": 0,
+   "h1": 0,
+   "m5": 0
+  },
+  "liquidity": null
+ },
+ {
+  "chainId": "solana",
+  "dexId": "raydium",
+  "labels": [
+   "CPMM"
+  ],
+  "pairAddress": "6ZMRSv48uBX7ESyZaocvm1ZNcsD3LgF1uJt4jmPfKDRT",
+  "baseToken": {
+   "address": "8b5c8hbbcKdd4F49RHjCiCntJS68Vro8ZJLumJNFZZHg",
+   "name": "BURSTCOIN",
+   "symbol": "BURST"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.0000002645",
+  "priceUsd": "0.00005621",
+  "volume": {
+   "h24": 74825.38,
+   "h6": 14138.34,
+   "h1": 2133.8,
+   "m5": 0
+  },
+  "liquidity": {
+   "usd": 20894.03,
+   "base": 185825172,
+   "quote": 49.1562
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "raydium",
+  "labels": [
+   "CPMM"
+  ],
+  "pairAddress": "3kxK94s3CN4TtbZfBVQCvnieuxsj1DRfinLRgRPD9Mpm",
+  "baseToken": {
+   "address": "9GS2EQgob5iVFSLJmAJCLywRJyUDQM2SwM6z4ad1C879",
+   "name": "Gooner Processing Unit",
+   "symbol": "GPU"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.0000002425",
+  "priceUsd": "0.00005155",
+  "volume": {
+   "h24": 94689.82,
+   "h6": 10596.32,
+   "h1": 3475.13,
+   "m5": 0
+  },
+  "liquidity": {
+   "usd": 20234.07,
+   "base": 196250131,
+   "quote": 47.6029
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "raydium",
+  "labels": [
+   "CLMM"
+  ],
+  "pairAddress": "Ak7oAUqQ9jYu5YvfmDrtDC3WHi7BcN5Y4k8Bh3yk4B5e",
+  "baseToken": {
+   "address": "Aigf5pKPyZW8nzxCrHEisE4tZMiUhFpKie8mYE7cmj6c",
+   "name": "NVDA Doge",
+   "symbol": "NVDGE"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.0000003299",
+  "priceUsd": "0.00007016",
+  "volume": {
+   "h24": 35018.9,
+   "h6": 830.21,
+   "h1": 194.04,
+   "m5": 33.97
+  },
+  "liquidity": {
+   "usd": 39042.6,
+   "base": 310010723,
+   "quote": 81.3064
+  }
+ },
+ {
+  "chainId": "solana",
+  "dexId": "raydium",
+  "labels": [
+   "CPMM"
+  ],
+  "pairAddress": "HKPrXoz4EqJ5HU9m9PmTTTxSRwoB2Hbknd6UqUTsf2Yt",
+  "baseToken": {
+   "address": "BGU4TfDLpV1JeJGXVgSbZkLSRxgAzcsQci1vEbaWJVcm",
+   "name": "Artificial Cat INU",
+   "symbol": "CATAI"
+  },
+  "quoteToken": {
+   "address": "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+   "name": "NVIDIA xStock",
+   "symbol": "NVDAx"
+  },
+  "priceNative": "0.00000008959",
+  "priceUsd": "0.00001904",
+  "volume": {
+   "h24": 7726.35,
+   "h6": 1105.87,
+   "h1": 95.93,
+   "m5": 0
+  },
+  "liquidity": {
+   "usd": 13635.1,
+   "base": 357978311,
+   "quote": 32.07201
+  }
+ }
+]

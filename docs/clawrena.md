@@ -33,6 +33,31 @@ Our lane is the ClawPump x pump.fun track on "novel tooling" (an autonomous Mete
 publishes every decision, makes its own pools, and can be rented by other agents over MCP and x402) and
 "live trading performance" (the desk live on Meteora, with the token's own pool in its book).
 
+## Paired with NVDA, Meteora only (Zach, 2026-09-15)
+
+Zach: "our agent will be paired with nvda" and "we dont want to use any other pools except meteora pools
+for this". What that means on chain, checked 2026-09-15:
+
+- **The token's pump.fun pair can be NVDAx.** pump.fun already lists tokens launched against NVDAx
+  (Jackcat/NVDAx, PEPE/NVDAx, Ainu/NVDAx). ClawPump's partner API takes a custom creation pair
+  (`pumpQuoteMint`) and a creator fee of 100-300 bps on it; creator fees then accrue in NVDAx.
+  `TOKEN_PUMP_PAIR=NVDAx` makes `npm run clawpump -- quote` resolve it against ClawPump's live catalogue
+  and refuse, listing what is offered, if it is not there.
+- **Meteora has NVDA pools, thin but busy.** NVDAx/SOL (FCn5zw4g, 0.2% bins, 0.2% fee, $4.1k deep,
+  $26.7k traded in a day: ~1.3% of its depth in fees daily) and NVDAx/USDC (F4inHs4R, 0.25%, $20.7k deep,
+  $12.5k a day). Raydium's NVDAx/USDC holds $2.1M; under the rule it is not used.
+- **The desk supplements them.** `PAIR_STOCK_PINNED_TICKERS=NVDA` pins the best Meteora NVDA pool the
+  wallet can fund into the book as a straddle hedged on Backpack's NVDA perp, floors waived (the guards,
+  the stop, the basis check stay). The seat is capped at half the band's depth, so in a $4k pool it stays
+  a supplement, not a takeover. If Meteora had no NVDA pool, the stock pair lane would make our own.
+- **Swaps stay on Meteora.** `SWAP_DEXES=Meteora DLMM` restricts Jupiter to Meteora DLMM routes. A 1 SOL
+  NVDAx buy costs 0.14% impact that way against 0.05% on the best route anywhere. Every xStock the desk
+  trades has a Meteora-only route (COIN is the expensive one at 2.5% per SOL).
+- **The house pool can be quoted in NVDAx on Meteora.** The program accepts it on the customizable
+  permissionless path: NEVIDIA/NVDAx was created that way (bin step 400, 0.5%). Our book's quote
+  accounting is SOL or USDC today, so a BANDS/NVDAx house pool is the next build; until then the house
+  pool is BANDS/SOL, and SOL holders reach BANDS through the NVDAx/SOL pool the desk supplements.
+
 ## What ships, in order
 
 ### A. The token (Zach, by 20 September)

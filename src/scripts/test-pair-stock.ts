@@ -174,7 +174,7 @@ async function main(): Promise<void> {
   console.log("stock pair lane / env");
   await test("pairStockEnv: the documented defaults; PAIR_STOCK_LANE closes the lane; tickers, the fee menu, the collect mode", () => {
     assert.deepEqual(lane.pairStockEnv({}), {
-      on: true, tickers: null, minRefLiquidityUsd: 100_000, minVolume24hUsd: 500_000, maxPools: 3, reserveSeats: 2, binStep: 20, feeBps: 25, feeBpsFixed: false, feeMenuBps: [10, 25, 50],
+      on: true, tickers: null, pinnedTickers: [], minRefLiquidityUsd: 100_000, minVolume24hUsd: 500_000, maxPools: 3, reserveSeats: 2, binStep: 20, feeBps: 25, feeBpsFixed: false, feeMenuBps: [10, 25, 50],
       collectFeeMode: "both", seatPct: 15, tradeMinUsd: 100, tradeMaxUsd: 20_000, hopFeePct: 0.04, refDepthPerPct: 0.1, refGoneCycles: 3,
     });
     for (const v of ["false", "no", "0", "yes"]) assert.equal(lane.pairStockEnv({ PAIR_STOCK_LANE: v }).on, false, `PAIR_STOCK_LANE=${v}`);
@@ -301,6 +301,29 @@ async function main(): Promise<void> {
     assert.deepEqual(seats.map((s) => s.candidate.ticker), ["MCD", "META", "MSFT"], "best by the model first; SPY and NVDA route nothing and are skipped, not seated");
     assert.equal(seats[0].worthUsdPerDay, 30);
     assert.deepEqual(lane.pairStockSeats(cands(), seatOpts({ worth: () => 0 })), [], "nothing worth seating, nothing seated");
+  });
+
+  await test("PAIR_STOCK_PINNED_TICKERS: the agent's pair is admitted with every floor waived (not even PAIR_STOCK_TICKERS keeps it out), seated first whatever the model says, still one of PAIR_STOCK_MAX_POOLS; a DENY still wins; no price, no pool", () => {
+    assert.deepEqual(lane.pairStockEnv({ PAIR_STOCK_PINNED_TICKERS: "nvdax, GLD" }).pinnedTickers, ["NVDA", "GLD"]);
+    const pinnedEnv = env({ pinnedTickers: ["VIDA", "GLD"], tickers: ["SPY"] });
+    const all = cands();
+    const vida = all.find((c) => c.ticker === "VIDA")!;
+    const gld = all.find((c) => c.ticker === "GLD")!;
+    assert.equal(lane.pairStockVerdict(vida, env()).ok, false, "VIDA's reference is under the liquidity floor");
+    assert.equal(lane.pairStockVerdict(gld, env()).ok, false, "GLD's reference is flagged thin");
+    const v = lane.pairStockVerdict(vida, pinnedEnv);
+    assert.ok(v.ok && v.pinned === true, "pinned VIDA is admitted");
+    assert.ok(lane.pairStockVerdict(gld, pinnedEnv).ok, "pinned GLD is admitted, thin or not, listed in PAIR_STOCK_TICKERS or not");
+    const noPrice = { ...vida, priceUsd: null };
+    const refused = lane.pairStockVerdict(noPrice, pinnedEnv);
+    assert.ok(!refused.ok && refused.reason === "pinned VIDA has no price to open a pool at");
+    const worth = (c: PairStockCandidate) => ({ SPY: 50 })[c.ticker] ?? 0;
+    const seats = lane.pairStockSeats(all, seatOpts({ env: pinnedEnv, worth }));
+    assert.deepEqual(seats.map((s) => s.candidate.ticker), ["VIDA", "GLD", "SPY"], "the pins first in the order listed, then the model's best; the pins are seated at zero worth");
+    assert.deepEqual(lane.pairStockSeats(all, seatOpts({ env: { ...pinnedEnv, maxPools: 1 }, worth })).map((s) => s.candidate.ticker), ["VIDA"], "a pin counts against PAIR_STOCK_MAX_POOLS");
+    const w = denyToken(emptyWatchlist(), "VIDAx");
+    const denied = (c: PairStockCandidate) => watchlistDenial({ address: c.reference.address, baseSymbol: c.symbol, baseMint: c.mint, name: c.name }, w);
+    assert.deepEqual(lane.pairStockSeats(all, seatOpts({ env: pinnedEnv, worth, denied })).map((s) => s.candidate.ticker), ["GLD", "SPY"], "a DENY beats the pin");
   });
 
   /* ================= 5. the routing model ================================================== */
@@ -590,6 +613,31 @@ async function main(): Promise<void> {
     const slow = { ...s0, pair: { ...s0.pair!, feesPerDayUsd: 2, feesPerDayGrossUsd: 2 } };
     assert.match(policy.policyDecide(observe(slow, []), { limits, now: clock, openCostSol: pv.openCostSol(s0).total, pairStock: senv }).reason, /payback [\d.]+h over the 24h limit/);
   });
+  await test("a PINNED stock in an existing Meteora pool (not ours, off the board): the volume floor, the score, the thin flag and the yield floors are waived, a straddle is proposed and says it is the pair; the same pool unpinned is passed", () => {
+    // an existing METAx/SOL Meteora pool with real depth in its bins and a thin day: $26,672 traded, $4,109 deep
+    const depth = s0.bins.map((b) => ({ ...b, xAmount: b.binId >= s0.activeBinId ? 0.4 : 0, yAmount: b.binId <= s0.activeBinId ? 2.5 : 0 }));
+    const below = depth.filter((b) => b.binId < s0.activeBinId).reduce((t, b) => t + b.yAmount, 0);
+    const above = depth.filter((b) => b.binId > s0.activeBinId).reduce((t, b) => t + b.xAmount, 0);
+    const existing: PoolSnapshot = { ...s0, address: "FCn5zw4gAcfRpQgst5ThFuzBGXbbJ6RocVErgC4vJ9j1", pair: undefined, bins: depth, liquidityBelowY: below, liquidityAboveX: above, baseFeePct: 0.2 };
+    const base = observe(s0, []);
+    const screenOf = (pinned: boolean, flags: string[]) => ({
+      ...base.screen!, pair: null, rank: 0, score: 0, volume24hUsd: 26_672, tvlUsd: 4_109, feeToTvl24hPct: 1.3, flags,
+      stock: { ticker: "META", issuer: "xstocks" }, pinned: pinned ? { ok: true as const, ticker: "META" } : null,
+    });
+    const o = { ...base, snapshot: existing, screen: screenOf(true, ["thin"]) } as Observation;
+    assert.ok(policy.isPinnedStock(o) && policy.isStockPool(o) && !policy.isPairPool(o));
+    const r = policy.policyDecide(o, { limits, now: clock, openCostSol: 0.2 });
+    assert.equal(r.decision.action, "OPEN_POSITION", r.reason);
+    assert.equal(r.decision.open!.side, "BOTH");
+    assert.match(r.decision.reasoning, /pinned: the agent is paired with META, so the desk works META's Meteora liquidity whatever its floors say \(\$26,672 traded here in 24h on \$4,109 of depth, 1\.3% of it in fees a day\)/);
+    const flagged = policy.policyDecide({ ...o, screen: screenOf(false, ["thin"]) } as Observation, { limits, now: clock, openCostSol: 0.2 });
+    assert.equal(flagged.decision.action, "HOLD");
+    assert.equal(flagged.branch, "flagged", "unpinned, the thin flag stops it");
+    const quiet = policy.policyDecide({ ...o, screen: screenOf(false, []) } as Observation, { limits, now: clock, openCostSol: 0.2 });
+    assert.equal(quiet.branch, "not-worth");
+    assert.match(quiet.reason, /24h volume \$26672 under the \$250000 floor/, "unpinned, the volume floor stops it");
+  });
+
   await test("MSFT: no Backpack perp, so the straddle is proposed unhedged and the headline says so", async () => {
     const msft = await pv.loadPool(fakeConnection, "pair-" + MSFT);
     const ms = await snap(msft);

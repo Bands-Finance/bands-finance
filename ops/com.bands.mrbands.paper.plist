@@ -52,6 +52,8 @@
     <key>HEDGE_MIN_REBALANCE_USD</key><string>5</string>
     <key>PAIR_SEAT_PCT</key><string>20</string>
     <key>PAIR_QUOTE</key><string>USDC</string>
+    <key>PAIR_STOCK_PINNED_TICKERS</key><string>NVDA</string>
+    <key>SWAP_DEXES</key><string>Meteora DLMM</string>
     <key>SERVE_PORT</key><string>3100</string>
   </dict>
 </dict>

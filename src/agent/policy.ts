@@ -187,6 +187,8 @@ export const isLaunchPool = (o: Pick<Observation, "screen">): boolean => o.scree
 
 /** Whether this is a pair-lane pool: our own Meteora pool for a pump.fun token or a tokenized stock (src/screener/pair.ts, src/venues/pair.ts). */
 export const isPairPool = (o: Pick<Observation, "screen" | "snapshot">): boolean => o.screen?.pair?.ok === true && !!o.snapshot.pair;
+/** The agent is paired with this stock (PAIR_STOCK_PINNED_TICKERS): the operator's pin stands in for the floors. */
+export const isPinnedStock = (o: Pick<Observation, "screen">): boolean => o.screen?.pinned?.ok === true;
 
 /** Whether this is a STOCK pair pool: our own STOCKx/SOL pool (src/screener/pairStock.ts). A stock pool is a stock pool: it straddles. */
 export const isStockPairPool = (o: Pick<Observation, "screen" | "engine" | "snapshot">): boolean => isPairPool(o) && (!!o.snapshot.pair?.stock || isStockPool(o));
@@ -805,7 +807,9 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   const launch = isLaunchPool(o) ? o.screen!.launch! : null;
   const pair = isPairPool(o) ? o.screen!.pair! : null;
   const lane = !!launch || !!pair;
-  const blockFlags = lane ? POLICY_BLOCK_FLAGS.filter((f) => f !== "new" && f !== "wild") : POLICY_BLOCK_FLAGS;
+  // A pinned stock (the agent's pair) is thin on Meteora on purpose: supplementing that liquidity is the point.
+  const pinned = isPinnedStock(o) ? o.screen!.pinned! : null;
+  const blockFlags = (lane ? POLICY_BLOCK_FLAGS.filter((f) => f !== "new" && f !== "wild") : POLICY_BLOCK_FLAGS).filter((f) => !(pinned && f === "thin"));
   const flagged = (list: string[]) => list.filter((f) => blockFlags.includes(f));
   const flags = [...new Set([...flagged(o.screen?.flags ?? []), ...flagged(hot.flags)])];
   if (flags.length) {
@@ -815,7 +819,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   // (A house token clears every floor by definition: its pool is made whatever it trades.)
   const vol24h = o.screen?.volume24hUsd ?? null;
   const house = !!o.snapshot.pair?.house;
-  if (env.minVolume24hUsd > 0 && vol24h !== null && vol24h < env.minVolume24hUsd && !house) {
+  if (env.minVolume24hUsd > 0 && vol24h !== null && vol24h < env.minVolume24hUsd && !house && !pinned) {
     return hold(
       `No band in ${o.poolLabel} (${priceLine}). The pool traded $${r(vol24h, 0)} in 24h, under the $${r(env.minVolume24hUsd, 0)} the policy will make a market in: fees come from volume, and there is not enough here to pay a seat. ${poolClause(o, hot)}.`,
       clip(`Only $${r(vol24h / 1000, 0)}k traded here in a day. Passing.`),
@@ -835,7 +839,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   // A listed token does not need a score, but every other gate (volume, yield, payback, flags, the
   // guards, the basis and session rules) still applies to it.
   const listed = o.screen?.watchlisted === true;
-  if (!isHotPick && !scoreOk && !stockBook && !listed && !lane) {
+  if (!isHotPick && !scoreOk && !stockBook && !listed && !lane && !pinned) {
     const why = score === null ? `not on the screen and not on the hot list` : `score ${r(score, 1)} is not above ${env.minScore} and the pool is not on the hot list`;
     return hold(`No band in ${o.poolLabel} (${priceLine}): ${why}. ${poolClause(o, hot)}.`, "Nothing worth a band here. Holding.", "not-worth", why);
   }
@@ -853,7 +857,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   if (pair && !straddleHere) return pairOpenDecide(o, x, env, q, now, hot, pair);
   const stockPair = !!pair && straddleHere;
   const senv = x.pairStock ?? pairStockEnv();
-  if (stockPair && !szPreview.none) {
+  if (stockPair && !szPreview.none && !pinned) {
     // The pool's rent never comes back and the token half costs two swaps: the stock model's fees must earn that back in time.
     const p = s.pair!;
     const solPrice = s.solPriceUsd ?? null;
@@ -874,7 +878,8 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   }
   // Is the seat worth taking? What it earns, against what it costs.
   const seatSolPreview = straddleHere ? (szPreview as StraddleSizing).seatSol : (szPreview as Sizing).amountSol;
-  const earn = szPreview.none ? null : seatEarnings(o, x, seatSolPreview, szPreview.sharePct, straddleHere);
+  // a pinned stock is seated for the pairing, not for its yield: the earnings are reported, never a reason to pass
+  const earn = szPreview.none || pinned ? null : seatEarnings(o, x, seatSolPreview, szPreview.sharePct, straddleHere);
   if (earn && env.minSeatYieldPct > 0 && earn.yieldPctPerDay < env.minSeatYieldPct) {
     return hold(
       `No band in ${o.poolLabel} (${priceLine}). The seat would earn about $${r(earn.feesPerDayUsd, 2)} a day on $${r(earn.seatUsd, 0)}, ${r(earn.yieldPctPerDay, 2)}% a day, under the ${env.minSeatYieldPct}% floor: the pool pays $${r(earn.poolFeesPerDayUsd, 0)} a day and our share of the band would be ${r(earn.sharePct, 1)}%. ${poolClause(o, hot)}.`,
@@ -891,7 +896,9 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       `payback ${r(earn.paybackHours, 1)}h over the ${env.maxPaybackHours}h limit`,
     );
   }
-  const worth = launch
+  const worth = pinned
+    ? `pinned: the agent is paired with ${pinned.ticker}, so the desk works ${pinned.ticker}'s Meteora liquidity whatever its floors say (${usd0(o.screen?.volume24hUsd ?? null)} traded here in 24h on ${usd0(o.screen?.tvlUsd ?? null)} of depth${o.screen?.feeToTvl24hPct !== null && o.screen?.feeToTvl24hPct !== undefined ? `, ${r(o.screen.feeToTvl24hPct, 2)}% of it in fees a day` : ""})`
+    : launch
     ? `launch lane: ${r(launch.ageHours, 1)}h old, turning over ${r(launch.turnover, 1)}x its liquidity a day${isHotPick ? `, hot list heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}` : ""}`
     : listed && !isHotPick && !scoreOk
     ? `on the watchlist${score !== null ? `, screen score ${r(score, 1)}` : ""}`

@@ -11,7 +11,7 @@
  */
 import { Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { config } from "../config";
-import { ClawPumpClient, clawpumpEnv, launchRefusal, tokenSpec, type LaunchRequest } from "../tools/clawpump";
+import { ClawPumpClient, clawpumpEnv, isSolPair, launchRefusal, resolvePumpPair, tokenSpec, type LaunchRequest } from "../tools/clawpump";
 import { Wallet } from "../tools/wallet";
 
 const usd = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 4 });
@@ -54,6 +54,19 @@ async function main(): Promise<void> {
     const connection = new Connection(config.rpcUrl, "confirmed");
     const wallet = Wallet.fromConfig(connection);
     const req: LaunchRequest = { agentId, agentName: config.agentName, walletAddress: wallet.keypair.publicKey.toBase58(), token };
+    // the creation pair: SOL, or a custom pair from ClawPump's live catalogue (the Clawrena entry is paired with NVDA)
+    if (!isSolPair(token.pumpPair)) {
+      const catalogue = await client.pumpPairs();
+      const pair = resolvePumpPair(catalogue.assets, token.pumpPair);
+      if (!pair.ok) {
+        console.log(`  launch pair refused: ${pair.reason}`);
+        process.exitCode = 2;
+        return;
+      }
+      req.pumpQuoteMint = pair.asset!.mint;
+      req.pumpCreatorFeeBps = token.creatorFeeBps ?? catalogue.creatorFeeBps.default;
+      console.log(`  paired with ${pair.asset!.symbol} (${pair.asset!.mint}), creator fee ${req.pumpCreatorFeeBps} bps; creator fees accrue in ${pair.asset!.symbol}`);
+    }
     const q = await client.launchPreflight(req);
     console.log(`${token.name} (${token.symbol}) by ${config.agentName}, agent ${agentId}, from wallet ${req.walletAddress}`);
     console.log(`  quote: ${q.amountSol} SOL (${q.amountLamports} lamports) to ${q.payTo}, valid ${q.validForSeconds} s${q.creationFeeSol !== null ? `; creation fee ${q.creationFeeSol} SOL` : ""}${q.devBuySol ? `, dev buy ${q.devBuySol} SOL` : ""}${q.requestId ? ` (request ${q.requestId})` : ""}`);
@@ -74,7 +87,7 @@ async function main(): Promise<void> {
     console.log(`  paid: ${sig}`);
     const done = await client.launchComplete(req, sig, q.preflightToken);
     console.log(`  ${done.status}: mint ${done.mintAddress}${done.txHash ? ` (launch tx ${done.txHash})` : ""}${done.pumpUrl ? `\n  pump.fun: ${done.pumpUrl}` : ""}${done.explorerUrl ? `\n  explorer: ${done.explorerUrl}` : ""}`);
-    console.log(`\n  add to .env and restart the desk:\n  PAIR_HOUSE_MINTS=${done.mintAddress}`);
+    console.log(`\n  add to .env and restart the desk:\n  PAIR_HOUSE_MINTS=${done.mintAddress}${req.pumpQuoteMint ? "\n  (the token is paired with a custom quote on pump.fun; the desk works Meteora pools only)" : ""}`);
     return;
   }
   console.log("usage: npm run clawpump -- status | pairs | cost | quote | launch [--confirm]");

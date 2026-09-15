@@ -3,7 +3,7 @@
  *   npx tsx src/scripts/test-clawpump.ts
  */
 import assert from "node:assert/strict";
-import { ClawPumpClient, ClawPumpError, clawpumpEnv, launchBody, launchRefusal, SOL_MINT, tokenSpec, type LaunchRequest } from "../tools/clawpump";
+import { ClawPumpClient, ClawPumpError, clawpumpEnv, isSolPair, launchBody, launchRefusal, resolvePumpPair, SOL_MINT, tokenSpec, type LaunchRequest } from "../tools/clawpump";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -58,6 +58,33 @@ async function main(): Promise<void> {
     assert.equal(done.txSignature, "5Kd");
     assert.equal(done.preflightToken, "tok");
     assert.equal(done.preflight, undefined);
+  });
+
+  await test("the launch pair: SOL by default; NVDA resolves to NVDAx in the catalogue by symbol, ticker or mint; an absent pair lists what is offered; the creator fee only on a custom pair", () => {
+    const t = tokenSpec(goodToken);
+    assert.equal(t.pumpPair, "SOL");
+    assert.equal(t.creatorFeeBps, null);
+    assert.equal(isSolPair("wsol"), true);
+    assert.equal(isSolPair(SOL_MINT), true);
+    const NVDAX = { mint: "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh", symbol: "NVDAx", name: "NVIDIA xStock", decimals: 8 };
+    const USD1 = { mint: "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB", symbol: "USD1", name: "World Liberty Financial USD", decimals: 6 };
+    const catalogue = [USD1, NVDAX];
+    for (const want of ["NVDAx", "nvdax", "NVDA", NVDAX.mint]) {
+      const r = resolvePumpPair(catalogue, want);
+      assert.ok(r.ok && r.asset?.mint === NVDAX.mint, `${want} -> NVDAx`);
+    }
+    const sol = resolvePumpPair(catalogue, "SOL");
+    assert.ok(sol.ok && sol.asset === null);
+    const missing = resolvePumpPair([USD1], "NVDA");
+    assert.ok(!missing.ok && /"NVDA" is not a pump.fun creation pair on ClawPump today \(offered: USD1\)/.test(missing.reason));
+    const nv = tokenSpec({ ...goodToken, TOKEN_PUMP_PAIR: "NVDAx", TOKEN_CREATOR_FEE_BPS: "250" });
+    assert.equal(nv.pumpPair, "NVDAx");
+    assert.equal(nv.creatorFeeBps, 250);
+    assert.throws(() => tokenSpec({ ...goodToken, TOKEN_CREATOR_FEE_BPS: "250" }), /cannot be set on the SOL pair/);
+    assert.throws(() => tokenSpec({ ...goodToken, TOKEN_PUMP_PAIR: "NVDAx", TOKEN_CREATOR_FEE_BPS: "50" }), /from 100 to 300/);
+    const body = launchBody({ ...req(), token: nv, pumpQuoteMint: NVDAX.mint, pumpCreatorFeeBps: 250 });
+    assert.equal(body.pumpQuoteMint, NVDAX.mint);
+    assert.equal(body.pumpCreatorFeeBps, 250);
   });
 
   console.log("the client");

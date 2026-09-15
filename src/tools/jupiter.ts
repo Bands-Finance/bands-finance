@@ -36,7 +36,21 @@ export interface JupiterEnv {
   slippageBps: number;
   /** paper fills: the fee charged on the input, in percent */
   feePct: number;
+  /**
+   * SWAP_DEXES: the only DEXes a swap may route through, by Jupiter's labels (GET /program-id-to-label),
+   * e.g. "Meteora DLMM"; null (unset) = any route. Zach's rule for the NVDA pairing is Meteora only.
+   */
+  dexes: string[] | null;
 }
+
+/** "Meteora DLMM, Meteora DAMM v2" -> ["Meteora DLMM", "Meteora DAMM v2"]; unset or empty -> null (any route). */
+export function parseDexes(raw: string | undefined): string[] | null {
+  const out = [...new Set((raw ?? "").split(",").map((s) => s.trim()).filter(Boolean))];
+  return out.length ? out : null;
+}
+
+/** Every allowed route is a Meteora pool (the paper book then charges the pool's own fee on a swap). */
+export const meteoraOnlyRoutes = (dexes: readonly string[] | null): boolean => !!dexes && dexes.length > 0 && dexes.every((d) => d.startsWith("Meteora"));
 
 const num = (v: string | undefined, d: number): number => {
   if (v === undefined || v.trim() === "") return d;
@@ -50,6 +64,7 @@ export function jupiterEnv(env: NodeJS.ProcessEnv = process.env): JupiterEnv {
     apiUrl: (url || JUPITER_API_URL_DEFAULT).replace(/\/$/, ""),
     slippageBps: Math.max(0, Math.floor(num(env.SWAP_SLIPPAGE_BPS, SWAP_SLIPPAGE_BPS_DEFAULT))),
     feePct: Math.max(0, num(env.SWAP_FEE_PCT, SWAP_FEE_PCT_DEFAULT)),
+    dexes: parseDexes(env.SWAP_DEXES),
   };
 }
 
@@ -107,6 +122,8 @@ export interface JupiterClientOptions {
   maxRetries?: number;
   /** default SWAP_SLIPPAGE_BPS */
   slippageBps?: number;
+  /** default SWAP_DEXES: route only through these DEXes; null = any */
+  dexes?: string[] | null;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -133,6 +150,7 @@ export const fromRawUnits = (raw: bigint | number | string, decimals: number): n
 export class JupiterClient {
   readonly baseUrl: string;
   readonly slippageBps: number;
+  readonly dexes: string[] | null;
   private readonly fetchImpl: FetchLike;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -146,6 +164,7 @@ export class JupiterClient {
     const env = jupiterEnv();
     this.baseUrl = (opts.baseUrl ?? env.apiUrl).replace(/\/$/, "");
     this.slippageBps = opts.slippageBps ?? env.slippageBps;
+    this.dexes = opts.dexes !== undefined ? opts.dexes : env.dexes;
     this.fetchImpl = opts.fetch ?? ((input, init) => fetch(input, init));
     this.now = opts.now ?? (() => Date.now());
     this.sleep = opts.sleep ?? defaultSleep;
@@ -221,7 +240,7 @@ export class JupiterClient {
     const slippageBps = req.slippageBps ?? this.slippageBps;
     const raw = obj(
       await this.request<unknown>("GET", "/quote", {
-        query: { inputMint: req.inputMint, outputMint: req.outputMint, amount: amount.toString(), slippageBps, swapMode: req.swapMode === "ExactOut" ? "ExactOut" : undefined },
+        query: { inputMint: req.inputMint, outputMint: req.outputMint, amount: amount.toString(), slippageBps, swapMode: req.swapMode === "ExactOut" ? "ExactOut" : undefined, dexes: this.dexes?.length ? this.dexes.join(",") : undefined },
       }),
     );
     if (typeof raw.error === "string") throw new JupiterError(`quote: ${raw.error}`, 400, JSON.stringify(raw));

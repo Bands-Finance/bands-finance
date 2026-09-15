@@ -51,6 +51,14 @@ export interface PairStockEnv {
   on: boolean;
   /** PAIR_STOCK_TICKERS: the tickers the lane may make pools for; null (unset) = every xStock on the board */
   tickers: string[] | null;
+  /**
+   * PAIR_STOCK_PINNED_TICKERS: the stocks the agent is PAIRED with (the Clawrena entry: NVDA). A pinned
+   * ticker is always admitted (the liquidity and volume floors, the thin flags and the model's payback
+   * are waived: the pin is the operator's judgement), seated first, and still counts against
+   * PAIR_STOCK_MAX_POOLS. The loop first works the ticker's existing Meteora pools (src/screener/pinnedStock.ts);
+   * this lane makes our own only when Meteora has none the wallet can fund.
+   */
+  pinnedTickers: string[];
   /** PAIR_STOCK_MIN_REF_LIQUIDITY_USD: the reference pool must hold this much */
   minRefLiquidityUsd: number;
   /** PAIR_STOCK_MIN_VOLUME_24H_USD: the ticker's pools together must trade this much a day */
@@ -109,6 +117,7 @@ export function pairStockEnv(env: NodeJS.ProcessEnv = process.env): PairStockEnv
   return {
     on: onByDefault(env.PAIR_STOCK_LANE),
     tickers: parseStockTickers(env.PAIR_STOCK_TICKERS),
+    pinnedTickers: parseStockTickers(env.PAIR_STOCK_PINNED_TICKERS) ?? [],
     minRefLiquidityUsd: Math.max(0, num(env.PAIR_STOCK_MIN_REF_LIQUIDITY_USD, 100_000)),
     minVolume24hUsd: Math.max(0, num(env.PAIR_STOCK_MIN_VOLUME_24H_USD, 500_000)),
     maxPools: Math.max(0, Math.floor(num(env.PAIR_STOCK_MAX_POOLS, 3))),
@@ -245,12 +254,21 @@ export const pairStockCandidateFor = (cands: readonly PairStockCandidate[], mint
 /* ---------- admission ---------- */
 
 export type PairStockVerdict =
-  | { ok: true; refLiquidityUsd: number; vol24hUsd: number; refFeePct: number; competingDepthUsd: number; competitors: CompetingPool[] }
+  | { ok: true; refLiquidityUsd: number; vol24hUsd: number; refFeePct: number; competingDepthUsd: number; competitors: CompetingPool[]; pinned?: boolean }
   | { ok: false; reason: string };
+
+/** Whether a ticker is pinned (PAIR_STOCK_PINNED_TICKERS). */
+export const isPinnedTicker = (env: Pick<PairStockEnv, "pinnedTickers">, ticker: string): boolean => env.pinnedTickers.includes(ticker.toUpperCase());
 
 /** PURE. Whether the lane makes a STOCKx/SOL pool for this ticker, or the number that stopped it. Other pools never refuse. */
 export function pairStockVerdict(c: PairStockCandidate, env: PairStockEnv): PairStockVerdict {
   if (!env.on) return { ok: false, reason: "the stock pair lane is off (PAIR_STOCK_LANE is not true)" };
+  // A pinned ticker is the agent's pair: every floor is waived, only a price to open at is required.
+  if (isPinnedTicker(env, c.ticker)) {
+    const px = c.priceUsd;
+    if (px === null || !(px > 0)) return { ok: false, reason: `pinned ${c.ticker} has no price to open a pool at` };
+    return { ok: true, refLiquidityUsd: c.refLiquidityUsd ?? 0, vol24hUsd: c.vol24hUsd ?? 0, refFeePct: c.refFeePct, competingDepthUsd: c.competingDepthUsd, competitors: c.competitors, pinned: true };
+  }
   if (env.tickers && !env.tickers.includes(c.ticker)) return { ok: false, reason: `${c.ticker} is not in PAIR_STOCK_TICKERS (${env.tickers.join(", ")})` };
 
   const liq = c.refLiquidityUsd;
@@ -469,7 +487,12 @@ export function pairStockSeats(cands: readonly PairStockCandidate[], o: PairStoc
   let free = Math.max(0, o.freeSeats);
   const takenTickers = new Set<string>();
   const worthOf = (c: PairStockCandidate): number => (o.worth ? o.worth(c) : (c.vol24hUsd ?? 0));
-  const ordered = [...cands].sort((a, b) => worthOf(b) - worthOf(a) || (b.vol24hUsd ?? 0) - (a.vol24hUsd ?? 0) || (b.refLiquidityUsd ?? 0) - (a.refLiquidityUsd ?? 0));
+  const pinnedRank = (c: PairStockCandidate): number => {
+    const i = o.env.pinnedTickers.indexOf(c.ticker);
+    return i < 0 ? Number.POSITIVE_INFINITY : i;
+  };
+  // pinned tickers first, in the order the operator listed them; then the model's best
+  const ordered = [...cands].sort((a, b) => pinnedRank(a) - pinnedRank(b) || worthOf(b) - worthOf(a) || (b.vol24hUsd ?? 0) - (a.vol24hUsd ?? 0) || (b.refLiquidityUsd ?? 0) - (a.refLiquidityUsd ?? 0));
   for (const c of ordered) {
     if (pools >= o.env.maxPools || free <= 0) break;
     if (!c.mint || takenTickers.has(c.ticker)) continue;
@@ -481,7 +504,8 @@ export function pairStockSeats(cands: readonly PairStockCandidate[], o: PairStoc
     if (!o.quoteOk("SOL")) continue;
     if (o.denied?.(c)) continue;
     const worth = o.worth ? worthOf(c) : null;
-    if (o.worth && !(worth! > 0)) continue;
+    // a pinned ticker is seated whatever the model says it earns
+    if (o.worth && !(worth! > 0) && !verdict.pinned) continue;
     out.push({ candidate: c, verdict, address, worthUsdPerDay: worth });
     takenTickers.add(c.ticker);
     pools++;

@@ -63,6 +63,8 @@ import { appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool }
 import { loadScreen, runScreen, tradableVenue } from "./screener";
 import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
+import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
+import { jupiterEnv as swapEnv, meteoraOnlyRoutes } from "./tools/jupiter";
 import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairHouseSeats, pairHouseSeatSol, pairLaunchEnv, pairMintOf, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict } from "./screener/pair";
 import { createPairVenue, hotRowForPool, isPairPool as isPairVenuePool } from "./venues/pair";
 import { pairStockCandidateFor, pairStockCandidatesOf, pairStockEnv, pairStockReserve, pairStockSeats, pairStockSeatSol, chooseStockFeeBps, stockPairModel, type PairStockCandidate } from "./screener/pairStock";
@@ -123,6 +125,9 @@ interface App {
   mintAttributed: Set<string>;
   /** the pair lane's venue: our own pools for pump.fun tokens, keyed pair-<mint> (src/venues/pair.ts) */
   pairVenue: ReturnType<typeof createPairVenue>;
+  /** the Meteora pools of the stocks the agent is paired with (PAIR_STOCK_PINNED_TICKERS), and when they were read */
+  pinned: PinnedStocks | null;
+  pinnedAt: number;
 }
 
 interface Observed {
@@ -327,11 +332,39 @@ function perpMidForTicker(app: App, ticker: string): number | null {
 }
 
 /** The basis row a pool reads: its own (a board pool), else its ticker's (a stock pair of ours is never on the board). */
-function basisRowFor(address: string, snapshot?: PoolSnapshot | null): BasisRow | null {
+function basisRowFor(address: string, snapshot?: PoolSnapshot | null, pinnedTicker?: string | null): BasisRow | null {
   const own = basisForPool(address);
   if (own) return own;
-  const ticker = snapshot?.pair?.stock?.ticker;
+  const ticker = snapshot?.pair?.stock?.ticker ?? pinnedTicker ?? null;
   return ticker ? basisForTicker(ticker) : null;
+}
+
+/** Discover the pinned stocks' Meteora pools: on start and every PINNED_REFRESH_MS; a failed refresh keeps the last answer. */
+async function refreshPinned(app: App): Promise<void> {
+  const tickers = pinnedTickers();
+  if (!tickers.length) return;
+  if (app.pinned && Date.now() - app.pinnedAt < PINNED_REFRESH_MS) return;
+  try {
+    app.pinned = await refreshPinnedStocks({
+      tickers,
+      mintOf: (ticker) => (app.screen?.pools ?? []).find((p) => p.stock?.ticker === ticker && p.stock.issuer === "xstocks")?.baseMint ?? null,
+      readAccounts: async (addresses) => (await app.connection.getMultipleAccountsInfo(addresses.map((a) => new PublicKey(a)))).map((a) => (a ? a.data : null)),
+    });
+    app.pinnedAt = Date.now();
+    for (const t of app.pinned.tickers) {
+      console.log(`[cycle ${app.cycle}] pinned ${t.ticker}: ${t.pools.length ? t.pools.map((p) => `${p.symbol}/${p.quoteSymbol} ${p.address.slice(0, 6)} $${Math.round(p.liquidityUsd ?? 0).toLocaleString("en-US")} deep, $${Math.round(p.volume24hUsd ?? 0).toLocaleString("en-US")}/24h${p.feeToTvl24hPct !== null ? `, ${p.feeToTvl24hPct.toFixed(2)}%/day` : ""}`).join(" | ") : (t.note ?? "no Meteora pools")}`);
+    }
+  } catch (err) {
+    console.error(`[cycle ${app.cycle}] pinned stocks: discovery failed, keeping the last answer: ${(err as Error).message}`);
+  }
+}
+
+/** The pinned ticker a pool belongs to: a pinned Meteora pool, or our own stock pair for a pinned ticker. */
+function pinnedTickerOf(app: App, address: string, snapshot?: PoolSnapshot | null): string | null {
+  const pool = pinnedPoolAt(app.pinned, address);
+  if (pool) return pool.ticker;
+  const t = snapshot?.pair?.stock?.ticker;
+  return t && pinnedTickers().includes(t) ? t : null;
 }
 
 /** The seat the stock model sizes for, in SOL: the lane's cap or the max band, whichever binds first. */
@@ -393,6 +426,26 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
           `seat ${pairHouseSeatSol(riskLimits.maxTotalExposureSol, penv).toFixed(4)} SOL, ${penv.binStep / 100}%/bin; the ordinary ${riskLimits.stopLossPct}% stop, no maximum hold, no fade exit`,
       );
     }
+  }
+
+  // THE STOCKS THE AGENT IS PAIRED WITH (PAIR_STOCK_PINNED_TICKERS), Meteora only: the ticker's existing
+  // Meteora DLMM pool the wallet can fund, best by fee/TVL, supplemented with our liquidity. A ticker
+  // Meteora has no such pool for falls through to the stock pair lane below, which makes our own.
+  for (const ticker of pinnedTickers()) {
+    if (set.size >= config.maxActivePools) break;
+    const entry = app.pinned?.tickers.find((t) => t.ticker === ticker);
+    const pool = choosePinnedPool(entry, (q) => quoteOk(q));
+    if (!pool) {
+      console.log(`[cycle ${app.cycle}] pinned ${ticker}: ${entry?.note ?? (entry ? "no Meteora pool the wallet can fund" : "not discovered yet")}; the stock pair lane makes our own ${ticker}x/SOL pool`);
+      continue;
+    }
+    if (watchlistDenial({ address: pool.address, baseSymbol: pool.symbol, baseMint: pool.mint, name: `${pool.symbol} / ${pool.quoteSymbol}` }, watch)) continue;
+    if (!take(pool.address, pool.mint)) continue;
+    console.log(
+      `[cycle ${app.cycle}] pinned ${ticker}: supplementing Meteora DLMM ${pool.symbol}/${pool.quoteSymbol} (${pool.address.slice(0, 6)}), ` +
+        `${pool.binStep !== null ? `${pool.binStep / 100}%/bin, ` : ""}${pool.baseFeePct !== null ? `${pool.baseFeePct}% fee, ` : ""}$${Math.round(pool.liquidityUsd ?? 0).toLocaleString("en-US")} deep, $${Math.round(pool.volume24hUsd ?? 0).toLocaleString("en-US")} in 24h` +
+        `${pool.feeToTvl24hPct !== null ? ` (${pool.feeToTvl24hPct.toFixed(2)}% of its depth in fees a day)` : ""}; worked as a straddle, floors waived by the pin`,
+    );
   }
 
   // The STOCK PAIR lane, FIRST after held and pinned pools (it is the focus): for each tokenized stock
@@ -631,6 +684,8 @@ function pairContext(app: App, address: string, snapshot: PoolSnapshot, s: Scree
       recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
       generatedAt: s.generatedAt,
       stock: { ticker: info.stock.ticker, issuer: info.stock.issuer },
+      // our own pool for a stock the agent is paired with: the pin waives the floors
+      pinned: pinnedTickers().includes(info.stock.ticker) ? { ok: true, ticker: info.stock.ticker } : null,
       alternatives: [],
       hot: hotContext(address),
     };
@@ -666,6 +721,29 @@ function screenContext(app: App, address: string, state?: RiskState, snapshot?: 
   if (snapshot?.pair) return pairContext(app, address, snapshot, s, state);
   const launch = launchOf(hotRowOf(address));
   const p = s.pools.find((x) => x.address === address);
+  const pin = pinnedPoolAt(app.pinned, address);
+  if (!p && pin) {
+    // a Meteora pool of a stock the agent is paired with, too thin for the board: its own numbers, the pin
+    return {
+      rank: 0,
+      rankedPools: s.rankedPools,
+      score: 0,
+      feeToTvl24hPct: pin.feeToTvl24hPct,
+      volume24hUsd: pin.volume24hUsd,
+      tvlUsd: pin.liquidityUsd,
+      ageHours: null,
+      priceChange24hPct: null,
+      flags: [],
+      watchlisted: false,
+      launch: null,
+      recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
+      generatedAt: app.pinned!.generatedAt,
+      stock: { ticker: pin.ticker, issuer: "xstocks" },
+      pinned: { ok: true, ticker: pin.ticker },
+      alternatives: [],
+      hot: hotContext(address),
+    };
+  }
   if (!p) return launch ? launchContext(app, address, hotRowOf(address)!, launch, s, state) : null;
   return {
     rank: p.rank,
@@ -684,6 +762,7 @@ function screenContext(app: App, address: string, state?: RiskState, snapshot?: 
     recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()) ?? p.binRangePct ?? null,
     generatedAt: s.generatedAt,
     stock: p.stock ? { ticker: p.stock.ticker, issuer: p.stock.issuer } : null,
+    pinned: pin ? { ok: true, ticker: pin.ticker } : null,
     alternatives: s.pools
       .filter((x) => x.address !== address && tradableVenue(x) && (x.quoteSymbol === "SOL" || (x.quoteSymbol === "USDC" && solPriceOf(app) !== null)))
       .slice(0, 5)
@@ -721,6 +800,8 @@ function previousPrice(state: RiskState, pool: string): number | null {
 function paperFeeSource(app: App, address: string): { fees24hUsd: number | null; volume24hUsd: number | null } | null {
   const row = app.screen?.pools.find((p) => p.address === address);
   if (row) return { fees24hUsd: row.fees24hUsd, volume24hUsd: row.volume24hUsd };
+  const pinned = pinnedPoolAt(app.pinned, address);
+  if (pinned) return { fees24hUsd: pinned.fees24hUsd, volume24hUsd: pinned.volume24hUsd };
   const hot = loadHot()?.rows.find((r) => r.address === address);
   if (hot) return { fees24hUsd: null, volume24hUsd: hot.vol24hUsd };
   return null;
@@ -850,11 +931,14 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // Stock pools carry a basis row (src/basis): the US session clock and the gap to Backpack's perp.
   // A stock pair of ours reads its ticker's row, and its basis is OUR pool's price against the perp
   // (near zero when the synthetic price is the perp itself; real when the pool exists on chain).
-  const basisRow = basisRowFor(o.address, snapshot);
+  const pinnedTicker = pinnedTickerOf(app, o.address, snapshot);
+  const basisRow = basisRowFor(o.address, snapshot, pinnedTicker);
   const clock = sessionClock();
   const perpMidNow = basisRow ? ((basisRow.perpSymbol ? app.perpMarks.get(basisRow.perpSymbol)?.mid : undefined) ?? basisRow.perpMid ?? null) : null;
   const ownPriceUsd = quoteIsSol ? snapshot.tokenPriceInSol * (solPriceOf(app) ?? 0) : quoteOf(snapshot).tokenPriceInQuote;
-  const basisPctNow = isPair ? (perpMidNow && perpMidNow > 0 && ownPriceUsd > 0 ? (ownPriceUsd / perpMidNow - 1) * 100 : null) : (basisRow?.basisPct ?? null);
+  // our own pool's price against the perp for a pair of ours or a pinned Meteora pool (their basis row belongs to another pool)
+  const ownBasis = isPair || (!!pinnedTicker && basisRow?.pool !== o.address);
+  const basisPctNow = ownBasis ? (perpMidNow && perpMidNow > 0 && ownPriceUsd > 0 ? (ownPriceUsd / perpMidNow - 1) * 100 : null) : (basisRow?.basisPct ?? null);
   const basisCheck = basisRow ? basisVerdict(basisPctNow, clock) : null;
   const basisObs: EngineObservation["basis"] = basisRow
     ? {
@@ -988,7 +1072,8 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     rawPositions: raw,
     snapshot,
     positions,
-    paper: paper ? { book: paper, slippagePct: app.paperEnv.slippagePct, now } : undefined,
+    // on Meteora-only routes (SWAP_DEXES) a paper swap pays at least the pool's own base fee, not a deep route's
+    paper: paper ? { book: paper, slippagePct: app.paperEnv.slippagePct, now, ...(meteoraOnlyRoutes(swapEnv().dexes) ? { swapFeePct: Math.max(swapEnv().feePct, snapshot.baseFeePct) } : {}) } : undefined,
     walletToken: token.ui,
   });
   if (paper) savePaperBook(paper);
@@ -1189,6 +1274,8 @@ async function refreshPerpMarks(app: App, pools: string[]): Promise<void> {
   const symbols = new Set<string>();
   for (const address of pools) {
     let sym = basisForPool(address)?.perpSymbol;
+    const pinnedPool = pinnedPoolAt(app.pinned, address);
+    if (!sym && pinnedPool) sym = basisForTicker(pinnedPool.ticker)?.perpSymbol ?? undefined;
     if (!sym && isStockPairKey(app, address)) {
       const mint = pairMintOf(address);
       const c = mint ? pairStockCandidateFor(stockCandidatesOf(app), mint) : null;
@@ -1241,6 +1328,7 @@ async function runIteration(app: App): Promise<void> {
     }
   }
   const funds = fundableQuotes(app, solAtStart, usdcAtStart);
+  await refreshPinned(app);
   const pools = pickPools(app, withPositions, funds);
   if (pools.length === 0) {
     console.log(`[cycle ${app.cycle}] nothing to work: no pinned pools, no bands held, no screen picks`);
@@ -1392,6 +1480,8 @@ async function main(): Promise<void> {
     hedgedThisCycle: new Map(),
     mintAttributed: new Set(),
     pairVenue,
+    pinned: null,
+    pinnedAt: 0,
   };
   appRef = app;
   if (app.screen) app.screenAt = new Date(app.screen.generatedAt).getTime();

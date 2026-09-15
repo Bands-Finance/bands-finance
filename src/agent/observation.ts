@@ -31,6 +31,13 @@ export interface ScreenContext {
   generatedAt: string;
   /** the screen's stock tag when the base is a tokenized stock (the stock book's pools) */
   stock?: { ticker: string; issuer: string } | null;
+  /**
+   * PINNED: the agent is paired with this stock (PAIR_STOCK_PINNED_TICKERS; the Clawrena entry is paired
+   * with NVDA). The pool is a Meteora pool for the ticker, either one that already trades (the desk
+   * supplements its liquidity) or our own. The volume, score, yield and payback floors and the thin flag
+   * are waived; the guards, the stop, the basis check and the session rules are not.
+   */
+  pinned?: { ok: true; ticker: string } | null;
   alternatives: { name: string; score: number; feeToTvl24hPct: number | null; tvlUsd: number | null }[];
   /** the fast watch's surges (src/hot): what printed fees in the last hour, across every venue */
   hot?: {

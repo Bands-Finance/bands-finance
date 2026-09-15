@@ -15,7 +15,10 @@
  *
  * Env: CLAWPUMP_AGENT_ID (the Mr Bands agent on ClawPump), CLAWPUMP_API_KEY (never in git or chat),
  * CLAWPUMP_API_URL (default https://clawpump.tech). The token's own fields: TOKEN_NAME, TOKEN_SYMBOL,
- * TOKEN_DESCRIPTION (20+ characters), TOKEN_IMAGE_URL (https), TOKEN_DEV_BUY_SOL (default 0).
+ * TOKEN_DESCRIPTION (20+ characters), TOKEN_IMAGE_URL (https), TOKEN_DEV_BUY_SOL (default 0),
+ * TOKEN_PUMP_PAIR (the pump.fun creation pair: SOL by default; the Clawrena entry is paired with NVDA,
+ * so "NVDAx", "NVDA" or the mint, resolved against ClawPump's live catalogue) and TOKEN_CREATOR_FEE_BPS
+ * (100-300, custom pairs only; pump.fun does not allow it on the SOL pair).
  */
 
 export const CLAWPUMP_URL_DEFAULT = "https://clawpump.tech";
@@ -44,6 +47,10 @@ export interface TokenSpec {
   description: string;
   imageUrl: string;
   devBuySol: number;
+  /** the pump.fun creation pair as asked for: "SOL" (default), a symbol ("NVDAx", "NVDA") or a mint */
+  pumpPair: string;
+  /** creator fee on a custom pair, bps (100-300); null = the catalogue's default */
+  creatorFeeBps: number | null;
 }
 
 export function tokenSpec(env: NodeJS.ProcessEnv = process.env): TokenSpec {
@@ -52,14 +59,42 @@ export function tokenSpec(env: NodeJS.ProcessEnv = process.env): TokenSpec {
   const description = (env.TOKEN_DESCRIPTION ?? "").trim();
   const imageUrl = (env.TOKEN_IMAGE_URL ?? "").trim();
   const devBuySol = Number((env.TOKEN_DEV_BUY_SOL ?? "0").trim() || "0");
+  const pumpPair = (env.TOKEN_PUMP_PAIR ?? "").trim() || "SOL";
+  const feeRaw = (env.TOKEN_CREATOR_FEE_BPS ?? "").trim();
+  const creatorFeeBps = feeRaw === "" ? null : Number(feeRaw);
   const faults: string[] = [];
+  if (creatorFeeBps !== null && !(Number.isInteger(creatorFeeBps) && creatorFeeBps >= 100 && creatorFeeBps <= 300)) faults.push(`TOKEN_CREATOR_FEE_BPS "${feeRaw}" must be a whole number from 100 to 300`);
+  if (creatorFeeBps !== null && isSolPair(pumpPair)) faults.push("TOKEN_CREATOR_FEE_BPS cannot be set on the SOL pair (pump.fun does not allow it)");
   if (!name) faults.push("TOKEN_NAME is empty");
   if (!/^[A-Z0-9]{1,10}$/.test(symbol)) faults.push(`TOKEN_SYMBOL "${symbol}" must be 1-10 letters or digits`);
   if (description.length < 20) faults.push(`TOKEN_DESCRIPTION must be at least 20 characters (${description.length})`);
   if (!/^https:\/\/\S+$/.test(imageUrl)) faults.push("TOKEN_IMAGE_URL must be an https URL");
   if (!Number.isFinite(devBuySol) || devBuySol < 0) faults.push(`TOKEN_DEV_BUY_SOL "${env.TOKEN_DEV_BUY_SOL}" must be a non-negative number`);
   if (faults.length) throw new Error(`token spec: ${faults.join("; ")}`);
-  return { name, symbol, description, imageUrl, devBuySol };
+  return { name, symbol, description, imageUrl, devBuySol, pumpPair, creatorFeeBps };
+}
+
+/** "SOL", "wSOL" or the wrapped SOL mint: the standard pump.fun pair. */
+export const isSolPair = (want: string): boolean => {
+  const w = want.trim();
+  return w === SOL_MINT || ["SOL", "WSOL"].includes(w.toUpperCase());
+};
+
+/**
+ * PURE. The catalogue entry the token will be paired with, or a refusal that lists what IS offered.
+ * Matches the mint exactly, else the symbol case-insensitively, else an xStock's ticker ("NVDA" finds
+ * "NVDAx"). The SOL pair needs no entry.
+ */
+export function resolvePumpPair(assets: readonly PumpPair[], want: string): { ok: true; asset: PumpPair | null } | { ok: false; reason: string } {
+  if (isSolPair(want)) return { ok: true, asset: null };
+  const w = want.trim();
+  const byMint = assets.find((a) => a.mint === w);
+  if (byMint) return { ok: true, asset: byMint };
+  const up = w.toUpperCase();
+  const bySymbol = assets.find((a) => a.symbol.toUpperCase() === up) ?? assets.find((a) => /^[A-Za-z.]{1,6}x$/.test(a.symbol) && a.symbol.slice(0, -1).toUpperCase() === up.replace(/X$/, ""));
+  if (bySymbol) return { ok: true, asset: bySymbol };
+  const offered = assets.map((a) => a.symbol).filter(Boolean).join(", ") || "none";
+  return { ok: false, reason: `"${w}" is not a pump.fun creation pair on ClawPump today (offered: ${offered})` };
 }
 
 export interface Earnings {
