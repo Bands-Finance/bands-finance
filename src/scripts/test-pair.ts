@@ -339,6 +339,18 @@ async function main(): Promise<void> {
     near(d.net, b.gross / 10, 1e-9, "nine times our depth: a tenth");
     assert.equal(pair.routedShare(model({ competingConcentratedDepthUsd: 31_500 })), d.net);
   });
+  await test("pairSeats with `worth`: the model's best candidate is seated first, and one the model routes nothing to is skipped rather than given the only seat", () => {
+    const mk = (symbol: string, vol1hUsd: number): PairCandidate => ({
+      address: `ref-${symbol}`, name: `${symbol} / SOL`, venue: "pumpswap", baseMint: `${symbol}mint`, baseSymbol: symbol, quoteSymbol: "SOL", origin: "pump.fun",
+      ageHours: 4, liquidityUsd: 300_000, vol24hUsd: 50_000_000, vol1hUsd, sellShare1h: 0.5, priceChange1hPct: 3, flags: [], priceNative: 0.001, heat: 50,
+    });
+    const rows = [mk("LOUD", 16_000_000), mk("QUIET", 13_000_000)];
+    const base = { env: env(), freeSeats: 1, quoteOk: () => true };
+    assert.deepEqual(pair.pairSeats(rows, base).map((s) => s.row.baseSymbol), ["LOUD"], "without a model, the last hour's volume orders");
+    const worth = (r: PairCandidate) => (r.baseSymbol === "QUIET" ? 50_000 : 0);
+    assert.deepEqual(pair.pairSeats(rows, { ...base, worth }).map((s) => s.row.baseSymbol), ["QUIET"], "the model's pick takes the seat; the one it routes nothing to is skipped");
+    assert.deepEqual(pair.pairSeats(rows, { ...base, worth: () => 0 }), [], "nothing worth seating, nothing seated");
+  });
   await test("chooseFeeBps: a deep reference next to a small seat wants PumpSwap's own fee, a thin one lets a bigger seat charge more; a fixed PAIR_FEE_BPS is honoured", () => {
     assert.deepEqual(pair.feeMenu(undefined), [25, 50, 100]);
     assert.deepEqual(pair.feeMenu(" 100, 25 ,25, 0, 2000, x "), [25, 100]);

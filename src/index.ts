@@ -54,7 +54,7 @@ import { appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool }
 import { loadScreen, runScreen, tradableVenue } from "./screener";
 import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
-import { competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairLaunchEnv, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict } from "./screener/pair";
+import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairLaunchEnv, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict } from "./screener/pair";
 import { createPairVenue, hotRowForPool } from "./venues/pair";
 import { loadHotFileCached } from "./hot/store";
 import type { ScreenResult } from "./screener/types";
@@ -387,6 +387,16 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
       hasPool: (address) => set.has(address),
       hasToken: (mint) => takenTokens.has(mint),
       competition: (mint) => competitionFor(mint, [...rows, ...screenRows], pairPoolAddress(mint)),
+      // best first by the routing model at this seat, with the fee it would pick; a token the model
+      // routes nothing to does not take the lane's only seat
+      worth: (row) => {
+        const px = solPriceOf(app);
+        const seatUsd = px ? Math.min(pairSeatSol(riskLimits.maxTotalExposureSol, penv), riskLimits.maxPositionSol) * px : 0;
+        if (!(seatUsd > 0)) return row.vol1hUsd ?? 0;
+        const ref = { liquidityUsd: row.liquidityUsd, vol24hUsd: row.vol24hUsd, vol1hUsd: row.vol1hUsd };
+        const comp = competitionFor(row.baseMint, [...rows, ...screenRows], pairPoolAddress(row.baseMint));
+        return pairModel(ref, { ...penv, feeBps: chooseFeeBps(ref, penv, seatUsd) }, seatUsd, comp?.depthUsd ?? 0).feesPerDayUsd;
+      },
     });
     if (seats.length === 0 && !quoteOk(penv.quote)) {
       const clears = pairCandidatesOf(rows).filter((r) => r.baseMint && pairVerdict(r, penv, competitionFor(r.baseMint, [...rows, ...screenRows], pairPoolAddress(r.baseMint))).ok);

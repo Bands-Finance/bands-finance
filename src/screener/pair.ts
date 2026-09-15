@@ -498,6 +498,12 @@ export interface PairSeatOptions {
   hasToken?: (baseMint: string) => boolean;
   /** the competing concentrated pools for a mint, for the verdict's model inputs */
   competition?: (mint: string) => Competition | null;
+  /**
+   * What a seat in this token is worth by the routing model (fees per day, USD): candidates are
+   * taken best first, and one the model routes nothing to is skipped rather than given the lane's
+   * only seat for the policy to refuse. Absent = order by the last hour's volume.
+   */
+  worth?: (row: PairCandidate) => number;
 }
 
 export interface PairSeat {
@@ -519,10 +525,12 @@ export function pairSeats(rows: readonly PairCandidate[], o: PairSeatOptions): P
   let pools = Math.max(0, o.poolsTaken ?? 0);
   let free = Math.max(0, o.freeSeats);
   const takenTokens = new Set<string>();
-  const ordered = [...rows].sort((a, b) => (b.vol1hUsd ?? 0) - (a.vol1hUsd ?? 0) || (b.vol24hUsd ?? 0) - (a.vol24hUsd ?? 0) || (b.heat ?? 0) - (a.heat ?? 0));
+  const worthOf = (row: PairCandidate): number => (o.worth ? o.worth(row) : (row.vol1hUsd ?? 0));
+  const ordered = [...rows].sort((a, b) => worthOf(b) - worthOf(a) || (b.vol1hUsd ?? 0) - (a.vol1hUsd ?? 0) || (b.vol24hUsd ?? 0) - (a.vol24hUsd ?? 0) || (b.heat ?? 0) - (a.heat ?? 0));
   for (const row of ordered) {
     if (pools >= o.env.maxPools || free <= 0) break;
     if (!row.baseMint) continue;
+    if (o.worth && !(worthOf(row) > 0)) continue;
     const address = pairPoolAddress(row.baseMint);
     if (o.hasPool?.(address) || o.hasPool?.(row.address)) continue;
     if (takenTokens.has(row.baseMint) || o.hasToken?.(row.baseMint)) continue;
