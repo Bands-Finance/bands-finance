@@ -398,7 +398,8 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
     const row = ref.row;
     const seatUsd = solPriceUsd && solPriceUsd > 0 ? deps.seatSol() * solPriceUsd : 0;
     const competition = competitionFor(spec.mint, [...(h?.rows ?? []), ...deps.screenRows()], spec.address);
-    const model = pairModel({ liquidityUsd: row?.liquidityUsd ?? null, vol24hUsd: row?.vol24hUsd ?? null, vol1hUsd: row?.vol1hUsd ?? null }, e, seatUsd, competition.depthUsd);
+    // the model at the pool's OWN fee and bin step (the spec chose them), not the env's default
+    const model = pairModel({ liquidityUsd: row?.liquidityUsd ?? null, vol24hUsd: row?.vol24hUsd ?? null, vol1hUsd: row?.vol1hUsd ?? null }, { ...e, feeBps: spec.feeBps, binStep: spec.binStep }, seatUsd, competition.depthUsd);
     const isThere = exists(pool);
     const pair: PairSnapshotInfo = {
       address: spec.address,

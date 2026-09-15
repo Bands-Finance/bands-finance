@@ -351,6 +351,28 @@ async function main(): Promise<void> {
     assert.deepEqual(pair.pairSeats(rows, { ...base, worth }).map((s) => s.row.baseSymbol), ["QUIET"], "the model's pick takes the seat; the one it routes nothing to is skipped");
     assert.deepEqual(pair.pairSeats(rows, { ...base, worth: () => 0 }), [], "nothing worth seating, nothing seated");
   });
+  await test("the synthetic snapshot models at the pool's own fee: a pool the lane priced at 25 bps is not judged at the env's 50", async () => {
+    const REF = { address: NIKE_POOL, name: "NIKE / SOL", venue: "pumpswap", baseMint: NIKE, baseSymbol: "NIKE", quoteMint: SOL, quoteSymbol: "SOL", origin: "pump.fun",
+      ageHours: 4.7, liquidityUsd: 304_802, vol24hUsd: 60_660_376, vol1hUsd: 13_161_294, priceNative: 0.000000356, priceUsd: 0.0000364711, sellShare1h: 0.5, priceChange1hPct: 3, flags: [], heat: 60 };
+    const venue = await import("../venues/pair.js");
+    const pv = venue.createPairVenue({
+      env: () => env(), // PAIR_FEE_BPS unset: the lane chooses
+      hot: () => ({ generatedAt: new Date().toISOString(), rows: [REF] }) as never,
+      paper: () => null,
+      created: () => ({}),
+      seatSol: () => 35,
+      solPriceUsd: () => 102.5,
+      screenRows: () => [],
+      accountExists: async () => false,
+      mintDecimals: async () => 6,
+      ourBins: () => null,
+    });
+    const pool = await pv.loadPool({} as never, "pair-" + NIKE);
+    assert.equal((pool as { pair: { feeBps: number } }).pair.feeBps, 25, "the lane chose PumpSwap's fee for this seat");
+    const s = await pv.snapshot(pool, 10, { solPriceUsd: 102.5 });
+    assert.equal(s.baseFeePct, 0.25);
+    assert.ok(s.pair!.routedShare > 0.3, `the model at the pool's own fee routes a third of the flow, got ${s.pair!.routedShare}`);
+  });
   await test("chooseFeeBps: a deep reference next to a small seat wants PumpSwap's own fee, a thin one lets a bigger seat charge more; a fixed PAIR_FEE_BPS is honoured", () => {
     assert.deepEqual(pair.feeMenu(undefined), [25, 50, 100]);
     assert.deepEqual(pair.feeMenu(" 100, 25 ,25, 0, 2000, x "), [25, 100]);
