@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { isDemoJournal, isEmbedded, loadJournal, loadLimits, loadScreen } from "./api";
 import { groupAgents } from "./derive";
-import { bookOf, recordOf, statusOf } from "./model";
+import { bookOf, madePairsOf, recordOf, statusOf } from "./model";
 import { useScrollFx } from "./hooks/useScrollFx";
 import type { JournalEntry, RiskLimits, ScreenResult } from "./types";
 import { Header } from "./components/Header";
@@ -10,6 +10,7 @@ import { ModeBanner } from "./components/ModeBanner";
 import { Desk } from "./components/Desk";
 import { Record } from "./components/Record";
 import { Book } from "./components/Book";
+import { MadePairs } from "./components/MadePairs";
 import { Guards } from "./components/Guards";
 import { Learn } from "./components/Learn";
 import { TryIt } from "./components/TryIt";
@@ -108,6 +109,7 @@ export default function App() {
   const status = useMemo(() => statusOf(agentEntries, now, demo), [agentEntries, now, demo]);
   const record = useMemo(() => recordOf(agentEntries), [agentEntries]);
   const book = useMemo(() => bookOf(agentEntries), [agentEntries]);
+  const madePairs = useMemo(() => madePairsOf(agentEntries), [agentEntries]);
   const agentName = selected?.name ?? "Mr Bands";
   const workingNow = useMemo(() => {
     const seen = new Map<string, boolean>();
@@ -136,6 +138,7 @@ export default function App() {
       <Desk id={id} entries={agentEntries} status={status} limits={limits} screen={screen} agentName={agentName} />
       {record && <Record record={record} solPriceUsd={screen?.solPriceUsd ?? null} status={status} agentName={agentName} />}
       <Book book={book} status={status} agentName={agentName} />
+      {madePairs.length > 0 && <MadePairs pairs={madePairs} status={status} agentName={agentName} />}
       <Guards limits={limits} record={record} />
     </>
   );

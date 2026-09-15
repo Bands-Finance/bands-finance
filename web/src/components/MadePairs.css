@@ -1,0 +1,12 @@
+/* Pools he made: sits on the Book's grammar (livepos) with a compact term list per pool. */
+.madepairs__card { display: flex; flex-direction: column; gap: 0.5rem; }
+.madepairs__row { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+.madepairs__label { font-weight: 600; letter-spacing: 0.01em; }
+.madepairs__terms { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.35rem 0.75rem; margin: 0; }
+.madepairs__terms div { display: flex; flex-direction: column; min-width: 0; }
+.madepairs__terms dt { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.65; }
+.madepairs__terms dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.madepairs__now, .madepairs__headline, .madepairs__addr { margin: 0; font-size: 0.85rem; opacity: 0.85; }
+.madepairs__ago { opacity: 0.6; margin-left: 0.35rem; }
+.madepairs__addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; opacity: 0.6; }
+@media (max-width: 480px) { .madepairs__terms { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

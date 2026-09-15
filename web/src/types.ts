@@ -126,6 +126,29 @@ export interface JournalEntry {
   emergency: boolean;
   execution: Execution;
   headline: string;
+  /** the engine's view for this cycle; only the parts the site renders are typed here */
+  engine?: {
+    /** a pool the desk MADE (the pair lane): our own Meteora DLMM pool for a token, keyed pair-<mint> */
+    pair?: {
+      refPool: string | null;
+      refVenue: string | null;
+      refLiquidityUsd: number | null;
+      /** the routing model's share of the reference pool's flow, after and before the split with competing depth */
+      routedShare: number;
+      routedShareGross: number;
+      competingDepthUsd: number;
+      feeBps: number;
+      binStep: number;
+      /** creation rent that never comes back (0 once the pool exists) */
+      rentSol: number;
+      lbPair: string | null;
+      exists: boolean;
+      ours: boolean;
+      seatCapSol: number;
+      stopPct: number;
+      maxHoldMin: number;
+    };
+  };
   screen?: { rank: number; rankedPools: number; score: number; feeToTvl24hPct: number | null } | null;
 }
 

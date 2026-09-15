@@ -257,6 +257,80 @@ export interface BandCard {
   openTx: string | null;
 }
 
+/** A pool the desk made (the pair lane), as of its newest journal entry. */
+export interface MadePair {
+  poolLabel: string;
+  poolAddress: string;
+  /** the real Meteora pool address, once derived */
+  lbPair: string | null;
+  exists: boolean;
+  ours: boolean;
+  feeBps: number;
+  binStep: number;
+  routedShare: number;
+  routedShareGross: number;
+  competingDepthUsd: number;
+  refVenue: string | null;
+  refLiquidityUsd: number | null;
+  rentSol: number;
+  seatCapSol: number;
+  bands: number;
+  inRange: boolean;
+  activePrice: number;
+  priceLabel: string;
+  headline: string;
+  action: Action;
+  ts: string;
+  /** when the desk first wrote an entry for this pool */
+  since: string;
+  /** successful CLAIM_FEES decisions on this pool over the journal */
+  claims: number;
+  /** fees sitting in its bands, earned and not yet claimed, SOL */
+  feesWaitingSol: number;
+}
+
+/** Every pool the desk made, newest decision first. Empty when the pair lane never seated one. */
+export function madePairsOf(newestFirst: JournalEntry[]): MadePair[] {
+  const latest = new Map<string, JournalEntry>();
+  const since = new Map<string, string>();
+  const claims = new Map<string, number>();
+  for (const e of newestFirst) {
+    if (!e.engine?.pair) continue;
+    if (!latest.has(e.pool.address)) latest.set(e.pool.address, e);
+    since.set(e.pool.address, e.ts);
+    if (e.decision.action === "CLAIM_FEES" && e.execution.ok && e.execution.txs.length > 0) claims.set(e.pool.address, (claims.get(e.pool.address) ?? 0) + 1);
+  }
+  return [...latest.values()].map((e) => {
+    const p = e.engine!.pair!;
+    return {
+      poolLabel: e.pool.label,
+      poolAddress: e.pool.address,
+      lbPair: p.lbPair,
+      exists: p.exists,
+      ours: p.ours,
+      feeBps: p.feeBps,
+      binStep: p.binStep,
+      routedShare: p.routedShare,
+      routedShareGross: p.routedShareGross,
+      competingDepthUsd: p.competingDepthUsd,
+      refVenue: p.refVenue,
+      refLiquidityUsd: p.refLiquidityUsd,
+      rentSol: p.rentSol,
+      seatCapSol: p.seatCapSol,
+      bands: e.positions.length,
+      inRange: e.positions.some((x) => x.inRange),
+      activePrice: e.pool.price,
+      priceLabel: e.pool.priceLabel,
+      headline: e.headline || e.decision.headline,
+      action: e.decision.action,
+      ts: e.ts,
+      since: since.get(e.pool.address) ?? e.ts,
+      claims: claims.get(e.pool.address) ?? 0,
+      feesWaitingSol: e.positions.reduce((t, x) => t + feesInSol(x, e), 0),
+    };
+  });
+}
+
 export interface Book {
   bands: BandCard[];
   asOf: number | null;
