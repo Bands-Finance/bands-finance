@@ -36,7 +36,7 @@
     <key>PAPER_SOL</key><string>100</string>
     <key>PAPER_USDC</key><string>10000</string>
     <key>BOOK</key><string>all</string>
-    <key>MAX_ACTIVE_POOLS</key><string>4</string>
+    <key>MAX_ACTIVE_POOLS</key><string>5</string>
     <key>MAX_POSITION_SOL</key><string>44</string>
     <key>MAX_TOTAL_EXPOSURE_SOL</key><string>175</string>
     <key>GAS_RESERVE_SOL</key><string>1</string>

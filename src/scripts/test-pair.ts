@@ -139,7 +139,7 @@ async function main(): Promise<void> {
   await test("pairEnv: the documented defaults; PAIR_LANE closes the lane; quote and fee mode are validated", () => {
     assert.deepEqual(pair.pairEnv({}), {
       on: true, minAgeMin: 30, maxAgeHours: 48, minRefLiquidityUsd: 30_000, minVolume24hUsd: 1_000_000, minVolume1hUsd: 100_000, minTurnover: 5,
-      maxPools: 1, quote: "SOL", binStep: 100, feeBps: 50, collectFeeMode: "quote", seatPct: 10, binsEachSide: 2, stopPct: 10, maxHoldMin: 240,
+      maxPools: 1, reserveSeat: true, quote: "SOL", binStep: 100, feeBps: 50, collectFeeMode: "quote", seatPct: 10, binsEachSide: 2, stopPct: 10, maxHoldMin: 240,
       live: false, tradeMinUsd: 50, tradeMaxUsd: 5000, pumpswapFeePct: 0.25,
     });
     for (const v of ["false", "no", "0", "yes"]) assert.equal(pair.pairEnv({ PAIR_LANE: v }).on, false, `PAIR_LANE=${v}`);

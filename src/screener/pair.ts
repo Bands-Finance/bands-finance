@@ -62,6 +62,8 @@ export interface PairEnv {
   minTurnover: number;
   /** PAIR_MAX_POOLS: pools of ours holding a band at once */
   maxPools: number;
+  /** keep one seat of the book for the lane while it holds no pool, so ordinary picks cannot fill the book against it (PAIR_RESERVE_SEAT, default on) */
+  reserveSeat: boolean;
   /** PAIR_QUOTE: the quote our pool is made in (the program allows SOL or USDC) */
   quote: "SOL" | "USDC";
   /** PAIR_BIN_STEP: bin step in bps (100 = 1% per bin) */
@@ -106,6 +108,7 @@ export function pairEnv(env: NodeJS.ProcessEnv = process.env): PairEnv {
     minVolume1hUsd: Math.max(0, num(env.PAIR_MIN_VOLUME_1H_USD, 100_000)),
     minTurnover: Math.max(0, num(env.PAIR_MIN_TURNOVER, 5)),
     maxPools: Math.max(0, Math.floor(num(env.PAIR_MAX_POOLS, 1))),
+    reserveSeat: onByDefault(env.PAIR_RESERVE_SEAT),
     quote: quote === "USDC" ? "USDC" : "SOL",
     binStep: Math.min(400, Math.max(1, Math.floor(num(env.PAIR_BIN_STEP, 100)))),
     feeBps: Math.max(1, Math.floor(num(env.PAIR_FEE_BPS, 50))),

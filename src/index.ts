@@ -296,6 +296,14 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     if (baseMint) takenTokens.add(baseMint);
     return true;
   };
+  // The pair lane keeps one seat of the book for itself while it holds no pool: a pump.fun token
+  // that clears the lane must not find the book full of ordinary picks (there is no rotation yet).
+  // Held and pinned pools are never evicted for it; the reserve only stops new ordinary seats.
+  const penv = pairEnv();
+  const laneBands = loadState().launchBands ?? {};
+  const pairsHeld = new Set(Object.values(laneBands).map((b) => b.pool).filter(isPairAddress));
+  const reserve = penv.on && penv.reserveSeat && pairsHeld.size < penv.maxPools ? 1 : 0;
+  const ordinaryCap = Math.max(set.size, config.maxActivePools - reserve);
   // The operator's list decides what the desk may put money into; the screener only finds it.
   // Pinned pools and pools already holding a band are added above, so a band can always be managed out.
   const watch = loadWatchlist();
@@ -306,13 +314,13 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // The stock book: tokenized stocks first, by fee/TVL, then the rest of the picker.
   if (bookEnv() === "stocks") {
     for (const p of stockBookPools(app.screen?.pools ?? [], usdcOk)) {
-      if (set.size >= config.maxActivePools) break;
+      if (set.size >= ordinaryCap) break;
       if (quoteOk(p.quoteSymbol) && watchlistRefusal(p, watch) === null) take(p.address, p.baseMint);
     }
   }
   // Surges first: what the fast watch found in the last hour, already filtered for liquidity, age and dumping.
   for (const r of hotRows(app)) {
-    if (set.size >= config.maxActivePools) break;
+    if (set.size >= ordinaryCap) break;
     const row = { address: r.address, baseSymbol: r.baseSymbol, baseMint: r.baseMint, name: r.name };
     if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume) take(r.address, r.baseMint);
   }
@@ -331,7 +339,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // pools); this decides the order among those that do.
   const byYield = [...candidates].sort((a, b) => (b.feeToTvl24hPct ?? -1) - (a.feeToTvl24hPct ?? -1) || b.score - a.score);
   for (const p of byYield) {
-    if (set.size >= config.maxActivePools) break;
+    if (set.size >= ordinaryCap) break;
     take(p.address, p.baseMint);
   }
 
@@ -339,13 +347,12 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // admitted by rule rather than by name, so the watchlist's ALLOW mode cannot block it (nobody can
   // list a token that did not exist yesterday) but an explicit DENY still wins.
   const lenv = launchEnv();
-  const laneBands = loadState().launchBands ?? {};
-  if (lenv.on && set.size < config.maxActivePools) {
+  if (lenv.on && set.size < ordinaryCap) {
     const held = laneBands;
     const heldPools = new Set(Object.values(held).map((b) => b.pool).filter((p) => !isPairAddress(p)));
     const seats = launchSeats(launchCandidates(), {
       env: lenv,
-      freeSeats: config.maxActivePools - set.size,
+      freeSeats: ordinaryCap - set.size,
       seatsTaken: heldPools.size,
       tradable: (v) => isTradableVenue(v),
       quoteOk,
@@ -367,12 +374,10 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // The pair lane, LAST of all: a pump.fun token that clears the lane on its PumpSwap reference pool
   // gets a pool of OUR OWN (key pair-<mint>), one at a time, after every other lane has had its chance.
   // Other pools never refuse it; they only feed the routing model as competing depth.
-  const penv = pairEnv();
   if (penv.on && set.size < config.maxActivePools) {
     const hot = loadHotFileCached();
     const rows = hot?.rows ?? [];
     const screenRows = (app.screen?.pools ?? []).map((p) => ({ address: p.address, venue: p.venue, baseMint: p.baseMint, quoteSymbol: p.quoteSymbol, liquidityUsd: p.tvlUsd }));
-    const pairsHeld = new Set(Object.values(laneBands).map((b) => b.pool).filter(isPairAddress));
     const seats = pairSeats(pairCandidatesOf(rows), {
       env: penv,
       freeSeats: config.maxActivePools - set.size,
