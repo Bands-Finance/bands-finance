@@ -283,24 +283,41 @@ export interface MadePair {
   ts: string;
   /** when the desk first wrote an entry for this pool */
   since: string;
+  /** bands opened and closed in this pool over the journal */
+  opens: number;
+  closes: number;
   /** successful CLAIM_FEES decisions on this pool over the journal */
   claims: number;
   /** fees sitting in its bands, earned and not yet claimed, SOL */
   feesWaitingSol: number;
 }
 
-/** Every pool the desk made, newest decision first. Empty when the pair lane never seated one. */
+/**
+ * Every pool the desk MADE, newest decision first. The lane seats many candidates it never makes
+ * (the policy passes on most of them); a pool counts here only once the journal shows it created
+ * (the pair block says it exists or is ours) or a band opened in it.
+ */
 export function madePairsOf(newestFirst: JournalEntry[]): MadePair[] {
   const latest = new Map<string, JournalEntry>();
   const since = new Map<string, string>();
   const claims = new Map<string, number>();
+  const opens = new Map<string, number>();
+  const closes = new Map<string, number>();
+  const made = new Set<string>();
   for (const e of newestFirst) {
     if (!e.engine?.pair) continue;
-    if (!latest.has(e.pool.address)) latest.set(e.pool.address, e);
-    since.set(e.pool.address, e.ts);
-    if (e.decision.action === "CLAIM_FEES" && e.execution.ok && e.execution.txs.length > 0) claims.set(e.pool.address, (claims.get(e.pool.address) ?? 0) + 1);
+    const a = e.pool.address;
+    if (!latest.has(a)) latest.set(a, e);
+    since.set(a, e.ts);
+    if (e.engine.pair.exists || e.engine.pair.ours) made.add(a);
+    if (e.execution.ok && e.execution.opened) {
+      made.add(a);
+      opens.set(a, (opens.get(a) ?? 0) + 1);
+    }
+    if (e.execution.ok && e.execution.closed) closes.set(a, (closes.get(a) ?? 0) + 1);
+    if (e.decision.action === "CLAIM_FEES" && e.execution.ok && e.execution.txs.length > 0) claims.set(a, (claims.get(a) ?? 0) + 1);
   }
-  return [...latest.values()].map((e) => {
+  return [...latest.values()].filter((e) => made.has(e.pool.address)).map((e) => {
     const p = e.engine!.pair!;
     return {
       poolLabel: e.pool.label,
@@ -325,6 +342,8 @@ export function madePairsOf(newestFirst: JournalEntry[]): MadePair[] {
       action: e.decision.action,
       ts: e.ts,
       since: since.get(e.pool.address) ?? e.ts,
+      opens: opens.get(e.pool.address) ?? 0,
+      closes: closes.get(e.pool.address) ?? 0,
       claims: claims.get(e.pool.address) ?? 0,
       feesWaitingSol: e.positions.reduce((t, x) => t + feesInSol(x, e), 0),
     };

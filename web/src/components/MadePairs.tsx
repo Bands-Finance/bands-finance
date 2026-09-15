@@ -42,7 +42,7 @@ export function MadePairs({ pairs, status, agentName }: MadePairsProps) {
             <div className="madepairs__row">
               <span className="madepairs__label">{p.poolLabel}</span>
               <span className={`livepos__badge ${p.bands > 0 ? (p.inRange ? "livepos__badge--up" : "livepos__badge--dim") : "livepos__badge--dim"}`}>
-                {p.bands > 0 ? (p.inRange ? "earning now" : "band waiting") : p.exists ? "pool open, no band" : "not made yet"}
+                {p.bands > 0 ? (p.inRange ? "earning now" : "band waiting") : p.closes > 0 ? "band closed, pool stays" : "pool open, no band"}
               </span>
             </div>
             <dl className="madepairs__terms">
@@ -55,6 +55,7 @@ export function MadePairs({ pairs, status, agentName }: MadePairsProps) {
             </dl>
             <p className="madepairs__now">
               {p.activePrice > 0 ? <>price {p.priceLabel} · </> : null}
+              {p.opens > 0 ? <>{p.opens} band{p.opens === 1 ? "" : "s"} opened{p.closes > 0 ? `, ${p.closes} closed` : ""} · </> : null}
               {p.claims > 0 ? <>{p.claims} fee claim{p.claims === 1 ? "" : "s"} · </> : null}
               {p.feesWaitingSol > 0 ? <>{solFmt(p.feesWaitingSol)} waiting in the band · </> : null}
               since {ago(p.since, now)}
