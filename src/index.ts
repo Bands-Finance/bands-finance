@@ -450,8 +450,8 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const byAddress = new Map((app.screen?.pools ?? []).map((p) => [p.address, p] as const));
   const takenTokens = new Set<string>();
   for (const a of set) {
-    // a made pair's key names its mint: the token's seat is taken by our own pool
-    const t = byAddress.get(a)?.baseMint ?? pairMintOf(a);
+    // a made pair's key names its mint, and a pinned Meteora pool (off the board) carries its own: the token's seat is taken
+    const t = byAddress.get(a)?.baseMint ?? pairMintOf(a) ?? pinnedPoolAt(app.pinned, a)?.mint;
     if (t) takenTokens.add(t);
   }
   const take = (address: string, baseMint: string | undefined): boolean => {
