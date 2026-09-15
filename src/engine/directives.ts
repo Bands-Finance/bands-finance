@@ -13,7 +13,10 @@
  *            our pool; it is marked at the last price and closed, liquidating.
  *   COLLECT  the collect policy wants a claim, and the guards' rate limits would let it through
  *
- * Precedence FLATTEN > STOP > EXPIRE > COLLECT, one directive per pool per cycle. When a directive exists
+ *   ROTATE   a stock the agent is paired with (PAIR_STOCK_PINNED_TICKERS) cannot be seated because the
+ *            book is full: the loop names one band to make room (src/engine/rotation.ts) and it comes
+ *            off here, liquidated, so the pin takes the seat next cycle.
+ * Precedence FLATTEN > STOP > EXPIRE > ROTATE > COLLECT, one directive per pool per cycle. When a directive exists
  * the LLM is not called for that pool this cycle; the guards still run on it (they never block
  * an exit for anything but "this position is not ours"). Pure: no disk, no network.
  */
@@ -27,7 +30,7 @@ import { standingDown, type EngineState } from "./breakers";
 import { collectDirective } from "./collect";
 import { bandStopPct, drawdownPct } from "./exit";
 
-export type DirectiveKind = "FLATTEN" | "STOP" | "EXPIRE" | "COLLECT";
+export type DirectiveKind = "FLATTEN" | "STOP" | "EXPIRE" | "ROTATE" | "COLLECT";
 
 export interface Directive {
   kind: DirectiveKind;
@@ -56,6 +59,8 @@ export interface DirectiveContext {
    * pool has been off the board, and the count at which the band comes off (PAIR_STOCK_REF_GONE_CYCLES).
    */
   pairStock?: { ticker: string; refGoneCycles: number; maxCycles: number };
+  /** the loop named this pool to make room for a pin (src/engine/rotation.ts); absent for every other pool */
+  rotate?: { reason: string } | null;
 }
 
 const close = (positionAddress: string, reasoning: string, headline: string, liquidate = false): Decision => ({
@@ -140,6 +145,21 @@ export function engineDirective(ctx: DirectiveContext): Directive | null {
         target.address,
         `Engine directive EXPIRE: ${reason}. The band comes off and its ${ctx.snapshot.baseToken.symbol} is sold back to the quote.`,
         "Reference gone. Off the table.",
+        true,
+      ),
+    };
+  }
+
+  // ROTATE: the book is full and a pinned stock needs the seat. The largest band in the pool comes off, liquidated.
+  if (ctx.rotate && positions.length > 0) {
+    const target = [...positions].sort((a, b) => b.valueInSol - a.valueInSol)[0];
+    return {
+      kind: "ROTATE",
+      reason: ctx.rotate.reason,
+      decision: close(
+        target.address,
+        `Engine directive ROTATE: ${ctx.rotate.reason}. Closing ${target.address.slice(0, 6)} (${target.valueInSol.toFixed(4)} SOL) and selling its token back to the quote; the seat goes to the pin next cycle${positions.length > 1 ? `, and ${positions.length - 1} more band(s) in this pool follow` : ""}.`,
+        "Making room for the pair. This band comes off.",
         true,
       ),
     };

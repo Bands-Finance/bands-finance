@@ -20,6 +20,9 @@ import {
   withFee,
   type PinnedPool,
 } from "../screener/pinnedStock";
+import { pinRotateMinAgeMin, rotationCandidate, type RotationBand } from "../engine/rotation";
+
+const T0 = Date.parse("2026-09-15T16:00:00Z");
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -166,6 +169,32 @@ async function main(): Promise<void> {
     // Meteora has nothing for the mint: the note says so
     const none = await refreshPinnedStocks({ tickers: ["NVDA"], mintOf: () => NVDAX, fetch: async () => new Response("[]", { status: 200 }), readAccounts: async () => [] });
     assert.match(none.tickers[0].note!, /^Meteora has no DLMM pool for NVDA quoted in SOL or USDC$/);
+  });
+
+  console.log("pinned stocks / rotation for a pin");
+  const band = (over: Partial<RotationBand>): RotationBand => ({ pool: "P", label: "P/SOL", venue: "meteora-dlmm", openedAt: T0 - 5 * 3600_000, valueSol: 20, feesPerDaySol: 0.2, pinned: false, house: false, ...over });
+  const opts = { now: T0, tradable: (v: string) => v === "meteora-dlmm", minAgeMin: 60, forTicker: "NVDA" };
+  await test("rotationCandidate: a band off TRADABLE_VENUES goes first (largest), else the slowest earner; never a pin, the house pool, or a band under the minimum age", () => {
+    const mcd = band({ pool: "MCD", label: "MCDx/USDC", venue: "raydium-clmm", valueSol: 49.8, feesPerDaySol: 3 });
+    const spcx = band({ pool: "SPCX", label: "SPCXx/SOL", valueSol: 22, feesPerDaySol: 0.05 });
+    const stonk = band({ pool: "STONK", label: "STONK/SOL", valueSol: 21, feesPerDaySol: 0 });
+    const pick = rotationCandidate([spcx, stonk, mcd], opts)!;
+    assert.equal(pick.pool, "MCD", "off-venue first, even though it earns the most");
+    assert.equal(pick.reason, "making room for pinned NVDA: MCDx/USDC is on raydium-clmm, off TRADABLE_VENUES, and the pairing is Meteora only");
+    const slow = rotationCandidate([spcx, stonk], opts)!;
+    assert.equal(slow.pool, "STONK", "then the slowest earner");
+    assert.equal(slow.reason, "making room for pinned NVDA: STONK/SOL is the slowest earner in the book (0.00% of its value in fees a day)");
+    assert.equal(rotationCandidate([band({ pinned: true }), band({ pool: "H", house: true })], opts), null, "a pin and the house pool never go");
+    assert.equal(rotationCandidate([band({ openedAt: T0 - 30 * 60_000 })], opts), null, "a band under an hour old has not had its chance");
+    assert.equal(rotationCandidate([band({ openedAt: T0 - 30 * 60_000 })], { ...opts, minAgeMin: 0 })?.pool, "P");
+    const unknown = rotationCandidate([band({ pool: "OLD", openedAt: null, feesPerDaySol: null }), band({ pool: "NEW", openedAt: null, feesPerDaySol: null })], opts)!;
+    assert.equal(unknown.pool, "OLD", "pace unknown everywhere: the first listed (oldest) goes");
+    assert.match(unknown.reason, /its pace is not tracked; the oldest band goes/);
+    assert.equal(rotationCandidate([band({ pool: "KNOWN", feesPerDaySol: 5 }), band({ pool: "UNKNOWN", feesPerDaySol: null })], opts)!.pool, "KNOWN", "a known pace goes before an unknown one");
+    assert.equal(rotationCandidate([band({ venue: null, feesPerDaySol: 1 })], opts)!.pool, "P", "an unknown venue is not assumed off-venue");
+    assert.equal(pinRotateMinAgeMin({}), 60);
+    assert.equal(pinRotateMinAgeMin({ PIN_ROTATE_MIN_AGE_MIN: "15" }), 15);
+    assert.equal(pinRotateMinAgeMin({ PIN_ROTATE_MIN_AGE_MIN: "-3" }), 60);
   });
 
   console.log(`\n${passed} pinned stock tests passed`);

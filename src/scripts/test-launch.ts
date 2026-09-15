@@ -586,6 +586,23 @@ function launchState(agoMin: number, vol1h: number | null): RiskState {
 async function terms(): Promise<void> {
   console.log("\nlaunch lane / harsher terms");
 
+  await test("ROTATE: the loop names a pool to make room for a pin; its largest band closes, liquidated, below FLATTEN/STOP/EXPIRE and above COLLECT", () => {
+    const big = position({ address: "posBig", valueInSol: 0.4, solInPosition: 0.4 });
+    const small = position({ address: "posSmall", valueInSol: 0.1, solInPosition: 0.1 });
+    const d = engineDirective(dctx({ positions: [small, big], rotate: { reason: "making room for pinned NVDA: WET/SOL is the slowest earner in the book" } }))!;
+    assert.equal(d.kind, "ROTATE");
+    assert.equal(d.decision.action, "CLOSE_POSITION");
+    assert.equal(d.decision.positionAddress, "posBig", "the largest band first");
+    assert.equal(d.decision.liquidate, true);
+    assert.match(d.decision.reasoning, /^Engine directive ROTATE: making room for pinned NVDA: WET\/SOL is the slowest earner in the book\. Closing posBig \(0\.4000 SOL\) and selling its token back to the quote; the seat goes to the pin next cycle, and 1 more band\(s\) in this pool follow\.$/);
+    assert.equal(engineDirective(dctx({ positions: [], rotate: { reason: "x" } })), null, "nothing to close, no directive");
+    assert.equal(engineDirective(dctx({ rotate: null }))?.kind ?? null, null, "no rotation named, no ROTATE");
+    // a stop outranks the rotation
+    const hurt = position({ address: "pos1", valueInSol: 0.07, solInPosition: 0.07 });
+    const stopped = { ...emptyState("2026-09-14"), entryValueSol: { pos1: 0.09 }, stops: { pos1: 12 } };
+    assert.equal(engineDirective(dctx({ positions: [hurt], state: stopped, rotate: { reason: "x" } }))?.kind, "STOP");
+  });
+
   await test("the tighter stop: rolled with the same jitter, persisted the same way, never looser", () => {
     // the desk's stop, unchanged
     assert.equal(rollStop(limits, () => 0), 12);

@@ -64,6 +64,7 @@ import { loadScreen, runScreen, tradableVenue } from "./screener";
 import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
 import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
+import { pinRotateMinAgeMin, rotationCandidate, type RotationBand } from "./engine/rotation";
 import { jupiterEnv as swapEnv, meteoraOnlyRoutes } from "./tools/jupiter";
 import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairHouseSeats, pairHouseSeatSol, pairLaunchEnv, pairMintOf, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict } from "./screener/pair";
 import { createPairVenue, hotRowForPool, isPairPool as isPairVenuePool } from "./venues/pair";
@@ -128,6 +129,8 @@ interface App {
   /** the Meteora pools of the stocks the agent is paired with (PAIR_STOCK_PINNED_TICKERS), and when they were read */
   pinned: PinnedStocks | null;
   pinnedAt: number;
+  /** the band the picker named this cycle to make room for a pin (src/engine/rotation.ts); null when none */
+  rotateOut: { pool: string; label: string; reason: string } | null;
 }
 
 interface Observed {
@@ -359,6 +362,39 @@ async function refreshPinned(app: App): Promise<void> {
   }
 }
 
+/** The book's bands as the rotation picker needs them: venue, age, value, fee pace, and whether they are pinned or the house pool. */
+function rotationBands(app: App, held: string[]): RotationBand[] {
+  const houseMints = pairEnv().houseMints;
+  const venueOf = (pool: string): string | null =>
+    app.screen?.pools.find((p) => p.address === pool)?.venue ?? app.pools.get(pool)?.venue.id ?? (isPairAddress(pool) || pinnedPoolAt(app.pinned, pool) ? "meteora-dlmm" : null);
+  const flags = (pool: string) => ({
+    pinned: pinnedTickerOf(app, pool) !== null || (isPairAddress(pool) && pinnedTickers().includes(app.paper?.pairPools?.[pool]?.stock?.ticker ?? loadState().pairPools?.[pool]?.stock?.ticker ?? "")),
+    house: !!app.paper?.pairPools?.[pool]?.house || houseMints.includes(pairMintOf(pool) ?? ""),
+  });
+  if (app.paper) {
+    const byPool = new Map<string, RotationBand>();
+    const now = Date.now();
+    for (const b of app.paper.bands) {
+      if (!held.includes(b.pool)) continue;
+      const value = b.lastMark?.valueInSol ?? b.entryValueSol;
+      const ageDays = Math.max((now - b.openedAt) / 86_400_000, 1 / 288);
+      const perDay = (b.lastMark?.feeSol ?? 0) / ageDays + (app.paper.feesClaimedByPool?.[b.pool] ?? 0) / ageDays;
+      const prev = byPool.get(b.pool);
+      byPool.set(b.pool, {
+        pool: b.pool,
+        label: b.label,
+        venue: venueOf(b.pool),
+        openedAt: prev?.openedAt !== undefined && prev.openedAt !== null ? Math.min(prev.openedAt, b.openedAt) : b.openedAt,
+        valueSol: (prev?.valueSol ?? 0) + value,
+        feesPerDaySol: (prev?.feesPerDaySol ?? 0) + perDay,
+        ...flags(b.pool),
+      });
+    }
+    return [...byPool.values()];
+  }
+  return held.map((pool) => ({ pool, label: pool.slice(0, 6), venue: venueOf(pool), openedAt: null, valueSol: 0, feesPerDaySol: null, ...flags(pool) }));
+}
+
 /** The pinned ticker a pool belongs to: a pinned Meteora pool, or our own stock pair for a pinned ticker. */
 function pinnedTickerOf(app: App, address: string, snapshot?: PoolSnapshot | null): string | null {
   const pool = pinnedPoolAt(app.pinned, address);
@@ -431,15 +467,25 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // THE STOCKS THE AGENT IS PAIRED WITH (PAIR_STOCK_PINNED_TICKERS), Meteora only: the ticker's existing
   // Meteora DLMM pool the wallet can fund, best by fee/TVL, supplemented with our liquidity. A ticker
   // Meteora has no such pool for falls through to the stock pair lane below, which makes our own.
+  app.rotateOut = null;
   for (const ticker of pinnedTickers()) {
-    if (set.size >= config.maxActivePools) break;
     const entry = app.pinned?.tickers.find((t) => t.ticker === ticker);
     const pool = choosePinnedPool(entry, (q) => quoteOk(q));
     if (!pool) {
       console.log(`[cycle ${app.cycle}] pinned ${ticker}: ${entry?.note ?? (entry ? "no Meteora pool the wallet can fund" : "not discovered yet")}; the stock pair lane makes our own ${ticker}x/SOL pool`);
       continue;
     }
+    if (set.has(pool.address)) continue; // held already
     if (watchlistDenial({ address: pool.address, baseSymbol: pool.symbol, baseMint: pool.mint, name: `${pool.symbol} / ${pool.quoteSymbol}` }, watch)) continue;
+    if (set.size >= config.maxActivePools) {
+      // the book is full and there is no general rotation: one band makes room for the pin, one per cycle
+      if (!app.rotateOut) {
+        const pick = rotationCandidate(rotationBands(app, [...set]), { now: Date.now(), tradable: (v) => isTradableVenue(v), minAgeMin: pinRotateMinAgeMin(), forTicker: ticker });
+        app.rotateOut = pick;
+        console.log(`[cycle ${app.cycle}] pinned ${ticker}: the book is full (${set.size}/${config.maxActivePools}); ${pick ? `rotating out ${pick.label} (${pick.pool.slice(0, 6)}): ${pick.reason}` : "nothing may rotate out (every band is pinned, the house pool, or under the minimum age)"}`);
+      }
+      continue;
+    }
     if (!take(pool.address, pool.mint)) continue;
     console.log(
       `[cycle ${app.cycle}] pinned ${ticker}: supplementing Meteora DLMM ${pool.symbol}/${pool.quoteSymbol} (${pool.address.slice(0, 6)}), ` +
@@ -1014,12 +1060,12 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   );
 
   // The engine decides first. When it has a directive the LLM is not asked this cycle.
-  const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined, pairStock: pairStockWatch });
+  const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined, pairStock: pairStockWatch, rotate: app.rotateOut?.pool === o.address ? { reason: app.rotateOut.reason } : null });
   // Then an approved outside proposal, oldest first: "agents propose, the operator decides, the desk
   // executes through its own guards". Otherwise Mr Bands proposes.
   const proposal = directive ? null : (approvedProposals(o.address)[0] ?? null);
   // An engine close in a stock pool or a pair pool liquidates: the book returns to the quote (the hedge comes off with it; the token is never kept).
-  const directiveDecision = directive && (basisRow || isPair) && directive.decision.action === "CLOSE_POSITION" ? { ...directive.decision, liquidate: true } : directive?.decision;
+  const directiveDecision = directive && (basisRow || isPair || directive.kind === "ROTATE") && directive.decision.action === "CLOSE_POSITION" ? { ...directive.decision, liquidate: true } : directive?.decision;
   let llm = directive
     ? engineDecideResult(directiveDecision!, `${directive.kind}: ${directive.reason}`)
     : proposal
@@ -1482,6 +1528,7 @@ async function main(): Promise<void> {
     pairVenue,
     pinned: null,
     pinnedAt: 0,
+    rotateOut: null,
   };
   appRef = app;
   if (app.screen) app.screenAt = new Date(app.screen.generatedAt).getTime();
