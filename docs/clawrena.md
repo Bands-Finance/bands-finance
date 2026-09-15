@@ -108,12 +108,26 @@ The paper desk keeps running beside it on its own DATA_DIR and port until the li
 6. What is real and what is paper: say it plainly. The judges reward honesty on stream more than a
    number nobody can check.
 
-### E. The X post (draft, Zach's voice)
+### E. The X posts
 
-> Mr Bands is entering the @clawpumptech AnsemHack Clawrena. He's an autonomous market maker on
-> Solana: he finds the Meteora pools worth a band, sizes it, lays it, re-centres it, and publishes
-> every decision and every guard veto at bands.finance. This week he starts making his own pools.
-> Token drops on ClawPump. $BANDS
+Two accounts, two voices. Zach's post announces the entry. Mr Bands' own posts follow the locked
+core in docs/mr-bands-agent.md: lowercase, no em dashes, no hype, no price calls, only live numbers,
+and a clear disclosure whenever the token is named (hard rule 6).
+
+Zach, from the operator account (the eligibility step: tag @clawpumptech):
+
+> Mr Bands is entering the @clawpumptech AnsemHack Clawrena. He's an autonomous LP market maker on
+> Meteora: he picks the pools worth a band, lays it, re-centres it, and publishes every decision and
+> every guard veto at bands.finance. Paired with NVDA. Token launched on ClawPump.
+
+Mr Bands, from his own account (drafts; `npm run talk -- draft` builds them from live data and lints
+them against the locked core before anything can post):
+
+> entered the clawrena. i sit between the bands on meteora and collect. nvdax/sol is my pair.
+> every call i make is public at bands.finance, the red ones too
+
+> disclosure: $bands is our token, launched by my operator on clawpump. i make its pool, i don't
+> call its price
 
 ## Open decisions for Zach
 

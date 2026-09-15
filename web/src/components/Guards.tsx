@@ -37,7 +37,7 @@ interface Family {
   rules: Rule[];
 }
 
-const NA = "—";
+const NA = "n/a";
 const n = (v: number | undefined, unit = "") => (v === undefined ? NA : `${v}${unit}`);
 
 // The rules are plain code around the AI: caps, reserves, a stop-loss, a

@@ -184,7 +184,7 @@ function blockOf(e: JournalEntry): DeskBlock {
     verdict,
     action: d.action,
     saw: sawLines(e),
-    proposed: proposedDiffers ? `${ACTION_WORDS[e.proposal.action]}${pIntent ? `: ${pIntent}` : ""} — “${e.proposal.headline}”` : null,
+    proposed: proposedDiffers ? `${ACTION_WORDS[e.proposal.action]}${pIntent ? `: ${pIntent}` : ""}: “${e.proposal.headline}”` : null,
     guards:
       verdict === "blocked"
         ? `vetoed: ${e.violations.join("; ")}`

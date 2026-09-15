@@ -66,6 +66,7 @@ import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type Launc
 import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
 import { pinRotateMinAgeMin, rotationCandidate, type RotationBand } from "./engine/rotation";
 import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
+import { voiceLine } from "./agent/voice";
 import { jupiterEnv as swapEnv, meteoraOnlyRoutes } from "./tools/jupiter";
 import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairHouseSeats, pairHouseSeatSol, pairLaunchEnv, pairMintOf, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict, type PairSeatOptions } from "./screener/pair";
 import { createPairVenue, hotRowForPool, isPairPool as isPairVenuePool } from "./venues/pair";
@@ -1274,15 +1275,16 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     positions,
     analytics,
     llm: llmMeta,
-    proposal: verdict.proposal,
-    decision: verdict.decision,
+    // every public line in Mr Bands' voice (docs/mr-bands-agent.md section 2), whoever wrote it
+    proposal: { ...verdict.proposal, headline: voiceLine(verdict.proposal.headline) },
+    decision: { ...verdict.decision, headline: voiceLine(verdict.decision.headline) },
     allowed: verdict.allowed,
     violations: verdict.violations,
     overrides: verdict.overrides,
     passed: verdict.passed,
     emergency: verdict.emergency,
     execution,
-    headline: verdict.decision.headline,
+    headline: voiceLine(verdict.decision.headline),
     screen: screen ? { rank: screen.rank, rankedPools: screen.rankedPools, score: screen.score, feeToTvl24hPct: screen.feeToTvl24hPct } : null,
     engine: journalEngine,
     ...(hedgeJournal ? { hedge: hedgeJournal } : {}),
