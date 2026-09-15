@@ -65,8 +65,9 @@ import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/wat
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
 import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
 import { pinRotateMinAgeMin, rotationCandidate, type RotationBand } from "./engine/rotation";
+import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
 import { jupiterEnv as swapEnv, meteoraOnlyRoutes } from "./tools/jupiter";
-import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairHouseSeats, pairHouseSeatSol, pairLaunchEnv, pairMintOf, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict } from "./screener/pair";
+import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairHouseSeats, pairHouseSeatSol, pairLaunchEnv, pairMintOf, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict, type PairSeatOptions } from "./screener/pair";
 import { createPairVenue, hotRowForPool, isPairPool as isPairVenuePool } from "./venues/pair";
 import { pairStockCandidateFor, pairStockCandidatesOf, pairStockEnv, pairStockReserve, pairStockSeats, pairStockSeatSol, chooseStockFeeBps, stockPairModel, type PairStockCandidate } from "./screener/pairStock";
 import { stockBinsPerSide } from "./agent/policy";
@@ -438,6 +439,19 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // The operator's list decides what the desk may put money into; the screener only finds it.
   // Pinned pools and pools already holding a band are added above, so a band can always be managed out.
   const watch = loadWatchlist();
+  // The memecoin floor (src/screener/memeFloor.ts): not on launch, and a market cap worth making a market
+  // in. Checked only on a token the lane would otherwise seat, so the log names what it actually kept out.
+  const meme = memeFloorEnv();
+  const memeRefused: string[] = [];
+  const memeOk = (c: MemeCandidate): boolean => {
+    const why = memeRefusal(c, meme);
+    if (why && !memeRefused.includes(why)) memeRefused.push(why);
+    return why === null;
+  };
+  const hotMeme = (address: string): Pick<MemeCandidate, "marketCapUsd" | "ageHours" | "stock"> => {
+    const r = loadHotFileCached()?.rows.find((x) => x.address === address);
+    return { marketCapUsd: r?.marketCapUsd ?? null, ageHours: r?.ageHours ?? null, stock: r?.stock ?? null };
+  };
   const minVolume = Number(process.env.POLICY_MIN_VOLUME_24H_USD ?? 250_000);
   const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0 && funds.has("USDC");
   const quoteOk = (q: string) => (q === "SOL" && funds.has("SOL")) || (q === "USDC" && usdcOk);
@@ -544,7 +558,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   for (const r of hotRows(app)) {
     if (set.size >= ordinaryCap) break;
     const row = { address: r.address, baseSymbol: r.baseSymbol, baseMint: r.baseMint, name: r.name };
-    if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume) take(r.address, r.baseMint);
+    if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume && !takenTokens.has(r.baseMint) && memeOk({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours, stock: r.stock })) take(r.address, r.baseMint);
   }
   const candidates = (app.screen?.pools ?? []).filter(
     (p) =>
@@ -562,6 +576,8 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const byYield = [...candidates].sort((a, b) => (b.feeToTvl24hPct ?? -1) - (a.feeToTvl24hPct ?? -1) || b.score - a.score);
   for (const p of byYield) {
     if (set.size >= ordinaryCap) break;
+    if (takenTokens.has(p.baseMint) || set.has(p.address)) continue;
+    if (!memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock })) continue;
     take(p.address, p.baseMint);
   }
 
@@ -572,16 +588,25 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   if (lenv.on && set.size < ordinaryCap) {
     const held = laneBands;
     const heldPools = new Set(Object.values(held).map((b) => b.pool).filter((p) => !isPairAddress(p)));
-    const seats = launchSeats(launchCandidates(), {
+    const launchOpts = {
       env: lenv,
       freeSeats: ordinaryCap - set.size,
       seatsTaken: heldPools.size,
-      tradable: (v) => isTradableVenue(v),
+      tradable: (v: string) => isTradableVenue(v),
       quoteOk,
-      denied: (row) => watchlistDenial(row, watch),
-      hasPool: (address) => set.has(address),
-      hasToken: (mint) => takenTokens.has(mint),
-    });
+      denied: (row: LaunchCandidate) => watchlistDenial(row, watch),
+      hasPool: (address: string) => set.has(address),
+      hasToken: (mint: string) => takenTokens.has(mint),
+    };
+    let launchRows = launchCandidates();
+    let seats = launchSeats(launchRows, launchOpts);
+    for (let pass = 0; pass < 8; pass++) {
+      const kept = seats.filter((s) => memeOk({ symbol: s.row.baseSymbol, ...hotMeme(s.row.address) }));
+      if (kept.length === seats.length) break;
+      const drop = new Set(seats.filter((s) => !kept.includes(s)).map((s) => s.row.address));
+      launchRows = launchRows.filter((r) => !drop.has(r.address));
+      seats = launchSeats(launchRows, launchOpts);
+    }
     for (const seat of seats) {
       if (!take(seat.row.address, seat.row.baseMint)) continue;
       console.log(
@@ -600,7 +625,8 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     const hot = loadHotFileCached();
     const rows = hot?.rows ?? [];
     const screenRows = (app.screen?.pools ?? []).map((p) => ({ address: p.address, venue: p.venue, baseMint: p.baseMint, quoteSymbol: p.quoteSymbol, liquidityUsd: p.tvlUsd }));
-    const seats = pairSeats(pairCandidatesOf(rows, penv.houseMints), {
+    let pairRows = pairCandidatesOf(rows, penv.houseMints).filter((r) => !penv.houseMints.includes(r.baseMint));
+    const pairOpts: PairSeatOptions = {
       env: penv,
       freeSeats: config.maxActivePools - set.size,
       poolsTaken: pairsHeld.size,
@@ -619,7 +645,15 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
         const comp = competitionFor(row.baseMint, [...rows, ...screenRows], pairPoolAddress(row.baseMint));
         return pairModel(ref, { ...penv, feeBps: chooseFeeBps(ref, penv, seatUsd) }, seatUsd, comp?.depthUsd ?? 0).feesPerDayUsd;
       },
-    });
+    };
+    let seats = pairSeats(pairRows, pairOpts);
+    for (let pass = 0; pass < 8; pass++) {
+      const kept = seats.filter((s) => memeOk({ symbol: s.row.baseSymbol, ...hotMeme(s.row.address) }));
+      if (kept.length === seats.length) break;
+      const drop = new Set(seats.filter((s) => !kept.includes(s)).map((s) => s.row.baseMint));
+      pairRows = pairRows.filter((r) => !drop.has(r.baseMint));
+      seats = pairSeats(pairRows, pairOpts);
+    }
     if (seats.length === 0 && !quoteOk(penv.quote)) {
       const clears = pairCandidatesOf(rows).filter((r) => r.baseMint && pairVerdict(r, penv, competitionFor(r.baseMint, [...rows, ...screenRows], pairPoolAddress(r.baseMint))).ok);
       if (clears.length) {
@@ -637,6 +671,8 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
       );
     }
   }
+  const floorLine = memeFloorLine(memeRefused, meme);
+  if (floorLine) console.log(`[cycle ${app.cycle}] ${floorLine}`);
   return [...set];
 }
 

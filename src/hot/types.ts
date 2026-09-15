@@ -19,6 +19,8 @@ export interface HotRow {
   quoteSymbol: string;
   /** the base token in USD, as the sources report it; null when nobody priced it */
   priceUsd: number | null;
+  /** the base token's market cap in USD (GeckoTerminal market_cap_usd else fdv_usd; DexScreener marketCap else fdv); null when unreported */
+  marketCapUsd: number | null;
   /** QUOTE per base, UI units (DexScreener's priceNative, else GeckoTerminal's base_token_price_quote_token): the reference price a made pair opens at */
   priceNative: number | null;
   /** "pump.fun" when the base mint ends in "pump" or the pool lives on pump.fun's venues (pumpswap, pump-fun); null otherwise */
@@ -124,6 +126,8 @@ export interface PoolSample {
   baseSymbol: string | null;
   quoteSymbol: string | null;
   priceUsd: number | null;
+  /** market cap of the source's base token, USD; nulled when the sample is oriented to the other token */
+  marketCapUsd: number | null;
   /** USD price of the quote token (GeckoTerminal only): prices SOL when the quote is SOL */
   quotePriceUsd: number | null;
   /** quote per base, UI units: DexScreener priceNative, GeckoTerminal base_token_price_quote_token */

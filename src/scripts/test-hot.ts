@@ -301,7 +301,7 @@ async function main(): Promise<void> {
 
   /* ---------- hotPicks ---------- */
   const hotRow = (o: Partial<HotRow> & Pick<HotRow, "address" | "venue" | "heat">): HotRow => ({
-    name: o.address, baseMint: "", baseSymbol: "", quoteMint: SOL, quoteSymbol: "SOL", priceUsd: null, priceNative: null, origin: null, onBoard: false, screenRank: null, stock: null, vol1hUsd: 1, vol5mUsd: 1, vol24hUsd: 1, liquidityUsd: 100_000, feePct: 1, feeSource: "board", fees1hUsd: 1,
+    name: o.address, baseMint: "", baseSymbol: "", quoteMint: SOL, quoteSymbol: "SOL", priceUsd: null, marketCapUsd: null, priceNative: null, origin: null, onBoard: false, screenRank: null, stock: null, vol1hUsd: 1, vol5mUsd: 1, vol24hUsd: 1, liquidityUsd: 100_000, feePct: 1, feeSource: "board", fees1hUsd: 1,
     feeToTvl1hPct: 1, feeToTvlDailyPct: 24, turnover1h: 1, acceleration: 1, buys1h: 1, sells1h: 1, buys5m: 1, sells5m: 1, sellShare1h: 0.5, sellShare5m: 0.5, priceChange5mPct: 0, priceChange1hPct: 0, priceChange24hPct: 0, ageHours: 100,
     flags: [], surge: false, surgeAt: null, firstSeenAt: "", lastSeenAt: "", ...o,
   });

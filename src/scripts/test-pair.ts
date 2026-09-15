@@ -108,7 +108,7 @@ const good = (over: Partial<PairRow> = {}): PairRow => ({
 
 const hotRowOf = (over: Partial<HotRow> = {}): HotRow => ({
   address: NIKE_POOL, name: "NIKE / SOL", venue: "pumpswap", baseMint: NIKE, baseSymbol: "NIKE", quoteMint: SOL, quoteSymbol: "SOL",
-  priceUsd: 0.00003, priceNative: NIKE_PRICE, origin: "pump.fun", onBoard: false, screenRank: null, stock: null,
+  priceUsd: 0.00003, marketCapUsd: 30_000_000, priceNative: NIKE_PRICE, origin: "pump.fun", onBoard: false, screenRank: null, stock: null,
   vol1hUsd: 12_394_850, vol5mUsd: 900_000, vol24hUsd: 48_129_456, liquidityUsd: 343_799, feePct: null, feeSource: null,
   fees1hUsd: null, feeToTvl1hPct: null, feeToTvlDailyPct: null, turnover1h: 36, acceleration: 6.2,
   buys1h: 6365, sells1h: 6333, buys5m: 500, sells5m: 480, sellShare1h: 0.499, sellShare5m: 0.49,

@@ -127,7 +127,7 @@ async function detection(): Promise<void> {
   await test("siblingTargets: only tokens we cannot already quote, over the volume floor, most promising first, capped", () => {
     const sample = (over: Partial<PoolSample>): PoolSample => ({
       source: "trending", address: "a", name: null, venue: "pumpswap", baseMint: "mintA", quoteMint: SOL, baseSymbol: "A", quoteSymbol: "SOL",
-      priceUsd: null, quotePriceUsd: null, priceNative: null, liquidityUsd: 50_000, vol5mUsd: null, vol1hUsd: null, vol24hUsd: 1_000_000,
+      priceUsd: null, marketCapUsd: null, quotePriceUsd: null, priceNative: null, liquidityUsd: 50_000, vol5mUsd: null, vol1hUsd: null, vol24hUsd: 1_000_000,
       buys5m: null, sells5m: null, buys1h: null, sells1h: null, priceChange5mPct: null, priceChange1hPct: null, priceChange24hPct: null, createdAt: null, ...over,
     });
     const rows = [
@@ -495,7 +495,7 @@ async function seating(): Promise<void> {
 
 const hotRow = (over: Partial<HotRow> = {}): HotRow => ({
   address: "poolA", name: "WET / SOL", venue: "meteora-dlmm", baseMint: "mintA", baseSymbol: "WET", quoteMint: SOL, quoteSymbol: "SOL",
-  priceUsd: 0.002, priceNative: 0.00002, origin: null, onBoard: false, screenRank: null, stock: null,
+  priceUsd: 0.002, marketCapUsd: 2_000_000, priceNative: 0.00002, origin: null, onBoard: false, screenRank: null, stock: null,
   vol1hUsd: 1_160_000, vol5mUsd: 90_000, vol24hUsd: 2_500_000, liquidityUsd: 31_638, feePct: 2, feeSource: "onchain",
   fees1hUsd: 23_200, feeToTvl1hPct: 73, feeToTvlDailyPct: 1760, turnover1h: 36, acceleration: 11,
   buys1h: 520, sells1h: 480, buys5m: 40, sells5m: 30, sellShare1h: 0.48, sellShare5m: 0.43,

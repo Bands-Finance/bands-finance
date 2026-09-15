@@ -112,6 +112,8 @@ export function orient(s: PoolSample, baseMint: string): PoolSample {
     priceNative: s.priceNative !== null && s.priceNative > 0 ? 1 / s.priceNative : null,
     priceUsd: s.quotePriceUsd,
     quotePriceUsd: s.priceUsd,
+    // the source sized ITS base, which is our quote: nothing is known about ours
+    marketCapUsd: null,
   };
 }
 
@@ -359,6 +361,7 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
       baseSymbol: p.baseSymbol,
       quoteSymbol: p.quoteSymbol,
       priceUsd: p.priceUsd,
+      marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null,
       quotePriceUsd: null,
       priceNative: p.price > 0 ? p.price : null,
       liquidityUsd: p.tvlUsd,
@@ -517,6 +520,7 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
       quoteMint: c.id.quoteMint,
       quoteSymbol: c.id.quoteSymbol,
       priceUsd: pick(c.dex?.priceUsd, pick(c.trend?.priceUsd, c.board?.priceUsd)),
+      marketCapUsd: pick(c.dex?.marketCapUsd, pick(c.trend?.marketCapUsd, c.board ? (c.board.mcapUsd ?? c.board.fdvUsd ?? null) : null)),
       priceNative: pick(c.dex?.priceNative, pick(c.trend?.priceNative, c.board && c.board.price > 0 ? c.board.price : null)),
       origin: originOf(c.id.baseMint, c.id.venue),
       onBoard: !!c.board,
