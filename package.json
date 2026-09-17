@@ -17,6 +17,8 @@
     "web:snapshot": "tsx src/scripts/snapshot.ts",
     "web:deploy": "npm run web:snapshot && cd web && vercel deploy --prod --yes",
     "dash:deploy": "npm run web:snapshot && node web/scripts/deploy-dash.mjs",
+    "live:preflight": "set -a && . ./ops/live.env && set +a && DRY_RUN=false tsx src/scripts/preflight.ts",
+    "live:rehearse": "set -a && . ./ops/live.env && set +a && DRY_RUN=true AUTO_DEPLOY=false tsx src/index.ts --once",
     "screen": "tsx src/scripts/screen.ts",
     "test:screener": "tsx src/scripts/test-screener.ts",
     "test:platform": "tsx src/scripts/test-platform.ts",

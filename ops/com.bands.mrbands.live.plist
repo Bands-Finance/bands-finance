@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mr Bands, LIVE: real transactions from the hot wallet in .env, on Meteora stock pools, with the
+  limits in ops/live.env (sized for the first 20 SOL). This is the only place DRY_RUN is set to
+  false. Installing this service is the act of going live; do it on Zach's word and never with the
+  paper desk running (one loop at a time).
+
+  Go live:  npm run live:preflight            (every FAIL must be clear)
+            npm run live:rehearse             (one dry-run cycle with the real wallet: builds and simulates, sends nothing)
+            launchctl bootout gui/$(id -u)/com.bands.mrbands.paper
+            cp ops/com.bands.mrbands.live.plist ~/Library/LaunchAgents/
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bands.mrbands.live.plist
+  Watch:    tail -f data-mainnet/mrbands.log   ·  API: http://localhost:3101/api/journal
+  Halt now: touch STOP   (blocks every new band; exits still run)
+  Stop:     launchctl bootout gui/$(id -u)/com.bands.mrbands.live
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.bands.mrbands.live</string>
+  <key>WorkingDirectory</key><string>/Users/zach/Bands.Finance/mr-bands</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>set -a; . ./ops/live.env; set +a; exec /usr/local/bin/npm run live</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>120</integer>
+  <key>StandardOutPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-mainnet/mrbands.log</string>
+  <key>StandardErrorPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-mainnet/mrbands.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string>
+    <key>DRY_RUN</key><string>false</string>
+  </dict>
+</dict>
+</plist>
