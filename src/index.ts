@@ -67,7 +67,7 @@ import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/wat
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
 import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
 import { flowByPool, flowContextLine, readFlowFile, type FlowContext, type PoolMeta as FlowPoolMeta } from "./scouts/flow";
-import { consolidation, rankSeats, seatLine, seatRankingEnv, seatYield, sittingOut, weakSeatRotation, type HeldSeat, type RankedSeat, type SeatRotation } from "./screener/seatYield";
+import { consolidation, rankSeats, seatLine, seatRankingEnv, seatYield, sittingOut, swapDepthWithin, weakSeatRotation, type HeldSeat, type RankedSeat, type SeatRotation } from "./screener/seatYield";
 import { pinRotateMinAgeMin, pinSeatAction, rotationCandidate, type RotationBand } from "./engine/rotation";
 import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
 import { fetchPoolHistory, historyFresh, historyPhrase, historyRefusal, memeHistoryEnv, type HistoryRecord } from "./screener/memeHistory";
@@ -544,8 +544,10 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
       const seatQuote = riskLimits.maxPositionSol / q.priceInSol;
       const y = seatYield({ seatQuote, binsEachSide: bins, activeBinId: snapshot.activeBinId, bins: snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote });
       const label = snapshot.label;
-      // the seat the policy could lay there: the max band, or half the band's depth (its cap on somebody else's pool)
-      const capSol = Math.max(0, Math.min(riskLimits.maxPositionSol, (y.bandDepthQuote / 2) * q.priceInSol));
+      // the seat the policy could lay there: the max band, half the band's depth (its cap on somebody else's
+      // pool), or twice the token liquidity a swap reaches inside POLICY_MAX_SWAP_IMPACT_PCT
+      const impactCapQuote = pEnv.maxSwapImpactPct > 0 ? 2 * swapDepthWithin(snapshot.bins, snapshot.activeBinId, q.side, q.tokenPriceInQuote, snapshot.binStep, pEnv.maxSwapImpactPct) : Infinity;
+      const capSol = Math.max(0, Math.min(riskLimits.maxPositionSol, (y.bandDepthQuote / 2) * q.priceInSol, impactCapQuote * q.priceInSol));
       watch.push({ address, label, quoteSide: q.side, quoteSymbol: q.symbol, xDecimals: snapshot.tokenX.decimals, yDecimals: snapshot.tokenY.decimals, band: null });
       if (withPositions.includes(address)) {
         held.push({ address, label, yieldPctPerDay: y.yieldPctPerDay, openedAt: state.lastMoveByPool?.[address] ?? null, pinned: pinnedTickerOf(app, address, snapshot) !== null, capSol, heldSol: null, feeSource });
@@ -558,11 +560,14 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
   // a pool the ranking gave up sits out METEORA_STOCK_REENTRY_MIN: MRVL/SOL was closed at 0.08%/day and
   // wanted back four minutes later at 1.95% on two swaps (2026-09-17)
   const satOut = (a: string) => !withPositions.includes(a) && sittingOut(state.rotatedOutAt?.[a], rEnv, now);
-  const worth = rankSeats(ranked.filter((r) => !satOut(r.address)), rEnv);
+  // while the scout runs, a candidate it has not read yet is watched, not seated: the venue's day figure
+  // put MRVL/SOL at 139%/day on the seat during a scout backfill and the picker took it (2026-09-17)
+  const unreadCandidate = (r: RankedSeat) => r.feeSource === "24h" && app.flow.size > 0 && !withPositions.includes(r.address);
+  const worth = rankSeats(ranked.filter((r) => !satOut(r.address) && !unreadCandidate(r)), rEnv);
   app.seatRanking = { ranked: worth, held, at: now };
   if (ranked.length) {
     const all = [...ranked].sort((a, b) => b.yieldPctPerDay - a.yieldPctPerDay);
-    console.log(`[cycle ${app.cycle}] seat yield (${riskLimits.maxPositionSol} SOL seat, floor ${rEnv.minYieldPct}%/day): ${all.map((r) => `${seatLine(r)}${withPositions.includes(r.address) ? " [held]" : ""}${r.yieldPctPerDay < rEnv.minYieldPct ? " [under the floor]" : ""}${satOut(r.address) ? ` [sat out, given up ${Math.round((now - (state.rotatedOutAt?.[r.address] ?? now)) / 60_000)} min ago]` : ""}`).join(" | ")}`);
+    console.log(`[cycle ${app.cycle}] seat yield (${riskLimits.maxPositionSol} SOL seat, floor ${rEnv.minYieldPct}%/day): ${all.map((r) => `${seatLine(r)}${withPositions.includes(r.address) ? " [held]" : ""}${r.yieldPctPerDay < rEnv.minYieldPct ? " [under the floor]" : ""}${satOut(r.address) ? ` [sat out, given up ${Math.round((now - (state.rotatedOutAt?.[r.address] ?? now)) / 60_000)} min ago]` : ""}${unreadCandidate(r) ? " [unread by the scout: watched, not seated]" : ""}`).join(" | ")}`);
   }
   // no seat is judged on the venue's day figure: while the scout has not read a held pool (it is
   // backfilling, or just restarted), nothing rotates and nothing consolidates

@@ -77,6 +77,7 @@ import type { RiskLimits } from "../risk/limits";
 import { launchEnv, launchSeatSol, type LaunchEnv } from "../screener/launch";
 import { pairEnv, pairHouseSeatSol, pairSeatSol, type PairEnv } from "../screener/pair";
 import { pairStockEnv, pairStockSeatSol, type PairStockEnv } from "../screener/pairStock";
+import { swapDepthWithin } from "../screener/seatYield";
 import { OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, quoteOf, type PoolSnapshot, type PositionSnapshot, type QuoteView } from "../tools/dlmm";
 import { jupiterEnv, meteoraOnlyRoutes } from "../tools/jupiter";
 import { bookEnv, type Book } from "../venues/env";
@@ -107,6 +108,8 @@ export interface PolicyEnv {
   stockGrowMinPct: number;
   /** STOCK_GROW_MIN_AGE_MIN: a band younger than this is not grown */
   stockGrowMinAgeMin: number;
+  /** POLICY_MAX_SWAP_IMPACT_PCT: a straddle's seat is capped so its token half is bought inside this much price impact in the pool's own bins (0 = no cap) */
+  maxSwapImpactPct: number;
   /** the one-time cost of a seat (rent that never comes back plus the swap round trip) must be earned back inside this many hours (POLICY_MAX_PAYBACK_HOURS) */
   maxPaybackHours: number;
   /** a seat under this share of the book's max exposure is not worth its rent and attention (POLICY_MIN_SEAT_PCT) */
@@ -138,6 +141,7 @@ export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
     stockRecentreMaxWaitSec: Math.max(0, num(env.STOCK_RECENTRE_MAX_WAIT_MIN, 120)) * 60,
     stockGrowMinPct: Math.max(0, num(env.STOCK_GROW_MIN_PCT, 50)),
     stockGrowMinAgeMin: Math.max(0, num(env.STOCK_GROW_MIN_AGE_MIN, 15)),
+    maxSwapImpactPct: Math.max(0, num(env.POLICY_MAX_SWAP_IMPACT_PCT, 1.5)),
     maxPaybackHours: Math.max(0, num(env.POLICY_MAX_PAYBACK_HOURS, 24)),
     minScore: num(env.POLICY_MIN_SCORE, 20),
     book: bookEnv(env),
@@ -549,6 +553,12 @@ function sizeStraddle(o: Observation, x: PolicyExtras, q: QuoteView, env: Policy
     ...(stockPair ? [] : [{ name: `half the band's depth on both sides (${r(depthQuote, 2)} ${q.symbol})`, quote: depthQuote }]),
     { name: `exposure room ${r(roomSol)} SOL`, quote: roomSol / q.priceInSol },
   ];
+  // the token half is bought through this pool's bins (and sold back the same way): the seat is capped
+  // so that stays inside POLICY_MAX_SWAP_IMPACT_PCT of price impact
+  if (!stockPair && env.maxSwapImpactPct > 0) {
+    const swapDepth = swapDepthWithin(s.bins, s.activeBinId, q.side, p, s.binStep, env.maxSwapImpactPct);
+    caps.push({ name: `a swap under ${env.maxSwapImpactPct}% impact (${r(swapDepth, 2)} ${q.symbol} of ${s.baseToken.symbol} sits within it)`, quote: 2 * swapDepth });
+  }
   if (stockPair) {
     const seatCapSol = pairStockSeatSol(limits.maxTotalExposureSol, senv);
     caps.push({ name: `stock pair lane seat ${r(seatCapSol)} SOL (${senv.seatPct}% of the ${limits.maxTotalExposureSol} SOL book)`, quote: seatCapSol / q.priceInSol });

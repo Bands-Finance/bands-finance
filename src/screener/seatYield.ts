@@ -71,6 +71,27 @@ export function seatYield(i: SeatYieldInput): SeatYield {
   };
 }
 
+/**
+ * PURE. The token liquidity, in quote units, within `maxImpactPct` of the price: the active bin's own
+ * token side plus the bins on the token side whose price is inside the cap (one bin step per bin).
+ * A buy of the seat's token half that must empty more bins than that moves the price past the cap;
+ * the seat is capped at twice this so the half fits (MRVL/SOL took 3.5% of impact on a 2.5 SOL buy,
+ * 2026-09-17). Only this pool's bins count: a deeper route elsewhere is a bonus, not a plan.
+ */
+export function swapDepthWithin(bins: readonly { binId: number; xAmount: number; yAmount: number }[], activeBinId: number, quoteSide: "X" | "Y", tokenPriceInQuote: number, binStepBps: number, maxImpactPct: number): number {
+  const step = Math.max(1, binStepBps) / 10_000;
+  const maxBins = Math.max(0, Math.floor(Math.log(1 + Math.max(0, maxImpactPct) / 100) / Math.log(1 + step)));
+  // the token sits above the active bin when the quote is Y (bins above hold X), below when the quote is X
+  const tokenAbove = quoteSide === "Y";
+  let total = 0;
+  for (const b of bins) {
+    const d = tokenAbove ? b.binId - activeBinId : activeBinId - b.binId;
+    if (d < 0 || d > maxBins) continue;
+    total += (quoteSide === "Y" ? b.xAmount : b.yAmount) * tokenPriceInQuote;
+  }
+  return total;
+}
+
 /* ---------- ranking and rotation ---------- */
 
 export interface RankedSeat {

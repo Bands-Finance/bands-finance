@@ -4,7 +4,7 @@
  *   npx tsx src/scripts/test-seat-yield.ts
  */
 import assert from "node:assert/strict";
-import { binQuote, consolidation, rankSeats, seatRankingEnv, seatYield, sittingOut, weakSeatRotation, type HeldSeat, type RankedSeat } from "../screener/seatYield";
+import { binQuote, consolidation, rankSeats, seatRankingEnv, seatYield, sittingOut, swapDepthWithin, weakSeatRotation, type HeldSeat, type RankedSeat } from "../screener/seatYield";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -51,6 +51,12 @@ async function main() {
     near(lumpy.theirsPerBinQuote, (30 + 4 * 10) / 5, 1e-9, "the mean over the band's five bins");
     assert.equal(seatYield({ seatQuote: 0, binsEachSide: 2, activeBinId: 100, bins, quoteSide: "Y", tokenPriceInQuote: 2.35, poolFeesPerDayQuote: 1 }).sharePct, 0);
     near(binQuote({ xAmount: 2, yAmount: 3 }, "X", 4), 2 + 12, 1e-12, "quote on the X side: Y priced into X");
+    // the token liquidity a buy reaches inside the impact cap: 1.25% bins reach one bin past the active inside 1.5%, 0.2% bins reach seven
+    near(swapDepthWithin(flat(10, 2.35), 100, "Y", 2.35, 125, 1.5), 10, 1e-9, "MRVL-like: the active bin holds no token, the next holds 10 SOL of it");
+    near(swapDepthWithin(flat(10, 2.35), 100, "Y", 2.35, 20, 1.5), 70, 1e-9, "NVDAx-like: seven bins of 10");
+    near(swapDepthWithin(flat(10, 2.35), 100, "Y", 2.35, 125, 0), 0, 1e-12, "no impact allowed: only the active bin's token side, empty here");
+    const xq = [{ binId: 99, xAmount: 0, yAmount: 4 }, { binId: 100, xAmount: 1, yAmount: 1 }, { binId: 101, xAmount: 3, yAmount: 0 }];
+    near(swapDepthWithin(xq, 100, "X", 0.5, 100, 1.5), (1 + 4) * 0.5, 1e-12, "quote on X: the token is Y, below the active bin");
   });
 
   console.log("ranking and rotation");

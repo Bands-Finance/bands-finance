@@ -385,6 +385,22 @@ async function main(): Promise<void> {
     assert.equal(whole.branch, "in-range", "a band that holds both halves is left alone even with spare token in the wallet");
   });
 
+  await test("swap impact cap: a thin pool's straddle is capped at twice the token liquidity a buy reaches inside POLICY_MAX_SWAP_IMPACT_PCT; off at 0", () => {
+    const wallet = { address: "w", sol: 100, token: 0, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" };
+    const base = snapAt(ACTIVE);
+    const bin = (id: number, x: number, y: number) => ({ binId: id, price: P, xAmount: x, yAmount: y, isActive: id === ACTIVE });
+    // 1% bins: inside 1.5% a buy reaches the active bin and one above; 0.6 SPYx there (~463 USDC) caps the seat at ~926 USDC
+    const thin = { ...base, binStep: 100, bins: [bin(ACTIVE - 2, 0, 5000), bin(ACTIVE - 1, 0, 5000), bin(ACTIVE, 0.1, 500), bin(ACTIVE + 1, 0.5, 0), bin(ACTIVE + 2, 5, 0), bin(ACTIVE + 3, 5, 0)] };
+    const r = policy.policyDecide(obs({ wallet }, thin), x);
+    assert.equal(r.decision.action, "OPEN_POSITION", r.reason);
+    near(r.decision.open!.amountSol, Math.floor((0.6 * P) * 100) / 100, 0.02, "the USDC half is the token half's worth: 0.6 SPYx");
+    assert.match(r.decision.reasoning, /bound by a swap under 1\.5% impact \([\d.]+ USDC of SPYx sits within it\)/);
+    const off = policy.policyDecide(obs({ wallet }, thin), { ...x, env: { ...x.env, maxSwapImpactPct: 0 } });
+    assert.equal(off.decision.open!.amountSol, 1125, "no cap: the max band binds");
+    const wide = policy.policyDecide(obs({ wallet }, thin), { ...x, env: { ...x.env, maxSwapImpactPct: 3 } });
+    assert.ok(wide.decision.open!.amountSol > 1125 * 0.99 - 1, `3% reaches two more bins of 5 SPYx: the max band binds again (${wide.decision.open!.amountSol})`);
+  });
+
   await test("grow: a straddle at an old cap re-lays bigger when the book has room for a much larger seat (STOCK_GROW_MIN_PCT); not at the cap, not twice a pass, not young, not when the added seat's fees would not earn the re-lay back", () => {
     const inr = straddleAt(ACTIVE + 5);
     const wallet = { address: "w", sol: 100, token: 0, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" };
