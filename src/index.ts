@@ -140,6 +140,8 @@ interface App {
   flowWatch: Map<string, FlowPoolMeta>;
   /** consecutive cycles a held seat's own measured yield read under the fade line */
   fadeStreak: Map<string, number>;
+  /** position address -> the seat check's yield this cycle, written onto the band's meta by runPool (whose copy of state is the one saved) */
+  predictedYield: Map<string, number>;
   movedThisCycle: boolean;
   /** base mints whose wallet balance has been attributed to a pool's hedge this cycle */
   mintAttributed: Set<string>;
@@ -625,7 +627,11 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     const t = byAddress.get(a)?.baseMint ?? pairMintOf(a) ?? pinnedPoolAt(app.pinned, a)?.mint ?? meteoraStockAt(app, a)?.mint;
     if (t) takenTokens.add(t);
   }
+  // THE OPERATOR'S EXIT LIST (ROTATE_OUT_POOLS, comma-separated pool addresses): a held band on the list
+  // comes off through the ROTATE directive, and a listed pool is not picked again while it is listed.
+  const exitList = (process.env.ROTATE_OUT_POOLS ?? "").split(",").map((a) => a.trim()).filter(Boolean);
   const take = (address: string, baseMint: string | undefined): boolean => {
+    if (exitList.includes(address)) return false;
     if (baseMint && takenTokens.has(baseMint)) return false;
     set.add(address);
     if (baseMint) takenTokens.add(baseMint);
@@ -694,7 +700,6 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // THE OPERATOR'S EXIT LIST (ROTATE_OUT_POOLS, comma-separated pool addresses): a held band on the list
   // comes off through the ROTATE directive (closed and liquidated through the guards), one per cycle.
   // Zach (2026-09-17): "lets just enter memecoin style pools", with two stock seats to move out of.
-  const exitList = (process.env.ROTATE_OUT_POOLS ?? "").split(",").map((a) => a.trim()).filter(Boolean);
   const exiting = exitList.find((a) => withPositions.includes(a));
   if (exiting && !app.rotateOut) {
     app.rotateOut = { pool: exiting, label: app.screen?.pools.find((p) => p.address === exiting)?.name ?? exiting.slice(0, 6), reason: "on the operator's exit list (ROTATE_OUT_POOLS): the book moves on" };
@@ -813,7 +818,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
       quoteOk(p.quoteSymbol) &&
       watchlistRefusal(p, watch) === null &&
       (p.volume24hUsd ?? 0) >= minVolume &&
-      p.score >= Math.max(1e-9, policyEnv().minScore) &&
+      p.score > Math.max(0, policyEnv().minScore) &&
       !p.flags.includes("thin") &&
       !p.flags.includes("no-24h-data"),
   );
@@ -1250,6 +1255,8 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     const rs = ((state.rangeStats ??= {})[p.address] ??= { cycles: 0, inRange: 0 });
     rs.cycles += 1;
     if (p.inRange) rs.inRange += 1;
+    const predicted = app.predictedYield.get(p.address);
+    if (predicted !== undefined && state.bandMeta?.[p.address]) state.bandMeta[p.address].predictedYieldPct = predicted;
   }
   trackFeesPending(state, positions, snapshot, now, cfg.collectFloorSol);
   const others = all.filter((x) => x !== o);
@@ -1268,6 +1275,8 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // the scout's reading, once it covers the pool (a backfill in progress is not a reading)
   const flow = app.flow.get(o.address) ?? null;
   if (screen && flow && flow.coveredMin !== null) screen.flow = flow;
+  // a pick off the board has no screen context: its reading rides on the observation itself
+  const offBoardFlow = !screen && flow && flow.coveredMin !== null ? flow : null;
   if (flow) console.log(`[cycle ${app.cycle} ${snapshot.label}] ${flowContextLine(flow)}${flow.coveredMin === null ? " (backfilling: not a reading yet)" : ""}`);
   const isPair = !!snapshot.pair;
 
@@ -1378,6 +1387,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
       .slice(0, 5)
       .map((e) => ({ ts: e.ts, action: e.decision.action, allowed: e.allowed, headline: e.headline, violations: e.violations })),
     screen,
+    flow: offBoardFlow,
     portfolio,
     engine: engineObs,
   };
@@ -1458,11 +1468,14 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)}${quoteLeg} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
   }
   // THE LESSON (src/learn/lessons.ts): a closed seat becomes a record before its bookkeeping is forgotten
-  if (execution.ok && execution.closed) {
+  // a close that landed is a lesson whether or not a later leg failed (those are the expensive ones); a
+  // rehearsal (dry-run) writes none and leaves the live bands' bookkeeping alone
+  if (execution.closed && execution.mode !== "dry-run") {
     const meta = state.bandMeta?.[execution.closed];
+    app.fadeStreak.delete(o.address);
     if (meta) {
       try {
-        const lesson = lessonOf({ meta, position: execution.closed, stats: state.rangeStats?.[execution.closed] ?? null, rows: readLedgerRows(), closedAt: Date.now(), endReason: endReasonOf(directive?.kind ?? null, app.rotateOut?.pool === o.address ? app.rotateOut.reason : null, llm.decision.headline), headline: llm.decision.headline });
+        const lesson = lessonOf({ meta, position: execution.closed, stats: state.rangeStats?.[execution.closed] ?? null, rows: readLedgerRows(), closedAt: Date.now(), endReason: endReasonOf(directive?.kind ?? null, app.rotateOut?.pool === o.address ? app.rotateOut.reason : null, verdict.decision.headline, verdict.overrides), headline: verdict.decision.headline, mode: execution.mode, ledgerMode: execution.mode === "live" ? "live" : "dry-run" });
         appendLesson(path.join(path.resolve(process.cwd(), config.dataDir), LESSONS_FILE), lesson);
         console.log(`${tag} ${lessonLine(lesson)}`);
       } catch (err) {
@@ -1472,7 +1485,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     if (state.bandMeta) delete state.bandMeta[execution.closed];
     if (state.rangeStats) delete state.rangeStats[execution.closed];
   }
-  if (execution.ok && execution.opened && verdict.decision.open) {
+  if (execution.ok && execution.opened && verdict.decision.open && execution.mode !== "dry-run") {
     const op = verdict.decision.open;
     const bins = op.binsBelowActive + op.binsAboveActive + 1;
     const kind: BandMeta["kind"] = screen?.stock || basisRow ? "stock" : snapshot.pair ? "other" : "memecoin";
@@ -1847,11 +1860,13 @@ async function runIteration(app: App): Promise<void> {
   // FADE (src/screener/seatYield.ts): a held seat is judged on its own pool's measured flow. Its yield
   // (the scout's four-hour fee pace x our share of the band's bins / the seat) under half the floor for
   // three cycles running, on a band old enough, and it comes off: the flow it was seated for is gone.
-  if (!app.rotateOut) {
+  {
     const pEnvNow = policyEnv();
     const rEnvNow = seatRankingEnv();
-    const fadeFactor = Math.max(0, Number(process.env.SEAT_FADE_FACTOR ?? "0.5") || 0.5);
+    const ff = Number((process.env.SEAT_FADE_FACTOR ?? "").trim() === "" ? "0.5" : process.env.SEAT_FADE_FACTOR);
+    const fadeFactor = Number.isFinite(ff) ? Math.max(0, ff) : 0.5; // 0 switches the fade rule off (the seat check still logs)
     const fadeCycles = Math.max(1, Math.floor(Number(process.env.SEAT_FADE_CYCLES ?? "3") || 3));
+    app.predictedYield.clear();
     for (const o of observed) {
       if (!o.positions.length) continue;
       const flow = app.flow.get(o.address);
@@ -1863,16 +1878,15 @@ async function runIteration(app: App): Promise<void> {
         const upper = Math.max(...o.positions.map((p) => p.upperBinId));
         const y = seatYield({ seatQuote: seatSol / q.priceInSol, binsEachSide: Math.max(0, Math.floor((upper - lower) / 2)), activeBinId: o.snapshot.activeBinId, bins: o.snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote: flow.feesPerDayQuote240m });
         const line = fadeFactor * pEnvNow.minSeatYieldPct;
-        for (const p of o.positions) if (state.bandMeta?.[p.address]) state.bandMeta[p.address].predictedYieldPct = Math.round(y.yieldPctPerDay * 100) / 100;
+        for (const p of o.positions) app.predictedYield.set(p.address, Math.round(y.yieldPctPerDay * 100) / 100);
         const streak = y.yieldPctPerDay < line ? (app.fadeStreak.get(o.address) ?? 0) + 1 : 0;
         app.fadeStreak.set(o.address, streak);
         const openedAt = state.lastMoveByPool?.[o.address] ?? null;
         const ageOk = openedAt === null || now - openedAt >= rEnvNow.minAgeMin * 60_000;
         console.log(`[cycle ${app.cycle} ${o.snapshot.label}] seat check: ${y.yieldPctPerDay.toFixed(2)}%/day on the ${seatSol.toFixed(2)} SOL seat from the pool's last ${flow.coveredMin} min (${flow.feesPerDayQuote240m.toFixed(3)} ${q.symbol}/day pool pace x ${y.sharePct.toFixed(1)}% of the band's bins)${streak ? `; under the fade line ${line.toFixed(2)}% for ${streak} cycle(s)` : ""}`);
-        if (seatFaded({ yieldPctPerDay: y.yieldPctPerDay, floorPct: pEnvNow.minSeatYieldPct, fadeFactor, streak, cyclesNeeded: fadeCycles, ageOk })) {
+        if (!app.rotateOut && fadeFactor > 0 && seatFaded({ yieldPctPerDay: y.yieldPctPerDay, floorPct: pEnvNow.minSeatYieldPct, fadeFactor, streak, cyclesNeeded: fadeCycles, ageOk })) {
           app.rotateOut = { pool: o.address, label: o.snapshot.label, reason: `its own flow faded: the seat reads ${y.yieldPctPerDay.toFixed(2)}%/day from the pool's last ${flow.coveredMin} min, under ${line.toFixed(2)}% for ${streak} cycles` };
           console.log(`[cycle ${app.cycle}] seat check: rotating out ${o.snapshot.label} (${o.address.slice(0, 6)}): ${app.rotateOut.reason}`);
-          break;
         }
       } catch {
         /* unpriced: no judgement */
@@ -1922,8 +1936,9 @@ async function runIteration(app: App): Promise<void> {
       const tfile = path.resolve(process.cwd(), process.env.TUNING_FILE!.trim());
       const tuning = readTuning(tfile) ?? { history: [] };
       const tenv = tuneEnv();
-      const current = { volMultiple: policyEnv().volMultiple };
-      const change = tuneFromLessons(readLessons(path.join(dataDir, LESSONS_FILE), now - 24 * 3_600_000), current, tuning, tenv, now);
+      const penvNow = policyEnv();
+      const current = { volMultiple: penvNow.tunedVolMultiple ?? penvNow.volMultiple };
+      const change = tuneFromLessons(readLessons(path.join(dataDir, LESSONS_FILE), now - 24 * 3_600_000), current, tuning, tenv, now, paper ? "paper" : config.dryRun ? "dry-run" : "live");
       if (change) {
         writeTuning(tfile, { ...tuning, volMultiple: change.to, history: [...tuning.history, change] });
         console.log(`[cycle ${app.cycle}] [tuning] band width multiple ${change.from} -> ${change.to}: ${change.why}`);
@@ -2009,6 +2024,7 @@ async function main(): Promise<void> {
     exposureDelta: new Map(),
     flowWatch: new Map(),
     fadeStreak: new Map(),
+    predictedYield: new Map(),
     mintAttributed: new Set(),
     pairVenue,
     pinned: null,

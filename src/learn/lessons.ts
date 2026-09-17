@@ -47,6 +47,8 @@ export type EndReason = "through-band" | "idle" | "stop" | "faded" | "rotated" |
 
 export interface Lesson {
   at: number;
+  /** the desk's mode when the seat closed: a rehearsal's or a paper book's lesson never teaches the live knob */
+  mode: string;
   pool: string;
   label: string;
   position: string;
@@ -73,10 +75,11 @@ export interface Lesson {
 }
 
 /** PURE. Why a seat ended, from the directive that closed it or the policy's headline. */
-export function endReasonOf(directiveKind: string | null, rotateReason: string | null, headline: string): EndReason {
+export function endReasonOf(directiveKind: string | null, rotateReason: string | null, headline: string, guardOverrides: readonly string[] = []): EndReason {
   const h = headline.toLowerCase();
   const rr = (rotateReason ?? "").toLowerCase();
-  if (directiveKind === "STOP") return "stop";
+  // the guards' own stop overrides whatever was proposed: the headline is then the proposal's, not the reason
+  if (directiveKind === "STOP" || guardOverrides.some((o) => /^stop-loss/i.test(o))) return "stop";
   if (directiveKind === "FLATTEN") return "flatten";
   if (directiveKind === "EXPIRE") return "expire";
   if (directiveKind === "ROTATE") {
@@ -95,15 +98,17 @@ export function endReasonOf(directiveKind: string | null, rotateReason: string |
  * to it: the position's own rows, plus the pool's swap rows inside the seat's life (the token half
  * bought at the open, the liquidation at the close).
  */
-export function lessonOf(i: { meta: BandMeta; position: string; stats: RangeStats | null; rows: readonly LedgerRow[]; closedAt: number; endReason: EndReason; headline: string }): Lesson {
+export function lessonOf(i: { meta: BandMeta; position: string; stats: RangeStats | null; rows: readonly LedgerRow[]; closedAt: number; endReason: EndReason; headline: string; mode?: string; ledgerMode?: LedgerRow["mode"] }): Lesson {
   const { meta, stats } = i;
-  const mine = i.rows.filter((r) => r.position === i.position || (r.pool === meta.pool && r.mech === "swap" && r.ts >= meta.openedAt - 120_000 && r.ts <= i.closedAt + 180_000));
+  const rows = i.ledgerMode ? i.rows.filter((r) => r.mode === i.ledgerMode) : i.rows;
+  const mine = rows.filter((r) => r.position === i.position || (r.pool === meta.pool && r.mech === "swap" && r.ts >= meta.openedAt - 120_000 && r.ts <= i.closedAt + 180_000));
   const netSol = mine.reduce((t, r) => t + r.solDelta + r.rentSol + r.txFeeSol, 0);
   const feesSol = mine.reduce((t, r) => t + (r.mech === "collect" ? (r.feeSol ?? Math.max(0, r.solDelta)) : r.mech === "close" ? (r.feeSol ?? 0) : 0), 0);
   const minutes = Math.max(1 / 60, (i.closedAt - meta.openedAt) / 60_000);
   const realizedYieldPctPerDay = meta.seatSol > 0 ? (feesSol / meta.seatSol) * (1440 / minutes) * 100 : 0;
   return {
     at: i.closedAt,
+    mode: i.mode ?? "live",
     pool: meta.pool,
     label: meta.label,
     position: i.position,
@@ -186,16 +191,20 @@ export function tuneEnv(env: NodeJS.ProcessEnv = process.env): TuneEnv {
  * seats were priced out within minutes of laying; narrow when they sat in range nearly all the time
  * and earned under the floor. One step, inside the bounds, never twice inside the gap.
  */
-export function tuneFromLessons(lessons: readonly Lesson[], current: { volMultiple: number }, tuning: Tuning | null, env: TuneEnv, now: number): TuningChange | null {
+export function tuneFromLessons(lessons: readonly Lesson[], current: { volMultiple: number }, tuning: Tuning | null, env: TuneEnv, now: number, mode = "live"): TuningChange | null {
   const last = tuning?.history.length ? tuning.history[tuning.history.length - 1] : null;
   if (last && now - last.at < env.minGapMs) return null;
-  const recent = lessons.filter((l) => l.kind === "memecoin").slice(-env.window);
+  // only what was learned SINCE the last change counts: the same five lessons must not buy a second
+  // step after the gap, and the step just taken has to show in new seats before another follows
+  const recent = lessons.filter((l) => l.kind === "memecoin" && (l.mode ?? "live") === mode && (!last || l.at > last.at)).slice(-env.window);
   if (recent.length < env.window) return null;
-  const pricedOut = recent.filter((l) => l.endReason === "through-band" && l.minutes <= env.pricedOutMin).length;
+  // priced out: through the band, or stopped (a band narrower than the stop goes through it first), within minutes of laying
+  const isPricedOut = (l: Lesson) => (l.endReason === "through-band" || l.endReason === "stop") && l.minutes <= env.pricedOutMin;
+  const pricedOut = recent.filter(isPricedOut).length;
   const round = (v: number) => Math.round(v * 100) / 100;
   if (pricedOut * 2 > recent.length && current.volMultiple < env.max) {
     const to = round(Math.min(env.max, current.volMultiple + env.step));
-    return { at: now, knob: "volMultiple", from: current.volMultiple, to, why: `${pricedOut} of the last ${recent.length} memecoin seats were priced out of the band within ${env.pricedOutMin} min of laying (${recent.filter((l) => l.endReason === "through-band" && l.minutes <= env.pricedOutMin).map((l) => `${l.label} ${l.minutes} min`).join(", ")}): the band follows more of the token's travel` };
+    return { at: now, knob: "volMultiple", from: current.volMultiple, to, why: `${pricedOut} of the last ${recent.length} memecoin seats were priced out of the band within ${env.pricedOutMin} min of laying (${recent.filter(isPricedOut).map((l) => `${l.label} ${l.minutes} min`).join(", ")}): the band follows more of the token's travel` };
   }
   const idle = recent.filter((l) => l.inRangePct !== null && l.inRangePct >= env.idleInRangePct && l.realizedYieldPctPerDay < env.idleYieldPct).length;
   if (idle === recent.length && current.volMultiple > env.min) {
@@ -205,10 +214,14 @@ export function tuneFromLessons(lessons: readonly Lesson[], current: { volMultip
   return null;
 }
 
-/** PURE. The policy env with the tuned knobs on top, inside the tuner's bounds. */
-export function applyTuning<T extends { volMultiple: number }>(env: T, tuning: Tuning | null, bounds: Pick<TuneEnv, "min" | "max">): T {
+/**
+ * PURE. The policy env with the tuned knob beside the configured one, inside the tuner's bounds. The
+ * multiple is learned from memecoin seats, so it rides as `tunedVolMultiple` and the policy applies it
+ * to pools that are not stocks; `volMultiple` stays what the env says.
+ */
+export function applyTuning<T extends { volMultiple: number; tunedVolMultiple?: number }>(env: T, tuning: Tuning | null, bounds: Pick<TuneEnv, "min" | "max">): T {
   if (!tuning || typeof tuning.volMultiple !== "number" || !Number.isFinite(tuning.volMultiple)) return env;
-  return { ...env, volMultiple: Math.min(bounds.max, Math.max(bounds.min, tuning.volMultiple)) };
+  return { ...env, tunedVolMultiple: Math.min(bounds.max, Math.max(bounds.min, tuning.volMultiple)) };
 }
 
 /* ---------- files ---------- */

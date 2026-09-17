@@ -113,6 +113,12 @@ export interface PolicyEnv {
   maxSwapImpactPct: number;
   /** POLICY_REQUIRE_FLOW: a board pool is not opened until the flow scout has read it (the venue's day figure is not an entry) */
   requireFlow: boolean;
+  /** POLICY_MIN_FLOW_COVER_MIN: and the reading must cover at least this many minutes (ALLINU/SOL was opened on 18 minutes labelled an hour, 2026-09-17) */
+  minFlowCoverMin: number;
+  /** POLICY_IDLE_RELAY_SEC: an idle all-quote band (the price ran off its quote side) is re-laid after this long instead of 3x the out-of-range minimum; it needs no swap (0 = the 3x rule) */
+  idleRelaySec: number;
+  /** the self-learning tuner's band width multiple (src/learn/lessons.ts), learned from memecoin seats and applied to pools that are not stocks; absent without a tuning file */
+  tunedVolMultiple?: number;
   /** the one-time cost of a seat (rent that never comes back plus the swap round trip) must be earned back inside this many hours (POLICY_MAX_PAYBACK_HOURS) */
   maxPaybackHours: number;
   /** a seat under this share of the book's max exposure is not worth its rent and attention (POLICY_MIN_SEAT_PCT) */
@@ -153,6 +159,8 @@ function policyEnvBase(env: NodeJS.ProcessEnv): PolicyEnv {
     stockGrowMinAgeMin: Math.max(0, num(env.STOCK_GROW_MIN_AGE_MIN, 15)),
     maxSwapImpactPct: Math.max(0, num(env.POLICY_MAX_SWAP_IMPACT_PCT, 1.5)),
     requireFlow: (env.POLICY_REQUIRE_FLOW ?? "").trim().toLowerCase() === "true",
+    minFlowCoverMin: Math.max(0, num(env.POLICY_MIN_FLOW_COVER_MIN, 60)),
+    idleRelaySec: Math.max(0, num(env.POLICY_IDLE_RELAY_SEC, 0)),
     maxPaybackHours: Math.max(0, num(env.POLICY_MAX_PAYBACK_HOURS, 24)),
     minScore: num(env.POLICY_MIN_SCORE, 20),
     book: bookEnv(env),
@@ -255,26 +263,40 @@ export function stockBinsPerSide(binStep: number, coverPct: number, maxBinWidth:
  * because a tight band there is out of range before the transaction confirms. With no recent move to
  * read (a fresh screen, a quiet pool) the configured cover stands.
  */
-export function coverPctFor(o: Pick<Observation, "screen"> & { snapshot?: { binStep: number } }, env: PolicyEnv, base: number, hot: { priceChange1hPct: number | null }): { coverPct: number; from: string } {
-  // The pool's own swaps first (the flow scout: every bin the last hour's trades touched, exact), then
-  // the measured travel of the price from the loop's samples, then the hot list's 1h change: the first
-  // two are the range the band must survive, the last is only the net move, so it understates a pool
-  // that went up and came back. Any of them beats a fixed percentage.
-  const scoutBins = o.screen?.flow?.range60mBins;
+/** The scout's reading for this pool: on the screen context for a board pool, on the observation itself for a pick off the board. */
+export const flowOf = (o: { screen?: Observation["screen"]; flow?: Observation["flow"] }): NonNullable<Observation["flow"]> | null => o.screen?.flow ?? o.flow ?? null;
+
+export function coverPctFor(o: Pick<Observation, "screen"> & Partial<Pick<Observation, "engine" | "flow">> & { snapshot?: { binStep: number } }, env: PolicyEnv, base: number, hot: { priceChange1hPct: number | null }): { coverPct: number; from: string } {
+  // The pool's own swaps first (the flow scout: every bin the trades touched, exact): the larger of the
+  // last hour's travel and half the last four hours', so one quiet hour does not lay a narrow band on a
+  // token that travels (GP/SOL: 6 bins in the hour, 13 in four, laid 6 wide and idle in minutes). Then the
+  // measured travel of the price from the loop's samples, whichever is larger; the hot list's 1h change
+  // last: it is only the net move, so it understates a pool that went up and came back.
+  const flow = flowOf(o);
   const binStep = o.snapshot?.binStep;
-  const scouted = typeof scoutBins === "number" && scoutBins >= 0 && typeof binStep === "number" && binStep > 0 && (o.screen?.flow?.swaps60m ?? 0) >= 3 ? coveragePct(binStep, scoutBins) : null;
-  const measured = o.screen?.recentMovePct;
-  const move = scouted !== null ? scouted : typeof measured === "number" && Number.isFinite(measured) ? measured : hot.priceChange1hPct;
-  const how = scouted !== null ? `the price travelled ${r(Math.abs(move ?? 0), 2)}% (${scoutBins} bins) in the last hour's swaps` : `the price travelled ${r(Math.abs(move ?? 0), 2)}% in the last hour`;
-  if (env.volMultiple <= 0 || move === null || !Number.isFinite(move)) return { coverPct: base, from: `${r(base, 2)}% each way (configured)` };
-  const raw = Math.abs(move) * env.volMultiple;
+  const bins60 = flow && (flow.swaps60m ?? 0) >= 3 && typeof flow.range60mBins === "number" ? flow.range60mBins : null;
+  const bins240 = flow && (flow.swaps240m ?? 0) >= 3 && typeof flow.range240mBins === "number" ? flow.range240mBins : null;
+  const scoutBins = bins60 === null && bins240 === null ? null : Math.max(bins60 ?? 0, (bins240 ?? 0) / 2);
+  const scouted = scoutBins !== null && typeof binStep === "number" && binStep > 0 ? coveragePct(binStep, scoutBins) : null;
+  const measuredRaw = o.screen?.recentMovePct;
+  const measured = typeof measuredRaw === "number" && Number.isFinite(measuredRaw) ? Math.abs(measuredRaw) : null;
+  const fromScout = scouted !== null && (measured === null || scouted >= measured);
+  const move = scouted !== null || measured !== null ? Math.max(scouted ?? 0, measured ?? 0) : hot.priceChange1hPct;
+  // the tuner's multiple is learned from memecoin seats: a stock pool keeps the configured one
+  const stock = isStockPool({ screen: o.screen, engine: o.engine ?? null });
+  const multiple = stock ? env.volMultiple : (env.tunedVolMultiple ?? env.volMultiple);
+  const how = fromScout
+    ? `the price travelled ${r(Math.abs(move ?? 0), 2)}% (${bins60 ?? "n/a"} bins in the last hour's swaps, ${bins240 ?? "n/a"} in four hours)`
+    : `the price travelled ${r(Math.abs(move ?? 0), 2)}% in the last hour`;
+  if (multiple <= 0 || move === null || !Number.isFinite(move)) return { coverPct: base, from: `${r(base, 2)}% each way (configured)` };
+  const raw = Math.abs(move) * multiple;
   const coverPct = Math.min(env.maxCoverPct, Math.max(env.minCoverPct, raw));
   const why =
     raw < env.minCoverPct
       ? `${r(coverPct, 2)}% each way (the floor: ${how})`
       : raw > env.maxCoverPct
         ? `${r(coverPct, 2)}% each way (the cap: ${how})`
-        : `${r(coverPct, 2)}% each way (${env.volMultiple}x: ${how})`;
+        : `${r(coverPct, 2)}% each way (${multiple}x: ${how})`;
   return { coverPct, from: why };
 }
 
@@ -432,7 +454,7 @@ export function seatEarnings(o: Observation, x: PolicyExtras, seatSol: number, s
   if (!solPriceUsd || seatSol <= 0) return null;
   // The flow scout's last hour beats the 24h figure: it is the pool's own swaps, read minutes ago,
   // and a quiet hour or a busy one is what the seat will actually earn next.
-  const flow = o.screen?.flow ?? null;
+  const flow = flowOf(o);
   const q = quoteOf(o.snapshot);
   const flowPace = flow ? (flow.feesPerDayQuote240m ?? flow.feesPerDayQuote60m) : null;
   const flowFeesPerDayUsd = flowPace !== null && flowPace !== undefined ? flowPace * q.priceInSol * solPriceUsd : null;
@@ -850,7 +872,10 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
     }
     // idle in quote: the price ran off the quote side
     const where = quoteBelow ? "above" : "below";
-    const waitSec = IDLE_MULTIPLE * minSec;
+    // an idle band is all quote: following the price needs no swap, only the close and the open
+    // (POLICY_IDLE_RELAY_SEC); without it the old rule stands, 3x the out-of-range minimum
+    const waitSec = env.idleRelaySec > 0 ? env.idleRelaySec : IDLE_MULTIPLE * minSec;
+    const idleRule = env.idleRelaySec > 0 ? "an all-quote band follows the price without a swap, POLICY_IDLE_RELAY_SEC" : `${IDLE_MULTIPLE}x the ${minSec}s minimum`;
     if (s.priceModel === "clmm" && dist <= 1) {
       return hold(
         `Band ${addr} covers bins ${range} and the ${priceLine} sits one bin ${where} it. On a CLMM a ${q.symbol}-only band rests one bin ${quoteBelow ? "under" : "over"} the price by construction (the active bin is never part of a single-sided range); it ${bandClause(o, band, q)}. Fees start the moment the price crosses into it.`,
@@ -861,7 +886,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
     }
     if (oor < waitSec) {
       return hold(
-        `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}); the band ${bandClause(o, band, q)} and earns nothing there. Idle ${oor}s of the ${waitSec}s (${IDLE_MULTIPLE}x the ${minSec}s minimum) the policy waits before re-laying it.`,
+        `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}); the band ${bandClause(o, band, q)} and earns nothing there. Idle ${oor}s of the ${waitSec}s (${idleRule}) the policy waits before re-laying it.`,
         `Price ran off the top. Idle ${oor}s, waiting.`,
         "idle-wait",
         `band ${addr} idle ${oor}s < ${waitSec}s`,
@@ -989,13 +1014,22 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   }
   // A board pool is not opened on the venue's day figure: the scout reads it first (POLICY_REQUIRE_FLOW).
   // Pinned stocks, the lanes and our own pools are not board pools.
-  if (env.requireFlow && !pinned && !launch && !pair && !o.screen?.flow) {
-    return hold(
-      `No band in ${o.poolLabel} (${priceLine}). The flow scout has not read this pool yet: the desk seats on what it measures, not on the venue's day figure, so it waits a cycle for the reading. ${poolClause(o, hot)}.`,
-      "Waiting for the scout's reading. Not seated on the day figure.",
-      "flow-wait",
-      "the flow scout has not read the pool yet (POLICY_REQUIRE_FLOW)",
-    );
+  const entryFlow = flowOf(o);
+  const coveredMin = entryFlow?.coveredMin ?? 0;
+  if (env.requireFlow && !pinned && !launch && !pair && (!entryFlow || coveredMin < env.minFlowCoverMin)) {
+    return entryFlow
+      ? hold(
+          `No band in ${o.poolLabel} (${priceLine}). The flow scout has read ${coveredMin} minutes of this pool and the desk wants ${env.minFlowCoverMin} before it seats: a few minutes are not an hour's travel or an hour's fees. ${poolClause(o, hot)}.`,
+          clip(`${coveredMin} min of the scout's reading, ${env.minFlowCoverMin} wanted. Waiting.`),
+          "flow-wait",
+          `the scout's reading covers ${coveredMin} min < ${env.minFlowCoverMin} (POLICY_MIN_FLOW_COVER_MIN)`,
+        )
+      : hold(
+          `No band in ${o.poolLabel} (${priceLine}). The flow scout has not read this pool yet: the desk seats on what it measures, not on the venue's day figure, so it waits for the reading. ${poolClause(o, hot)}.`,
+          "Waiting for the scout's reading. Not seated on the day figure.",
+          "flow-wait",
+          "the flow scout has not read the pool yet (POLICY_REQUIRE_FLOW)",
+        );
   }
   // Is the seat worth taking? What it earns, against what it costs.
   const seatSolPreview = straddleHere ? (szPreview as StraddleSizing).seatSol : (szPreview as Sizing).amountSol;

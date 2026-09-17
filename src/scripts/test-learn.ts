@@ -47,10 +47,14 @@ async function main() {
     assert.equal(l.endReason, "through-band");
     assert.match(lessonLine(l), /^\[lesson\] baton\/SOL: 30 min, 5 bins \(4\.1% of price against 24 bins of travel the hour before\), in range 33\.3% of the time, ended through-band; fees 0\.4785 SOL \(306\.2%\/day realized vs 216\.6% predicted\), net -0\.0020 SOL$/);
     assert.equal(lessonOf({ meta, position: "POS", stats: null, rows: [], closedAt: T0 + 60_000, endReason: "close", headline: "" }).inRangePct, null);
+    assert.equal(l.mode, "live");
+    const rehearsal = lessonOf({ meta, position: "POS", stats: null, rows, closedAt: T0 + 30 * 60_000, endReason: "close", headline: "", mode: "dry-run", ledgerMode: "dry-run" });
+    assert.deepEqual([rehearsal.mode, rehearsal.netSol, rehearsal.feesSol], ["dry-run", 0, 0], "a rehearsal reads only its own ledger rows: none here");
   });
 
   await test("endReasonOf: the directive first, then the rotation's reason, then the policy's headline", () => {
     assert.equal(endReasonOf("STOP", null, "x"), "stop");
+    assert.equal(endReasonOf(null, null, "In range. Fees ticking. Nothing to do.", ["stop-loss: 6jQRGh is 15.2% below entry (7.5000 -> 6.3600 SOL), stop 14.10%; forcing CLOSE"]), "stop", "the guards' stop overrides the proposal's headline");
     assert.equal(endReasonOf("ROTATE", "on the operator's exit list (ROTATE_OUT_POOLS): the book moves on", "x"), "exit-list");
     assert.equal(endReasonOf("ROTATE", "its own flow faded: ...", "x"), "faded");
     assert.equal(endReasonOf("ROTATE", "MRVL earns ... while NVDAx, already held, earns ...", "x"), "consolidated");
@@ -62,7 +66,7 @@ async function main() {
 
   console.log("tuning");
   const lesson = (label: string, endReason: Lesson["endReason"], minutes: number, inRangePct: number | null, realized: number, at = T0): Lesson => ({
-    at, pool: label, label, position: `${label}-${at}`, kind: "memecoin", openedAt: at - minutes * 60_000, closedAt: at, minutes, seatSol: 7.5, bins: 5, binStep: 100, coverPct: 4, travelBins60m: 24, inRangePct, endReason, feesSol: 0.1, netSol: 0, predictedYieldPct: null, realizedYieldPctPerDay: realized, headline: "",
+    at, mode: "live", pool: label, label, position: `${label}-${at}`, kind: "memecoin", openedAt: at - minutes * 60_000, closedAt: at, minutes, seatSol: 7.5, bins: 5, binStep: 100, coverPct: 4, travelBins60m: 24, inRangePct, endReason, feesSol: 0.1, netSol: 0, predictedYieldPct: null, realizedYieldPctPerDay: realized, headline: "",
   });
   await test("tuneFromLessons: three of the last five seats priced out within thirty minutes widens the band one step; the gap, the bounds and a thin record hold it; all-idle narrows", () => {
     const env = tuneEnv({});
@@ -82,14 +86,26 @@ async function main() {
     assert.match(n.why, /sat in range 90% of the time or more and earned under 2%\/day/);
     assert.equal(tuneFromLessons(idle, { volMultiple: 0.5 }, null, env, now), null, "at the floor");
     assert.equal(tuneFromLessons([...idle.slice(1), { ...idle[0], kind: "stock" }], { volMultiple: 1 }, null, env, now), null, "stock seats do not teach the memecoin width");
+    // only what was learned since the last change counts: after the gap the same five lessons buy nothing more
+    const later = now + 7 * 3_600_000;
+    const changed = { volMultiple: 1, history: [{ at: now, knob: "volMultiple" as const, from: 0.75, to: 1, why: "" }] };
+    assert.equal(tuneFromLessons(pricedOut, { volMultiple: 1 }, changed, env, later), null, "the lessons that bought the first step are older than it");
+    const fresh = pricedOut.map((l, i) => ({ ...l, at: now + (i + 1) * 3_600_000 }));
+    assert.deepEqual([tuneFromLessons(fresh, { volMultiple: 1 }, changed, env, later)!.from, tuneFromLessons(fresh, { volMultiple: 1 }, changed, env, later)!.to], [1, 1.25], "five new seats, most priced out again: one more step");
+    // a stop inside the window is priced out too (a band narrower than the stop goes through it first); a rehearsal's lessons teach nothing live
+    const stopped = [lesson("A", "stop", 8, 10, 0), lesson("B", "stop", 20, 10, 0), lesson("C", "through-band", 10, 10, 0), lesson("D", "close", 90, 80, 30), lesson("E", "idle", 200, 5, 1)];
+    assert.equal(tuneFromLessons(stopped, { volMultiple: 0.75 }, null, env, now)!.to, 1);
+    assert.equal(tuneFromLessons(stopped.map((l) => ({ ...l, mode: "dry-run" })), { volMultiple: 0.75 }, null, env, now), null);
+    assert.equal(tuneFromLessons(stopped.map((l) => ({ ...l, mode: "paper" })), { volMultiple: 0.75 }, null, env, now, "paper")!.to, 1, "a paper desk learns from its own");
   });
 
-  await test("applyTuning: the tuned multiple on top of the env, inside the bounds; nothing without a tuning file", () => {
-    const base = { volMultiple: 0.75, other: 1 };
+  await test("applyTuning: the tuned multiple rides beside the configured one, inside the bounds; nothing without a tuning file", () => {
+    const base: { volMultiple: number; tunedVolMultiple?: number; other: number } = { volMultiple: 0.75, other: 1 };
     assert.deepEqual(applyTuning(base, null, { min: 0.5, max: 1.5 }), base);
-    assert.equal(applyTuning(base, { volMultiple: 1.25, history: [] }, { min: 0.5, max: 1.5 }).volMultiple, 1.25);
-    assert.equal(applyTuning(base, { volMultiple: 9, history: [] }, { min: 0.5, max: 1.5 }).volMultiple, 1.5, "bounded");
-    assert.equal(applyTuning(base, { history: [] }, { min: 0.5, max: 1.5 }).volMultiple, 0.75);
+    const t = applyTuning(base, { volMultiple: 1.25, history: [] }, { min: 0.5, max: 1.5 });
+    assert.deepEqual([t.volMultiple, t.tunedVolMultiple], [0.75, 1.25], "the env's multiple stays for stock pools; the tuned one is for the rest");
+    assert.equal(applyTuning(base, { volMultiple: 9, history: [] }, { min: 0.5, max: 1.5 }).tunedVolMultiple, 1.5, "bounded");
+    assert.equal(applyTuning(base, { history: [] }, { min: 0.5, max: 1.5 }).tunedVolMultiple, undefined);
   });
 
   console.log(`\n${passed} learning tests passed`);

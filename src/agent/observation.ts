@@ -116,6 +116,8 @@ export interface Observation {
   state: { actionsToday: number; lastActionAt: number | null; lastMoveAt?: number | null; lastPrice: number | null; killSwitch: boolean };
   recent: JournalGlimpse[];
   screen: ScreenContext | null;
+  /** the flow scout's reading for a pool that has no screen context (a pick off the board); a board pool carries it on `screen.flow` */
+  flow?: NonNullable<ScreenContext["flow"]> | null;
   portfolio: PortfolioContext;
   engine: EngineObservation | null;
 }
@@ -173,8 +175,8 @@ export function formatObservation(o: Observation): string {
   } else {
     lines.push("- unavailable this cycle");
   }
-  if (o.screen?.flow) {
-    const f = o.screen.flow;
+  if (o.screen?.flow ?? o.flow) {
+    const f = (o.screen?.flow ?? o.flow)!;
     lines.push(`- FLOW, read from the chain by the scout (${Math.round((Date.now() - f.asOf) / 1000)}s ago): last 15 min ${f.swaps15m} swaps, ${r(f.volume15mQuote, 3)} ${f.quoteSymbol} traded, ${r(f.fees15mQuote, 4)} ${f.quoteSymbol} of LP fees (${r(f.ours15mQuote, 4)} in the bins your band covers); last hour ${f.swaps60m} swaps, ${r(f.fees60mQuote, 4)} ${f.quoteSymbol} of fees${f.feesPerDayQuote60m !== null ? `, a ${r(f.feesPerDayQuote60m, 3)} ${f.quoteSymbol}/day pace` : ""}. This beats the 24h figures above when they disagree.`);
   }
   lines.push("");

@@ -509,8 +509,10 @@ async function main(): Promise<void> {
     stockGrowMinAgeMin: 15,
     stockGrowMinPct: 50,
     maxSwapImpactPct: 1.5,
-    requireFlow: false, minSeatPct: 5, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 20, book: "all", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200 });
-    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 10, book: "stocks", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200, stockGrowMinPct: 50, stockGrowMinAgeMin: 15, maxSwapImpactPct: 1.5, requireFlow: false });
+    requireFlow: false,
+    minFlowCoverMin: 60,
+    idleRelaySec: 0, minSeatPct: 5, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 20, book: "all", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200 });
+    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 10, book: "stocks", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200, stockGrowMinPct: 50, stockGrowMinAgeMin: 15, maxSwapImpactPct: 1.5, requireFlow: false, minFlowCoverMin: 60, idleRelaySec: 0 });
     const tuned = policy.policyEnv({ STOCK_MIN_COVER_PCT: "0.5", STOCK_RECENTRE_MAX_PAYBACK_HOURS: "0", STOCK_RECENTRE_MAX_WAIT_MIN: "30" });
     assert.deepEqual([tuned.stockMinCoverPct, tuned.stockRecentreMaxPaybackHours, tuned.stockRecentreMaxWaitSec], [0.5, 0, 1800]);
   });
@@ -703,9 +705,45 @@ async function main(): Promise<void> {
     assert.equal(second.branch, "close");
     assert.match(second.decision.reasoning, /still hot but already had its extra cycle/);
   });
+  await test("the scout's travel sets the width: the larger of the hour and half the four hours; the tuner's multiple applies to pools that are not stocks; entry waits for an hour of coverage", () => {
+    const flow = { asOf: Date.now(), quoteSymbol: "SOL", swaps15m: 5, volume15mQuote: 1, fees15mQuote: 0.01, ours15mQuote: 0, swaps60m: 10, volume60mQuote: 4, fees60mQuote: 0.04, ours60mQuote: 0, swaps240m: 40, fees240mQuote: 0.2, coveredMin: 240, feesPerDayQuote240m: 1.2, range60mBins: 6, range240mBins: 13, feesPerDayQuote60m: 0.96, feesPerDayQuote15m: 0.96, lastPrice: null, lastSwapAt: null, largest15m: null };
+    const wide = { ...policy.policyEnv({}), maxCoverPct: 25 };
+    // GP/SOL on 2026-09-17: 6 bins in the hour, 13 in four -> 6.5 bins of 1% = 6.68% of price
+    const gp = policy.coverPctFor({ screen: { flow } as never, snapshot: { binStep: 100 } }, wide, 5, { priceChange1hPct: null });
+    assert.ok(Math.abs(gp.coverPct - (Math.pow(1.01, 6.5) - 1) * 100) < 1e-9, `cover ${gp.coverPct}`);
+    assert.match(gp.from, /1x: the price travelled 6\.68% \(6 bins in the last hour's swaps, 13 in four hours\)/);
+    const busyHour = policy.coverPctFor({ screen: { flow: { ...flow, range60mBins: 24 } } as never, snapshot: { binStep: 100 } }, wide, 5, { priceChange1hPct: null });
+    assert.ok(Math.abs(busyHour.coverPct - 25) < 1e-9, "24 bins of 1% is 26.97%: the 25% cap");
+    const tuned = policy.coverPctFor({ screen: { flow } as never, snapshot: { binStep: 100 } }, { ...wide, tunedVolMultiple: 1.25 }, 5, { priceChange1hPct: null });
+    assert.ok(Math.abs(tuned.coverPct - (Math.pow(1.01, 6.5) - 1) * 100 * 1.25) < 1e-9, "a memecoin pool takes the tuner's multiple");
+    const stock = policy.coverPctFor({ screen: { flow, stock: { ticker: "NVDA", issuer: "xstocks" } } as never, snapshot: { binStep: 100 } }, { ...wide, tunedVolMultiple: 1.25 }, 5, { priceChange1hPct: null });
+    assert.ok(Math.abs(stock.coverPct - (Math.pow(1.01, 6.5) - 1) * 100) < 1e-9, "a stock pool keeps the configured multiple");
+    const measuredWins = policy.coverPctFor({ screen: { flow, recentMovePct: 12 } as never, snapshot: { binStep: 100 } }, wide, 5, { priceChange1hPct: null });
+    assert.equal(measuredWins.coverPct, 12, "the loop's own samples count when they saw more travel");
+    const floor = policy.coverPctFor({ screen: { flow: { ...flow, range60mBins: 0, range240mBins: 1 } } as never, snapshot: { binStep: 100 } }, { ...wide, minCoverPct: 3 }, 5, { priceChange1hPct: null });
+    assert.equal(floor.coverPct, 3, "a quiet hour still lays POLICY_MIN_COVER_PCT");
+    // the entry gate: no reading, a short reading, an hour of it; a pick off the board carries its reading on the observation
+    const gated = { ...x, env: { requireFlow: true, minSeatYieldPct: 0, minScore: 0 } };
+    const none = policy.policyDecide(obs({}), gated);
+    assert.equal(none.branch, "flow-wait");
+    assert.match(none.reason, /has not read the pool yet/);
+    const short = policy.policyDecide(obs({ screen: { ...obs().screen!, flow: { ...flow, coveredMin: 18 } } }), gated);
+    assert.equal(short.branch, "flow-wait");
+    assert.match(short.reason, /covers 18 min < 60/);
+    assert.equal(short.decision.headline, "18 min of the scout's reading, 60 wanted. Waiting.");
+    assert.notEqual(policy.policyDecide(obs({ screen: { ...obs().screen!, flow } }), gated).branch, "flow-wait");
+    assert.notEqual(policy.policyDecide(obs({ screen: null, flow }), gated).branch, "flow-wait", "off the board: the reading rides on the observation");
+  });
   await test("price above the band (idle quote): HOLD under 3x the minimum, REBALANCE past it, CLOSE when a fresh band is gated", () => {
     const { pos, snap } = paperPos(263);
     const e = obs().engine!;
+    // POLICY_IDLE_RELAY_SEC: an all-quote band follows the price after two cycles, not 3x the minimum
+    const quick = { ...x, env: { idleRelaySec: 600 } };
+    const soon = policy.policyDecide(obs({ positions: [pos], engine: { ...e, outOfRangeSec: { [pos.address]: 500 } } }, snap), quick);
+    assert.equal(soon.branch, "idle-wait");
+    assert.match(soon.decision.reasoning, /Idle 500s of the 600s \(an all-quote band follows the price without a swap, POLICY_IDLE_RELAY_SEC\)/);
+    const relaid = policy.policyDecide(obs({ positions: [pos], wallet: { address: "w", sol: 50, token: 0, tokenSymbol: "ANSEM", quote: 50, quoteSymbol: "SOL" }, engine: { ...e, outOfRangeSec: { [pos.address]: 700 } } }, snap), quick);
+    assert.equal(relaid.branch, "rebalance", relaid.reason);
     const wait = policy.policyDecide(obs({ positions: [pos], engine: { ...e, outOfRangeSec: { [pos.address]: 1000 } } }, snap), x);
     assert.equal(wait.branch, "idle-wait");
     assert.match(wait.decision.reasoning, /3 bins above band .* Idle 1000s of the 1800s/);
