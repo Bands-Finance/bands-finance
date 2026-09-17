@@ -202,7 +202,7 @@ async function detection(): Promise<void> {
       runHotTick({
         dataDir: dir, screen: null, held: [], now, durations: ["1h"], fetchImpl: impl, sleep: async () => {},
         readFee: async () => null, feeCache: new Map(), siblingCache: cache, tradableVenue,
-        env: { minLiquidityUsd: 1000, minAgeHours: 12, siblingLookups, siblingMinVol24hUsd: 500_000, siblingTtlMin, onchainReads: 0, pumpswapPages: 0 },
+        env: { geckoterminal: true, minLiquidityUsd: 1000, minAgeHours: 12, siblingLookups, siblingMinVol24hUsd: 500_000, siblingTtlMin, onchainReads: 0, pumpswapPages: 0 },
         log: () => {},
       });
 
@@ -292,7 +292,7 @@ async function detection(): Promise<void> {
     const failed = await runHotTick({
       dataDir: dir2, screen: null, held: [], now: NOW, durations: ["1h"], fetchImpl: broken, sleep: async () => {},
       readFee: async () => null, feeCache: new Map(), siblingCache: new Map(), tradableVenue,
-      env: { minLiquidityUsd: 1000, siblingLookups: 6, onchainReads: 0, pumpswapPages: 0 }, log: () => {},
+      env: { geckoterminal: true,  minLiquidityUsd: 1000, siblingLookups: 6, onchainReads: 0, pumpswapPages: 0 }, log: () => {},
     });
     assert.equal(failed.rows.length, 1, "the trending row still lands");
     assert.equal(failed.sources.errors.length, 1);
