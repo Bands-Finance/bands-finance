@@ -1055,9 +1055,12 @@ function stockBandDecide(o: Observation, x: PolicyExtras, env: PolicyEnv, q: Quo
     // the token half idle (the executor clamped the token leg to a stale balance read, 2026-09-17). It
     // earns on one side and carries the stock exposure for nothing. Re-lay both halves; no swap is
     // needed, the wallet already has the token.
+    // The band's token side grows as the price climbs through it (the active bin turns quote into token),
+    // so the test is against a full straddle's token half: the band holds well under half of it while
+    // the wallet holds most of it.
     const tokenInBand = q.side === "X" ? band.amountY : band.amountX;
     const fix = sizeStraddle(o, x, q, env, band, now);
-    if (!fix.none && fix.amountToken > 0 && tokenInBand < 0.05 * fix.amountToken && o.wallet.token + 1e-9 >= 0.9 * fix.amountToken && fix.acquireToken <= 0) {
+    if (!fix.none && fix.amountToken > 0 && tokenInBand < 0.5 * fix.amountToken && o.wallet.token + 1e-9 >= 0.75 * fix.amountToken && fix.acquireToken <= 0) {
       const gate = openGate(o, limits, now);
       if (gate) {
         return hold(

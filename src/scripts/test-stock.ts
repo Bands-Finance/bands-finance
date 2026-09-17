@@ -357,6 +357,10 @@ async function main(): Promise<void> {
     assert.match(r.decision.reasoning, /holds only its USDC half: the wallet holds [\d.]+ SPYx, the token half, idle/);
     assert.match(r.reason, /half-laid: re-laying/);
     voice(r.decision);
+    // the price climbed a bin since: the active bin turned some of the USDC into SPYx; still half a straddle
+    const drifted = { ...half, amountX: 0.08, amountY: half.amountY - 0.08 * P };
+    const r2 = policy.policyDecide(obs({ positions: [drifted], wallet: { address: "w", sol: 100, token: tokenHalf, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" } }, inr.snap), x);
+    assert.equal(r2.branch, "rebalance", r2.reason);
     const empty = policy.policyDecide(obs({ positions: [half], wallet: { address: "w", sol: 100, token: 0, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" } }, inr.snap), x);
     assert.equal(empty.branch, "in-range", "no token in the wallet: nothing to re-lay with, the band holds");
     const whole = policy.policyDecide(obs({ positions: [inr.pos], wallet: { address: "w", sol: 100, token: tokenHalf, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" } }, inr.snap), x);
