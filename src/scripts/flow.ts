@@ -17,6 +17,7 @@ import path from "node:path";
 import { Connection, PublicKey, type VersionedTransactionResponse } from "@solana/web3.js";
 import { config } from "../config";
 import { decodeSwapEvents, dlmmInnerData, FLOW_EVENTS_FILE, FLOW_FILE, flowLine, flowPoolOf, poolsFromLatest, swapOf, trimSwaps, type FlowFile, type FlowSwap, type PoolMeta } from "../scouts/flow";
+import { decodeLbPair, flowPoolFromSamples, sampleOf, trimSamples, type AccountPoolMeta, type AccountSample } from "../scouts/accountFlow";
 
 const num = (v: string | undefined, d: number): number => {
   const n = Number(v ?? "");
@@ -216,7 +217,216 @@ async function poll(): Promise<void> {
   writeFile(now);
 }
 
+/* =====================================================================================================
+ * ACCOUNTS MODE (the default, FLOW_MODE=accounts): one getMultipleAccounts call per poll reads every
+ * watched pool's own account (src/scouts/accountFlow.ts). Watched: the desk's pools and picks (latest.json,
+ * flow-watch.json), FLOW_POOLS, and a standing list of the board's best (DATA_DIR/screen.json, top
+ * FLOW_BOARD_TOP by fee on depth over FLOW_BOARD_MIN_VOL_USD), so a candidate has hours of history before
+ * the picker wants it. Samples are seeded from the screener's own half-hourly history of the same counters
+ * (DATA_DIR/screen-history.json) and kept across restarts in DATA_DIR/flow-samples.json.
+ * FLOW_MODE=tx runs the first scout (every transaction decoded) unchanged.
+ * ===================================================================================================== */
+const SAMPLES_FILE = "flow-samples.json";
+const BOARD_TOP = Math.floor(num(process.env.FLOW_BOARD_TOP, 40));
+const BOARD_MIN_VOL_USD = num(process.env.FLOW_BOARD_MIN_VOL_USD, 100_000);
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+interface AccountWatch {
+  /** what is known before the first decode: the desk's meta, or a board row's (then the quote side waits for the account) */
+  meta: PoolMeta;
+  quoteSideKnown: boolean;
+  quoteMint: string | null;
+  full: AccountPoolMeta | null;
+  samples: AccountSample[];
+  seeded: boolean;
+}
+const accountWatches = new Map<string, AccountWatch>();
+let rpcCalls = 0;
+
+interface BoardRow { address: string; name: string; venue?: string; quoteSymbol: string; quoteMint?: string; baseDecimals: number; quoteDecimals: number; feeToTvl24hPct: number | null; volume24hUsd: number | null; flags?: string[] }
+function readBoard(): { meta: PoolMeta; quoteMint: string | null }[] {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(dataDir, "screen.json"), "utf8")) as { pools?: BoardRow[] };
+    return (j.pools ?? [])
+      .filter((p) => String(p.venue ?? "meteora-dlmm").includes("meteora") && (p.quoteSymbol === "SOL" || p.quoteSymbol === "USDC") && (p.volume24hUsd ?? 0) >= BOARD_MIN_VOL_USD && !(p.flags ?? []).includes("thin"))
+      .sort((a, b) => (b.feeToTvl24hPct ?? -1) - (a.feeToTvl24hPct ?? -1))
+      .slice(0, BOARD_TOP)
+      .map((p) => ({
+        // the quote side and which decimals are X's and Y's wait for the account (token_x_mint / token_y_mint)
+        meta: { address: p.address, label: p.name.replace(/\s*\/\s*/, "/"), quoteSide: "Y" as const, quoteSymbol: p.quoteSymbol, xDecimals: p.baseDecimals, yDecimals: p.quoteDecimals, band: null },
+        quoteMint: p.quoteMint ?? (p.quoteSymbol === "SOL" ? SOL_MINT : USDC_MINT),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function relistAccounts(): void {
+  const wanted = new Map<string, { meta: PoolMeta; quoteSideKnown: boolean; quoteMint: string | null }>();
+  for (const b of readBoard()) wanted.set(b.meta.address, { meta: b.meta, quoteSideKnown: false, quoteMint: b.quoteMint });
+  for (const p of readWatch()) wanted.set(p.address, { meta: { ...p, band: null }, quoteSideKnown: true, quoteMint: null });
+  for (const p of readLatest()) wanted.set(p.address, { meta: p, quoteSideKnown: true, quoteMint: null });
+  for (const a of (process.env.FLOW_POOLS ?? "").split(",").map((x) => x.trim()).filter(Boolean)) {
+    if (!wanted.has(a)) wanted.set(a, { meta: { address: a, label: a.slice(0, 8), quoteSide: "Y", quoteSymbol: "SOL", xDecimals: 6, yDecimals: 9, band: null }, quoteSideKnown: false, quoteMint: SOL_MINT });
+  }
+  for (const [addr, w] of wanted) {
+    const have = accountWatches.get(addr);
+    if (have) {
+      // the desk's meta wins over a board row's (it knows the quote side and our band); the samples stay
+      if (w.quoteSideKnown || !have.quoteSideKnown) {
+        const changedSide = have.full && w.quoteSideKnown && have.full.quoteSide !== w.meta.quoteSide;
+        have.meta = w.quoteSideKnown ? w.meta : { ...have.meta, band: have.meta.band };
+        have.quoteSideKnown = have.quoteSideKnown || w.quoteSideKnown;
+        if (have.full) have.full = { ...have.full, ...(w.quoteSideKnown ? w.meta : {}), band: w.quoteSideKnown ? w.meta.band : have.full.band };
+        if (changedSide) have.samples = []; // the counters were read on the wrong sides: start over
+      }
+    } else {
+      accountWatches.set(addr, { meta: w.meta, quoteSideKnown: w.quoteSideKnown, quoteMint: w.quoteMint, full: null, samples: [], seeded: false });
+    }
+  }
+  // a pool nobody wants any more keeps its samples for ten minutes (the picker's candidates come and go)
+  for (const [addr, w] of accountWatches) {
+    if (wanted.has(addr)) continue;
+    const last = w.samples.length ? w.samples[w.samples.length - 1].ts : 0;
+    if (Date.now() - last > 10 * 60_000) accountWatches.delete(addr);
+  }
+}
+
+/** The screener's half-hourly history of the same counters (raw units, base and quote): a coarse first four hours. */
+function seedFromScreenHistory(w: AccountWatch, full: AccountPoolMeta, now: number): void {
+  if (w.seeded) return;
+  w.seeded = true;
+  try {
+    const h = JSON.parse(fs.readFileSync(path.join(dataDir, "screen-history.json"), "utf8")) as Record<string, { t: number; fb: string; fq: string; bin: number }[]>;
+    const rows = (h[full.address] ?? []).filter((r) => now - r.t <= 4 * 3_600_000 + 60_000 && now - r.t > 0);
+    const seeds = rows.map((r) => {
+      const base = Number(r.fb);
+      const quote = Number(r.fq);
+      return full.quoteSide === "Y"
+        ? { ts: r.t, activeId: r.bin, feeX: base / Math.pow(10, full.xDecimals), feeY: quote / Math.pow(10, full.yDecimals) }
+        : { ts: r.t, activeId: r.bin, feeX: quote / Math.pow(10, full.xDecimals), feeY: base / Math.pow(10, full.yDecimals) };
+    });
+    if (seeds.length && !w.samples.length) w.samples = seeds.sort((a, b) => a.ts - b.ts);
+  } catch {
+    /* no history: coverage starts now */
+  }
+}
+
+function loadSamples(now: number): void {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(dataDir, SAMPLES_FILE), "utf8")) as { pools?: Record<string, { side: "X" | "Y"; samples: AccountSample[] }> };
+    for (const [addr, rec] of Object.entries(j.pools ?? {})) {
+      const w = accountWatches.get(addr);
+      if (!w || !Array.isArray(rec.samples)) continue;
+      // a board row's quote side is only a guess until the account is read: keep saved samples only when the side was recorded
+      w.samples = trimSamples(rec.samples.filter((x) => x && typeof x.ts === "number"), now);
+      if (w.samples.length) w.seeded = true;
+      (w as AccountWatch & { savedSide?: "X" | "Y" }).savedSide = rec.side;
+    }
+  } catch {
+    /* first run */
+  }
+}
+
+function saveSamples(now: number): void {
+  try {
+    const pools: Record<string, { side: "X" | "Y"; samples: AccountSample[] }> = {};
+    for (const [addr, w] of accountWatches) if (w.full && w.samples.length) pools[addr] = { side: w.full.quoteSide, samples: trimSamples(w.samples, now, 0, 30_000) };
+    const target = path.join(dataDir, SAMPLES_FILE);
+    const tmp = `${target}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ savedAt: new Date(now).toISOString(), pools }));
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    console.error(`[flow ${stamp()}] could not save samples: ${(err as Error).message.slice(0, 120)}`);
+  }
+}
+
+async function pollAccounts(): Promise<void> {
+  const now = Date.now();
+  const list = [...accountWatches.values()];
+  for (let i = 0; i < list.length; i += 100) {
+    const chunk = list.slice(i, i + 100);
+    let infos: (import("@solana/web3.js").AccountInfo<Buffer> | null)[];
+    try {
+      rpcCalls++;
+      infos = await connection.getMultipleAccountsInfo(chunk.map((w) => new PublicKey(w.meta.address)), "confirmed");
+    } catch (err) {
+      console.error(`[flow ${stamp()}] accounts read failed: ${(err as Error).message.slice(0, 140)}`);
+      continue;
+    }
+    infos.forEach((info, k) => {
+      const w = chunk[k];
+      if (!info) return;
+      try {
+        const d = decodeLbPair(info.data as Buffer);
+        if (!w.full) {
+          // settle the sides: the desk's meta says which side is the quote; a board row's is read off the mints
+          let meta = w.meta;
+          if (!w.quoteSideKnown && w.quoteMint) {
+            const quoteIsX = d.tokenXMint === w.quoteMint;
+            // a board row listed base then quote decimals: put them on the sides the account says
+            meta = quoteIsX ? { ...meta, quoteSide: "X", xDecimals: w.meta.yDecimals, yDecimals: w.meta.xDecimals } : { ...meta, quoteSide: "Y" };
+          }
+          w.full = { ...meta, binStep: d.binStep, protocolSharePct: d.protocolSharePct, baseFeePct: d.baseFeePct };
+          const saved = (w as AccountWatch & { savedSide?: "X" | "Y" }).savedSide;
+          if (saved && saved !== w.full.quoteSide) w.samples = [];
+          seedFromScreenHistory(w, w.full, now);
+          console.log(`[flow ${stamp()}] sampling ${w.full.label} (${w.full.address.slice(0, 8)}): ${w.full.binStep / 100}%/bin, base fee ${w.full.baseFeePct ?? "?"}%, protocol share ${w.full.protocolSharePct}%, quote on ${w.full.quoteSide}${w.samples.length ? `, ${w.samples.length} earlier samples from ${new Date(w.samples[0].ts).toISOString().slice(11, 16)}Z` : ""}${w.full.band ? `, our band [${w.full.band.lowerBinId}, ${w.full.band.upperBinId}]` : ""}`);
+        } else {
+          w.full = { ...w.full, band: w.meta.band, binStep: d.binStep, protocolSharePct: d.protocolSharePct, baseFeePct: d.baseFeePct };
+        }
+        const s = sampleOf(d, now, w.full.xDecimals, w.full.yDecimals);
+        const last = w.samples.length ? w.samples[w.samples.length - 1] : null;
+        // a sample when something moved, or every 30 s so the clock of the windows keeps running
+        if (!last || s.activeId !== last.activeId || s.feeX !== last.feeX || s.feeY !== last.feeY || now - last.ts >= 30_000) w.samples.push(s);
+      } catch (err) {
+        if (!w.full) console.error(`[flow ${stamp()}] ${w.meta.label}: ${(err as Error).message.slice(0, 120)}`);
+      }
+    });
+  }
+  const pools = list.filter((w) => w.full).map((w) => flowPoolFromSamples(w.full!, w.samples, now));
+  const file: FlowFile = { generatedAt: new Date(now).toISOString(), pollSec: POLL_MS / 1000, pools };
+  const target = path.join(dataDir, FLOW_FILE);
+  const tmp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(file));
+  fs.renameSync(tmp, target);
+}
+
+async function mainAccounts(): Promise<void> {
+  fs.mkdirSync(dataDir, { recursive: true });
+  console.log(`[flow] account scout up: DATA_DIR=${config.dataDir}, poll ${POLL_MS / 1000}s, board top ${BOARD_TOP}, rpc ${/helius/.test(config.rpcUrl) ? "helius" : "other"}`);
+  relistAccounts();
+  loadSamples(Date.now());
+  let lastRelist = Date.now();
+  let lastSave = Date.now();
+  let lastLine = Date.now();
+  for (;;) {
+    const t0 = Date.now();
+    if (t0 - lastRelist >= RELIST_MS) {
+      relistAccounts();
+      lastRelist = t0;
+    }
+    await pollAccounts();
+    const now = Date.now();
+    for (const w of accountWatches.values()) if (w.samples.length > 400) w.samples = trimSamples(w.samples, now);
+    if (now - lastSave >= 5 * 60_000) {
+      saveSamples(now);
+      lastSave = now;
+    }
+    if (now - lastLine >= 60_000) {
+      lastLine = now;
+      const all = [...accountWatches.values()].filter((w) => w.full);
+      const traded = all.filter((w) => w.samples.length > 1 && now - (flowPoolFromSamples(w.full!, w.samples, now).lastSwapAt ?? 0) <= 60_000).length;
+      console.log(`[flow ${stamp()}] ${all.length} pools sampled, ${traded} traded in the last minute, ${rpcCalls} account reads since the start`);
+      for (const w of all) if (w.full!.band) console.log(flowLine(flowPoolFromSamples(w.full!, w.samples, now), POLL_MS, now));
+    }
+    await sleep(Math.max(500, POLL_MS - (Date.now() - t0)));
+  }
+}
+
 async function main(): Promise<void> {
+  if ((process.env.FLOW_MODE ?? "accounts").trim().toLowerCase() !== "tx") return mainAccounts();
   fs.mkdirSync(dataDir, { recursive: true });
   console.log(`[flow] scout up: DATA_DIR=${config.dataDir}, poll ${POLL_MS / 1000}s, rpc ${/helius/.test(config.rpcUrl) ? "helius" : "other"}`);
   relist();
