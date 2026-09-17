@@ -17,7 +17,7 @@ import { BrandPlates } from "./components/Brand";
  * move, one sentence each). The same journal and the same model as bands.finance.
  */
 export default function DashboardApp() {
-  const { entries, screen, equity, error, now, embedded } = useJournalFeed();
+  const { entries, screen, equity, error, now, embedded, stamp } = useJournalFeed();
 
   const agents = useMemo(() => (entries ? groupAgents(entries) : []), [entries]);
   const selected = agents[0] ?? null;
@@ -61,7 +61,7 @@ export default function DashboardApp() {
   return (
     <div className="dash">
       <DashNav status={status} agentName={agentName} />
-      <DashNote narrative={narrative} record={record} summary={selected} solPriceUsd={solPriceUsd} status={status} walletAddress={walletAddress} agentName={agentName} now={now} />
+      <DashNote narrative={narrative} record={record} summary={selected} solPriceUsd={solPriceUsd} status={status} walletAddress={walletAddress} agentName={agentName} now={now} stamp={stamp} />
       <main className="dash__main">
         {error && !entries && (
           <div className="error">

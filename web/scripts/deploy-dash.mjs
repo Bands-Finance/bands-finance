@@ -23,7 +23,9 @@ if (!link.projectId || !link.orgId) {
   process.exit(2);
 }
 const preview = process.argv.includes("--preview");
-const args = ["deploy", "--yes", "--build-env", "VITE_SITE=dashboard", preview ? "--target=preview" : "--prod"];
+// the live feed the desk uploads every cycle (src/publish/live.ts): baked in as VITE_LIVE_URL when the env names it
+const liveUrl = (process.env.LIVE_FEED_URL ?? "").trim();
+const args = ["deploy", "--yes", "--build-env", "VITE_SITE=dashboard", ...(liveUrl ? ["--build-env", `VITE_LIVE_URL=${liveUrl}`] : []), preview ? "--target=preview" : "--prod"];
 const r = spawnSync("vercel", args, {
   cwd: path.join(root, "web"),
   stdio: "inherit",

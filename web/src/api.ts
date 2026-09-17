@@ -22,22 +22,80 @@ let limitsSource: string | null = null;
 
 export const isEmbedded = () => Boolean(window.__BANDS_DATA__?.entries);
 
-async function fetchJson(url: string): Promise<unknown> {
-  const res = await fetch(url, { headers: { accept: "application/json" }, cache: "no-store" });
+async function fetchJson(url: string, cache: RequestCache = "no-store"): Promise<unknown> {
+  const res = await fetch(url, { headers: { accept: "application/json" }, cache });
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
   return res.json();
 }
 
+/**
+ * THE LIVE FEED (VITE_LIVE_URL): one JSON file the desk uploads after every cycle (src/publish/live.ts):
+ * the journal's newest entries, the equity history, the limits and the SOL price. It comes before every
+ * other source, so the page shows the desk's last cycle, not the last rebuild. One request serves all
+ * the loaders of a poll (kept for five seconds), revalidated with the CDN each time ("no-cache": a 304
+ * when nothing changed). A feed that does not answer, or is more than two hours old while another
+ * source is newer, falls through to the sources below.
+ */
+export interface LiveFeed {
+  generatedAt: string;
+  cycle: number | null;
+  mode: string | null;
+  entries: JournalEntry[];
+  points: EquityHistoryPoint[];
+  limits: RiskLimits;
+  solPriceUsd: number | null;
+}
+const LIVE_URL = env.VITE_LIVE_URL?.trim() || "";
+let liveAt = 0;
+let livePending: Promise<LiveFeed | null> | null = null;
+export function loadLiveFeed(): Promise<LiveFeed | null> {
+  if (!LIVE_URL || window.__BANDS_DATA__?.entries) return Promise.resolve(null);
+  const now = Date.now();
+  if (livePending && now - liveAt < 5_000) return livePending;
+  liveAt = now;
+  livePending = fetchJson(LIVE_URL, "no-cache")
+    .then((j) => {
+      const f = j as LiveFeed;
+      return f && Array.isArray(f.entries) && typeof f.generatedAt === "string" ? f : null;
+    })
+    .catch(() => null);
+  return livePending;
+}
+
+/** Where the data on the page came from and when it was written: for the page's "updated" word. */
+export interface DataStamp {
+  source: "live" | "api" | "snapshot" | "embedded";
+  generatedAt: number | null;
+}
+let stamp: DataStamp = { source: "snapshot", generatedAt: null };
+export const dataStamp = (): DataStamp => stamp;
+const LIVE_MAX_AGE_MS = 2 * 3_600_000;
+
 export async function loadJournal(limit = 600): Promise<JournalEntry[]> {
-  if (window.__BANDS_DATA__?.entries) return window.__BANDS_DATA__.entries;
+  if (window.__BANDS_DATA__?.entries) {
+    stamp = { source: "embedded", generatedAt: null };
+    return window.__BANDS_DATA__.entries;
+  }
+  const live = await loadLiveFeed();
+  if (live && Date.now() - Date.parse(live.generatedAt) < LIVE_MAX_AGE_MS) {
+    stamp = { source: "live", generatedAt: Date.parse(live.generatedAt) };
+    return live.entries;
+  }
   const candidates = journalSource ? [journalSource] : [env.VITE_JOURNAL_URL, `${base}/api/journal?limit=${limit}`, `${base}/journal.json`].filter((u): u is string => Boolean(u));
   let lastErr: Error | null = null;
   for (const url of candidates) {
     try {
-      const json = (await fetchJson(url)) as { entries?: JournalEntry[] } | JournalEntry[];
+      const json = (await fetchJson(url)) as { entries?: JournalEntry[]; generatedAt?: string } | JournalEntry[];
       const entries = Array.isArray(json) ? json : json.entries;
       if (!Array.isArray(entries)) throw new Error(`${url}: no entries`);
       journalSource = url;
+      const at = !Array.isArray(json) && json.generatedAt ? Date.parse(json.generatedAt) : NaN;
+      // a live feed that is old but still newer than this source wins (the desk may be down; the rebuilds stop with it)
+      if (live && Number.isFinite(at) && Date.parse(live.generatedAt) > at) {
+        stamp = { source: "live", generatedAt: Date.parse(live.generatedAt) };
+        return live.entries;
+      }
+      stamp = { source: url.includes("/api/") ? "api" : "snapshot", generatedAt: Number.isFinite(at) ? at : null };
       return entries;
     } catch (err) {
       lastErr = err as Error;
@@ -48,6 +106,8 @@ export async function loadJournal(limit = 600): Promise<JournalEntry[]> {
 
 export async function loadLimits(): Promise<RiskLimits | null> {
   if (window.__BANDS_DATA__?.limits) return window.__BANDS_DATA__.limits;
+  const live = await loadLiveFeed();
+  if (live?.limits && typeof live.limits.maxPositionSol === "number") return live.limits;
   const candidates = limitsSource ? [limitsSource] : [env.VITE_LIMITS_URL, `${base}/api/limits`, `${base}/limits.json`].filter((u): u is string => Boolean(u));
   for (const url of candidates) {
     try {
@@ -70,6 +130,8 @@ export async function loadLimits(): Promise<RiskLimits | null> {
 let equitySource: string | null = null;
 export async function loadEquity(): Promise<EquityHistoryPoint[] | null> {
   if (window.__BANDS_DATA__?.entries) return window.__BANDS_DATA__.equity ?? null;
+  const live = await loadLiveFeed();
+  if (live && Array.isArray(live.points) && stamp.source === "live") return live.points.filter((p) => p && typeof p.t === "number" && typeof p.equitySol === "number" && Number.isFinite(p.equitySol));
   const candidates = equitySource ? [equitySource] : [env.VITE_EQUITY_URL, `${base}/api/equity`, `${base}/equity.json`].filter((u): u is string => Boolean(u));
   for (const url of candidates) {
     try {

@@ -4,6 +4,7 @@ import { ago, short } from "../format";
 import { type AgentRecord, type Status } from "../model";
 import type { AgentSummary } from "../derive";
 import type { Narrative } from "../narrative";
+import type { DataStamp } from "../api";
 import { num } from "../narrative";
 import { PLATFORM_URL } from "../site";
 import { BrandFigure, BrandPortrait } from "./Brand";
@@ -65,7 +66,18 @@ export interface DashNoteProps {
   walletAddress: string | null;
   agentName: string;
   now: number;
+  /** where the page's data came from and when that source was written */
+  stamp?: DataStamp;
 }
+
+/** "live, written 40 sec ago" / "snapshot, 17 min old": the page says how fresh it is. */
+const stampWord = (stamp: DataStamp | undefined, now: number): string | null => {
+  if (!stamp || stamp.source === "embedded") return null;
+  const age = stamp.generatedAt ? ago(stamp.generatedAt, now) : null;
+  if (stamp.source === "live") return age ? `live, written ${age}` : "live";
+  if (stamp.source === "api") return age ? `the desk's own server, ${age}` : "the desk's own server";
+  return age ? `a snapshot from ${age}` : "a snapshot";
+};
 
 const usd = (sol: number, px: number | null): string | null => {
   if (px === null || !Number.isFinite(px) || px <= 0) return null;
@@ -74,7 +86,7 @@ const usd = (sol: number, px: number | null): string | null => {
 };
 const dateWord = (t: number) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
-export function DashNote({ narrative, record, summary, solPriceUsd, status, walletAddress, agentName, now }: DashNoteProps) {
+export function DashNote({ narrative, record, summary, solPriceUsd, status, walletAddress, agentName, now, stamp }: DashNoteProps) {
   const live = status.mode === "live";
   const fees = record ? record.feesRealized + record.feesUnclaimed : null;
   const rows: { label: string; value: ReactNode }[] = [
@@ -85,6 +97,7 @@ export function DashNote({ narrative, record, summary, solPriceUsd, status, wall
     { label: "Bands", value: summary ? `${summary.bandsOpen} open, ${summary.bandsInRange} in range` : "·" },
     { label: "Decisions", value: record ? `${record.counts.decisions.toLocaleString()}, ${record.counts.holds.toLocaleString()} of them holds` : "·" },
     { label: "Last decision", value: status.lastTs ? ago(status.lastTs, now) : "none yet" },
+    ...(stampWord(stamp, now) ? [{ label: "This page", value: stampWord(stamp, now)! }] : []),
   ];
   const tone = record ? (record.net >= 0.05 ? "up" : record.net <= -0.05 ? "down" : "flat") : "flat";
   return (

@@ -81,6 +81,7 @@ import { createPairVenue, hotRowForPool, isPairPool as isPairVenuePool } from ".
 import { pairStockCandidateFor, pairStockCandidatesOf, pairStockEnv, pairStockReserve, pairStockSeats, pairStockSeatSol, chooseStockFeeBps, stockPairModel, type PairStockCandidate } from "./screener/pairStock";
 import { coveragePct, MIN_BAND_SOL, stockBinsPerSide } from "./agent/policy";
 import { earlyCycleAllowed, fastEnv, fastTrigger, type WatchedBand } from "./engine/fastwatch";
+import { buildLiveFeed, liveFeedOn, publishLiveFeed } from "./publish/live";
 import { appendLesson, endReasonOf, LESSONS_FILE, lessonLine, lessonOf, readLessons, readTuning, TUNING_FILE, tuneEnv, tuneFromLessons, writeTuning, type BandMeta } from "./learn/lessons";
 import { loadHotFileCached } from "./hot/store";
 import type { ScreenResult } from "./screener/types";
@@ -2019,6 +2020,17 @@ async function runIteration(app: App): Promise<void> {
     }
   }
   await runSkim(app);
+  // THE LIVE FEED (src/publish/live.ts): the sites poll one small file; it is uploaded every cycle, with no rebuild.
+  // Never awaited past 20 s and never fatal: the desk does not wait on a website.
+  if (liveFeedOn() && entries.length > 0 && !paper) {
+    const started = Date.now();
+    try {
+      const out = await Promise.race([publishLiveFeed(buildLiveFeed({ cycle: app.cycle })), new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timed out after 20s")), 20_000))]);
+      console.log(`[live] cycle ${app.cycle} published: ${Math.round(out.bytes / 1024)} KB in ${Date.now() - started} ms`);
+    } catch (err) {
+      console.error(`[live] cycle ${app.cycle} not published: ${(err as Error).message.slice(0, 160)}`);
+    }
+  }
   // The site shows what the desk just did: push once the cycle's decisions are on disk, throttled.
   // (Deploying right after the screen would ship a journal that stops at the previous cycle, and an
   // empty one on the very first run.)
