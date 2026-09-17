@@ -73,6 +73,16 @@ const close = (positionAddress: string, reasoning: string, headline: string, liq
   ...(liquidate ? { liquidate: true } : {}),
 });
 
+/** PURE. The rotation's headline from its reason: the exit list, a faded seat, consolidation, a better seat, or a pin. */
+export function rotateHeadline(reason: string): string {
+  const r = reason.toLowerCase();
+  if (r.includes("operator's exit list")) return "Off the book by the operator's list. This band comes off.";
+  if (r.includes("its own flow faded")) return "Its flow faded. This band comes off.";
+  if (r.includes("already held")) return "Consolidating into the best seat. This band comes off.";
+  if (r.includes("would earn about")) return "A better seat is open. This band comes off.";
+  return "Making room for the pair. This band comes off.";
+}
+
 export function engineDirective(ctx: DirectiveContext): Directive | null {
   const { now, positions, state } = ctx;
 
@@ -150,7 +160,8 @@ export function engineDirective(ctx: DirectiveContext): Directive | null {
     };
   }
 
-  // ROTATE: the book is full and a pinned stock needs the seat. The largest band in the pool comes off, liquidated.
+  // ROTATE: a seat is given up (a pin needs it, the yield ranking or the seat check found better, the
+  // operator listed it). The largest band in the pool comes off, liquidated; the headline says which.
   if (ctx.rotate && positions.length > 0) {
     const target = [...positions].sort((a, b) => b.valueInSol - a.valueInSol)[0];
     return {
@@ -159,7 +170,7 @@ export function engineDirective(ctx: DirectiveContext): Directive | null {
       decision: close(
         target.address,
         `Engine directive ROTATE: ${ctx.rotate.reason}. Closing ${target.address.slice(0, 6)} (${target.valueInSol.toFixed(4)} SOL) and selling its token back to the quote; the seat goes to the pin next cycle${positions.length > 1 ? `, and ${positions.length - 1} more band(s) in this pool follow` : ""}.`,
-        "Making room for the pair. This band comes off.",
+        rotateHeadline(ctx.rotate.reason),
         true,
       ),
     };
