@@ -22,7 +22,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { paperEnabled } from "./paper/env";
 import { config, riskLimits } from "./config";
-import { dataDir, readRecent } from "./journal";
+import { dataDir, readEquity, readRecent } from "./journal";
 import { loadScreen } from "./screener";
 import { setSolPriceUsd } from "./tools/dlmm";
 import { engineRoutes } from "./engine/routes";
@@ -59,6 +59,11 @@ export function buildApp(): Hono {
     let entries = readRecent(limit);
     if (agent) entries = entries.filter((e) => (e.agent?.id ?? "mr-bands") === agent);
     return c.json({ entries, generatedAt: new Date().toISOString() });
+  });
+
+  app.get("/api/equity", (c) => {
+    const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 20_000), 1), 100_000);
+    return c.json({ points: readEquity(limit), generatedAt: new Date().toISOString() });
   });
 
   app.get("/api/limits", (c) => c.json(riskLimits));

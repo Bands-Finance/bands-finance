@@ -1,0 +1,274 @@
+/**
+ * The site's money math (web/src/derive.ts, web/src/model.ts), on fixtures. The one rule under test:
+ * every figure is read per CYCLE (the whole book at one moment), never from the last entry of each
+ * pool ever worked. The bug of 2026-09-16: a pool closed a day earlier still listed its band in its
+ * last entry, so "the book" carried a 50 SOL band that no longer existed and "started with" was one
+ * pool's entry instead of the first cycle's, printing +228 SOL on a desk that was down 40.
+ *   npx tsx src/scripts/test-web-model.ts
+ */
+import assert from "node:assert/strict";
+import { bookOf, recordOf } from "../../web/src/model";
+import { bookCycle, completeCycles, cycleEquity, cyclesOf, equitySeriesOf, summarize } from "../../web/src/derive";
+import type { EquityHistoryPoint, JournalEntry, Position } from "../../web/src/types";
+
+let passed = 0;
+async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
+  try {
+    await fn();
+    passed++;
+    console.log(`  ok  ${name}`);
+  } catch (err) {
+    console.log(`FAIL  ${name}`);
+    console.log(err);
+    process.exitCode = 1;
+  }
+}
+
+const T0 = Date.parse("2026-09-16T00:00:00Z");
+const RENT = 0.0574;
+
+function band(address: string, valueInSol: number, o: Partial<Position> = {}): Position {
+  return {
+    address,
+    lowerBinId: 90,
+    upperBinId: 110,
+    lowerPrice: 0.9,
+    upperPrice: 1.1,
+    widthBins: 21,
+    inRange: true,
+    binsFromRange: 0,
+    amountX: 0,
+    amountY: valueInSol,
+    feeX: 0,
+    feeY: 0,
+    valueInSol,
+    solInPosition: valueInSol,
+    quoteInPosition: valueInSol,
+    lastUpdatedAt: 0,
+    entryValueSol: valueInSol,
+    ...o,
+  } as Position;
+}
+
+interface EntryOpts {
+  cycle: number;
+  /** minutes after T0 */
+  min: number;
+  pool: string;
+  sol: number;
+  usdc?: number;
+  positions?: Position[];
+  action?: JournalEntry["decision"]["action"];
+  closed?: string;
+  executed?: boolean;
+}
+
+function entry(o: EntryOpts): JournalEntry {
+  const usdcQuoted = o.usdc !== undefined;
+  const action = o.action ?? "HOLD";
+  const executed = o.executed ?? action !== "HOLD";
+  const decision = { action, open: null, positionAddress: o.positions?.[0]?.address ?? null, reasoning: "r", confidence: 0.7, headline: "h" };
+  return {
+    id: `${o.cycle}-${o.pool}-${o.min}`,
+    ts: new Date(T0 + o.min * 60_000).toISOString(),
+    cycle: o.cycle,
+    mode: "paper",
+    agent: { id: "mr-bands", name: "Mr Bands" },
+    pool: {
+      address: o.pool,
+      label: `${o.pool}/${usdcQuoted ? "USDC" : "SOL"}`,
+      tokenX: { symbol: o.pool, decimals: 6 },
+      tokenY: { symbol: usdcQuoted ? "USDC" : "SOL", decimals: usdcQuoted ? 6 : 9 },
+      solSide: usdcQuoted ? null : "Y",
+      binStep: 20,
+      activeBinId: 100,
+      price: usdcQuoted ? 100 : 1,
+      priceLabel: "quote per token",
+      tokenPriceInSol: 1,
+      baseFeePct: 0.2,
+      dynamicFeePct: 0.2,
+      bins: [],
+      quoteSymbol: usdcQuoted ? "USDC" : "SOL",
+      quoteSide: "Y",
+      quotePriceInSol: usdcQuoted ? 0.01 : 1,
+      tokenPriceInQuote: usdcQuoted ? 100 : 1,
+      venue: "meteora-dlmm",
+    },
+    wallet: { address: "wallet1", sol: o.sol, token: 0, tokenSymbol: o.pool, ...(usdcQuoted ? { quote: o.usdc, quoteSymbol: "USDC" } : { quote: o.sol, quoteSymbol: "SOL" }) } as JournalEntry["wallet"],
+    positions: o.positions ?? [],
+    analytics: null,
+    llm: { source: "policy", model: "desk-policy" },
+    proposal: decision,
+    decision,
+    allowed: true,
+    violations: [],
+    overrides: [],
+    passed: [],
+    emergency: false,
+    execution: { mode: "paper", ok: true, txs: executed ? [{ label: "x", ok: true, skipped: "paper" }] : [], notes: [], ledger: [], ...(o.closed ? { closed: o.closed } : {}) } as unknown as JournalEntry["execution"],
+    headline: "h",
+  } as unknown as JournalEntry;
+}
+
+/**
+ * Three pools, four cycles. AAA holds a 20 SOL band throughout; BBB (USDC-quoted) holds a 50 SOL band
+ * and CLOSES it in cycle 2 (its last entry, the close, still lists the band); CCC opens a 10 SOL band
+ * in cycle 3. The wallet: 5 SOL and 1,000 USDC (10 SOL at 0.01) until BBB's close returns 50 SOL of
+ * USDC in cycle 3. Cycle 1 is cut in the window: only its last entry (BBB) is present.
+ */
+function fixture(): JournalEntry[] {
+  const a = (cycle: number, min: number) => entry({ cycle, min, pool: "AAA", sol: 5, positions: [band("a1", 20)] });
+  const chrono: JournalEntry[] = [
+    // cycle 1, partial: AAA's entry fell off the window
+    entry({ cycle: 1, min: 1, pool: "BBB", sol: 5, usdc: 1000, positions: [band("b1", 50)] }),
+    // cycle 2: BBB closes its band (the entry still lists it, pre-close)
+    a(2, 10),
+    entry({ cycle: 2, min: 11, pool: "BBB", sol: 5, usdc: 1000, positions: [band("b1", 50)], action: "CLOSE_POSITION", closed: "b1" }),
+    // cycle 3: BBB is gone; the wallet holds its 50 SOL as USDC; CCC opens
+    a(3, 20),
+    entry({ cycle: 3, min: 21, pool: "CCC", sol: 5, usdc: 6000, positions: [], action: "OPEN_POSITION" }),
+    // cycle 4: CCC's band is on the book
+    a(4, 30),
+    entry({ cycle: 4, min: 31, pool: "CCC", sol: 5, usdc: 5000, positions: [band("c1", 10)] }),
+  ];
+  return [...chrono].reverse();
+}
+
+async function main() {
+  console.log("cycles");
+  await test("cyclesOf groups the journal by cycle, oldest first; completeCycles drops a cut oldest cycle and never the newest", () => {
+    const cycles = cyclesOf(fixture());
+    assert.deepEqual(cycles.map((c) => [c.cycle, c.entries.length]), [[1, 1], [2, 2], [3, 2], [4, 2]]);
+    const complete = completeCycles(cycles);
+    assert.deepEqual(complete.map((c) => c.cycle), [2, 3, 4], "cycle 1 has fewer entries than cycle 2: cut by the window");
+    assert.deepEqual(completeCycles(cycles.slice(1)).map((c) => c.cycle), [2, 3, 4], "a full oldest cycle stays");
+    assert.deepEqual(completeCycles([cycles[3]]).map((c) => c.cycle), [4], "one cycle is kept");
+  });
+
+  await test("cyclesOf: a restarted desk's cycle 1 is not merged with the last run's cycle 1; a pool written twice, or a three-minute gap, starts a new cycle", () => {
+    const chrono = [...fixture()].reverse();
+    // the desk restarts: cycle 1 again, an hour later, AAA and CCC
+    const restarted = [...chrono, entry({ cycle: 1, min: 90, pool: "AAA", sol: 5, positions: [band("a1", 20)] }), entry({ cycle: 1, min: 91, pool: "CCC", sol: 5, usdc: 5000, positions: [band("c1", 10)] })].reverse();
+    const cycles = cyclesOf(restarted);
+    assert.deepEqual(cycles.map((c) => [c.cycle, c.entries.length]), [[1, 1], [2, 2], [3, 2], [4, 2], [1, 2]]);
+    assert.deepEqual(bookOf(restarted).bands.map((b) => b.address).sort(), ["a1", "c1"], "the new run's cycle 1 is the book, alone");
+    // the same cycle number, same pool, 10 minutes apart: two cycles
+    const gap = [entry({ cycle: 7, min: 0, pool: "AAA", sol: 5, positions: [band("a1", 20)] }), entry({ cycle: 7, min: 10, pool: "AAA", sol: 5, positions: [band("a1", 20)] })].reverse();
+    assert.equal(cyclesOf(gap).length, 2);
+    assert.ok(Math.abs(recordOf(gap)!.equityNow - (5 + 20 + RENT)) < 1e-9, "one band, not two");
+  });
+
+  await test("cycleEquity: wallet SOL + the USDC leg at the SOL price + every band with its rent, once", () => {
+    const cycles = cyclesOf(fixture());
+    // cycle 2: 5 SOL + 1,000 USDC (10 SOL) + AAA 20 + BBB 50 + 2 x rent
+    assert.ok(Math.abs(cycleEquity(cycles[1]) - (5 + 10 + 20 + 50 + 2 * RENT)) < 1e-9, `cycle 2 ${cycleEquity(cycles[1])}`);
+    // cycle 4: 5 SOL + 5,000 USDC (50 SOL) + AAA 20 + CCC 10 + 2 x rent; BBB's closed band is gone
+    assert.ok(Math.abs(cycleEquity(cycles[3]) - (5 + 50 + 20 + 10 + 2 * RENT)) < 1e-9, `cycle 4 ${cycleEquity(cycles[3])}`);
+    const series = equitySeriesOf(fixture());
+    assert.equal(series.length, 3, "the cut cycle is not a point");
+    assert.ok(Math.abs(series[0].equity - cycleEquity(cycles[1])) < 1e-9);
+  });
+
+  console.log("the book and the record");
+  await test("bookOf: the bands of the newest cycle only; a pool whose band closed a cycle ago is not on the book", () => {
+    const book = bookOf(fixture());
+    assert.deepEqual(book.bands.map((b) => b.address).sort(), ["a1", "c1"]);
+    assert.ok(book.bands.every((b) => b.address !== "b1"), "BBB's closed band must not linger from its last entry");
+  });
+
+  await test("bookCycle: a pool the desk did not write this cycle keeps its band for one cycle unless its last entry closed it", () => {
+    const chrono = [...fixture()].reverse();
+    // cycle 5 writes CCC only: AAA's read failed. AAA's cycle-4 entry still holds a1 and did not close: carried.
+    const skipped = [...chrono, entry({ cycle: 5, min: 40, pool: "CCC", sol: 5, usdc: 5000, positions: [band("c1", 10)] })].reverse();
+    assert.deepEqual(bookCycle(skipped)!.entries.map((e) => e.pool.address).sort(), ["AAA", "CCC"]);
+    assert.deepEqual(bookOf(skipped).bands.map((b) => b.address).sort(), ["a1", "c1"]);
+    assert.ok(Math.abs(recordOf(skipped)!.equityNow - (5 + 50 + 20 + 10 + 2 * RENT)) < 1e-9, "the carried band counts in the book's equity");
+    // two cycles without AAA: the carry is one cycle only
+    const twice = [...[...skipped].reverse(), entry({ cycle: 6, min: 50, pool: "CCC", sol: 5, usdc: 5000, positions: [band("c1", 10)] })].reverse();
+    assert.deepEqual(bookCycle(twice)!.entries.map((e) => e.pool.address), ["CCC"]);
+    // BBB closed in cycle 2 and is absent from cycle 3: never carried
+    assert.deepEqual(bookCycle(chrono.slice(0, 5).reverse())!.entries.map((e) => e.pool.address).sort(), ["AAA", "CCC"]);
+  });
+
+  await test("summarize: bands open / in range count the newest cycle's bands", () => {
+    const s = summarize("mr-bands", "Mr Bands", fixture());
+    assert.equal(s.bandsOpen, 2);
+    assert.equal(s.bandsInRange, 2);
+  });
+
+  await test("recordOf without history: started with the first complete cycle, the book is the newest cycle, net is their difference", () => {
+    const r = recordOf(fixture())!;
+    const cycles = cyclesOf(fixture());
+    assert.equal(r.sinceStart, false);
+    assert.equal(r.hedge, null);
+    assert.equal(r.startTs, cycles[1].t, "cycle 2, the first complete one");
+    assert.ok(Math.abs(r.startEquity - cycleEquity(cycles[1])) < 1e-9);
+    assert.ok(Math.abs(r.equityNow - cycleEquity(cycles[3])) < 1e-9);
+    assert.ok(Math.abs(r.net - (cycleEquity(cycles[3]) - cycleEquity(cycles[1]))) < 1e-9);
+    assert.ok(Math.abs(r.atWork - 30) < 1e-9, "AAA 20 + CCC 10 at work; not BBB's 50");
+    assert.ok(Math.abs(r.rent - 2 * RENT) < 1e-9);
+    assert.equal(r.quote?.symbol, "USDC");
+    assert.ok(Math.abs(r.quote!.inSol - 50) < 1e-9, "5,000 USDC at 0.01 SOL");
+    assert.equal(r.counts.pools, 3, "three pools were worked in the window");
+    assert.equal(r.days.length, 1);
+    assert.ok(Math.abs(r.days[0].open - r.startEquity) < 1e-9);
+    assert.ok(Math.abs(r.days[0].close - r.equityNow) < 1e-9);
+  });
+
+  await test("recordOf with history: start, now, net, hedge and the daily rows come from the desk's own points, mode-matched; fees since the start from the claimed tally", () => {
+    const pt = (o: Partial<EquityHistoryPoint>): EquityHistoryPoint => ({
+      t: T0,
+      cycle: 1,
+      agent: "mr-bands",
+      mode: "paper",
+      equitySol: 100,
+      walletSol: 5,
+      quoteSol: 10,
+      quoteUsdc: 1000,
+      bandsSol: 85,
+      tokensSol: 0,
+      hedgeSol: 0,
+      bands: 2,
+      pools: 2,
+      feesClaimedSol: 0,
+      solPriceUsd: 100,
+      ...o,
+    });
+    const day1 = T0 - 36 * 3600e3; // two days before
+    const history = [
+      pt({ t: day1, cycle: 1, equitySol: 250, feesClaimedSol: 0 }),
+      pt({ t: day1 + 3600e3, cycle: 2, equitySol: 240, feesClaimedSol: 1 }),
+      pt({ t: T0 - 12 * 3600e3, cycle: 40, equitySol: 230, feesClaimedSol: 3 }),
+      pt({ t: T0 + 31 * 60_000, cycle: 4, equitySol: 84.9, hedgeSol: -0.8, feesClaimedSol: 4.5 }),
+      // a live point must not leak into a paper record
+      pt({ t: T0 + 32 * 60_000, cycle: 4, mode: "live", equitySol: 1 }),
+    ];
+    const r = recordOf(fixture(), history)!;
+    assert.equal(r.sinceStart, true);
+    assert.equal(r.startTs, day1);
+    assert.equal(r.startEquity, 250);
+    assert.equal(r.equityNow, 84.9);
+    assert.ok(Math.abs(r.net - (84.9 - 250)) < 1e-9);
+    assert.equal(r.hedge, -0.8);
+    assert.equal(r.feesRealized, 4.5, "claimed since the first point");
+    assert.deepEqual(r.days.map((d) => d.date), [new Date(day1).toISOString().slice(0, 10), "2026-09-15", "2026-09-16"].filter((v, i, a) => a.indexOf(v) === i));
+    const d0 = r.days[0];
+    assert.equal(d0.open, 250);
+    assert.equal(d0.close, 240);
+    assert.equal(d0.fees, 1);
+    const last = r.days[r.days.length - 1];
+    assert.equal(last.close, 84.9);
+    assert.ok(Math.abs(last.fees - 1.5) < 1e-9, "4.5 claimed by the end of the day, 3 by the end of the day before");
+    assert.ok(Math.abs(r.atWork - 30) < 1e-9, "the book split is still the newest cycle's");
+    // stale history (its last point long before the newest cycle) is not trusted for "now"
+    const stale = recordOf(fixture(), history.slice(0, 3))!;
+    assert.equal(stale.sinceStart, false);
+  });
+
+  console.log(`\n${passed} web model tests passed`);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

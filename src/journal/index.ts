@@ -197,6 +197,49 @@ export function toJournalPool(s: PoolSnapshot): JournalPool {
 
 export const dataDir = () => path.resolve(process.cwd(), config.dataDir);
 const JSONL = () => path.join(dataDir(), "decisions.jsonl");
+const EQUITY_JSONL = () => path.join(dataDir(), "equity.jsonl");
+
+/**
+ * One point of the book's equity per cycle, written by the desk's marks (src/index.ts markBook) with
+ * the figure it prints as "marks: equity": wallet SOL, the USDC leg at the SOL price, every open band
+ * marked with its unclaimed fees, wallet tokens at mark, and the hedge desk. Refundable rent is not in
+ * it. A small line a cycle, so the site can show the whole run where the journal window (600 heavy
+ * entries) shows a day.
+ */
+export interface EquityPoint {
+  t: number;
+  cycle: number;
+  agent: string;
+  mode: "paper" | "dry-run" | "live";
+  equitySol: number;
+  walletSol: number;
+  /** the wallet's USDC, in SOL and in USDC */
+  quoteSol: number;
+  quoteUsdc: number;
+  bandsSol: number;
+  tokensSol: number;
+  hedgeSol: number;
+  bands: number;
+  pools: number;
+  /** fees claimed to the wallet since the run began, SOL */
+  feesClaimedSol: number;
+  solPriceUsd: number | null;
+}
+
+export function appendEquity(point: EquityPoint): void {
+  fs.mkdirSync(dataDir(), { recursive: true });
+  fs.appendFileSync(EQUITY_JSONL(), JSON.stringify(point) + "\n");
+}
+
+/** The newest `limit` points, oldest first. Missing file = []. */
+export function readEquity(limit = 20_000): EquityPoint[] {
+  try {
+    const lines = fs.readFileSync(EQUITY_JSONL(), "utf8").trim().split("\n").filter(Boolean);
+    return lines.slice(-limit).map((l) => JSON.parse(l) as EquityPoint);
+  } catch {
+    return [];
+  }
+}
 
 /** Newest first. */
 export function readRecent(limit = 100): JournalEntry[] {

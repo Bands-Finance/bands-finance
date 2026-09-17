@@ -1,8 +1,8 @@
-import type { HotFile, JournalEntry, RiskLimits, ScreenResult } from "./types";
+import type { EquityHistoryPoint, HotFile, JournalEntry, RiskLimits, ScreenResult } from "./types";
 
 declare global {
   interface Window {
-    __BANDS_DATA__?: { entries: JournalEntry[]; limits?: RiskLimits; screen?: ScreenResult | null; demo?: boolean };
+    __BANDS_DATA__?: { entries: JournalEntry[]; limits?: RiskLimits; screen?: ScreenResult | null; equity?: EquityHistoryPoint[]; demo?: boolean };
   }
 }
 
@@ -55,6 +55,28 @@ export async function loadLimits(): Promise<RiskLimits | null> {
       if (json && typeof json.maxPositionSol === "number") {
         limitsSource = url;
         return json;
+      }
+    } catch {
+      /* try the next source */
+    }
+  }
+  return null;
+}
+
+/**
+ * The equity history: one point a cycle since the run began, the desk's own marks. Null when the
+ * host has none (an older snapshot, a demo): the page then reads the money from the journal window.
+ */
+let equitySource: string | null = null;
+export async function loadEquity(): Promise<EquityHistoryPoint[] | null> {
+  if (window.__BANDS_DATA__?.entries) return window.__BANDS_DATA__.equity ?? null;
+  const candidates = equitySource ? [equitySource] : [env.VITE_EQUITY_URL, `${base}/api/equity`, `${base}/equity.json`].filter((u): u is string => Boolean(u));
+  for (const url of candidates) {
+    try {
+      const json = (await fetchJson(url)) as { points?: EquityHistoryPoint[] };
+      if (json && Array.isArray(json.points)) {
+        equitySource = url;
+        return json.points.filter((p) => p && typeof p.t === "number" && typeof p.equitySol === "number" && Number.isFinite(p.equitySol));
       }
     } catch {
       /* try the next source */

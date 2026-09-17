@@ -108,24 +108,106 @@ export function toSeries(newestFirst: JournalEntry[]): SeriesPoint[] {
   }));
 }
 
+/** The wallet's non-SOL quote (USDC) in SOL, when the entry carries one; the same wallet across every pool of a cycle. */
+function quoteLegSol(e: JournalEntry): number | null {
+  const w = e.wallet as JournalEntry["wallet"] & { quote?: number; quoteSymbol?: string };
+  if (typeof w.quote !== "number" || !w.quoteSymbol || w.quoteSymbol === "SOL") return null;
+  return w.quote * quoteMath(e).priceInSol;
+}
+
+/** One loop iteration: every entry the desk wrote in that cycle, oldest first. */
+export interface Cycle {
+  cycle: number;
+  t: number;
+  /** oldest first */
+  entries: JournalEntry[];
+}
+
+/**
+ * The journal grouped by cycle, oldest cycle first. The desk writes one entry per pool it works in a
+ * cycle, so a cycle is the whole book at one moment: what it holds is exactly what it holds, and a
+ * pool it stopped working (its band closed) is simply absent. That is the unit every money figure is
+ * read from; "the latest entry per pool" is not, because a closed pool's last entry still lists the
+ * band it was closing (the desk found a day-old band worth 50 SOL that way, 2026-09-16).
+ */
+export function cyclesOf(newestFirst: JournalEntry[]): Cycle[] {
+  // Consecutive entries in time with the same cycle number are one cycle. The number alone is not
+  // enough: it restarts at 1 with the desk, so two runs' "cycle 1" would merge into one book with
+  // every band twice (a backfill found a 26-pool cycle worth 875 SOL that way, 2026-09-16). A gap of
+  // more than CYCLE_GAP_MS between entries, or a pool written twice, starts a new cycle.
+  const chrono = [...newestFirst].sort((a, b) => a.ts.localeCompare(b.ts));
+  const out: Cycle[] = [];
+  let cur: Cycle | null = null;
+  let seen = new Set<string>();
+  let lastT = 0;
+  for (const e of chrono) {
+    const t = new Date(e.ts).getTime();
+    if (!cur || e.cycle !== cur.cycle || t - lastT > CYCLE_GAP_MS || seen.has(e.pool.address)) {
+      cur = { cycle: e.cycle, t, entries: [] };
+      out.push(cur);
+      seen = new Set();
+    }
+    cur.entries.push(e);
+    seen.add(e.pool.address);
+    lastT = t;
+  }
+  return out;
+}
+
+/** Entries of one cycle are seconds apart; cycles are minutes apart. */
+export const CYCLE_GAP_MS = 3 * 60_000;
+
+/**
+ * The cycles a window can be trusted for. A journal window is the newest N entries, so its oldest
+ * cycle is usually cut mid-way: when it has fewer entries than the cycle after it, it is dropped.
+ * The newest cycle is kept: the desk publishes its snapshot after the cycle completes.
+ */
+export function completeCycles(cycles: Cycle[]): Cycle[] {
+  if (cycles.length >= 2 && cycles[0].entries.length < cycles[1].entries.length) return cycles.slice(1);
+  return cycles;
+}
+
+/** An entry that closed its band for good: an executed CLOSE (a rebalance closes and reopens, so the pool goes on). */
+const closedOut = (e: JournalEntry): boolean => e.decision.action === "CLOSE_POSITION" && e.allowed && e.execution.ok && e.execution.txs.length > 0;
+
+/**
+ * The newest cycle as the book: its entries, plus, for a pool the desk worked in the cycle before but
+ * did not write this cycle (a read that failed, a pool skipped), that pool's previous entry when it
+ * still held a band and did not close it. One cycle of carry only: a band the desk cannot see for
+ * longer than that is dropped until it reads it again. Without the carry a single failed RPC read
+ * knocked a 9 SOL band off the site for five minutes.
+ */
+export function bookCycle(newestFirst: JournalEntry[]): Cycle | null {
+  const cycles = cyclesOf(newestFirst);
+  const newest = cycles[cycles.length - 1];
+  if (!newest) return null;
+  const prev = cycles[cycles.length - 2];
+  if (!prev) return newest;
+  const seen = new Set(newest.entries.map((e) => e.pool.address));
+  const carried = prev.entries.filter((e) => !seen.has(e.pool.address) && e.positions.length > 0 && !closedOut(e));
+  return carried.length ? { ...newest, entries: [...newest.entries, ...carried] } : newest;
+}
+
+/** What the book was worth at one cycle: wallet SOL, the USDC leg, tokens held, and the bands with their rent (equityOf's arithmetic). */
+export function cycleEquity(c: Cycle): number {
+  const first = c.entries[0];
+  const tokens = new Map<string, number>();
+  let bands = 0;
+  let quoteSol: number | null = null;
+  for (const e of c.entries) {
+    const base = e.pool.solSide === "X" ? e.pool.tokenY.symbol : e.pool.tokenX.symbol;
+    tokens.set(base, e.wallet.token * e.pool.tokenPriceInSol);
+    bands += e.positions.reduce((s, p) => s + p.valueInSol + POSITION_RENT_SOL, 0);
+    if (quoteSol === null) quoteSol = quoteLegSol(e);
+  }
+  return first.wallet.sol + (quoteSol ?? 0) + [...tokens.values()].reduce((s, v) => s + v, 0) + bands;
+}
+
 /** Equity per loop iteration across every pool the agent observed in it. */
 export function equitySeriesOf(newestFirst: JournalEntry[]): EquityPoint[] {
-  const byCycle = new Map<number, JournalEntry[]>();
-  for (const e of newestFirst) byCycle.set(e.cycle, [...(byCycle.get(e.cycle) ?? []), e]);
-  const out: EquityPoint[] = [];
-  for (const group of byCycle.values()) {
-    const sorted = [...group].sort((a, b) => a.ts.localeCompare(b.ts));
-    const first = sorted[0];
-    const tokens = new Map<string, number>();
-    let bands = 0;
-    for (const e of sorted) {
-      const base = e.pool.solSide === "X" ? e.pool.tokenY.symbol : e.pool.tokenX.symbol;
-      tokens.set(base, e.wallet.token * e.pool.tokenPriceInSol);
-      bands += e.positions.reduce((s, p) => s + p.valueInSol + POSITION_RENT_SOL, 0);
-    }
-    out.push({ t: new Date(first.ts).getTime(), equity: first.wallet.sol + [...tokens.values()].reduce((s, v) => s + v, 0) + bands });
-  }
-  return out.sort((a, b) => a.t - b.t);
+  const cycles = completeCycles(cyclesOf(newestFirst));
+  const book = bookCycle(newestFirst);
+  return cycles.map((c, i) => ({ t: c.t, equity: cycleEquity(i === cycles.length - 1 && book ? book : c) }));
 }
 
 export function summarize(id: string, name: string, newestFirst: JournalEntry[]): AgentSummary {
@@ -140,7 +222,8 @@ export function summarize(id: string, name: string, newestFirst: JournalEntry[])
   const equitySeries = equitySeriesOf(newestFirst);
   const equitySol = equitySeries[equitySeries.length - 1]?.equity ?? equityOf(latest);
   const startEquity = equitySeries[0]?.equity ?? equityOf(first);
-  const latestPositions = pools.flatMap((p) => p.latest.positions.map((pos) => ({ pos, e: p.latest })));
+  // the bands on the book: the newest cycle's, not the last entry of every pool ever worked
+  const latestPositions = (bookCycle(newestFirst)?.entries ?? []).flatMap((e) => e.positions.map((pos) => ({ pos, e })));
   let feesRealizedSol = 0;
   for (const e of newestFirst) {
     if (!executedAction(e)) continue;

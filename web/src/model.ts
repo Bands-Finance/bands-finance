@@ -2,8 +2,8 @@
  * One place that turns journal entries into what the page says.
  * Every component reads from here so the words and the numbers cannot disagree.
  */
-import { equityOf, feesInSol, POSITION_RENT_SOL } from "./derive";
-import type { Action, JournalEntry, Position } from "./types";
+import { bookCycle, completeCycles, cycleEquity, cyclesOf, equityOf, feesInSol, POSITION_RENT_SOL } from "./derive";
+import type { Action, EquityHistoryPoint, JournalEntry, Position } from "./types";
 
 /* ---------- words ---------- */
 
@@ -357,10 +357,10 @@ export interface Book {
 }
 
 export function bookOf(newestFirst: JournalEntry[]): Book {
-  const latestByPool = new Map<string, JournalEntry>();
-  for (const e of newestFirst) if (!latestByPool.has(e.pool.address)) latestByPool.set(e.pool.address, e);
+  // the newest cycle is the whole book at one moment; a pool whose band closed is absent from it
+  const newest = bookCycle(newestFirst);
   const bands: BandCard[] = [];
-  for (const e of latestByPool.values()) {
+  for (const e of newest?.entries ?? []) {
     for (const p of e.positions) {
       const opened = [...newestFirst].reverse().find((x) => x.execution.opened?.address === p.address);
       const openedAt = opened ? new Date(opened.ts).getTime() : p.lastUpdatedAt ? p.lastUpdatedAt * 1000 : null;
@@ -433,9 +433,15 @@ export interface AgentRecord {
   startTs: number;
   startEquity: number;
   equityNow: number;
+  /** the hedge desk's equity inside equityNow, SOL; null when the record has no history to read it from */
+  hedge: number | null;
+  /** true when start and now come from the desk's own equity history (the whole run), not the journal window */
+  sinceStart: boolean;
   net: number;
   netPct: number;
   wallet: number;
+  /** the stablecoin leg of the wallet (USDC), valued in SOL; null on a SOL-only desk */
+  quote: { symbol: string; amount: number; inSol: number } | null;
   atWork: number;
   rent: number;
   tokens: { symbol: string; amount: number; inSol: number }[];
@@ -447,19 +453,32 @@ export interface AgentRecord {
   anySimulated: boolean;
 }
 
-export function recordOf(newestFirst: JournalEntry[]): AgentRecord | null {
+/**
+ * The record. Two sources, the journal window always and the desk's equity history when the host has
+ * it. The window (the newest 600 entries) gives the newest cycle's book, the fee claims with their
+ * transactions, and the tally; but its oldest cycle is wherever 600 entries reach back, a day or so.
+ * The history is one point a cycle since the run began, the desk's own marks, so with it "started
+ * with" and "net" cover the whole run and the daily rows go back to day one.
+ */
+export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoint[] | null = null): AgentRecord | null {
   if (newestFirst.length === 0) return null;
   const chrono = [...newestFirst].reverse();
+  const cycles = cyclesOf(newestFirst);
+  const newest = bookCycle(newestFirst) ?? cycles[cycles.length - 1];
   const latestByPool = new Map<string, JournalEntry>();
   for (const e of newestFirst) if (!latestByPool.has(e.pool.address)) latestByPool.set(e.pool.address, e);
   const latest = newestFirst[0];
+  const agentId = latest.agent?.id ?? "mr-bands";
+  const hist = (history ?? []).filter((p) => (p.agent ?? "mr-bands") === agentId && p.mode === latest.mode).sort((a, b) => a.t - b.t);
+  const h0 = hist[0];
+  const hN = hist[hist.length - 1];
 
-  // Book split, from the newest cycle across pools
+  // Book split, from the newest cycle across pools: what he holds this moment, nothing stale
   const tokens = new Map<string, { symbol: string; amount: number; inSol: number }>();
   let atWork = 0;
   let rent = 0;
   let feesUnclaimed = 0;
-  for (const e of latestByPool.values()) {
+  for (const e of newest.entries) {
     const base = isSolY(e) ? e.pool.tokenX.symbol : e.pool.tokenY.symbol;
     tokens.set(base, { symbol: base, amount: e.wallet.token, inSol: e.wallet.token * e.pool.tokenPriceInSol });
     for (const p of e.positions) {
@@ -469,9 +488,28 @@ export function recordOf(newestFirst: JournalEntry[]): AgentRecord | null {
     }
   }
   const wallet = latest.wallet.sol;
-  const equityNow = wallet + [...tokens.values()].reduce((s, t) => s + t.inSol, 0) + atWork + rent;
+  // The USDC leg, when the desk holds one: the same wallet in every entry of the cycle, so the newest
+  // USDC-quoted entry has it. startEquity (equityOf) counts it; the book must too, or a USDC desk shows
+  // a hole the size of its stablecoin balance.
+  const quote = (() => {
+    for (const e of newestFirst) {
+      const w = e.wallet as JournalEntry["wallet"] & { quote?: number; quoteSymbol?: string; };
+      const q = e.pool as JournalEntry["pool"] & { quotePriceInSol?: number };
+      if (typeof w.quote === "number" && w.quoteSymbol && w.quoteSymbol !== "SOL") {
+        return { symbol: w.quoteSymbol, amount: w.quote, inSol: w.quote * (typeof q.quotePriceInSol === "number" && q.quotePriceInSol > 0 ? q.quotePriceInSol : 0) };
+      }
+      if (e.cycle !== latest.cycle) break;
+    }
+    return null;
+  })();
+  // With history: start and now from the same arithmetic (the desk's marks, rent not counted, hedge
+  // counted), so net is exact over the run. Without: the window's first complete cycle to its newest.
+  const fromHistory = !!h0 && !!hN && hN.t >= newest.t - 3600e3;
+  const complete = completeCycles(cycles);
   const first = chrono[0];
-  const startEquity = equityOf(first);
+  const equityNow = fromHistory ? hN.equitySol : cycleEquity(newest);
+  const startEquity = fromHistory ? h0.equitySol : complete.length ? cycleEquity(complete[0]) : equityOf(first);
+  const startTs = fromHistory ? h0.t : complete.length ? complete[0].t : new Date(first.ts).getTime();
 
   // Fee points: each executed claim/close/move realises the fees waiting on its target bands
   const feePoints: FeePoint[] = [];
@@ -488,8 +526,7 @@ export function recordOf(newestFirst: JournalEntry[]): AgentRecord | null {
     if (v === "blocked") counts.vetoed += 1;
     if (v === "override") counts.overrides += 1;
     const date = e.ts.slice(0, 10);
-    const row = days.get(date) ?? { date, fees: 0, open: equityOf(e), close: equityOf(e), moves: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 };
-    row.close = equityOf(e);
+    const row = days.get(date) ?? { date, fees: 0, open: NaN, close: NaN, moves: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 };
     row.decisions += 1;
     if (v === "hold") row.holds += 1;
     if (v === "blocked") row.vetoed += 1;
@@ -506,20 +543,54 @@ export function recordOf(newestFirst: JournalEntry[]): AgentRecord | null {
     }
     days.set(date, row);
   }
+  // The book open -> close per day: the day's first and last cycle (the window), or its first and last
+  // point of the history, which reaches back to the run's first day and carries the claimed fees too.
+  for (const c of complete) {
+    const date = new Date(c.t).toISOString().slice(0, 10);
+    const row = days.get(date);
+    if (!row) continue;
+    const eq = cycleEquity(c);
+    if (!Number.isFinite(row.open)) row.open = eq;
+    row.close = eq;
+  }
+  if (fromHistory) {
+    const byDay = new Map<string, EquityHistoryPoint[]>();
+    for (const p of hist) {
+      const date = new Date(p.t).toISOString().slice(0, 10);
+      byDay.set(date, [...(byDay.get(date) ?? []), p]);
+    }
+    let prevClaimed = h0.feesClaimedSol;
+    for (const [date, pts] of [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const row = days.get(date) ?? { date, fees: 0, open: NaN, close: NaN, moves: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 };
+      row.open = pts[0].equitySol;
+      row.close = pts[pts.length - 1].equitySol;
+      row.fees = Math.max(0, pts[pts.length - 1].feesClaimedSol - prevClaimed);
+      prevClaimed = pts[pts.length - 1].feesClaimedSol;
+      days.set(date, row);
+    }
+    cumulative = Math.max(0, hN.feesClaimedSol - h0.feesClaimedSol);
+  }
+  for (const row of days.values()) {
+    if (!Number.isFinite(row.open)) row.open = startEquity;
+    if (!Number.isFinite(row.close)) row.close = row.open;
+  }
   return {
-    startTs: new Date(first.ts).getTime(),
+    startTs,
     startEquity,
     equityNow,
+    hedge: fromHistory ? hN.hedgeSol : null,
+    sinceStart: fromHistory,
     net: equityNow - startEquity,
     netPct: startEquity > 0 ? ((equityNow - startEquity) / startEquity) * 100 : 0,
     wallet,
+    quote,
     atWork,
     rent,
     tokens: [...tokens.values()].filter((t) => t.amount > 0),
     feesRealized: cumulative,
     feesUnclaimed,
     feePoints,
-    days: [...days.values()],
+    days: [...days.values()].sort((a, b) => a.date.localeCompare(b.date)),
     counts,
     anySimulated: counts.simulated > 0,
   };

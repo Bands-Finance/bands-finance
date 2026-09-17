@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { isDemoJournal, isEmbedded, loadJournal, loadLimits, loadScreen } from "./api";
+import { isDemoJournal } from "./api";
+import { useJournalFeed } from "./hooks/useJournalFeed";
 import { groupAgents } from "./derive";
 import { bookOf, madePairsOf, recordOf, statusOf } from "./model";
 import { useScrollFx } from "./hooks/useScrollFx";
-import type { JournalEntry, RiskLimits, ScreenResult } from "./types";
 import { Header } from "./components/Header";
 import { Hero } from "./components/Hero";
 import { ModeBanner } from "./components/ModeBanner";
@@ -25,7 +25,6 @@ import { MePage } from "./platform/MePage";
 import { ToolCatalog } from "./components/ToolCatalog";
 import { HotNow } from "./components/HotNow";
 
-const POLL_MS = 20_000;
 export type Route = "home" | "pools" | "learn" | "agents" | "me";
 
 function routeFromHash(h: string): Route {
@@ -64,50 +63,16 @@ function useRoute(): Route {
 export default function App() {
   useScrollFx();
   const route = useRoute();
-  const [entries, setEntries] = useState<JournalEntry[] | null>(null);
-  const [screen, setScreen] = useState<ScreenResult | null>(null);
-  const [limits, setLimits] = useState<RiskLimits | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { entries, screen, limits, equity, error, now, embedded } = useJournalFeed();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [poolAddr, setPoolAddr] = useState<string | null>(null);
-  const [now, setNow] = useState(Date.now());
-  const embedded = isEmbedded();
-
-  useEffect(() => {
-    let alive = true;
-    let last = "";
-    const tick = async () => {
-      const [j, l, s] = await Promise.all([loadJournal().catch((e: Error) => ({ error: e })), loadLimits(), loadScreen()]);
-      if (!alive) return;
-      if (Array.isArray(j)) {
-        const sig = j.length ? `${j.length}:${j[0].id}` : "0";
-        if (sig !== last) {
-          last = sig;
-          setEntries(j);
-        }
-        setError(null);
-      } else {
-        setError((j as { error: Error }).error.message);
-      }
-      setLimits(l);
-      setScreen((prev) => (s && s.generatedAt !== prev?.generatedAt ? s : prev ?? s));
-    };
-    void tick();
-    const id = embedded ? undefined : window.setInterval(() => void tick(), POLL_MS);
-    const clock = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => {
-      alive = false;
-      if (id) window.clearInterval(id);
-      window.clearInterval(clock);
-    };
-  }, [embedded]);
 
   const agents = useMemo(() => (entries ? groupAgents(entries) : []), [entries]);
   const selected = agents.find((a) => a.id === selectedId) ?? agents[0] ?? null;
   const agentEntries = selected?.entries ?? [];
   const demo = embedded || (entries ? isDemoJournal(entries) : false);
   const status = useMemo(() => statusOf(agentEntries, now, demo), [agentEntries, now, demo]);
-  const record = useMemo(() => recordOf(agentEntries), [agentEntries]);
+  const record = useMemo(() => recordOf(agentEntries, equity), [agentEntries, equity]);
   const book = useMemo(() => bookOf(agentEntries), [agentEntries]);
   const madePairs = useMemo(() => madePairsOf(agentEntries), [agentEntries]);
   const agentName = selected?.name ?? "Mr Bands";

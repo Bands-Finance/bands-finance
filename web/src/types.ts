@@ -152,6 +152,26 @@ export interface JournalEntry {
   screen?: { rank: number; rankedPools: number; score: number; feeToTvl24hPct: number | null } | null;
 }
 
+/** One point of the desk's equity per cycle, from its own marks (src/journal EquityPoint on the desk). */
+export interface EquityHistoryPoint {
+  t: number;
+  cycle: number;
+  agent: string;
+  mode: "paper" | "dry-run" | "live";
+  equitySol: number;
+  walletSol: number;
+  quoteSol: number;
+  quoteUsdc: number;
+  bandsSol: number;
+  tokensSol: number;
+  hedgeSol: number;
+  bands: number;
+  pools: number;
+  /** fees claimed to the wallet since the run began, SOL */
+  feesClaimedSol: number;
+  solPriceUsd: number | null;
+}
+
 export interface RiskLimits {
   maxPositionSol: number;
   maxTotalExposureSol: number;

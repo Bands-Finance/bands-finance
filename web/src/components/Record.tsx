@@ -97,9 +97,11 @@ export function Record({ record, solPriceUsd, status, agentName }: RecordProps) 
         </span>
         <span className="pnl__sub">
           Started with {solFmt(record.startEquity)} on {startDate(record.startTs)}. The book is {solFmt(record.equityNow)}
-          {usdShadow(record.equityNow, solPriceUsd)} today: {solFmt(record.wallet)} in the wallet, {solFmt(record.atWork)} at work in{" "}
-          <span className="term" title={GLOSS.band}>bands</span>, {solFmt(record.rent)} of rent that comes back when bands close
-          {record.tokens.length ? `, and ${tokensHeld} held from bands that were closed` : ""}, marked to live pool prices.
+          {usdShadow(record.equityNow, solPriceUsd)} today: {solFmt(record.wallet)}{record.quote ? ` and ${fmtAmount(record.quote.amount)} ${record.quote.symbol} (${solFmt(record.quote.inSol)})` : ""} in the wallet, {solFmt(record.atWork)} at work in{" "}
+          <span className="term" title={GLOSS.band}>bands</span>
+          {record.tokens.length ? `, ${tokensHeld} held from bands that were closed` : ""}
+          {record.hedge !== null && Math.abs(record.hedge) >= 0.00005 ? `, the hedge desk at ${signedSol(record.hedge)}` : ""}, marked to live pool prices
+          {record.sinceStart ? `; ${solFmt(record.rent)} of rent comes back when bands close and is not counted` : `, plus ${solFmt(record.rent)} of rent that comes back when bands close`}.
         </span>
         <details className="pnl__how">
           <summary>How this is computed</summary>

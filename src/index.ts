@@ -47,6 +47,8 @@
  * liquidates the token back to the quote. In paper mode the hedge is virtual (src/paper/hedge.ts).
  */
 import { exec } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { config, riskLimits } from "./config";
 import { decide, engineDecideResult, proposalDecideResult } from "./agent/decide";
@@ -59,7 +61,7 @@ import { evaluate, EngineGuardContext } from "./risk/guards";
 import { describeLimits } from "./risk/limits";
 import { killSwitchActive, loadState, saveState, RiskState, todayUtc } from "./risk/state";
 import { execute, executeSkim, ExecutionResult, toOpenPlan } from "./executor";
-import { appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool } from "./journal";
+import { appendEquity, appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool } from "./journal";
 import { loadScreen, runScreen, tradableVenue } from "./screener";
 import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
@@ -101,7 +103,7 @@ import {
 import { skimPlan, trackFeesPending } from "./engine/collect";
 import { engineDirective } from "./engine/directives";
 import { forgetBand, knifeReason, moveAfterSec, outOfRangeSec, rangeOverWindowPct, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
-import { collectsOnDay, dayOf, readLedgerRows, realizedOnDaySol, workingSol } from "./engine/ledger";
+import { collectsOnDay, dayOf, readLedgerRows, realizedOnDaySol, rowsOf, workingSol } from "./engine/ledger";
 import { acquireLock, heartbeat, releaseLock, startWatchdog } from "./engine/watchdog";
 import { assertPaperEnv, bandsInPool, emptyBook, loadPaperBook, markPool, paperBinRows, paperEnabled, paperEnv, paperHedgeEquityUsd, paperPoolTokenInventory, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
 import { backpack, tickerOfXstock } from "./tools/backpack";
@@ -221,8 +223,10 @@ function deploySnapshot(): void {
     return;
   }
   lastDeployAt = Date.now();
-  console.log("[deploy] pushing snapshot to Vercel");
-  exec("npm run web:deploy", { cwd: process.cwd() }, (err, stdout, stderr) => {
+  // the platform, then the dashboard site when its Vercel link exists (dash/README.md)
+  const dash = fs.existsSync(path.join(process.cwd(), "dash", ".vercel", "project.json"));
+  console.log(`[deploy] pushing snapshot to Vercel${dash ? " (platform + dashboard)" : ""}`);
+  exec(dash ? "npm run web:deploy && npm run dash:deploy" : "npm run web:deploy", { cwd: process.cwd() }, (err, stdout, stderr) => {
     if (err) console.error(`[deploy] failed: ${err.message}\n${stderr.slice(-400)}`);
     else console.log(`[deploy] ${stdout.trim().split("\n").slice(-2).join(" | ")}`);
   });
@@ -1436,7 +1440,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
  * The breakers mark the book once per iteration, only on a complete read: a pool that failed to
  * observe would read as vanished capital, and a phantom crater must never trip a breaker.
  */
-function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAtStart: number, usdcAtStartSol: number, hedgeSol = 0): void {
+function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAtStart: number, usdcAtStartSol: number, hedgeSol = 0, usdcAtStart = 0): void {
   const now = Date.now();
   const today = todayUtc();
   const mode = config.dryRun ? "dry-run" : "live";
@@ -1464,6 +1468,32 @@ function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAt
   console.log(
     `[cycle ${app.cycle}] marks: equity ${equity.toFixed(4)} SOL (day high ${app.engine.portfolio.hwmSol.toFixed(4)})${hedgeSol !== 0 ? ` incl. hedge ${hedgeSol >= 0 ? "+" : ""}${hedgeSol.toFixed(4)}` : ""} | today's loss ${loss.toFixed(4)} / limit ${app.engine.circuit.lastLimitSol.toFixed(4)} SOL | working ${workingSol(state.entryValueSol).toFixed(4)}`,
   );
+  // The same figure, one line a cycle, for the site's "since the start" numbers (src/journal EquityPoint).
+  if (Number.isFinite(equity)) {
+    const bandsSol = observed.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0);
+    const feesClaimedSol = app.paper ? app.paper.feesClaimedSol : rowsOf(rows, mode).reduce((s, r) => s + ((r.mech === "collect" || r.mech === "close") && typeof r.feeSol === "number" ? r.feeSol : 0), 0);
+    try {
+      appendEquity({
+        t: now,
+        cycle: app.cycle,
+        agent: entries[0]?.agent?.id ?? "mr-bands",
+        mode: app.paper ? "paper" : mode,
+        equitySol: equity,
+        walletSol: solAtStart,
+        quoteSol: usdcAtStartSol,
+        quoteUsdc: usdcAtStart,
+        bandsSol,
+        tokensSol,
+        hedgeSol,
+        bands: openBands.length,
+        pools: observed.length,
+        feesClaimedSol,
+        solPriceUsd: solPriceOf(app),
+      });
+    } catch (err) {
+      console.error(`[cycle ${app.cycle}] equity point not written: ${(err as Error).message}`);
+    }
+  }
 }
 
 /** The treasury skim, after the pool loop, in its own failure domain. */
@@ -1617,7 +1647,7 @@ async function runIteration(app: App): Promise<void> {
   if (observed.length === pools.length && entries.length === observed.length && observed.length > 0 && !usdcUnpriced) {
     try {
       const hedgeSol = paper && solPriceUsd ? paperHedgeEquityUsd(paper.hedge).netUsd / solPriceUsd : 0;
-      markBook(app, observed, entries, solAtStart, solPriceUsd ? usdcAtStart / solPriceUsd : 0, hedgeSol);
+      markBook(app, observed, entries, solAtStart, solPriceUsd ? usdcAtStart / solPriceUsd : 0, hedgeSol, usdcAtStart);
     } catch (err) {
       console.error(`[cycle ${app.cycle}] marks failed:`, err);
     }

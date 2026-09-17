@@ -1,6 +1,8 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import DashboardApp from "./DashboardApp";
+import { SITE } from "./site";
 import "./styles/global.css";
 import "./styles.css";
 
@@ -19,8 +21,9 @@ window.addEventListener("unhandledrejection", (ev) => {
   }
 });
 
+// One codebase, two sites (src/site.ts): the platform, or just Mr Bands at work.
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    {SITE === "dashboard" ? <DashboardApp /> : <App />}
   </React.StrictMode>,
 );

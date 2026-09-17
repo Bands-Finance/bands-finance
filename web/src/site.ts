@@ -1,0 +1,14 @@
+/**
+ * Which site this build is. One codebase, two shells, two Vercel projects:
+ *   platform   bands.finance: the platform, the pools screener, learn, agents, your own Mr Bands
+ *   dashboard  just Mr Bands at work: the money, the open bands, the desk feed, nothing else
+ * Chosen at build time by VITE_SITE (web/scripts/deploy-dash.mjs sets it for the dashboard project),
+ * so the two sites read the same journal, the same model and the same components and cannot disagree.
+ */
+export type Site = "platform" | "dashboard";
+
+const raw = (import.meta.env.VITE_SITE ?? "").trim().toLowerCase();
+export const SITE: Site = raw === "dashboard" ? "dashboard" : "platform";
+
+/** Where the platform lives, for the dashboard's "how it works" links. */
+export const PLATFORM_URL = (import.meta.env.VITE_PLATFORM_URL ?? "https://bands.finance").replace(/\/$/, "");
