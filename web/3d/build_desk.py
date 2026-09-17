@@ -1,5 +1,5 @@
 """
-Mr Bands' desk, built from code.   blender -b -P web/3d/build_desk.py -- <out.glb> [<out.blend>] [<preview.png>]
+Mr Bands' desk, built from code.   blender -b -P web/3d/build_desk.py -- web/3d/desk.glb web/3d/desk.blend [<preview.png>]
 
 One diorama the dashboard's camera travels through (web/src/stage). Everything is modelled here so the
 scene is reproducible and so it can be opened in Blender and art-directed by hand: move a prop or a

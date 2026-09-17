@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMotion } from "../motion";
 import type { DeskStage, StageData } from "./DeskStage";
+// the model is a hashed asset like the scripts, so it can be cached for good and still change with every export
+import deskUrl from "../../3d/desk.glb?url";
 import "./Journey.css";
 
 /**
@@ -108,7 +110,7 @@ export function Journey({ beats, data, heroFoot }: JourneyProps) {
         stage.setRoute(beatsRef.current.map((b) => b.station));
         const f = framing();
         stage.setFrames(f.wide, f.tall);
-        await stage.load("/3d/desk.glb");
+        await stage.load(deskUrl);
         if (gone) return stage.dispose();
         stageRef.current = stage;
         (window as unknown as { __desk?: DeskStage }).__desk = stage; // for looking at the camera from the console

@@ -1,6 +1,7 @@
 // Dev only (web/stage-dev.html): the stage alone, a station picked by ?p=, fake bands by ?bands=, for looking at the engraving.
 import { Vector3 } from "three";
 import { DeskStage } from "./DeskStage";
+import deskUrl from "../../3d/desk.glb?url";
 const q = new URLSearchParams(location.search);
 const canvas = document.getElementById("c") as HTMLCanvasElement;
 const stage = new DeskStage(canvas);
@@ -14,7 +15,7 @@ stage.setMotion(false);
 // ?s=<station name> stands the camera at a named station
 if (q.get("s")) stage.setRoute([q.get("s")!, "hero"]);
 stage
-  .load("/3d/desk.glb")
+  .load(deskUrl)
   .then(() => {
     stage.setProgress(+(q.get("p") ?? 0));
     // ?cam=x,y,z&look=x,y,z&fov=30 in BLENDER coordinates (z up), to compose a station before writing it into build_desk.py

@@ -2,17 +2,13 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
   "headers": [
-    {
-      "source": "/(journal|limits|equity).json",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, s-maxage=30, stale-while-revalidate=300" }]
-    }
+    { "source": "/assets/(.*)", "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }] },
+    { "source": "/fonts/(.*)", "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }] },
+    { "source": "/art/(.*)", "headers": [{ "key": "Cache-Control", "value": "public, max-age=604800" }] },
+    { "source": "/(journal|limits|equity|screen|hot).json", "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, s-maxage=30, stale-while-revalidate=300" }] }
   ],
   "redirects": [
-    {
-      "source": "/(.*)",
-      "has": [{ "type": "host", "value": "www.bands.finance" }],
-      "destination": "https://bands.finance/$1",
-      "permanent": true
-    }
+    { "source": "/(.*)", "has": [{ "type": "host", "value": "www.bands.finance" }], "destination": "https://bands.finance/$1", "permanent": true },
+    { "source": "/(.*)", "has": [{ "type": "host", "value": "www.mrbands.finance" }], "destination": "https://mrbands.finance/$1", "permanent": true }
   ]
 }

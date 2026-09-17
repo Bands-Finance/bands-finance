@@ -30,8 +30,36 @@ export interface LiveFeed {
 }
 
 /** The feed as the desk has it on disk right now. */
+/**
+ * PURE. The feed carries a pool's bin ladder and its flow reading only on that pool's NEWEST entry: the
+ * sites read them from there (the book, the flow totals, the platform's ladder) and nowhere else, and
+ * on the 300 older entries they were half the file. Entries are newest first; everything else stays.
+ */
+export function trimEntries(entries: readonly unknown[]): unknown[] {
+  const seen = new Set<string>();
+  return entries.map((raw) => {
+    const e = raw as { pool?: { address?: string; bins?: unknown }; screen?: { flow?: unknown } | null };
+    const address = e?.pool?.address;
+    if (typeof address !== "string") return raw;
+    if (!seen.has(address)) {
+      seen.add(address);
+      return raw;
+    }
+    const out: typeof e = { ...e };
+    if (e.pool && "bins" in e.pool) {
+      const { bins: _bins, ...pool } = e.pool;
+      out.pool = pool;
+    }
+    if (e.screen && typeof e.screen === "object" && "flow" in e.screen) {
+      const { flow: _flow, ...screen } = e.screen;
+      out.screen = screen;
+    }
+    return out;
+  });
+}
+
 export function buildLiveFeed(o: { cycle?: number | null; entriesLimit?: number } = {}): LiveFeed {
-  const entries = readRecent(o.entriesLimit ?? 300);
+  const entries = trimEntries(readRecent(o.entriesLimit ?? 300));
   const newest = entries[0] as { mode?: string } | undefined;
   return {
     generatedAt: new Date().toISOString(),

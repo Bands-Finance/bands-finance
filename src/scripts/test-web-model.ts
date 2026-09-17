@@ -11,6 +11,7 @@ import { actionsOf, bookOf, flowOf, flowTotalsOf, recordOf } from "../../web/src
 import { bookCycle, completeCycles, cycleEquity, cyclesOf, equitySeriesOf, summarize } from "../../web/src/derive";
 import type { EquityHistoryPoint, JournalEntry, Position } from "../../web/src/types";
 import { dayWord, narrativeOf, num, sinceWord } from "../../web/src/narrative";
+import { trimEntries } from "../publish/live";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -330,6 +331,19 @@ async function main() {
     assert.equal(t.asOf, T0 + 32 * 60_000);
     assert.equal(flowTotalsOf(new Map()), null);
     assert.equal(flowOf(fixture()).size, 0, "no journaled flow: nothing");
+
+    // the live feed trims bins and flow off every entry but a pool's newest: the book and the flow totals read the same
+    const full = [...chrono].reverse() as (JournalEntry & { screen?: unknown })[];
+    const trimmed = trimEntries(full) as typeof full;
+    assert.equal(trimmed.length, full.length);
+    assert.deepEqual([...flowOf(trimmed).keys()].sort(), ["AAA", "CCC"], "the newest entries keep their flow");
+    assert.deepEqual(flowTotalsOf(flowOf(trimmed)), t, "the totals are unchanged");
+    assert.deepEqual(bookOf(trimmed).bands.map((b) => b.address), bookOf(full).bands.map((b) => b.address), "the book is unchanged");
+    const older = trimmed.filter((e, i) => trimmed.findIndex((x) => x.pool.address === e.pool.address) !== i);
+    assert.ok(older.length > 0 && older.every((e) => !("bins" in e.pool) && !(e.screen && typeof e.screen === "object" && "flow" in (e.screen as object))), "older entries carry neither bins nor flow");
+    assert.ok(trimmed.filter((e, i) => trimmed.findIndex((x) => x.pool.address === e.pool.address) === i).every((e) => "bins" in e.pool), "each pool's newest entry keeps its bins");
+    assert.notEqual(full[full.length - 1], trimmed[trimmed.length - 1], "the input is not mutated: a trimmed entry is a copy");
+    assert.ok("bins" in full[full.length - 1].pool, "the original still has its bins");
   });
 
   await test("narrativeOf: a headline and a short honest story from the record; the worst day named, today reported, the mode said plainly", () => {

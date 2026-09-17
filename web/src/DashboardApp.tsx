@@ -25,7 +25,7 @@ const byInRangeThenWorth = (a: { inRange: boolean; worthNow: number }, b: { inRa
  * flow scout's, and an empty book says so.
  */
 export default function DashboardApp() {
-  const { entries, screen, equity, error, now, embedded, stamp } = useJournalFeed();
+  const { entries, equity, error, now, embedded, stamp, solPriceUsd } = useJournalFeed();
 
   const agents = useMemo(() => (entries ? groupAgents(entries) : []), [entries]);
   const selected = agents[0] ?? null;
@@ -39,7 +39,6 @@ export default function DashboardApp() {
   const flowTotals = useMemo(() => flowTotalsOf(flows), [flows]);
   const agentName = selected?.name ?? "Mr Bands";
   const walletAddress = agentEntries[0]?.wallet.address ?? null;
-  const solPriceUsd = screen?.solPriceUsd ?? null;
   const narrative = useMemo(
     () => narrativeOf({ record, status, agentName, now, flow: flowTotals, bandsOpen: selected?.bandsOpen ?? 0, atWorkSol: record?.atWork }),
     [record, status, agentName, now, flowTotals, selected],
