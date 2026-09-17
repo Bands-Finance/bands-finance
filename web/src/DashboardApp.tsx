@@ -1,19 +1,18 @@
 import { useEffect, useMemo } from "react";
 import { isDemoJournal } from "./api";
 import { groupAgents } from "./derive";
-import { actionsOf, bookOf, madePairsOf, recordOf, statusOf } from "./model";
+import { actionsOf, bookOf, recordOf, statusOf } from "./model";
 import { narrativeOf } from "./narrative";
 import { useJournalFeed } from "./hooks/useJournalFeed";
 import { DashFooter, DashNav, DashNote, DashSection } from "./components/Dash";
 import { Record } from "./components/Record";
 import { Holdings } from "./components/Holdings";
-import { MadePairs } from "./components/MadePairs";
 import { Actions } from "./components/Actions";
 
 /**
  * The agent's own site: a landing page of actions and results, nothing else. A note written from
  * the numbers, the figures beside it, then what he made (the fee curve and every day on the book),
- * what he holds (the open bands, and the pools he made when he made any), and what he did (every
+ * what he holds (the open bands, each a card), and what he did (every
  * move, one sentence each). The same journal and the same model as bands.finance.
  */
 export default function DashboardApp() {
@@ -26,7 +25,6 @@ export default function DashboardApp() {
   const status = useMemo(() => statusOf(agentEntries, now, demo), [agentEntries, now, demo]);
   const record = useMemo(() => recordOf(agentEntries, equity), [agentEntries, equity]);
   const book = useMemo(() => bookOf(agentEntries), [agentEntries]);
-  const madePairs = useMemo(() => madePairsOf(agentEntries), [agentEntries]);
   const actions = useMemo(() => actionsOf(agentEntries), [agentEntries]);
   const agentName = selected?.name ?? "Mr Bands";
   const walletAddress = agentEntries[0]?.wallet.address ?? null;
@@ -71,7 +69,6 @@ export default function DashboardApp() {
             </DashSection>
             <DashSection id="holds" title="What he holds right now">
               <Holdings book={book} screen={screen} status={status} now={now} agentName={agentName} />
-              {madePairs.length > 0 && <MadePairs pairs={madePairs} status={status} agentName={agentName} />}
             </DashSection>
             <DashSection id="did" title="What he did" sub="Every move he made, newest first. Holds are not moves.">
               <Actions actions={actions} status={status} now={now} agentName={agentName} />
