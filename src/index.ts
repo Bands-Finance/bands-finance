@@ -686,6 +686,15 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // Meteora DLMM pool the wallet can fund, best by fee/TVL, supplemented with our liquidity. A ticker
   // Meteora has no such pool for falls through to the stock pair lane below, which makes our own.
   app.rotateOut = app.seatRotation; // a weak seat the yield ranking gives up this cycle, else null
+  // THE OPERATOR'S EXIT LIST (ROTATE_OUT_POOLS, comma-separated pool addresses): a held band on the list
+  // comes off through the ROTATE directive (closed and liquidated through the guards), one per cycle.
+  // Zach (2026-09-17): "lets just enter memecoin style pools", with two stock seats to move out of.
+  const exitList = (process.env.ROTATE_OUT_POOLS ?? "").split(",").map((a) => a.trim()).filter(Boolean);
+  const exiting = exitList.find((a) => withPositions.includes(a));
+  if (exiting && !app.rotateOut) {
+    app.rotateOut = { pool: exiting, label: app.screen?.pools.find((p) => p.address === exiting)?.name ?? exiting.slice(0, 6), reason: "on the operator's exit list (ROTATE_OUT_POOLS): the book moves on" };
+    console.log(`[cycle ${app.cycle}] exit list: rotating out ${app.rotateOut.label} (${exiting.slice(0, 6)})`);
+  }
   for (const ticker of pinnedTickers()) {
     const entry = app.pinned?.tickers.find((t) => t.ticker === ticker);
     // already seated in one of its Meteora pools: nothing to find
