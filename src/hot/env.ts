@@ -5,6 +5,8 @@
 export interface HotEnv {
   /** seconds between ticks */
   intervalSec: number;
+  /** HOT_GECKOTERMINAL: read GeckoTerminal's trending, PumpSwap and sibling lists (off: slow and rate-limited; DexScreener and the board stand) */
+  geckoterminal: boolean;
   /** pools with less liquidity than this are dropped outright */
   minLiquidityUsd: number;
   /** pools younger than this are flagged "new" and kept off the tradable list */
@@ -36,6 +38,7 @@ const num = (v: string | undefined, d: number): number => {
 export function hotEnv(env: NodeJS.ProcessEnv = process.env): HotEnv {
   return {
     intervalSec: num(env.HOT_INTERVAL_SEC, 120),
+    geckoterminal: (env.HOT_GECKOTERMINAL ?? "").trim().toLowerCase() === "true",
     minLiquidityUsd: num(env.HOT_MIN_LIQUIDITY_USD, 20_000),
     minAgeHours: num(env.HOT_MIN_AGE_HOURS, 12),
     surgeDailyPct: num(env.HOT_SURGE_DAILY_PCT, 5),

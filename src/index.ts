@@ -491,7 +491,7 @@ async function refreshMemeHistory(app: App, funds: Set<"SOL" | "USDC">): Promise
   const due = [...wanted.entries()].filter(([a]) => !historyFresh(app.memeHistory.get(a), hist, now)).sort((a, b) => b[1].yieldPct - a[1].yieldPct).slice(0, hist.lookupsPerCycle);
   for (const [i, [address, w]] of due.entries()) {
     if (i > 0) await new Promise((r) => setTimeout(r, 2500));
-    const rec = await fetchPoolHistory(address, hist.minDays);
+    const rec = await fetchPoolHistory(address, hist.minDays, { connection: app.connection, address: new PublicKey(address), minTxPerDay: hist.minTxPerDay, maxPages: hist.maxPages });
     app.memeHistory.set(address, rec);
     console.log(`[cycle ${app.cycle}] memecoin history ${w.symbol} (${address.slice(0, 6)}): ${rec.metrics ? historyPhrase(rec.metrics) : `unreadable (${rec.error})`}${rec.metrics && rec.metrics.days < hist.minDays ? `; under the ${hist.minDays} days the desk wants` : ""}`);
   }

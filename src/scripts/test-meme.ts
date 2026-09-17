@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { memeFloorEnv, memeFloorLine, memeRefusal } from "../screener/memeFloor";
 import { parseDexScreener, parseGeckoPools } from "../hot/sources";
 import { orient } from "../hot/index";
-import { fetchPoolHistory, historyFresh, historyMetrics, historyPhrase, historyRefusal, memeHistoryEnv, OHLCV_URL, parseOhlcv } from "../screener/memeHistory";
+import { fetchPoolHistory, historyFresh, historyFromSignatures, historyMetrics, historyPhrase, historyRefusal, memeHistoryEnv, OHLCV_URL, parseOhlcv } from "../screener/memeHistory";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     data: { attributes: { ohlcv_list: Array.from({ length: days }, (_, i) => [T0 + i * DAY, ...f(i)]).reverse() } },
   });
   await test("memeHistoryEnv: 30 days by default, 0 turns the rule off, a 24h cache, a few pools a cycle", () => {
-    assert.deepEqual(memeHistoryEnv({}), { minDays: 30, ttlHours: 24, lookupsPerCycle: 4 });
+    assert.deepEqual(memeHistoryEnv({}), { minTxPerDay: 50, maxPages: 40, minDays: 30, ttlHours: 24, lookupsPerCycle: 4 });
     assert.equal(memeHistoryEnv({ MEME_MIN_HISTORY_DAYS: "0" }).minDays, 0);
     assert.equal(memeHistoryEnv({ MEME_HISTORY_TTL_HOURS: "0" }).ttlHours, 1, "never an unbounded refetch loop");
   });
@@ -127,7 +127,53 @@ async function main(): Promise<void> {
     assert.equal(historyFresh(failed, env30, now + 10 * 60e3), true, "a failed read waits 15 minutes");
     assert.equal(historyFresh(failed, env30, now + 16 * 60e3), false, "then it is read again, not blocked for a day");
   });
-  await test("fetchPoolHistory: one GeckoTerminal OHLCV call for the pool, a month plus a day; a failure is a record, never a throw", async () => {
+  await test("historyFromSignatures and the Helius read: consecutive traded UTC days back from yesterday, the first-seen time when the read reached the start; pages until the window or the history ends; a failure is a record", async () => {
+    const now = Date.parse("2026-09-17T13:00:00Z");
+    const day = 86_400_000;
+    const at = (daysAgo: number, hour: number) => Math.floor((now - daysAgo * day - (13 - hour) * 3_600_000) / 1000);
+    const sigs = [
+      ...Array.from({ length: 60 }, (_, i) => ({ blockTime: at(0, 9) + i, err: null })), // today: not a full day, never counted
+      ...Array.from({ length: 80 }, (_, i) => ({ blockTime: at(1, 15) + i, err: null })), // yesterday 80
+      ...Array.from({ length: 20 }, (_, i) => ({ blockTime: at(1, 16) + i, err: { x: 1 } })), // failed tries do not count
+      ...Array.from({ length: 55 }, (_, i) => ({ blockTime: at(2, 12) + i, err: null })), // two days ago 55
+      ...Array.from({ length: 10 }, (_, i) => ({ blockTime: at(3, 12) + i, err: null })), // three days ago 10: quiet
+      ...Array.from({ length: 90 }, (_, i) => ({ blockTime: at(4, 12) + i, err: null })), // four days ago 90, after a quiet day
+    ];
+    const m = historyFromSignatures(sigs, now, 3, 50, false);
+    assert.deepEqual(m.txPerDay, [80, 55, 10]);
+    assert.equal(m.days, 2, "yesterday and the day before traded; the quiet day stops the run");
+    assert.equal(m.firstSeenAt, null, "the read did not reach the start");
+    const reached = historyFromSignatures(sigs, now, 3, 50, true);
+    assert.equal(reached.firstSeenAt, at(4, 12) * 1000);
+    assert.match(historyPhrase(m), /^2d of on-chain history \(80 \/ 55 \/ 10 tx a day, yesterday first\)$/);
+    assert.equal(historyFromSignatures(sigs, now, 3, 10, false).days, 3);
+    assert.equal(historyFromSignatures([], now, 3, 50, true).days, 0);
+    // the read: pages of 1,000 newest first until a signature is older than the window, or the history ends
+    const pages: number[] = [];
+    const mk = (n: number, fromSec: number) => Array.from({ length: n }, (_, i) => ({ signature: `s${fromSec}-${i}`, blockTime: fromSec - i * 30, err: null }));
+    const connection = {
+      async getSignaturesForAddress(_a: unknown, opts: { limit: number; before?: string }) {
+        pages.push(opts.limit);
+        if (!opts.before) return mk(1000, Math.floor(now / 1000)); // 1000 x 30s = 8.3h of the newest
+        if (pages.length === 2) return mk(1000, Math.floor(now / 1000) - 30_000);
+        return mk(1000, Math.floor((now - 5 * day) / 1000)); // older than the window: stops here
+      },
+    };
+    const rec = await fetchPoolHistory("POOL1", 3, { connection, now, minTxPerDay: 50, maxPages: 40 });
+    assert.equal(rec.error, null);
+    assert.equal(pages.length, 3);
+    assert.ok(rec.metrics!.txPerDay!.length === 3);
+    const short = { async getSignaturesForAddress() { return mk(12, Math.floor(now / 1000)); } };
+    const young = await fetchPoolHistory("POOL2", 3, { connection: short, now, minTxPerDay: 50 });
+    assert.equal(young.metrics!.days, 0);
+    assert.ok(young.metrics!.firstSeenAt !== null, "twelve signatures in all: the history ended, so the pool's age is known");
+    const broken = { async getSignaturesForAddress(): Promise<never> { throw new Error("429 Too Many Requests"); } };
+    const failed = await fetchPoolHistory("POOL3", 3, { connection: broken, now });
+    assert.equal(failed.metrics, null);
+    assert.match(failed.error!, /^helius: 429/);
+  });
+
+  await test("fetchPoolHistory (legacy candles, tests only): one GeckoTerminal OHLCV call for the pool, a month plus a day; a failure is a record, never a throw", async () => {
     const urls: string[] = [];
     const ok = await fetchPoolHistory("POOL1", 30, { fetch: async (u) => { urls.push(String(u)); return new Response(JSON.stringify(ohlcv(31, () => [1, 1.1, 0.9, 1, 10_000])), { status: 200 }); }, now: 5 });
     assert.equal(urls[0], OHLCV_URL("POOL1", 30));

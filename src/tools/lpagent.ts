@@ -110,6 +110,8 @@ export async function fetchPoolAnalytics(poolAddress: string, snapshot?: PoolSna
       console.warn(`[lpagent] ${(err as Error).message}; falling back to GeckoTerminal`);
     }
   }
+  // GeckoTerminal only when asked (GECKOTERMINAL=true): the board, the scout and the screen carry the figures
+  if ((process.env.GECKOTERMINAL ?? "").trim().toLowerCase() !== "true") return null;
   try {
     const payload = await getJson(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}`);
     return fromGecko(payload, snapshot);

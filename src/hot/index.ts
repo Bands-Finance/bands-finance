@@ -335,14 +335,15 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
   const screen = opts.screen === undefined ? loadScreen() : opts.screen;
   const board = boardTop(screen, env.boardTop);
   const held = opts.held ?? heldPools(readRecent(400));
-  const trending = await fetchTrending(opts.durations ?? ["5m", "1h"], so);
+  const none = { samples: [], calls: 0, errors: [] as string[] };
+  const trending = env.geckoterminal ? await fetchTrending(opts.durations ?? ["5m", "1h"], so) : none;
   const trendByAddr = new Map<string, PoolSample>();
   for (const s of trending.samples) if (!trendByAddr.has(s.address)) trendByAddr.set(s.address, s);
   const errors = [...trending.errors];
   // The top PumpSwap pools by 24h volume: the pair lane's reference pools. They merge like trending
   // rows (same shape, same DexScreener refresh), and their tokens seed the sibling lookups below, which
   // is how the lane learns what concentrated pools already compete for the token's flow.
-  const pump = env.pumpswapPages > 0 ? await fetchPumpSwap(env.pumpswapPages, so) : { samples: [], calls: 0, errors: [] };
+  const pump = env.geckoterminal && env.pumpswapPages > 0 ? await fetchPumpSwap(env.pumpswapPages, so) : { samples: [], calls: 0, errors: [] };
   for (const s of pump.samples) if (!trendByAddr.has(s.address)) trendByAddr.set(s.address, s);
   errors.push(...pump.errors);
 
@@ -388,7 +389,7 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
   };
   const targets = siblingTargets(siblingSeed, { minVol24hUsd: env.siblingMinVol24hUsd, max: env.siblingLookups, tradable, cached });
   let siblingLookups = 0;
-  if (targets.length) {
+  if (targets.length && env.geckoterminal) {
     log(`[hot] sibling lookup: ${targets.map((t) => `${t.symbol} ${fmtUsd(t.vol24hUsd)}/24h in ${t.from.slice(0, 6)} (untradable)`).join(" · ")}`);
     const got = await fetchTokenPools(targets.map((t) => t.mint), so);
     siblingLookups = got.calls;

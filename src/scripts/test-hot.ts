@@ -155,7 +155,8 @@ async function main(): Promise<void> {
   /* ---------- env ---------- */
   await test("hotEnv: defaults, overrides, blanks and junk fall back", () => {
     const d = hotEnv({});
-    assert.deepEqual(d, { intervalSec: 120, minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150, onchainReads: 8, siblingMinVol24hUsd: 500_000, siblingLookups: 6, siblingTtlMin: 30, pumpswapPages: 1 });
+    assert.deepEqual(d, { intervalSec: 120, minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150,
+      geckoterminal: false, onchainReads: 8, siblingMinVol24hUsd: 500_000, siblingLookups: 6, siblingTtlMin: 30, pumpswapPages: 1 });
     const e = hotEnv({ HOT_INTERVAL_SEC: "30", HOT_MIN_LIQUIDITY_USD: "", HOT_MAX_ROWS: "abc", HOT_ONCHAIN_READS: "2", HOT_SIBLING_LOOKUPS: "0", HOT_SIBLING_TTL_MIN: "junk" });
     assert.equal(e.intervalSec, 30);
     assert.equal(e.minLiquidityUsd, 20_000);
@@ -472,7 +473,8 @@ async function main(): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-bands-hot-"));
   // siblingLookups 0 and pumpswapPages 0: these tests pin the tick's exact call budget. Sibling discovery has its own
   // tests (npm run test:launch); the PumpSwap source is pinned on its own below, with its call counted.
-  const env = { minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150, onchainReads: 2, siblingLookups: 0, pumpswapPages: 0 };
+  const env = { minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150,
+      geckoterminal: true, onchainReads: 2, siblingLookups: 0, pumpswapPages: 0 };
   const feeCache = new Map<string, FeeCacheEntry>();
   const feeReads: string[] = [];
   const readFee = async (address: string, solPriceUsd: number | null) => {

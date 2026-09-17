@@ -18,6 +18,10 @@
  */
 
 export interface MemeHistoryEnv {
+  /** MEME_MIN_TX_PER_DAY: a UTC day counts as traded with at least this many successful transactions on the pool */
+  minTxPerDay: number;
+  /** MEME_HISTORY_MAX_PAGES: signature pages of 1,000 the on-chain read may turn per pool */
+  maxPages: number;
   /** 0 turns the requirement off */
   minDays: number;
   ttlHours: number;
@@ -33,6 +37,8 @@ const num = (v: string | undefined, d: number): number => {
 
 export function memeHistoryEnv(env: NodeJS.ProcessEnv = process.env): MemeHistoryEnv {
   return {
+    minTxPerDay: Math.max(1, Math.floor(num(env.MEME_MIN_TX_PER_DAY, 50))),
+    maxPages: Math.max(1, Math.floor(num(env.MEME_HISTORY_MAX_PAGES, 40))),
     minDays: Math.max(0, Math.floor(num(env.MEME_MIN_HISTORY_DAYS, 30))),
     ttlHours: Math.max(1, num(env.MEME_HISTORY_TTL_HOURS, 24)),
     lookupsPerCycle: Math.max(0, Math.floor(num(env.MEME_HISTORY_LOOKUPS, 4))),
@@ -49,8 +55,12 @@ export interface Candle {
 }
 
 export interface HistoryMetrics {
-  /** days with a candle that traded */
+  /** days that traded: on chain, the consecutive full UTC days back from yesterday with at least MEME_MIN_TX_PER_DAY successful transactions; from candles, days with volume */
   days: number;
+  /** on chain: successful transactions on each of the last `days` UTC days, yesterday first */
+  txPerDay?: number[];
+  /** on chain: when the pool's history begins, when the read reached it (else null: older than the window) */
+  firstSeenAt?: number | null;
   /** last close over the first open of the window, percent */
   changePct: number | null;
   /** worst fall from a running peak of closes, percent (negative) */
@@ -107,8 +117,42 @@ export function historyMetrics(candles: readonly Candle[]): HistoryMetrics {
   };
 }
 
+/**
+ * PURE. The pool's trading history from its own transaction signatures (Helius getSignaturesForAddress,
+ * newest first, successful ones only counted): the consecutive full UTC days back from yesterday that
+ * each carry at least `minTxPerDay` transactions, up to `days`. `reachedStart` says the read saw the
+ * pool's first transaction, so its age is known. Zach (2026-09-17): "use helius at all times for
+ * gathering onchain data".
+ */
+export function historyFromSignatures(sigs: readonly { blockTime?: number | null; err?: unknown }[], now: number, days: number, minTxPerDay: number, reachedStart: boolean): HistoryMetrics {
+  const dayMs = 86_400_000;
+  const today = Math.floor(now / dayMs);
+  const counts = new Map<number, number>();
+  let oldest: number | null = null;
+  for (const s of sigs) {
+    if (typeof s.blockTime !== "number") continue;
+    const ms = s.blockTime * 1000;
+    if (oldest === null || ms < oldest) oldest = ms;
+    if (s.err) continue;
+    const d = Math.floor(ms / dayMs);
+    counts.set(d, (counts.get(d) ?? 0) + 1);
+  }
+  const txPerDay: number[] = [];
+  for (let k = 1; k <= days; k++) txPerDay.push(counts.get(today - k) ?? 0);
+  let traded = 0;
+  for (const c of txPerDay) {
+    if (c >= minTxPerDay) traded++;
+    else break;
+  }
+  return { days: traded, txPerDay, firstSeenAt: reachedStart ? oldest : null, changePct: null, maxDrawdownPct: null, medianDailyRangePct: null, avgDailyVolumeUsd: null };
+}
+
 /** The month in one phrase, for the log and the reasons. */
 export const historyPhrase = (m: HistoryMetrics): string =>
+  m.txPerDay
+    ? `${m.days}d of on-chain history (${m.txPerDay.map((n) => n.toLocaleString("en-US")).join(" / ")} tx a day, yesterday first${m.firstSeenAt ? `; first seen ${new Date(m.firstSeenAt).toISOString().slice(0, 16)}Z` : ""})`
+    : historyPhraseCandles(m);
+const historyPhraseCandles = (m: HistoryMetrics): string =>
   `${m.days}d of history: ${m.changePct === null ? "n/a" : `${m.changePct >= 0 ? "+" : ""}${m.changePct}%`} over the window, worst drawdown ${m.maxDrawdownPct ?? "n/a"}%, median day ${m.medianDailyRangePct ?? "n/a"}% high to low`;
 
 /** PURE. Null when the pool has its month of data, else the reason. */
@@ -134,15 +178,62 @@ export const OHLCV_URL = (pool: string, days: number): string =>
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-/** One pool's month, read and summarised. Never throws: a failure is the record's error. */
-export async function fetchPoolHistory(pool: string, days: number, o: { fetch?: FetchLike; now?: number } = {}): Promise<HistoryRecord> {
-  const fetchImpl: FetchLike = o.fetch ?? ((input, init) => fetch(input, init));
+/** The slice of a Solana connection the on-chain read needs (Helius). */
+export interface SignatureReader {
+  getSignaturesForAddress(address: { toBase58(): string } | never, opts: { limit: number; before?: string }, commitment?: "confirmed"): Promise<{ signature: string; blockTime?: number | null; err: unknown }[]>;
+}
+
+/**
+ * The pool's trading history, read on chain through Helius: signature pages of 1,000, newest first,
+ * until one is older than the window or the history ends (then the pool's age is known too). A failure
+ * is a record with an error, never a throw. The GeckoTerminal candle path is kept only for tests.
+ */
+export async function fetchPoolHistory(
+  pool: string,
+  days: number,
+  o: { connection?: SignatureReader; address?: { toBase58(): string }; now?: number; minTxPerDay?: number; maxPages?: number; fetch?: FetchLike } = {},
+): Promise<HistoryRecord> {
   const at = o.now ?? Date.now();
-  try {
-    const res = await fetchImpl(OHLCV_URL(pool, days), { headers: { accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) return { at, metrics: null, error: `GeckoTerminal HTTP ${res.status}` };
-    return { at, metrics: historyMetrics(parseOhlcv(await res.json())), error: null };
-  } catch (err) {
-    return { at, metrics: null, error: (err as Error).message.slice(0, 80) };
+  if (!o.connection) {
+    // legacy candle read (tests only): GeckoTerminal's OHLCV
+    const fetchImpl: FetchLike = o.fetch ?? ((input, init) => fetch(input, init));
+    try {
+      const res = await fetchImpl(OHLCV_URL(pool, days), { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15000) });
+      if (!res.ok) return { at, metrics: null, error: `GeckoTerminal HTTP ${res.status}` };
+      return { at, metrics: historyMetrics(parseOhlcv(await res.json())), error: null };
+    } catch (err) {
+      return { at, metrics: null, error: (err as Error).message.slice(0, 80) };
+    }
   }
+  const sinceSec = Math.floor((at - (days + 1) * 86_400_000) / 1000);
+  const maxPages = o.maxPages ?? 40;
+  const collected: { blockTime?: number | null; err: unknown }[] = [];
+  let before: string | undefined;
+  let reachedStart = false;
+  try {
+    for (let page = 0; page < maxPages; page++) {
+      const batch = await o.connection.getSignaturesForAddress(o.address ?? { toBase58: () => pool }, { limit: 1000, before }, "confirmed");
+      if (!batch.length) {
+        reachedStart = true;
+        break;
+      }
+      let past = false;
+      for (const s of batch) {
+        if (typeof s.blockTime === "number" && s.blockTime < sinceSec) {
+          past = true;
+          break;
+        }
+        collected.push(s);
+      }
+      if (past) break;
+      if (batch.length < 1000) {
+        reachedStart = true;
+        break;
+      }
+      before = batch[batch.length - 1].signature;
+    }
+  } catch (err) {
+    return { at, metrics: null, error: `helius: ${(err as Error).message.slice(0, 80)}` };
+  }
+  return { at, metrics: historyFromSignatures(collected, at, days, o.minTxPerDay ?? 50, reachedStart), error: null };
 }

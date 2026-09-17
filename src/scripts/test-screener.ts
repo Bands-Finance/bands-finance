@@ -4,7 +4,7 @@
  *   npm run test:screener
  */
 import assert from "node:assert/strict";
-import type { Enrichment } from "../screener/enrich";
+import { parseDexScreenerEnrichment, type Enrichment } from "../screener/enrich";
 import { fillFromGecko, normalizeScreen, partialFromVenue, shortlistUnion, tradableVenue, venueCounts, venueSolPrice } from "../screener";
 import type { LegacyScreen } from "../screener";
 import { scorePool } from "../screener/score";
@@ -570,7 +570,21 @@ async function main(): Promise<void> {
     assert.deepEqual(again.venues, modern.venues);
   });
 
-  console.log(`\n${passed} screener tests passed`);
+    await test("parseDexScreenerEnrichment: pairs by address with volume, txns, market cap, age and the quote's USD price from the two prices", () => {
+    const json = { pairs: [{ pairAddress: "POOL1", baseToken: { address: "MINT", symbol: "PAID" }, quoteToken: { address: "So111", symbol: "SOL" }, priceUsd: "0.02", priceNative: "0.0002", liquidity: { usd: 293473 }, volume: { h24: 854292 }, priceChange: { h24: -12.5 }, txns: { h24: { buys: 1200, sells: 900 } }, fdv: 21500000, marketCap: 21500000, pairCreatedAt: 1758000000000 }, { nope: true }] };
+    const e = parseDexScreenerEnrichment(json).get("POOL1")!;
+    assert.equal(e.name, "PAID / SOL");
+    assert.deepEqual([e.baseMint, e.quoteMint], ["MINT", "So111"]);
+    assert.equal(e.volume24hUsd, 854292);
+    assert.equal(e.txns24h, 2100);
+    assert.equal(e.mcapUsd, 21500000);
+    assert.equal(e.createdAt, 1758000000000);
+    assert.equal(e.priceUsd, 0.02);
+    assert.ok(Math.abs(e.quotePriceUsd! - 100) < 1e-9, "0.02 USD per PAID over 0.0002 SOL per PAID = 100 USD per SOL");
+    assert.equal(parseDexScreenerEnrichment({}).size, 0);
+  });
+
+console.log(`\n${passed} screener tests passed`);
 }
 
 main().catch((err) => {
