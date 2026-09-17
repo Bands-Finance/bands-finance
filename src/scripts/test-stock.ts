@@ -340,6 +340,29 @@ async function main(): Promise<void> {
     assert.match(wait.decision.reasoning, /5 bins above straddle .* Out of range 100s against the engine minimum 600s/);
     voice(wait.decision);
   });
+  await test("half a straddle: the band holds only its USDC half while the wallet holds the SPYx half: REBALANCE that re-lays both without a swap; with no SPYx in the wallet the in-range hold stands", () => {
+    const inr = straddleAt(ACTIVE + 5);
+    assert.ok(inr.pos.amountX > 0.5, `the fixture's band holds ${inr.pos.amountX} SPYx`);
+    // the seat's token half, what the swap would have bought: the wallet holds all of it, the band none
+    const tokenHalf = Math.floor((1125 / P) * 1e6) / 1e6;
+    const half = { ...inr.pos, amountX: 0, feeX: 0, valueInSol: inr.pos.valueInSol / 2, solInPosition: inr.pos.solInPosition / 2, quoteInPosition: (inr.pos.quoteInPosition ?? 0) };
+    const o = obs({ positions: [half], wallet: { address: "w", sol: 100, token: tokenHalf, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" } }, inr.snap);
+    const r = policy.policyDecide(o, x);
+    assert.equal(r.branch, "rebalance", r.reason);
+    assert.equal(r.decision.action, "REBALANCE");
+    assert.equal(r.decision.positionAddress, half.address);
+    assert.equal(r.decision.open!.side, "BOTH");
+    assert.equal(r.decision.open!.acquireToken, 0, "the wallet has the token half: nothing to buy");
+    assert.match(r.decision.headline, /^Half a straddle in SPYx\/USDC\. Laying both halves: /);
+    assert.match(r.decision.reasoning, /holds only its USDC half: the wallet holds [\d.]+ SPYx, the token half, idle/);
+    assert.match(r.reason, /half-laid: re-laying/);
+    voice(r.decision);
+    const empty = policy.policyDecide(obs({ positions: [half], wallet: { address: "w", sol: 100, token: 0, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" } }, inr.snap), x);
+    assert.equal(empty.branch, "in-range", "no token in the wallet: nothing to re-lay with, the band holds");
+    const whole = policy.policyDecide(obs({ positions: [inr.pos], wallet: { address: "w", sol: 100, token: tokenHalf, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" } }, inr.snap), x);
+    assert.equal(whole.branch, "in-range", "a band that holds both halves is left alone even with spare token in the wallet");
+  });
+
   await test("price above the band past the minimum: REBALANCE to a fresh straddle around the new price, buying the token half (the old band is all USDC); the guards accept it", () => {
     const out = straddleAt(ACTIVE + 20);
     near(out.pos.amountX, 0, 1e-9, "all quote now");

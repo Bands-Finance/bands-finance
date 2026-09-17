@@ -374,6 +374,30 @@ async function readWalletToken(ctx: ExecutionContext): Promise<number | null> {
 }
 
 const fmtUnits = (n: number, d: number) => Number(n.toFixed(Math.min(d, 8))).toString();
+
+/**
+ * The wallet's base-token balance after a swap leg, once the read has caught up with the fill. A
+ * balance read right after a confirmed swap can still return the old figure: on 2026-09-17 the first
+ * live open read 0 NVDAx seconds after 1.15 had arrived, clamped the token leg to 0 and laid the SOL
+ * half alone. Reads until the balance reaches `expectMin` or the attempts run out; returns the last
+ * read (null when the wallet cannot be read at all).
+ */
+export async function settleWalletToken(
+  read: () => Promise<number | null>,
+  expectMin: number,
+  o: { attempts?: number; waitMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<number | null> {
+  const attempts = Math.max(1, o.attempts ?? 8);
+  const waitMs = o.waitMs ?? 2000;
+  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let last: number | null = null;
+  for (let i = 0; i < attempts; i++) {
+    last = await read();
+    if (last !== null && last + 1e-9 >= expectMin) return last;
+    if (i < attempts - 1) await sleep(waitMs);
+  }
+  return last;
+}
 const floorTo = (n: number, d: number) => Math.floor(n * 10 ** d) / 10 ** d;
 
 type SwapLeg = "acquire" | "liquidate" | "shortfall" | "surplus";
@@ -609,6 +633,7 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
         const held = read !== null ? read : before + tokensBack;
         const shortfall = o.amountToken - held;
         const declared = Number.isFinite(o.acquireToken ?? 0) ? Math.max(0, o.acquireToken ?? 0) : 0;
+        let bought = 0;
         if (shortfall > SWAP_DUST_TOKEN && (declared > 0 || d.action === "REBALANCE")) {
           const leg = await runSwapLeg(ctx, d.action === "REBALANCE" ? "shortfall" : "acquire", Number(shortfall.toFixed(Math.min(tokenDec, 8))), result, ledger);
           if (!leg.ok) {
@@ -616,6 +641,7 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
             result.notes.push(`the ${d.action === "REBALANCE" ? "shortfall" : "acquire"} leg failed: no deposit`);
             return result;
           }
+          bought = Math.max(0, leg.tokenDelta);
         } else if (d.action === "REBALANCE" && -shortfall > SWAP_DUST_TOKEN && tokensBack > SWAP_DUST_TOKEN) {
           const leg = await runSwapLeg(ctx, "surplus", floorTo(Math.min(-shortfall, tokensBack), tokenDec), result, ledger);
           if (!leg.ok) {
@@ -624,8 +650,11 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
             return result;
           }
         }
-        // live: the fill decides the token leg; the deposit takes what the wallet holds, never more
-        const after = await readWalletToken(ctx);
+        // live: the fill decides the token leg; the deposit takes what the wallet holds, never more.
+        // The read has to catch up with the fill first (a fill may land a little under the quote).
+        const expectMin = Math.min(o.amountToken, held + bought * 0.97);
+        const after = read === null ? null : await settleWalletToken(() => readWalletToken(ctx), expectMin);
+        if (after !== null && after + 1e-9 < expectMin) result.notes.push(`the wallet showed ${fmtUnits(after, tokenDec)} ${ctx.snapshot.baseToken.symbol} after ${bought > 0 ? "the swap" : "the read"}, under the ${fmtUnits(expectMin, tokenDec)} expected`);
         if (after !== null && after + 1e-9 < o.amountToken) {
           const clamped = floorTo(after, Math.min(tokenDec, 8));
           result.notes.push(`token leg clamped to the wallet's ${fmtUnits(after, tokenDec)} ${ctx.snapshot.baseToken.symbol} (planned ${o.amountToken})`);

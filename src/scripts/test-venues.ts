@@ -81,7 +81,7 @@ async function main(): Promise<void> {
   const venues = await import("../venues/index.js");
   const raydium = await import("../venues/raydium.js");
   const sdk = await import("@raydium-io/raydium-sdk-v2");
-  const { execute, broadcastRefusal, toOpenPlan } = await import("../executor.js");
+  const { execute, broadcastRefusal, toOpenPlan, settleWalletToken } = await import("../executor.js");
   const policy = await import("../agent/policy.js");
   const paper = await import("../paper/index.js");
   const { binPrice, tickToBin, binToTicks, ticksToBins, tickArrayStart, clmmBandTicks } = bins;
@@ -546,6 +546,27 @@ async function main(): Promise<void> {
     assert.equal(late.decision.open!.side, "BOTH");
     const off = policy.policyDecide(obs({ positions: [band(ACTIVE - 1)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 5000 } } }), { limits, env: { book: "stocks", stockRecentreMaxPaybackHours: 0 }, now: T0 });
     assert.equal(off.branch, "rebalance");
+  });
+
+  console.log("the token balance after a swap");
+  await test("settleWalletToken: reads again until the balance reaches the expected fill, returns the last read when it never does, and stops at once when it already has", async () => {
+    const waits: number[] = [];
+    const sleep = async (ms: number) => { waits.push(ms); };
+    const lagging = [0, 0, 1.1495];
+    let i = 0;
+    const got = await settleWalletToken(async () => lagging[Math.min(i++, lagging.length - 1)], 1.1479 * 0.97, { attempts: 8, waitMs: 2000, sleep });
+    near(got!, 1.1495, 1e-12);
+    assert.deepEqual(waits, [2000, 2000], "two lagging reads, two waits, then the fill shows");
+    waits.length = 0;
+    const never = await settleWalletToken(async () => 0, 1.1, { attempts: 4, waitMs: 500, sleep });
+    assert.equal(never, 0, "the last read comes back so the caller can clamp and say so");
+    assert.equal(waits.length, 3);
+    waits.length = 0;
+    const already = await settleWalletToken(async () => 5, 1.1, { attempts: 4, waitMs: 500, sleep });
+    assert.equal(already, 5);
+    assert.equal(waits.length, 0, "no wait when the first read is enough");
+    const unreadable = await settleWalletToken(async () => null, 1.1, { attempts: 2, waitMs: 1, sleep });
+    assert.equal(unreadable, null);
   });
 
   console.log("the paper executor on a CLMM snapshot");

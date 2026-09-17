@@ -1051,6 +1051,36 @@ function stockBandDecide(o: Observation, x: PolicyExtras, env: PolicyEnv, q: Quo
   const tDec = Math.min(s.baseToken.decimals, 6);
   const own = isStockPairPool(o) ? ` in our own ${o.poolLabel} pool` : "";
   if (band.inRange) {
+    // A straddle that went in with one half: the band holds the quote side only while the wallet holds
+    // the token half idle (the executor clamped the token leg to a stale balance read, 2026-09-17). It
+    // earns on one side and carries the stock exposure for nothing. Re-lay both halves; no swap is
+    // needed, the wallet already has the token.
+    const tokenInBand = q.side === "X" ? band.amountY : band.amountX;
+    const fix = sizeStraddle(o, x, q, env, band, now);
+    if (!fix.none && fix.amountToken > 0 && tokenInBand < 0.05 * fix.amountToken && o.wallet.token + 1e-9 >= 0.9 * fix.amountToken && fix.acquireToken <= 0) {
+      const gate = openGate(o, limits, now);
+      if (gate) {
+        return hold(
+          `Straddle ${addr} covers bins ${range}${own} and holds only its ${q.symbol} half; the wallet holds ${r(o.wallet.token, tDec)} ${sym}, the token half, idle. Re-laying both halves is off for now (${gate}).`,
+          `Half a straddle in ${o.poolLabel}, the ${sym} half in the wallet. Waiting to re-lay it.`,
+          "gated",
+          `straddle ${addr} half-laid; re-lay gated: ${gate}`,
+        );
+      }
+      const width = 2 * fix.bins + 1;
+      return {
+        decision: {
+          action: "REBALANCE",
+          open: straddleParams(fix),
+          positionAddress: band.address,
+          reasoning: `Straddle ${addr} covers bins ${range}${own} and the ${priceLine} sits inside it, but the band holds only its ${q.symbol} half: the wallet holds ${r(o.wallet.token, tDec)} ${sym}, the token half, idle, earning nothing and carrying the stock's moves. Closing it and laying ${r(fix.amountQuote, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} + ${r(fix.amountToken, tDec)} ${sym} as a ${width}-bin straddle from bin ${s.activeBinId - fix.bins} to ${s.activeBinId + fix.bins}, both halves from what the wallet and the band already hold; no swap. ${perpClause(o)}`,
+          confidence: 0.7,
+          headline: clip(`Half a straddle in ${o.poolLabel}. Laying both halves: ${r(fix.amountQuote, 2)} ${q.symbol} + ${r(fix.amountToken, 4)} ${sym}.`),
+        },
+        reason: `straddle ${addr} half-laid: re-laying ${r(fix.amountQuote, 2)} ${q.symbol} + ${r(fix.amountToken, tDec)} ${sym} across ${width} bins from the wallet's ${sym}`,
+        branch: "rebalance",
+      };
+    }
     return hold(
       `Straddle ${addr} covers bins ${range}${own} and the ${priceLine} sits inside it. It ${bandClause(o, band, q)}. In range is where the fees are, in both directions; the ${sym} half is the ${o.engine?.basis?.perpSymbol ? "hedge desk's to cover" : "book's own risk: no Backpack perp is listed, so it runs unhedged"}. Nothing to move.`,
       own ? "In range in our own pool. Fees ticking both ways. Nothing to do." : "In range. Fees ticking both ways. Nothing to do.",
