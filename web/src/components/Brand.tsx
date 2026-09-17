@@ -1,37 +1,35 @@
+import { Marquee } from "./Marquee";
 import "./Brand.css";
 
 /**
- * The house imagery: engraved plates on paper with one orange accent (Zach's brand renders,
- * 2026-09-17). A portrait beside the note, the eight plates as a strip, the full figure at the foot.
+ * The house imagery: Zach's engraved plates on paper with one orange accent (2026-09-17). The ten plates
+ * run as an infinite marquee the reader's scroll pushes around; the full figure stands at the foot.
  * Decoration only: every plate's words are in its alt text, nothing on the page depends on them.
  */
 
-export const PLATES: { file: string; title: string; line: string }[] = [
-  { file: "card-portrait", title: "Mr Bands", line: "Liquidity in between" },
-  { file: "card-partnership", title: "Partnership", line: "Better markets together" },
-  { file: "card-capital-flows", title: "Capital flows", line: "In between opportunity" },
-  { file: "card-global-liquidity", title: "Global liquidity", line: "Same principles. A wider world." },
-  { file: "card-higher-perspective", title: "A higher perspective", line: "Discipline creates freedom" },
-  { file: "card-liquidity-in-between", title: "Liquidity in between", line: "People, markets, opportunities, a brighter tomorrow" },
-  { file: "card-tradition", title: "Tradition meets progress", line: "" },
-  { file: "card-built-for-next", title: "Built for what's next", line: "" },
+export const PLATES: { file: string; title: string; line: string; w: number; h: number }[] = [
+  { file: "mr-bands", title: "Mr Bands", line: "Liquidity in between. Discipline today compounds tomorrow.", w: 307, h: 498 },
+  { file: "capital", title: "Capital", line: "Builds opportunity.", w: 277, h: 498 },
+  { file: "partnership", title: "Partnership", line: "Go further together. Better markets, stronger people.", w: 292, h: 498 },
+  { file: "global-reach", title: "Global reach", line: "Local opportunity. Same principles, a wider world.", w: 296, h: 498 },
+  { file: "tradition", title: "Tradition", line: "Meets progress. A brighter tomorrow.", w: 284, h: 498 },
+  { file: "discipline", title: "Discipline", line: "Creates freedom. A calm mind compounds everything.", w: 307, h: 471 },
+  { file: "markets", title: "Markets", line: "Never sleep. Time creates opportunity.", w: 277, h: 471 },
+  { file: "liquidity", title: "Liquidity in between", line: "Higher potential, in between, stronger foundations.", w: 292, h: 471 },
+  { file: "brighter-tomorrow", title: "A brighter tomorrow", line: "Same principles.", w: 296, h: 471 },
+  { file: "build", title: "Build", line: "For what's next. Built on principles.", w: 284, h: 471 },
 ];
 
-/** The engraved portrait beside the note. */
-export function BrandPortrait({ agentName }: { agentName: string }) {
-  return <img className="brand-portrait" src="/art/brand/portrait-cigar.webp" alt={`${agentName}, engraved: top hat with an orange band, pixel shades, a cigar`} width="900" height="900" loading="eager" />;
-}
-
-/** The eight plates, a strip on wide screens and a scroll on small ones. */
+/** The ten plates, always drifting; the reader's scroll hurries or reverses them. */
 export function BrandPlates() {
   return (
-    <div className="brand-plates" role="list" aria-label="The house plates">
+    <Marquee className="plates" speed={24} scrollBoost={5} label="The house plates">
       {PLATES.map((p) => (
-        <figure className="brand-plate" role="listitem" key={p.file}>
-          <img src={`/art/brand/${p.file}.webp`} alt={`${p.title}${p.line ? `. ${p.line}` : ""}`} loading="lazy" width="372" height="496" />
+        <figure className="plate" key={p.file}>
+          <img src={`/art/plates/${p.file}.webp`} alt={`${p.title}. ${p.line}`} loading="lazy" width={p.w} height={p.h} draggable={false} />
         </figure>
       ))}
-    </div>
+    </Marquee>
   );
 }
 

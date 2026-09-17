@@ -74,151 +74,215 @@
 .dash ::selection { background: var(--strap); color: #fff; }
 .dash a { color: var(--strap-deep); }
 
+/* ---------- engraved lettering and ornaments ---------- */
+
+.dash { --font-engrave: "Cormorant SC", "Cormorant Garamond", "Iowan Old Style", Georgia, serif; }
+.dash .engrave {
+  font-family: var(--font-engrave);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.24em;
+  font-feature-settings: "lnum" 1;
+}
+.guilloche { display: block; color: var(--ink); opacity: 0.55; }
+.rosette { display: block; color: var(--strap); }
+
 /* ---------- the nav ---------- */
 
 .dash-nav {
   max-width: var(--dash-max);
   margin: 0 auto;
-  padding: 26px var(--gut) 0;
+  padding: 24px var(--gut) 0;
   display: flex;
   align-items: center;
   gap: 24px;
-  font-family: var(--font-body);
-  font-size: 14px;
   color: var(--ink-2);
 }
-.dash-nav__brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--ink);
-  text-decoration: none;
-}
-.dash-nav__name {
-  font-family: var(--font-serif);
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-.dash-nav__links {
-  display: flex;
-  gap: 22px;
-  margin-left: auto;
-}
-.dash-nav__links a {
-  color: var(--ink-2);
-  text-decoration: none;
-  border-bottom: 1px solid transparent;
-  padding-bottom: 2px;
-}
+.dash-nav__brand { display: inline-flex; align-items: center; gap: 12px; color: var(--ink); text-decoration: none; white-space: nowrap; }
+.dash-nav__name { font-size: 19px; letter-spacing: 0.3em; }
+.dash-nav__links { display: flex; gap: clamp(14px, 2vw, 26px); margin-left: auto; font-size: 12px; white-space: nowrap; }
+.dash-nav__links a { color: var(--ink-2); text-decoration: none; border-bottom: 1px solid transparent; padding-bottom: 2px; }
 .dash-nav__links a:hover { color: var(--ink); border-bottom-color: var(--strap); }
-.dash-nav__mode {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--strap-deep);
-  cursor: help;
-}
+.dash-nav__mode { font-size: 12px; color: var(--strap-deep); cursor: help; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.dash-nav__mode i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; display: inline-block; }
 .dash-nav__mode--live { color: var(--good); }
+.dash-nav__mode--live i { animation: dash-pulse 2.4s ease-in-out infinite; }
+@keyframes dash-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(31, 122, 77, 0.45); } 50% { box-shadow: 0 0 0 6px rgba(31, 122, 77, 0); } }
 
-/* ---------- the note ---------- */
+/* ---------- the ticker tape ---------- */
 
-.dash-note {
-  max-width: var(--dash-max);
-  margin: 0 auto;
-  padding: 72px var(--gut) 56px;
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
-  gap: 48px clamp(32px, 6vw, 88px);
-  align-items: start;
+.tape {
+  margin: 20px 0 0;
+  border-top: 1px solid var(--rule-strong);
+  border-bottom: 1px solid var(--rule-strong);
+  background: linear-gradient(to bottom, rgba(22, 18, 15, 0.035), transparent 40%, transparent 60%, rgba(22, 18, 15, 0.035));
+  --marquee-gap: 0px;
 }
-.dash-note__text { max-width: 34em; }
-.dash-note__headline {
-  margin: 0 0 22px;
+.tape__item { display: inline-flex; align-items: baseline; gap: 12px; padding: 10px 0 9px; font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
+.tape__time { color: var(--ink-3); letter-spacing: 0.12em; }
+.tape__verb { color: var(--ink); }
+.tape__pool { color: var(--ink); letter-spacing: 0.14em; }
+.tape__sol { letter-spacing: 0.1em; }
+.tape__sol--up { color: var(--good); }
+.tape__sol--down { color: var(--bad); }
+.tape__sep { color: var(--strap); font-size: 8px; padding: 0 22px 0 10px; transform: translateY(-2px); }
+
+/* ---------- the note: the masthead printed like a banknote ---------- */
+
+.banknote { max-width: calc(var(--dash-max) + 40px); margin: 0 auto; padding: 40px var(--gut) 52px; }
+.banknote__frame {
+  position: relative;
+  padding: 0 clamp(18px, 3vw, 40px);
+  background:
+    radial-gradient(90% 120% at 12% 30%, rgba(255, 122, 26, 0.06), transparent 55%),
+    var(--paper-card);
+  border: 1px solid var(--ink);
+  outline: 1px solid var(--rule-strong);
+  outline-offset: 5px;
+  box-shadow: 0 1px 0 rgba(22, 18, 15, 0.08), 0 30px 60px -40px rgba(22, 18, 15, 0.55);
+}
+.banknote__braid { margin: 10px 0 0; }
+.banknote__braid--foot { margin: 0 0 10px; }
+.banknote__topline {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: baseline;
+  gap: 16px;
+  padding: 12px 2px 0;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.banknote__topline > :last-child { text-align: right; }
+.banknote__topline a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--rule-strong); }
+.banknote__topline a:hover { color: var(--ink); border-bottom-color: var(--strap); }
+.banknote__topmid { color: var(--ink-3); }
+
+.banknote__body {
+  display: grid;
+  grid-template-columns: minmax(170px, 230px) minmax(0, 1fr) minmax(280px, 330px);
+  gap: clamp(22px, 3.4vw, 48px);
+  align-items: center;
+  padding: clamp(24px, 3.5vw, 44px) 0 clamp(30px, 4vw, 52px);
+}
+
+/* the portrait in its oval, a rosette printed under it */
+.vignette { position: relative; aspect-ratio: 5 / 6; width: 100%; max-width: 230px; justify-self: center; color: var(--ink); }
+.vignette__rosette { position: absolute; left: 50%; top: 50%; width: 138%; height: auto; transform: translate(-50%, -50%); opacity: 0.32; }
+.vignette__img {
+  position: absolute;
+  inset: 4.5% 5.5%;
+  width: 89%;
+  height: 91%;
+  object-fit: cover;
+  object-position: 50% 30%;
+  border-radius: 50%;
+  mix-blend-mode: multiply;
+}
+.vignette__ring { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.banknote__text { min-width: 0; }
+.banknote__date { margin: 0 0 14px; font-size: 12px; color: var(--strap-deep); }
+.banknote__headline {
+  margin: 0 0 18px;
   font-family: var(--font-serif);
   font-weight: 600;
-  font-size: clamp(36px, 5.2vw, 62px);
+  font-size: clamp(34px, 4.4vw, 56px);
   line-height: 1.04;
   letter-spacing: -0.015em;
   color: var(--ink);
   font-variation-settings: "opsz" 144;
+  text-wrap: balance;
 }
-.dash-note__headline--down { color: var(--ink); }
-.dash-note__p {
-  margin: 0 0 14px;
+.banknote__p {
+  margin: 0 0 12px;
   font-family: var(--font-serif);
-  font-size: 19px;
+  font-size: 18.5px;
   line-height: 1.55;
   color: var(--ink-2);
   font-variation-settings: "opsz" 18;
+  max-width: 34em;
 }
-.dash-note__p:last-child { color: var(--ink-3); }
-.dash-note__p a { color: var(--strap-deep); text-decoration: underline; text-underline-offset: 3px; }
+.banknote__p:last-child { color: var(--ink-3); margin-bottom: 0; }
+.banknote__p a { color: var(--strap-deep); text-decoration: underline; text-underline-offset: 3px; }
 
-/* the mark: an engraved stack of bills, its cream multiplied away into the page */
-.dash-side { display: flex; flex-direction: column; gap: 0; }
-.dash-mark {
-  display: block;
-  width: min(100%, 300px);
-  height: auto;
-  margin: 18px auto 34px;
-  mix-blend-mode: multiply;
+/* the denomination: the book's value over a rosette, where a banknote carries its number */
+.banknote__denom {
+  position: absolute;
+  right: clamp(8px, 1.4vw, 20px);
+  bottom: 30px;
+  width: 112px;
+  height: 112px;
+  display: grid;
+  place-items: center;
   pointer-events: none;
+}
+.banknote__denom-rosette { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.5; }
+.banknote__denom-num { position: relative; font-family: var(--font-serif); font-weight: 600; font-size: 25px; letter-spacing: -0.02em; color: var(--ink); line-height: 1; transform: translateY(-3px); font-variant-numeric: lining-nums; }
+.banknote__denom-unit { position: absolute; bottom: 30px; font-size: 9.5px; color: var(--ink-2); letter-spacing: 0.3em; }
+
+.banknote__micro {
+  margin: 0;
+  padding: 0 2px 6px;
+  font-family: var(--font-engrave);
+  font-size: 7.5px;
+  letter-spacing: 0.32em;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
   user-select: none;
 }
 
-/* the ledger: dotted leaders between the label and the figure, a stamp on the corner */
+/* the statement: dotted leaders between the label and the figure, a stamp on the corner */
 .dash-ledger {
   position: relative;
-  margin-top: 10px;
-  padding: 22px 24px 18px;
-  background: var(--paper-card);
+  padding: 20px 22px 14px;
+  background: var(--paper);
   border: 1px solid var(--rule-strong);
-  box-shadow: 0 1px 0 rgba(22, 18, 15, 0.06), 0 12px 30px -22px rgba(22, 18, 15, 0.5);
+  box-shadow: inset 0 0 0 3px var(--paper), inset 0 0 0 4px var(--rule);
 }
+.dash-ledger__title { margin: 0 0 8px; font-size: 12px; color: var(--ink-2); text-align: center; }
 .dash-ledger__rows { margin: 0; }
-.dash-ledger__row {
+.dash-ledger__row { display: flex; align-items: baseline; gap: 8px; padding: 7px 0; }
+.dash-ledger__row dt {
+  flex: 1 1 auto;
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  padding: 9px 0;
-}
-.dash-ledger__row + .dash-ledger__row { border-top: 1px solid var(--rule); }
-.dash-ledger__row dt {
-  font-family: var(--font-body);
-  font-size: 14px;
+  gap: 8px;
+  font-family: var(--font-serif);
+  font-size: 15px;
   color: var(--ink-2);
   white-space: nowrap;
+  min-width: 0;
 }
-.dash-ledger__row dt::after {
-  content: "";
-  display: inline-block;
-  vertical-align: baseline;
-}
+.dash-ledger__row dt::after { content: ""; flex: 1 1 auto; min-width: 12px; border-bottom: 1px dotted var(--rule-strong); transform: translateY(-4px); }
 .dash-ledger__row dd {
-  margin: 0 0 0 auto;
-  font-family: var(--font-mono);
-  font-size: 14px;
+  margin: 0;
+  flex: 0 1 auto;
+  font-family: var(--font-serif);
+  font-weight: 500;
+  font-size: 15px;
   color: var(--ink);
   text-align: right;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums lining-nums;
 }
 .dash-ledger__aside { color: var(--ink-3); }
 
 .dash-stamp {
   position: absolute;
-  top: -14px;
-  right: 18px;
+  top: -15px;
+  right: 14px;
   transform: rotate(-4deg);
   padding: 5px 10px;
   border: 2px solid var(--strap-deep);
   border-radius: 4px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.16em;
+  font-family: var(--font-engrave);
+  font-weight: 700;
+  font-size: 11.5px;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--strap-deep);
   background: var(--paper-card);
-  opacity: 0.9;
+  opacity: 0.92;
   -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='40'><filter id='s'><feTurbulence type='fractalNoise' baseFrequency='.6' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -1.2 1.55'/></filter><rect width='120' height='40' filter='url(%23s)'/></svg>");
   mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='40'><filter id='s'><feTurbulence type='fractalNoise' baseFrequency='.6' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -1.2 1.55'/></filter><rect width='120' height='40' filter='url(%23s)'/></svg>");
 }
@@ -226,17 +290,11 @@
 
 /* ---------- the sections ---------- */
 
-.dash__main {
-  max-width: var(--dash-max);
-  margin: 0 auto;
-  padding: 0 var(--gut) 24px;
-}
-.dash-sec {
-  padding: 48px 0 8px;
-  border-top: 1px solid var(--rule-strong);
-  scroll-margin-top: 24px;
-}
+.dash__main { max-width: var(--dash-max); margin: 0 auto; padding: 0 var(--gut) 24px; }
+.dash-sec { padding: 0 0 8px; scroll-margin-top: 24px; }
+.dash-sec__braid { margin: 0 0 40px; opacity: 0.4; }
 .dash-sec__head { margin-bottom: 26px; }
+.dash-sec__plate { margin: 0 0 8px; font-size: 12px; color: var(--strap-deep); }
 .dash-sec__title {
   margin: 0;
   font-family: var(--font-serif);
@@ -245,14 +303,17 @@
   letter-spacing: -0.012em;
   color: var(--ink);
 }
-.dash-sec__sub {
-  margin: 8px 0 0;
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: 17px;
-  color: var(--ink-3);
-}
+.dash-sec__sub { margin: 8px 0 0; font-family: var(--font-serif); font-style: italic; font-size: 17px; color: var(--ink-3); }
+.dash-sec__body { padding-bottom: 44px; }
 .dash [id] { scroll-margin-top: 24px; }
+
+/* the record's chart, re-inked: an ink line over an engraver's hatch instead of a glow and a gradient */
+.dash .pnl__ink-stroke { stroke: var(--ink); }
+.dash .pnl__ink-fill { fill: var(--ink); }
+.dash .pnl path[filter] { display: none; }
+.dash .pnl path.pnl__area-in[fill^="url"] { fill: url(#dash-hatch); opacity: 0.55; }
+.dash .pnl__chart-eyebrow, .dash .pnl__board-eyebrow { font-family: var(--font-engrave); font-weight: 600; letter-spacing: 0.22em; }
+.dash .pnl__axis { fill: var(--ink-3); }
 
 /* the ported sections drew dark frames; on paper the rule is the frame */
 .dash .pnl { max-width: none; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
@@ -279,53 +340,45 @@
 
 /* ---------- footer ---------- */
 
-.dash-foot {
-  max-width: var(--dash-max);
-  margin: 0 auto;
-  padding: 36px var(--gut) 56px;
-  border-top: 1px solid var(--rule-strong);
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
+.dash-foot { max-width: var(--dash-max); margin: 0 auto; padding: 0 var(--gut) 56px; display: flex; flex-direction: column; gap: 14px; }
+.dash-foot__braid { opacity: 0.4; margin-bottom: 28px; }
 .dash-foot__row { display: flex; align-items: flex-end; gap: 28px; }
-.dash-foot__text { display: flex; flex-direction: column; gap: 10px; }
-.dash-foot__motto {
-  margin: 0;
-  font-family: var(--font-serif);
-  font-weight: 600;
-  font-size: 22px;
-  letter-spacing: 0.01em;
-  color: var(--ink);
-}
-.dash-foot__legal {
-  margin: 0;
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: 16px;
-  line-height: 1.55;
-  color: var(--ink-3);
-  max-width: 64ch;
-}
-.dash-foot__links { display: flex; gap: 22px; flex-wrap: wrap; font-size: 14px; }
+.dash-foot__text { display: flex; flex-direction: column; gap: 12px; }
+.dash-foot__motto { margin: 0; font-size: 17px; letter-spacing: 0.34em; color: var(--ink); }
+.dash-foot__legal { margin: 0; font-family: var(--font-serif); font-style: italic; font-size: 16px; line-height: 1.55; color: var(--ink-3); max-width: 64ch; }
+.dash-foot__links { display: flex; gap: 22px; flex-wrap: wrap; font-size: 12px; }
 .dash-foot__links a { color: var(--ink-2); text-decoration: none; border-bottom: 1px solid var(--rule-strong); padding-bottom: 1px; }
 .dash-foot__links a:hover { color: var(--ink); border-bottom-color: var(--strap); }
 
 /* ---------- narrow ---------- */
 
-@media (max-width: 860px) {
-  .dash-note { grid-template-columns: 1fr; gap: 36px; padding-top: 48px; }
-  .dash-ledger { margin-top: 4px; }
-  .dash-mark { width: 220px; margin: 0 auto 18px; }
+@media (max-width: 1020px) {
+  .banknote__body { grid-template-columns: minmax(150px, 200px) minmax(0, 1fr); }
+  .dash-ledger { grid-column: 1 / -1; }
+  .banknote__denom { bottom: auto; top: 58px; right: 10px; width: 92px; height: 92px; }
+  .banknote__denom-num { font-size: 21px; }
+  .banknote__denom-unit { bottom: 24px; }
 }
 @media (max-width: 640px) {
   .dash-nav { gap: 14px; padding-top: 18px; flex-wrap: wrap; }
   .dash-nav__links { display: none; }
   .dash-nav__mode { margin-left: auto; }
-  .dash-note { padding: 36px var(--gut) 40px; }
-  .dash-note__p { font-size: 17px; }
-  .dash-sec { padding-top: 36px; }
+  .tape { margin-top: 14px; }
+  .banknote { padding: 26px var(--gut) 40px; }
+  .banknote__frame { outline-offset: 4px; }
+  .banknote__topline { grid-template-columns: 1fr auto; font-size: 10.5px; }
+  .banknote__topmid { display: none; }
+  .banknote__body { grid-template-columns: 1fr; gap: 22px; padding-top: 22px; }
+  .vignette { max-width: 170px; }
+  .banknote__text { text-align: left; }
+  .banknote__p { font-size: 17px; }
+  .banknote__denom { display: none; }
+  .dash-sec__braid { margin-bottom: 30px; }
+  .dash-foot__row { flex-direction: column; align-items: flex-start; }
 }
 @media (max-width: 480px) {
-  .dash-nav__name { font-size: 19px; }
+  .dash-nav__name { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dash-nav__mode--live i { animation: none; }
 }

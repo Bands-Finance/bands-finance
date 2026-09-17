@@ -367,7 +367,7 @@ async function main() {
     assert.deepEqual(live.story, [
       "He has 14.9 SOL at work in 3 bands.",
       "He has earned 0.0031 SOL in fees since he started, still sitting in the bands.",
-      "In the last hour his 3 pools traded 84.2 SOL across 91 swaps and paid 0.15 SOL in fees; 0.15 of that was paid in the bins he covers.",
+      "In the last hour his 3 pools paid 0.15 SOL in fees to the people making a market there; he is one of them.",
       "This is his own wallet on Solana; every move below links to its transaction.",
     ]);
     assert.deepEqual([num(0.0031), num(0.15), num(0.0001)], ["0.0031", "0.15", "0.0001"]);

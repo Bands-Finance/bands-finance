@@ -74,11 +74,14 @@ export function narrativeOf(o: { record: AgentRecord | null; status: Status; age
   } else {
     story.push("He has not earned a fee yet.");
   }
-  if (o.flow && o.flow.swaps60m > 0) {
+  // The scout reads each pool's own account now: its fee counters are exact, its "swaps" are polls in which they
+  // moved and its volume is an estimate, so the story quotes the fees and nothing else. The bins-he-covers figure
+  // is left out: the scout applies today's band to the whole hour, which overstates it after a re-lay.
+  if (o.flow && o.flow.fees60mSol > 0) {
     const f = o.flow;
-    const ours = f.ours60mSol >= 0.0005 ? `; ${num(f.ours60mSol)} of that was paid in the bins he covers` : "";
-    story.push(`In the last hour his ${f.pools === 1 ? "pool" : `${f.pools} pools`} traded ${num(f.volume60mSol)} SOL across ${f.swaps60m} swaps and paid ${num(f.fees60mSol)} SOL in fees${ours}.`);
+    story.push(`In the last hour his ${f.pools === 1 ? "pool" : `${f.pools} pools`} paid ${num(f.fees60mSol)} SOL in fees to the people making a market there; he is one of them.`);
   }
+
 
   const days: DayRow[] = record.days.filter((d) => Number.isFinite(d.open) && Number.isFinite(d.close));
   const change = (d: DayRow) => d.close - d.open;

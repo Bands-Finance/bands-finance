@@ -2,6 +2,7 @@ import type { BandCard, Book as BookModel, PoolFlow, Status } from "../model";
 import type { ScreenResult, StockTag } from "../types";
 import { ago, duration, fmtPrice } from "../format";
 import { num } from "../narrative";
+import { Rosette } from "../brand/Engrave";
 import "./Holdings.css";
 
 /**
@@ -73,44 +74,61 @@ export function Holdings({ book, screen, status, now, agentName, flows }: Holdin
           const st = statusOfBand(b);
           const move = b.marketMove;
           const pos = b.upperPrice > b.lowerPrice ? Math.min(1, Math.max(0, (b.activePrice - b.lowerPrice) / (b.upperPrice - b.lowerPrice))) : 0.5;
+          // THE STRAP RULER: a ruler of bins from a little under the band to a little over it, the band as a paper
+          // strap across its own bins, and a needle where the price is. Bins rise with the price.
+          const outBy = Math.abs(b.binsFromRange);
+          const pad = Math.max(2, Math.round(b.widthBins * 0.3), b.inRange ? 0 : Math.min(outBy + 1, b.widthBins * 2));
+          const span = b.widthBins + 2 * pad;
+          const strapLeft = (pad / span) * 100;
+          const strapWidth = (b.widthBins / span) * 100;
+          const needleBins = b.inRange ? pad + pos * Math.max(0, b.widthBins - 1) + 0.5 : b.binsFromRange < 0 ? pad - Math.min(outBy, pad - 0.5) + 0.5 : pad + b.widthBins + Math.min(outBy, pad - 0.5) - 0.5;
+          const needle = Math.min(99, Math.max(1, (needleBins / span) * 100));
+          const offScale = !b.inRange && outBy > pad - 0.5;
           return (
-            <article className="hold__card" key={`${b.poolAddress}|${b.address}`}>
-              <header className="hold__head">
-                <div className="hold__name">
-                  <span className="hold__base">{base}</span>
-                  <span className="hold__quote">/ {quote}</span>
+            <article className={`bandnote${b.inRange ? " bandnote--live" : ""}`} key={`${b.poolAddress}|${b.address}`}>
+              <Rosette className="bandnote__rosette" size={260} lobes={18} rings={7} />
+              <header className="bandnote__head">
+                <div className="bandnote__name">
+                  <span className="bandnote__base">{base}</span>
+                  <span className="bandnote__quote engrave">/ {quote}</span>
                 </div>
-                <span className={`hold__pill hold__pill--${st.tone}`}>{st.word}</span>
+                <span className={`bandnote__state engrave bandnote__state--${st.tone}`}>{st.word}</span>
               </header>
-              <p className="hold__pair">
+              <p className="bandnote__pair engrave">
                 {stock ? (
                   <>
-                    Paired with <b>{stock.ticker}</b>
-                    {ISSUER[stock.issuer] ? <span className="hold__issuer"> · {ISSUER[stock.issuer]}</span> : null}
+                    Paired with {stock.ticker}
+                    {ISSUER[stock.issuer] ? ` · ${ISSUER[stock.issuer]}` : ""}
                   </>
                 ) : (
                   <>
-                    Meteora DLMM, {b.widthBins} bins, {b.side}
+                    Meteora DLMM · {b.widthBins} bins · {b.side}
                   </>
                 )}
               </p>
-              <div className="hold__stats">
-                <div className="hold__stat">
-                  <span className={`hold__big${b.fees > 0 ? " hold__big--good" : ""}`}>{b.fees < 0.00005 ? "0" : `+${num(b.fees)}`}<small> SOL</small></span>
-                  <span className="hold__label">Fees earned</span>
+
+              <div className="strapline" title={`${fmtPrice(b.lowerPrice)} to ${fmtPrice(b.upperPrice)} ${b.priceLabel}; now ${fmtPrice(b.activePrice)}`}>
+                <div className="strapline__ruler" style={{ backgroundSize: `${100 / span}% 100%` }} aria-hidden="true" />
+                <div className="strapline__strap" style={{ left: `${strapLeft}%`, width: `${strapWidth}%` }}>
+                  <span className="engrave">{b.putIn !== null ? `${num(b.putIn)} SOL` : `${b.widthBins} bins`}</span>
                 </div>
-                <div className="hold__stat">
-                  <span className="hold__big">{num(b.worthNow)}<small> SOL</small></span>
-                  <span className="hold__label">
-                    Worth now{move !== null ? <> · <span className={move >= 0 ? "hold__up" : "hold__down"}>{signed(move)} market</span></> : null}
-                  </span>
+                <div className={`strapline__needle${b.inRange ? "" : " strapline__needle--out"}`} style={{ left: `${needle}%` }}>
+                  <span className="strapline__price">{offScale ? `${outBy} bins ${b.binsFromRange < 0 ? "under" : "over"}` : fmtPrice(b.activePrice)}</span>
                 </div>
+                <span className="strapline__lo">{fmtPrice(b.lowerPrice)}</span>
+                <span className="strapline__hi">{fmtPrice(b.upperPrice)}</span>
               </div>
-              <div className="hold__bar" title={`${fmtPrice(b.lowerPrice)} to ${fmtPrice(b.upperPrice)} ${b.priceLabel}; now ${fmtPrice(b.activePrice)}`}>
-                <span className="hold__bar-track" />
-                <span className={`hold__bar-dot${b.inRange ? "" : " hold__bar-dot--out"}`} style={{ left: `${pos * 100}%` }} />
-                <span className="hold__bar-lo">{fmtPrice(b.lowerPrice)}</span>
-                <span className="hold__bar-hi">{fmtPrice(b.upperPrice)}</span>
+
+              <div className="bandnote__figs">
+                <div className="bandnote__fig">
+                  <span className="bandnote__label engrave">Fees earned</span>
+                  <span className={`bandnote__big${b.fees > 0 ? " bandnote__big--good" : ""}`}>{b.fees < 0.00005 ? "0" : `+${num(b.fees)}`}<small> SOL</small></span>
+                </div>
+                <div className="bandnote__fig">
+                  <span className="bandnote__label engrave">Worth now</span>
+                  <span className="bandnote__big">{num(b.worthNow)}<small> SOL</small></span>
+                  {move !== null && <span className={`bandnote__move ${move >= 0 ? "hold__up" : "hold__down"}`}>{signed(move)} from the market</span>}
+                </div>
               </div>
               {(() => {
                 const pf = flows?.get(b.poolAddress);
@@ -119,19 +137,21 @@ export function Holdings({ book, screen, status, now, agentName, flows }: Holdin
                 const q = f.quoteSymbol;
                 const age = Math.max(0, Math.round((now - f.asOf) / 60_000));
                 return (
-                  <p className="hold__flow" title="Read from the chain by the flow scout: every swap in this pool, decoded from Meteora's own events">
-                    <span className="hold__flow-k">Last hour</span> {f.swaps60m} swaps, {num(f.volume60mQuote)} {q} traded, {num(f.fees60mQuote)} {q} in fees
-                    {f.feesPerDayQuote60m !== null ? <>, a {num(f.feesPerDayQuote60m)} {q}/day pace</> : null}
-                    {f.swaps15m > 0 ? <>. <span className="hold__flow-k">Last 15 min</span> {f.swaps15m} swaps, {num(f.fees15mQuote)} {q} in fees</> : <>. Quiet in the last 15 minutes</>}
-                    <span className="hold__flow-age"> · {age === 0 ? "just now" : `${age} min ago`}</span>
+                  <p className="bandnote__flow" title="Read from the chain by the flow scout, from the pool's own account">
+                    In the last hour the pool paid {num(f.fees60mQuote)} {q} in fees
+                    {f.feesPerDayQuote60m !== null ? <>, a pace of {num(f.feesPerDayQuote60m)} {q} a day</> : null}
+                    {f.fees15mQuote > 0 ? <>; {num(f.fees15mQuote)} {q} of it in the last fifteen minutes</> : <>; quiet in the last fifteen minutes</>}
+                    <span className="bandnote__age"> · read {age === 0 ? "just now" : `${age} min ago`}</span>
                   </p>
                 );
               })()}
-              <footer className="hold__foot">
-                {b.putIn !== null && <span>Put in {num(b.putIn)} SOL</span>}
-                {b.pacePerDay !== null && <span>{num(b.pacePerDay)} SOL/day</span>}
+              <footer className="bandnote__foot engrave">
+                {b.pacePerDay !== null && <span>{num(b.pacePerDay)} SOL a day</span>}
                 {b.openedAt !== null && <span>Open {duration(now - b.openedAt)}</span>}
                 <span>±{(b.widthPct / 2).toFixed(1)}%</span>
+                <a href={`https://solscan.io/account/${b.address}`} target="_blank" rel="noreferrer" title="the position on Solscan">
+                  No. {b.address.slice(0, 4)}…{b.address.slice(-4)}
+                </a>
               </footer>
             </article>
           );

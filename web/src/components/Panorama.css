@@ -1,0 +1,103 @@
+/* The panorama: pinned on a wide screen, a strip to swipe on a narrow one. */
+
+.pano { position: relative; }
+.pano__stage { display: flex; flex-direction: column; }
+.pano--pinned .pano__stage {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow: hidden;
+  justify-content: center;
+  gap: clamp(14px, 2.4vh, 28px);
+  border-top: 1px solid var(--rule-strong);
+  border-bottom: 1px solid var(--rule-strong);
+  background:
+    radial-gradient(120% 90% at 50% 40%, rgba(255, 122, 26, 0.05), transparent 60%),
+    var(--paper);
+}
+.pano__head {
+  max-width: var(--dash-max);
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 var(--gut);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 4px 24px;
+}
+.pano__eyebrow { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--strap-deep); }
+.pano__title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: clamp(26px, 3.2vw, 38px);
+  letter-spacing: -0.012em;
+  color: var(--ink);
+}
+.pano__count { margin: 0; font-size: 15px; color: var(--ink); }
+.pano__count span { color: var(--ink-3); }
+
+.pano__viewport { width: 100%; }
+.pano__track {
+  display: flex;
+  align-items: stretch;
+  gap: clamp(36px, 5vw, 84px);
+  width: max-content;
+  padding: 6px max(var(--gut), calc((100vw - var(--dash-max)) / 2 + var(--gut)));
+  will-change: transform;
+}
+.pano__stop {
+  margin: 0;
+  display: flex;
+  align-items: stretch;
+  gap: clamp(18px, 2vw, 30px);
+  flex-shrink: 0;
+}
+.pano__panel {
+  display: block;
+  height: clamp(380px, 70vh, 791px);
+  width: auto;
+  mix-blend-mode: multiply;
+  filter: drop-shadow(0 18px 22px rgba(22, 18, 15, 0.18));
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.pano__label {
+  width: clamp(200px, 19vw, 280px);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-bottom: 10px;
+}
+.pano__no { font-size: 12px; color: var(--ink-3); }
+.pano__name { font-size: clamp(19px, 1.7vw, 24px); color: var(--ink); letter-spacing: 0.2em; line-height: 1.25; }
+.pano__rule { width: 44px; height: 1px; background: var(--ink); margin: 6px 0 8px; }
+.pano__figure {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: clamp(30px, 3vw, 46px);
+  line-height: 1.02;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  font-variant-numeric: lining-nums tabular-nums;
+  font-variation-settings: "opsz" 144;
+}
+.pano__what { font-size: 11.5px; color: var(--strap-deep); }
+.pano__motto {
+  margin-top: 6px;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 16px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+
+/* the strip: narrow screens and reduced motion */
+.pano--strip { padding: 44px 0 12px; border-top: 1px solid var(--rule-strong); }
+.pano--strip .pano__head { margin-bottom: 22px; }
+.pano--strip .pano__viewport { overflow-x: auto; scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; padding-bottom: 14px; }
+.pano--strip .pano__track { padding: 6px var(--gut); gap: 28px; }
+.pano--strip .pano__stop { scroll-snap-align: start; }
+.pano--strip .pano__panel { height: min(62vh, 520px); }
+.pano--strip .pano__label { width: min(52vw, 230px); }

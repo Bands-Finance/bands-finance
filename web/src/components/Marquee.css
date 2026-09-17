@@ -1,0 +1,21 @@
+.marquee {
+  position: relative;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 5%, #000 95%, transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 5%, #000 95%, transparent 100%);
+}
+.marquee__track {
+  display: flex;
+  width: max-content;
+  will-change: transform;
+}
+.marquee__set {
+  display: flex;
+  align-items: stretch;
+  gap: var(--marquee-gap, 24px);
+  padding-right: var(--marquee-gap, 24px);
+  flex-shrink: 0;
+}
+/* reduced motion: a strip to swipe, once */
+.marquee--still { overflow-x: auto; -webkit-mask-image: none; mask-image: none; }
+.marquee--still .marquee__set[aria-hidden="true"] { display: none; }

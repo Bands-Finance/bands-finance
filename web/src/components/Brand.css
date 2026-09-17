@@ -1,68 +1,19 @@
-/* The house plates: engraved on the same paper as the page, so they sit on it rather than in boxes. */
+/* The plates: engraved on the same paper as the page, drifting past like a printer's proofs on a line. */
 
-.brand-portrait {
-  display: block;
-  width: min(100%, 320px);
-  height: auto;
-  margin: 6px auto 30px;
-  mix-blend-mode: multiply;
-  pointer-events: none;
-  user-select: none;
-}
-
-.brand-plates {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 18px;
+.plates { --marquee-gap: 22px; padding: 10px 0 26px; margin: 0 calc(-1 * var(--gut)); }
+.plate {
   margin: 0;
-  padding: 0;
-}
-.brand-plate {
-  margin: 0;
+  flex: 0 0 auto;
+  align-self: flex-start;
   background: var(--paper-card);
   border: 1px solid var(--rule-strong);
-  box-shadow: 0 1px 0 rgba(22, 18, 15, 0.06), 0 14px 30px -24px rgba(22, 18, 15, 0.55);
-  overflow: hidden;
-  transform: rotate(var(--tilt, 0deg));
-  transition: transform 220ms ease;
+  box-shadow: 0 1px 0 rgba(22, 18, 15, 0.06), 0 18px 30px -24px rgba(22, 18, 15, 0.6);
+  transition: transform 260ms ease;
 }
-.brand-plate:nth-child(8n + 1) { --tilt: -0.6deg; }
-.brand-plate:nth-child(8n + 3) { --tilt: 0.5deg; }
-.brand-plate:nth-child(8n + 6) { --tilt: -0.4deg; }
-.brand-plate:nth-child(8n + 8) { --tilt: 0.7deg; }
-.brand-plate:hover { transform: rotate(0deg) translateY(-2px); }
-.brand-plate img {
-  display: block;
-  width: 100%;
-  height: auto;
-  mix-blend-mode: multiply;
-}
+.plate:nth-child(3n + 1) { transform: rotate(-0.7deg); }
+.plate:nth-child(3n + 2) { transform: rotate(0.5deg) translateY(6px); }
+.plate:hover { transform: rotate(0deg) translateY(-4px); }
+.plate img { display: block; height: clamp(310px, 33vw, 420px); width: auto; mix-blend-mode: multiply; user-select: none; }
 
-.brand-figure {
-  display: block;
-  width: min(100%, 220px);
-  height: auto;
-  mix-blend-mode: multiply;
-  pointer-events: none;
-  user-select: none;
-  flex-shrink: 0;
-}
-
-@media (max-width: 860px) {
-  .brand-plates {
-    display: flex;
-    gap: 14px;
-    overflow-x: auto;
-    padding: 4px 4px 14px;
-    margin: 0 -4px;
-    scroll-snap-type: x mandatory;
-    -webkit-overflow-scrolling: touch;
-  }
-  .brand-plate {
-    flex: 0 0 62vw;
-    max-width: 280px;
-    scroll-snap-align: start;
-    transform: none;
-  }
-  .brand-figure { width: min(100%, 160px); }
-}
+.brand-figure { display: block; width: min(100%, 210px); height: auto; mix-blend-mode: multiply; pointer-events: none; user-select: none; flex-shrink: 0; }
+@media (max-width: 860px) { .brand-figure { width: min(100%, 150px); } }

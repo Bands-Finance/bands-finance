@@ -1,87 +1,67 @@
-/* The ledger of moves: a day heading, then one sentence per move with the time in the margin. */
+/* The ledger of moves, ruled like a bank's book: a header of columns, a red double rule down the margin, red ink for what it cost. */
 
-.acts__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
+.acts { position: relative; background: var(--paper-card); border: 1px solid var(--rule-strong); box-shadow: inset 0 0 0 4px var(--paper-card), inset 0 0 0 5px var(--rule); padding: 8px 22px 14px; }
+.acts__list { list-style: none; margin: 0; padding: 0; position: relative; }
+/* the margin rule every ledger page has */
+.acts__list::before { content: ""; position: absolute; top: 0; bottom: 0; left: 92px; width: 3px; border-left: 1px solid rgba(184, 50, 31, 0.55); border-right: 1px solid rgba(184, 50, 31, 0.55); pointer-events: none; }
 .acts__day {
-  padding: 26px 0 8px;
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: 17px;
-  color: var(--ink-3);
-  border-bottom: 1px solid var(--rule-strong);
+  padding: 22px 0 9px 112px;
+  font-family: var(--font-engrave);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.24em;
+  font-size: 12px;
+  color: var(--strap-deep);
+  border-bottom: 1px solid var(--ink);
 }
 .acts__row {
   display: grid;
-  grid-template-columns: 84px minmax(0, 1fr) 96px 52px;
-  gap: 18px;
+  grid-template-columns: 76px minmax(0, 1fr) 104px 44px;
+  gap: 0 18px;
   align-items: baseline;
-  padding: 11px 0;
+  padding: 12px 0 11px;
   border-bottom: 1px solid var(--rule);
-  font-family: var(--font-body);
-  font-size: 15px;
+  font-family: var(--font-serif);
+  font-size: 16px;
   line-height: 1.5;
   color: var(--ink);
 }
-.acts__when {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--ink-3);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
+.acts__row > .acts__body { padding-left: 18px; }
+.acts__when { font-family: var(--font-serif); font-size: 14px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
 .acts__body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .acts__sentence { overflow-wrap: anywhere; }
 .acts__row--forced .acts__sentence { color: var(--bad); }
-.acts__quote {
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: 15px;
-  color: var(--ink-3);
-}
-.acts__result {
-  text-align: right;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--ink-3);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.acts__result--up { color: var(--good); }
+.acts__quote { font-style: italic; font-size: 15px; color: var(--ink-3); }
+.acts__result { text-align: right; font-family: var(--font-serif); font-weight: 500; font-size: 15px; color: var(--ink-3); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
+.acts__result--up { color: var(--ink); }
 .acts__result--down { color: var(--bad); }
-.acts__tx {
-  text-align: right;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--ink-3);
-}
-.acts__tx a { color: var(--strap-deep); text-decoration: none; }
-.acts__tx a:hover { text-decoration: underline; }
-
+.acts__tx { text-align: right; font-family: var(--font-engrave); font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; font-size: 10.5px; color: var(--ink-3); }
+.acts__tx a { color: var(--strap-deep); text-decoration: none; border-bottom: 1px solid transparent; }
+.acts__tx a:hover { border-bottom-color: var(--strap); }
+.acts__empty { margin: 0; font-family: var(--font-serif); font-size: 18px; color: var(--ink-2); }
 .acts__more {
-  margin-top: 20px;
-  font-family: var(--font-body);
-  font-size: 14px;
-  color: var(--strap-deep);
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  margin: 18px 0 4px 112px;
+  padding: 9px 16px 8px;
+  font-family: var(--font-engrave);
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  font-size: 11.5px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--ink);
+  cursor: pointer;
 }
-.acts__more:hover { color: var(--ink); }
-.acts__empty { font-family: var(--font-serif); font-size: 18px; color: var(--ink-2); }
+.acts__more:hover { background: var(--ink); color: var(--paper-card); }
 
-@media (max-width: 720px) {
-  .acts__row {
-    grid-template-columns: 1fr auto;
-    grid-template-areas:
-      "when result"
-      "body body"
-      "tx tx";
-    gap: 6px 12px;
-  }
-  .acts__when { grid-area: when; }
-  .acts__body { grid-area: body; }
-  .acts__result { grid-area: result; }
-  .acts__tx { grid-area: tx; text-align: left; }
+@media (max-width: 640px) {
+  .acts { padding: 4px 14px 12px; }
+  .acts__list::before { left: 58px; }
+  .acts__day { padding-left: 72px; }
+  .acts__row { grid-template-columns: 50px minmax(0, 1fr); gap: 2px 12px; font-size: 15px; }
+  .acts__row > .acts__body { padding-left: 12px; }
+  .acts__when { font-size: 12.5px; }
+  .acts__result { grid-column: 2; text-align: left; padding-left: 12px; }
+  .acts__tx { grid-column: 2; text-align: left; padding-left: 12px; }
+  .acts__more { margin-left: 72px; }
 }
