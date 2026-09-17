@@ -52,6 +52,54 @@ async function main() {
     assert.deepEqual([rehearsal.mode, rehearsal.netSol, rehearsal.feesSol], ["dry-run", 0, 0], "a rehearsal reads only its own ledger rows: none here");
   });
 
+  await test("lessonOf: a liquidation that also sells fee tokens earlier seats left in the wallet is shared out by token count (ALLINU, 17 Sep: +0.69 recorded, -0.07 true)", () => {
+    const m: BandMeta = { ...meta, pool: "ALLINU", label: "ALLINU/SOL", seatSol: 2.475, bins: 46, binStep: 50 };
+    const a = (o: Partial<LedgerRow> & Pick<LedgerRow, "ts" | "mech" | "solDelta">) => row({ pool: "ALLINU", markTokenInSol: 0.00019, ...o });
+    const rows = [
+      a({ ts: T0, mech: "open", solDelta: -2.475, rentSol: -0.0419 }),
+      a({ ts: T0 + 142 * 60_000, mech: "close", solDelta: 0.1589, rentSol: 0.0574, feeSol: 0.3444, tokenDelta: 11652.28326 }),
+      // the wallet also held 4,014.89 ALLINU of fee tokens from earlier seats: the swap sold the lot
+      a({ ts: T0 + 142 * 60_000 + 3_000, mech: "swap", solDelta: 2.99507, position: null, tokenDelta: -15667.17423 }),
+    ];
+    const l = lessonOf({ meta: m, position: "POS", stats: null, rows, closedAt: T0 + 142 * 60_000, endReason: "through-band", headline: "" });
+    const share = 11652.28326 / 15667.17423;
+    near(l.netSol, -2.475 - 0.0419 + 0.1589 + 0.0574 + (2.99507 - 0.000005) * share - 0.000005 * 2, 1e-6, "only the seat's own tokens' share of the swap");
+    assert.ok(l.netSol < 0 && l.netSol > -0.1, `a small loss, not a +0.69 win: ${l.netSol}`);
+    assert.equal(l.tokensLeftSol, 0);
+  });
+
+  await test("lessonOf: tokens the seat handed back and nobody sold count at the close's mark; a re-lay's new seat does not claim the old seat's liquidation; a bought token half is charged to the seat", () => {
+    // fee tokens from two collects stay in the wallet unsold; the close returns SOL only
+    const unsold = [
+      row({ ts: T0, mech: "open", solDelta: -7.5 }),
+      row({ ts: T0 + 10 * 60_000, mech: "collect", solDelta: 0.1, feeSol: 0.16, tokenDelta: 2000 }),
+      row({ ts: T0 + 20 * 60_000, mech: "close", solDelta: 7.5, feeSol: 0.0, tokenDelta: 1000, markTokenInSol: 0.00004 }),
+    ];
+    const u = lessonOf({ meta, position: "POS", stats: null, rows: unsold, closedAt: T0 + 20 * 60_000, endReason: "idle", headline: "" });
+    near(u.tokensLeftSol ?? 0, 3000 * 0.00004, 1e-9, "3,000 tokens left, at the close's mark");
+    near(u.netSol, -7.5 + 0.1 + 7.5 + 3000 * 0.00004 - 0.000005 * 3, 1e-9, "net counts them");
+    // a re-lay: the old seat closes and is liquidated seconds before the new seat opens; the new seat's window reaches back over that swap
+    const relay = [
+      row({ ts: T0 - 5_000, mech: "close", solDelta: 1.0, position: "OLD", tokenDelta: 50_000 }),
+      row({ ts: T0 - 3_000, mech: "swap", solDelta: 1.5, position: null, tokenDelta: -50_000 }),
+      row({ ts: T0, mech: "open", solDelta: -2.5 }),
+      row({ ts: T0 + 30 * 60_000, mech: "close", solDelta: 2.6, feeSol: 0.1 }),
+    ];
+    const n = lessonOf({ meta, position: "POS", stats: null, rows: relay, closedAt: T0 + 30 * 60_000, endReason: "idle", headline: "" });
+    near(n.netSol, -2.5 + 2.6 - 0.000005 * 2, 1e-9, "the old seat's liquidation is not the new seat's money");
+    const old = lessonOf({ meta: { ...meta, openedAt: T0 - 3600_000 }, position: "OLD", stats: null, rows: relay, closedAt: T0 - 5_000, endReason: "idle", headline: "" });
+    near(old.netSol, 1.0 + 1.5 - 0.000005 * 2, 1e-9, "it is the old seat's");
+    // a two-sided open: the token half is bought first, then deposited
+    const both = [
+      row({ ts: T0 - 4_000, mech: "swap", solDelta: -1.0, position: null, tokenDelta: 30_000 }),
+      row({ ts: T0, mech: "open", solDelta: -1.0, tokenDelta: -30_000 }),
+      row({ ts: T0 + 60 * 60_000, mech: "close", solDelta: 1.1, tokenDelta: 28_000 }),
+      row({ ts: T0 + 60 * 60_000 + 2_000, mech: "swap", solDelta: 0.95, position: null, tokenDelta: -28_000 }),
+    ];
+    const b = lessonOf({ meta, position: "POS", stats: null, rows: both, closedAt: T0 + 60 * 60_000, endReason: "close", headline: "" });
+    near(b.netSol, -1.0 - 1.0 + 1.1 + 0.95 - 0.000005 * 4, 1e-9, "the buy and the sell are both the seat's");
+  });
+
   await test("endReasonOf: the directive first, then the rotation's reason, then the policy's headline", () => {
     assert.equal(endReasonOf("STOP", null, "x"), "stop");
     assert.equal(endReasonOf(null, null, "In range. Fees ticking. Nothing to do.", ["stop-loss: 6jQRGh is 15.2% below entry (7.5000 -> 6.3600 SOL), stop 14.10%; forcing CLOSE"]), "stop", "the guards' stop overrides the proposal's headline");

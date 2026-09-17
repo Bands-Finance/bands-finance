@@ -16,6 +16,7 @@
     "web:build": "npm --prefix web run build",
     "web:snapshot": "tsx src/scripts/snapshot.ts",
     "live:publish": "tsx src/scripts/publish-live.ts",
+    "lessons:recompute": "tsx src/scripts/lessons-recompute.ts",
     "web:deploy": "npm run web:snapshot && cd web && vercel deploy --prod --yes ${LIVE_FEED_URL:+--build-env VITE_LIVE_URL=$LIVE_FEED_URL}",
     "dash:deploy": "npm run web:snapshot && node web/scripts/deploy-dash.mjs",
     "flow": "if command -v caffeinate >/dev/null 2>&1; then exec caffeinate -is tsx src/scripts/flow.ts; else exec tsx src/scripts/flow.ts; fi",

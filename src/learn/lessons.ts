@@ -66,8 +66,14 @@ export interface Lesson {
   endReason: EndReason;
   /** fees claimed on the seat (collects and the close's fee leg), SOL */
   feesSol: number;
-  /** SOL that came back less SOL that went in, rent and network fees included */
+  /**
+   * SOL that came back less SOL that went in, rent and network fees included. A swap counts only for the
+   * tokens that were this seat's: a liquidation that also sells fee tokens left in the wallet by earlier
+   * seats is shared out by token count, and tokens this seat left unsold are counted at the close's mark.
+   */
   netSol: number;
+  /** the part of netSol that is this seat's tokens still unsold in the wallet, at the close's mark; absent on lessons written before it was counted */
+  tokensLeftSol?: number;
   predictedYieldPct: number | null;
   /** fees over the seat, per day, percent */
   realizedYieldPctPerDay: number;
@@ -94,15 +100,57 @@ export function endReasonOf(directiveKind: string | null, rotateReason: string |
 }
 
 /**
+ * PURE. What a seat made, from the ledger: its own rows (open, collects, close) in full, and of the pool's
+ * swaps inside its life only the share that traded THIS seat's tokens. The wallet is one pot: a close's
+ * liquidation sells every token of that mint it holds, including fee tokens earlier seats left behind, so
+ * a swap is shared out by token count. A buy (the token half of an open) belongs to the seat up to what
+ * the seat deposited; a sell belongs to it up to what the seat had handed back by then and not yet sold.
+ * Tokens it handed back that were never sold are counted at the last mark, and tokens it deposited that
+ * no buy covered are charged at the open's mark.
+ */
+export function seatNetSol(own: readonly LedgerRow[], poolSwaps: readonly LedgerRow[], position: string): { netSol: number; tokensLeftSol: number } {
+  const flat = (r: LedgerRow) => r.solDelta + r.rentSol + r.txFeeSol;
+  const events = [...own.filter((r) => r.mech !== "swap"), ...poolSwaps].sort((a, b) => a.ts - b.ts || Number(a.mech === "swap") - Number(b.mech === "swap"));
+  let need = own.reduce((t, r) => t + (r.mech !== "swap" && r.tokenDelta < 0 ? -r.tokenDelta : 0), 0);
+  const openMark = own.find((r) => r.mech !== "swap" && r.tokenDelta < 0)?.markTokenInSol ?? 0;
+  let owed = 0;
+  let mark = 0;
+  let net = 0;
+  for (const r of events) {
+    if (r.mech !== "swap") {
+      net += flat(r);
+      if (r.tokenDelta > 0) owed += r.tokenDelta;
+      if (r.markTokenInSol > 0) mark = r.markTokenInSol;
+      continue;
+    }
+    const mine = r.position === position;
+    if (r.tokenDelta > 0) {
+      const share = mine ? 1 : Math.min(1, need / r.tokenDelta);
+      need = Math.max(0, need - r.tokenDelta * share);
+      net += flat(r) * share;
+    } else if (r.tokenDelta < 0) {
+      const sold = -r.tokenDelta;
+      const share = mine ? 1 : Math.min(1, owed / sold);
+      owed = Math.max(0, owed - sold * share);
+      net += flat(r) * share;
+    } else if (mine) net += flat(r);
+  }
+  const tokensLeftSol = owed * mark;
+  return { netSol: net + tokensLeftSol - need * openMark, tokensLeftSol };
+}
+
+/**
  * PURE. The lesson of a closed seat from its meta, its range stats and the ledger rows that belong
- * to it: the position's own rows, plus the pool's swap rows inside the seat's life (the token half
- * bought at the open, the liquidation at the close).
+ * to it: the position's own rows, plus its share of the pool's swap rows inside the seat's life (the
+ * token half bought at the open, the liquidation at the close): seatNetSol.
  */
 export function lessonOf(i: { meta: BandMeta; position: string; stats: RangeStats | null; rows: readonly LedgerRow[]; closedAt: number; endReason: EndReason; headline: string; mode?: string; ledgerMode?: LedgerRow["mode"] }): Lesson {
   const { meta, stats } = i;
   const rows = i.ledgerMode ? i.rows.filter((r) => r.mode === i.ledgerMode) : i.rows;
-  const mine = rows.filter((r) => r.position === i.position || (r.pool === meta.pool && r.mech === "swap" && r.ts >= meta.openedAt - 120_000 && r.ts <= i.closedAt + 180_000));
-  const netSol = mine.reduce((t, r) => t + r.solDelta + r.rentSol + r.txFeeSol, 0);
+  const own = rows.filter((r) => r.position === i.position);
+  const poolSwaps = rows.filter((r) => r.mech === "swap" && (r.position === i.position || (r.pool === meta.pool && r.ts >= meta.openedAt - 120_000 && r.ts <= i.closedAt + 180_000)));
+  const mine = [...own.filter((r) => r.mech !== "swap"), ...poolSwaps];
+  const { netSol, tokensLeftSol } = seatNetSol(own, poolSwaps, i.position);
   const feesSol = mine.reduce((t, r) => t + (r.mech === "collect" ? (r.feeSol ?? Math.max(0, r.solDelta)) : r.mech === "close" ? (r.feeSol ?? 0) : 0), 0);
   const minutes = Math.max(1 / 60, (i.closedAt - meta.openedAt) / 60_000);
   const realizedYieldPctPerDay = meta.seatSol > 0 ? (feesSol / meta.seatSol) * (1440 / minutes) * 100 : 0;
@@ -125,6 +173,7 @@ export function lessonOf(i: { meta: BandMeta; position: string; stats: RangeStat
     endReason: i.endReason,
     feesSol: Math.round(feesSol * 1e6) / 1e6,
     netSol: Math.round(netSol * 1e6) / 1e6,
+    tokensLeftSol: Math.round(tokensLeftSol * 1e6) / 1e6,
     predictedYieldPct: meta.predictedYieldPct,
     realizedYieldPctPerDay: Math.round(realizedYieldPctPerDay * 100) / 100,
     headline: i.headline,
