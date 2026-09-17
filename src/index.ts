@@ -1471,7 +1471,9 @@ function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAt
   // The same figure, one line a cycle, for the site's "since the start" numbers (src/journal EquityPoint).
   if (Number.isFinite(equity)) {
     const bandsSol = observed.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0);
-    const feesClaimedSol = app.paper ? app.paper.feesClaimedSol : rowsOf(rows, mode).reduce((s, r) => s + ((r.mech === "collect" || r.mech === "close") && typeof r.feeSol === "number" ? r.feeSol : 0), 0);
+    // fees realised to the wallet: claims plus the fee leg of every close, from the ledger in both
+    // modes (the paper book's feesClaimedSol counts claims only; the backfill and this must agree)
+    const feesClaimedSol = rowsOf(rows, mode).reduce((s, r) => s + ((r.mech === "collect" || r.mech === "close") && typeof r.feeSol === "number" ? r.feeSol : 0), 0);
     try {
       appendEquity({
         t: now,
