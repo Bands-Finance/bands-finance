@@ -374,10 +374,49 @@ async function main(): Promise<void> {
     const drifted = { ...half, amountX: 0.08, amountY: half.amountY - 0.08 * P };
     const r2 = policy.policyDecide(obs({ positions: [drifted], wallet: { address: "w", sol: 100, token: tokenHalf, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" } }, inr.snap), x);
     assert.equal(r2.branch, "rebalance", r2.reason);
+    // no token in the wallet: the half-laid rule has nothing to re-lay with; the grow rule takes it
+    // from here, the band being half the seat the book has room for, and buys the token half
     const empty = policy.policyDecide(obs({ positions: [half], wallet: { address: "w", sol: 100, token: 0, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" } }, inr.snap), x);
-    assert.equal(empty.branch, "in-range", "no token in the wallet: nothing to re-lay with, the band holds");
+    assert.equal(empty.branch, "rebalance", empty.reason);
+    assert.match(empty.reason, /growing from 11\.\d+ to 22\.\d+ SOL/);
+    assert.ok((empty.decision.open!.acquireToken ?? 0) > 0, "buys the token half");
+    assert.equal(policy.policyDecide(obs({ positions: [half], wallet: { address: "w", sol: 100, token: 0, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" } }, inr.snap), { ...x, env: { ...x.env, stockGrowMinPct: 0 } }).branch, "in-range", "with growing off, the band holds");
     const whole = policy.policyDecide(obs({ positions: [inr.pos], wallet: { address: "w", sol: 100, token: tokenHalf, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" } }, inr.snap), x);
     assert.equal(whole.branch, "in-range", "a band that holds both halves is left alone even with spare token in the wallet");
+  });
+
+  await test("grow: a straddle at an old cap re-lays bigger when the book has room for a much larger seat (STOCK_GROW_MIN_PCT); not at the cap, not twice a pass, not young, not when the added seat's fees would not earn the re-lay back", () => {
+    const inr = straddleAt(ACTIVE + 5);
+    const wallet = { address: "w", sol: 100, token: 0, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" };
+    // the engine's effective max band moves with the limit (the fixture's engine view pins it at 22.5)
+    const o = obs({ positions: [inr.pos], wallet, engine: engineObs({ effectiveMaxPositionSol: 45 }) }, inr.snap);
+    const roomy = { ...x, limits: { ...limits, maxPositionSol: 45 } };
+    const r = policy.policyDecide(o, roomy);
+    assert.equal(r.branch, "rebalance", r.reason);
+    assert.equal(r.decision.action, "REBALANCE");
+    assert.equal(r.decision.positionAddress, inr.pos.address);
+    assert.equal(r.decision.open!.side, "BOTH");
+    assert.ok(r.decision.open!.amountSol > 1125 * 1.4, `grew to ${r.decision.open!.amountSol} USDC a side`);
+    assert.ok((r.decision.open!.acquireToken ?? 0) > 0, "the added token half is bought");
+    assert.match(r.decision.headline, /^Growing the seat in SPYx\/USDC: 22\.\d to \d+(\.\d)? SOL\.$/);
+    assert.match(r.decision.reasoning, /holding 22\.\d+ SOL; the book has room for \d+(\.\d+)? SOL here \(bound by max band 45 SOL\)/);
+    assert.match(r.reason, /growing from 22\.\d+ to/);
+    voice(r.decision);
+    assert.equal(policy.policyDecide(o, x).branch, "in-range", "at the cap: nothing to grow into");
+    assert.equal(policy.policyDecide(o, { ...roomy, grow: { allowed: false } }).branch, "in-range", "money already moved this pass: the other pools' exposure is stale");
+    assert.equal(policy.policyDecide(o, { ...roomy, env: { ...x.env, stockGrowMinPct: 0 } }).branch, "in-range", "off by env");
+    assert.equal(policy.policyDecide(o, { ...roomy, env: { ...x.env, stockGrowMinPct: 120 } }).branch, "in-range", "45 is not 2.2 x 22.5");
+    const young = obs({ positions: [inr.pos], wallet, engine: engineObs({ effectiveMaxPositionSol: 45 }), state: { ...o.state, lastMoveAt: T0 - 12 * 60_000 } }, inr.snap);
+    assert.equal(policy.policyDecide(young, roomy).branch, "in-range", "twelve minutes since the last move: too young for the 15-minute default");
+    assert.equal(policy.policyDecide(young, { ...roomy, env: { ...x.env, stockGrowMinAgeMin: 10 } }).branch, "rebalance");
+    const gated = policy.policyDecide(obs({ ...young, state: { ...o.state, lastMoveAt: T0 - 5 * 60_000 } }, inr.snap), { ...roomy, env: { ...x.env, stockGrowMinAgeMin: 4 } });
+    assert.equal(gated.branch, "gated", "the open gate (10 minutes between actions) still stands over the grow");
+    assert.match(gated.reason, /could grow to \d+(\.\d+)? SOL; gated: /);
+    const slow = policy.policyDecide(o, { ...roomy, env: { ...x.env, stockRecentreMaxPaybackHours: 0.0001 } });
+    assert.equal(slow.branch, "in-range", slow.reason);
+    assert.match(slow.reason, /could grow to \d+(\.\d+)? SOL; payback [\d.]+h > 0.0001h/);
+    assert.match(slow.decision.headline, /^Room to grow in SPYx\/USDC, not worth the re-lay\. Holding\.$/);
+    voice(slow.decision);
   });
 
   await test("price above the band past the minimum: REBALANCE to a fresh straddle around the new price, buying the token half (the old band is all USDC); the guards accept it", () => {

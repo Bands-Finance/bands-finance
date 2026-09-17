@@ -67,7 +67,7 @@ import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/wat
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
 import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
 import { flowByPool, flowContextLine, readFlowFile, type FlowContext, type PoolMeta as FlowPoolMeta } from "./scouts/flow";
-import { rankSeats, seatLine, seatRankingEnv, seatYield, weakSeatRotation, type HeldSeat, type RankedSeat, type SeatRotation } from "./screener/seatYield";
+import { consolidation, rankSeats, seatLine, seatRankingEnv, seatYield, weakSeatRotation, type HeldSeat, type RankedSeat, type SeatRotation } from "./screener/seatYield";
 import { pinRotateMinAgeMin, pinSeatAction, rotationCandidate, type RotationBand } from "./engine/rotation";
 import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
 import { fetchPoolHistory, historyFresh, historyPhrase, historyRefusal, memeHistoryEnv, type HistoryRecord } from "./screener/memeHistory";
@@ -79,7 +79,7 @@ import { jupiterEnv as swapEnv, meteoraOnlyRoutes } from "./tools/jupiter";
 import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairHouseSeats, pairHouseSeatSol, pairLaunchEnv, pairMintOf, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict, type PairSeatOptions } from "./screener/pair";
 import { createPairVenue, hotRowForPool, isPairPool as isPairVenuePool } from "./venues/pair";
 import { pairStockCandidateFor, pairStockCandidatesOf, pairStockEnv, pairStockReserve, pairStockSeats, pairStockSeatSol, chooseStockFeeBps, stockPairModel, type PairStockCandidate } from "./screener/pairStock";
-import { stockBinsPerSide } from "./agent/policy";
+import { MIN_BAND_SOL, stockBinsPerSide } from "./agent/policy";
 import { loadHotFileCached } from "./hot/store";
 import type { ScreenResult } from "./screener/types";
 import { KNOWN_TOKENS, PoolSnapshot, PositionSnapshot, quoteOf, QuotePriceUnknownError, setSolPriceUsd, UnsupportedQuoteError } from "./tools/dlmm";
@@ -132,6 +132,8 @@ interface App {
   perpMarks: Map<string, { mid: number; at: number }>;
   /** perp symbol -> contracts the pools decided so far this cycle target (live: they share one Backpack position) */
   hedgedThisCycle: Map<string, number>;
+  /** money moved this pass (an open or a close ran): the other pools' exposure was read before it, so no seat grows on it */
+  movedThisCycle: boolean;
   /** base mints whose wallet balance has been attributed to a pool's hedge this cycle */
   mintAttributed: Set<string>;
   /** the pair lane's venue: our own pools for pump.fun tokens, keyed pair-<mint> (src/venues/pair.ts) */
@@ -523,8 +525,10 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
       const flow = app.flow.get(address) ?? null;
       let poolFeesPerDayQuote: number | null = null;
       let feeSource: RankedSeat["feeSource"] = "24h";
-      if (flow && flow.feesPerDayQuote60m !== null) {
-        poolFeesPerDayQuote = flow.feesPerDayQuote60m;
+      // a pool the scout reads ranks on what the scout saw, a quiet hour included (two swaps in an hour
+      // is a quiet pool, not a reason to fall back to the venue's day figure: MRVL/SOL read 160%/day that way)
+      if (flow) {
+        poolFeesPerDayQuote = flow.feesPerDayQuote60m ?? flow.fees60mQuote * 24;
         feeSource = "flow-60m";
       } else if (met?.fees24hUsd !== null && met?.fees24hUsd !== undefined && solPriceUsd) {
         poolFeesPerDayQuote = met.fees24hUsd / (q.priceInSol * solPriceUsd);
@@ -534,11 +538,13 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
       const seatQuote = riskLimits.maxPositionSol / q.priceInSol;
       const y = seatYield({ seatQuote, binsEachSide: bins, activeBinId: snapshot.activeBinId, bins: snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote });
       const label = snapshot.label;
+      // the seat the policy could lay there: the max band, or half the band's depth (its cap on somebody else's pool)
+      const capSol = Math.max(0, Math.min(riskLimits.maxPositionSol, (y.bandDepthQuote / 2) * q.priceInSol));
       watch.push({ address, label, quoteSide: q.side, quoteSymbol: q.symbol, xDecimals: snapshot.tokenX.decimals, yDecimals: snapshot.tokenY.decimals, band: null });
       if (withPositions.includes(address)) {
-        held.push({ address, label, yieldPctPerDay: y.yieldPctPerDay, openedAt: state.lastMoveByPool?.[address] ?? null, pinned: pinnedTickerOf(app, address, snapshot) !== null });
+        held.push({ address, label, yieldPctPerDay: y.yieldPctPerDay, openedAt: state.lastMoveByPool?.[address] ?? null, pinned: pinnedTickerOf(app, address, snapshot) !== null, capSol, heldSol: null });
       }
-      if (met) ranked.push({ address, label, mint: met.mint, yieldPctPerDay: y.yieldPctPerDay, sharePct: y.sharePct, feesPerDayQuote: y.feesPerDayQuote, quoteSymbol: q.symbol, feeSource });
+      if (met) ranked.push({ address, label, mint: met.mint, yieldPctPerDay: y.yieldPctPerDay, sharePct: y.sharePct, feesPerDayQuote: y.feesPerDayQuote, quoteSymbol: q.symbol, feeSource, capSol });
     } catch (err) {
       console.log(`[cycle ${app.cycle}] seat yield: ${met?.symbol ?? address.slice(0, 6)} unreadable (${(err as Error).message.slice(0, 80)})`);
     }
@@ -1336,7 +1342,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     ? engineDecideResult(directiveDecision!, `${directive.kind}: ${directive.reason}`)
     : proposal
       ? proposalDecideResult(proposalDecision(proposal), `proposal ${proposal.id} by ${proposal.proposerName} (${proposal.proposerId})`)
-      : await decide(observation, { hot: hotRows(app, 8, true), openCostSol: openCostDefault });
+      : await decide(observation, { hot: hotRows(app, 8, true), openCostSol: openCostDefault, grow: { allowed: !app.movedThisCycle } });
   // Every close sells the token back to the quote, whoever proposed it (the model, a proposal, the
   // guards, a directive): the book is quote-denominated, and a token left in the wallet is capital
   // nothing can size a band from. This is the mechanism the 7f5b49b fix belonged in.
@@ -1397,6 +1403,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     const quoteLeg = quoteIsSol || typeof row.quoteDelta !== "number" ? "" : ` (${row.quoteDelta.toFixed(4)} ${q.symbol})`;
     console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)}${quoteLeg} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
   }
+  if (execution.ok && (execution.opened || execution.closed)) app.movedThisCycle = true;
   updateState(state, execution, positions, snapshot, (screen?.launch?.ok || screen?.pair?.ok) && !noLaneExits ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null);
 
   // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
@@ -1686,6 +1693,7 @@ async function runIteration(app: App): Promise<void> {
   console.log(`[cycle ${app.cycle}] working ${pools.length} pools (${withPositions.length} with bands)`);
   app.hedgedThisCycle.clear();
   app.mintAttributed.clear();
+  app.movedThisCycle = false;
   await refreshPerpMarks(app, pools);
 
   const solPriceUsd = solPriceOf(app);
@@ -1727,8 +1735,21 @@ async function runIteration(app: App): Promise<void> {
   app.regime = regimeView(regimeAddrs.map((a) => move24hPct(app, a, state)));
   if (app.regime.reason) console.log(`[cycle ${app.cycle}] ${app.regime.reason}`);
 
-  // Pools holding a band are decided first: closes free capital for opens later in the pass.
-  observed.sort((a, b) => b.positions.length - a.positions.length);
+  // Pools holding a band are decided first: closes free capital for opens later in the pass. Among
+  // them the best seat by yield goes first, so the room a closed seat left grows the seat that earns most.
+  const heldYield = new Map((app.seatRanking?.held ?? []).map((h) => [h.address, h.yieldPctPerDay] as const));
+  observed.sort((a, b) => b.positions.length - a.positions.length || (heldYield.get(b.address) ?? -1) - (heldYield.get(a.address) ?? -1));
+  // CONSOLIDATION (src/screener/seatYield.ts): now that the seats' sizes are read, a weak seat makes
+  // way for the best held one when that one could hold more; the policy's grow rule moves the money next cycle.
+  if (!app.rotateOut && app.seatRanking) {
+    const sized = app.seatRanking.held.map((h) => ({ ...h, heldSol: observed.find((o) => o.address === h.address)?.positions.reduce((t, p) => t + p.valueInSol, 0) ?? null }));
+    const minGrowSol = Math.max(MIN_BAND_SOL, (riskLimits.maxTotalExposureSol * policyEnv().minSeatPct) / 100);
+    const c = consolidation(sized, seatRankingEnv(), now, minGrowSol);
+    if (c) {
+      app.rotateOut = c;
+      console.log(`[cycle ${app.cycle}] seat yield: rotating out ${c.label} (${c.pool.slice(0, 6)}): ${c.reason}`);
+    }
+  }
   const entries: JournalEntry[] = [];
   for (const o of observed) {
     try {
@@ -1827,6 +1848,7 @@ async function main(): Promise<void> {
     paperEnv: pEnv,
     perpMarks: new Map(),
     hedgedThisCycle: new Map(),
+    movedThisCycle: false,
     mintAttributed: new Set(),
     pairVenue,
     pinned: null,

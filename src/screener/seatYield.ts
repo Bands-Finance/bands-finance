@@ -38,6 +38,8 @@ export interface SeatYield {
   theirsPerBinQuote: number;
   oursPerBinQuote: number;
   activeBinQuote: number;
+  /** liquidity already in the bins the band would cover, quote units (the policy's depth cap is half of it) */
+  bandDepthQuote: number;
 }
 
 /** PURE. A bin's liquidity in quote units. */
@@ -65,6 +67,7 @@ export function seatYield(i: SeatYieldInput): SeatYield {
     theirsPerBinQuote,
     oursPerBinQuote,
     activeBinQuote,
+    bandDepthQuote: theirsPerBinQuote * width,
   };
 }
 
@@ -79,8 +82,10 @@ export interface RankedSeat {
   sharePct: number;
   feesPerDayQuote: number;
   quoteSymbol: string;
-  /** where the pool's fee figure came from */
+  /** where the pool's fee figure came from: the flow scout's own reading of the last hour, or the venue's 24h figure */
   feeSource: "flow-60m" | "24h";
+  /** the seat the desk could hold there, SOL: the max band or half the band's depth, whichever is less */
+  capSol: number;
 }
 
 export interface HeldSeat {
@@ -90,6 +95,10 @@ export interface HeldSeat {
   yieldPctPerDay: number;
   openedAt: number | null;
   pinned: boolean;
+  /** the seat the desk could hold there, SOL (see RankedSeat.capSol) */
+  capSol: number;
+  /** what the seat holds now, SOL; null before the cycle has observed it */
+  heldSol: number | null;
 }
 
 export interface SeatRankingEnv {
@@ -117,10 +126,14 @@ export function rankSeats(candidates: readonly RankedSeat[], env: SeatRankingEnv
  * best candidate not already held beats it by the factor (against the floor when the seat is under
  * it). Zach (2026-09-17): "I want to really focus on entering the highest earning pool", so a seat
  * that earns is still given up when something earns clearly more. One per cycle.
+ *
+ * Only a candidate the flow scout has read counts: the venue's 24h figure said DKNG/SOL would pay
+ * 51% a day on the seat, and the scout's first hour of it said 1.7% (2026-09-17, pre-market). A
+ * candidate the scout has not read yet is on the watch list from this cycle, so the next ranking has it.
  */
 export function weakSeatRotation(held: readonly HeldSeat[], ranked: readonly RankedSeat[], env: SeatRankingEnv, now: number): SeatRotation | null {
   const heldAddrs = new Set(held.map((h) => h.address));
-  const best = ranked.find((c) => !heldAddrs.has(c.address));
+  const best = ranked.find((c) => !heldAddrs.has(c.address) && c.feeSource === "flow-60m");
   if (!best) return null;
   const eligible = held.filter((h) => !h.pinned && (h.openedAt === null || now - h.openedAt >= env.minAgeMin * 60_000));
   if (!eligible.length) return null;
@@ -132,6 +145,29 @@ export function weakSeatRotation(held: readonly HeldSeat[], ranked: readonly Ran
     pool: weakest.address,
     label: weakest.label,
     reason: `${weakest.label} earns about ${weakest.yieldPctPerDay.toFixed(2)}% a day on its seat${under ? `, under the ${env.minYieldPct}% floor` : ""}, while ${best.label} would earn about ${best.yieldPctPerDay.toFixed(2)}% (${best.sharePct.toFixed(1)}% of its bins, ${best.feeSource === "flow-60m" ? "the last hour's fees" : "the day's fees"}), ${(best.yieldPctPerDay / Math.max(weakest.yieldPctPerDay, 1e-9)).toFixed(1)}x as much`,
+  };
+}
+
+/**
+ * PURE. CONSOLIDATION: when the best seat the desk holds could hold more (its cap is at least
+ * minGrowSol above what it holds) and another seat earns under a factor of it, that seat is given up
+ * so the money moves to the best one (the policy's grow rule re-lays it bigger next cycle). The
+ * weakest first, one per cycle; pins and young bands stay; a best seat under the floor grows nothing.
+ */
+export function consolidation(held: readonly HeldSeat[], env: SeatRankingEnv, now: number, minGrowSol: number): SeatRotation | null {
+  const known = held.filter((h) => h.heldSol !== null);
+  if (known.length < 2) return null;
+  const best = known.reduce((b, h) => (h.yieldPctPerDay > b.yieldPctPerDay ? h : b));
+  if (best.yieldPctPerDay < env.minYieldPct) return null;
+  const roomSol = best.capSol - (best.heldSol ?? 0);
+  if (roomSol < minGrowSol) return null;
+  const eligible = known.filter((h) => h !== best && !h.pinned && (h.openedAt === null || now - h.openedAt >= env.minAgeMin * 60_000) && h.yieldPctPerDay * env.rotateFactor <= best.yieldPctPerDay);
+  if (!eligible.length) return null;
+  const weakest = eligible.reduce((w, h) => (h.yieldPctPerDay < w.yieldPctPerDay ? h : w));
+  return {
+    pool: weakest.address,
+    label: weakest.label,
+    reason: `${weakest.label} earns about ${weakest.yieldPctPerDay.toFixed(2)}% a day on its seat while ${best.label}, already held, earns about ${best.yieldPctPerDay.toFixed(2)}% and could hold ${roomSol.toFixed(1)} SOL more (${(best.heldSol ?? 0).toFixed(1)} of ${best.capSol.toFixed(1)} SOL); the money goes there`,
   };
 }
 

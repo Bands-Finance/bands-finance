@@ -103,6 +103,10 @@ export interface PolicyEnv {
   stockRecentreMaxPaybackHours: number;
   /** stock straddles: the longest a costly re-centre waits for the price to come back, in seconds (STOCK_RECENTRE_MAX_WAIT_MIN) */
   stockRecentreMaxWaitSec: number;
+  /** STOCK_GROW_MIN_PCT: a held straddle re-lays bigger when the seat the book has room for is this much larger, percent (0 = never) */
+  stockGrowMinPct: number;
+  /** STOCK_GROW_MIN_AGE_MIN: a band younger than this is not grown */
+  stockGrowMinAgeMin: number;
   /** the one-time cost of a seat (rent that never comes back plus the swap round trip) must be earned back inside this many hours (POLICY_MAX_PAYBACK_HOURS) */
   maxPaybackHours: number;
   /** a seat under this share of the book's max exposure is not worth its rent and attention (POLICY_MIN_SEAT_PCT) */
@@ -132,6 +136,8 @@ export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
     stockMinCoverPct: Math.max(0.01, num(env.STOCK_MIN_COVER_PCT, STOCK_MIN_COVER_PCT_DEFAULT)),
     stockRecentreMaxPaybackHours: Math.max(0, num(env.STOCK_RECENTRE_MAX_PAYBACK_HOURS, 4)),
     stockRecentreMaxWaitSec: Math.max(0, num(env.STOCK_RECENTRE_MAX_WAIT_MIN, 120)) * 60,
+    stockGrowMinPct: Math.max(0, num(env.STOCK_GROW_MIN_PCT, 50)),
+    stockGrowMinAgeMin: Math.max(0, num(env.STOCK_GROW_MIN_AGE_MIN, 15)),
     maxPaybackHours: Math.max(0, num(env.POLICY_MAX_PAYBACK_HOURS, 24)),
     minScore: num(env.POLICY_MIN_SCORE, 20),
     book: bookEnv(env),
@@ -174,6 +180,8 @@ export interface PolicyExtras {
   pair?: PairEnv;
   /** the stock pair lane's settings; defaults to pairStockEnv(). Only the seat cap is read here. */
   pairStock?: PairStockEnv;
+  /** whether a held straddle may re-lay bigger this cycle (the loop allows one money move a pass); defaults to allowed */
+  grow?: { allowed: boolean };
 }
 
 export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "recentre-wait" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
@@ -1087,6 +1095,48 @@ function stockBandDecide(o: Observation, x: PolicyExtras, env: PolicyEnv, q: Quo
           headline: clip(`Half a straddle in ${o.poolLabel}. Laying both halves: ${r(fix.amountQuote, 2)} ${q.symbol} + ${r(fix.amountToken, 4)} ${sym}.`),
         },
         reason: `straddle ${addr} half-laid: re-laying ${r(fix.amountQuote, 2)} ${q.symbol} + ${r(fix.amountToken, tDec)} ${sym} across ${width} bins from the wallet's ${sym}`,
+        branch: "rebalance",
+      };
+    }
+    // GROW: the seat could be much bigger than the band it holds. Zach (2026-09-17): "I want to really
+    // focus on entering the highest earning pool": a seat laid at an old cap, or while the book was
+    // full, takes the room a closed seat left. Close and re-lay at the full size; the closing band's
+    // halves are reused and only the added token half is bought. One money move per pass across the
+    // book (x.grow: the other pools' exposure is read once a cycle), never on a band younger than
+    // STOCK_GROW_MIN_AGE_MIN, and gated like a re-centre: the ADDED seat's fees must earn the swap
+    // and the lost rent back inside STOCK_RECENTRE_MAX_PAYBACK_HOURS.
+    const heldSol = band.valueInSol;
+    const addedSol = fix.none ? 0 : fix.seatSol - heldSol;
+    const minSeatSol = Math.max(MIN_BAND_SOL, (limits.maxTotalExposureSol * env.minSeatPct) / 100);
+    const ageOk = typeof o.state.lastMoveAt !== "number" || now - o.state.lastMoveAt >= env.stockGrowMinAgeMin * 60_000;
+    if (env.stockGrowMinPct > 0 && (x.grow?.allowed ?? true) && ageOk && heldSol > 0 && addedSol >= minSeatSol && fix.seatSol >= heldSol * (1 + env.stockGrowMinPct / 100)) {
+      const qDec = q.symbol === "SOL" ? 4 : 2;
+      const rc = recentreCost(o, x, q, fix);
+      const addedFeesPerDaySol = rc.feesPerDaySol !== null ? rc.feesPerDaySol * (addedSol / fix.seatSol) : null;
+      const payback = addedFeesPerDaySol !== null && addedFeesPerDaySol > 0 ? rc.costSol / (addedFeesPerDaySol / 24) : null;
+      const tooSlow = env.stockRecentreMaxPaybackHours > 0 && rc.costSol > 0 && (payback === null || payback > env.stockRecentreMaxPaybackHours);
+      const growLine = `Straddle ${addr} covers bins ${range}${own} and the ${priceLine} sits inside it, holding ${r(heldSol)} SOL; the book has room for ${r(fix.seatSol)} SOL here (bound by ${fix.boundBy})`;
+      const gate = openGate(o, limits, now);
+      if (gate) return hold(`${growLine}. Growing it is off for now (${gate}).`, `Room to grow in ${o.poolLabel}. Waiting.`, "gated", `straddle ${addr} could grow to ${r(fix.seatSol)} SOL; gated: ${gate}`);
+      if (tooSlow) {
+        return hold(
+          `${growLine}, but the re-lay costs about ${r(rc.costSol, 4)} SOL and the added ${r(addedSol)} SOL would earn ${addedFeesPerDaySol === null || addedFeesPerDaySol <= 0 ? "nothing the screen can price" : `about ${r(addedFeesPerDaySol, 3)} SOL a day, ${r(payback!, 1)}h to earn it back, past the ${env.stockRecentreMaxPaybackHours}h limit`}. Holding the seat as it is.`,
+          `Room to grow in ${o.poolLabel}, not worth the re-lay. Holding.`,
+          "in-range",
+          `straddle ${addr} could grow to ${r(fix.seatSol)} SOL; payback ${payback === null ? "never" : `${r(payback, 1)}h`} > ${env.stockRecentreMaxPaybackHours}h`,
+        );
+      }
+      const width = 2 * fix.bins + 1;
+      return {
+        decision: {
+          action: "REBALANCE",
+          open: straddleParams(fix),
+          positionAddress: band.address,
+          reasoning: `${growLine}. Closing it and laying ${r(fix.amountQuote, qDec)} ${q.symbol} + ${r(fix.amountToken, tDec)} ${sym} as a ${width}-bin straddle from bin ${s.activeBinId - fix.bins} to ${s.activeBinId + fix.bins}, both halves from what the band returns and the wallet holds${fix.acquireToken > 0 ? `, buying ${r(fix.acquireToken, tDec)} ${sym} for the added half` : ", no swap"}; the re-lay costs about ${r(rc.costSol, 4)} SOL against about ${r(addedFeesPerDaySol ?? 0, 3)} SOL a day more in fees. ${perpClause(o)}`,
+          confidence: 0.65,
+          headline: clip(`Growing the seat in ${o.poolLabel}: ${r(heldSol, 1)} to ${r(fix.seatSol, 1)} SOL.`),
+        },
+        reason: `straddle ${addr} growing from ${r(heldSol)} to ${r(fix.seatSol)} SOL (${r(fix.amountQuote, qDec)} ${q.symbol} + ${r(fix.amountToken, tDec)} ${sym} across ${width} bins)`,
         branch: "rebalance",
       };
     }

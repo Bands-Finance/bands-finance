@@ -33,6 +33,8 @@ export interface DecideOptions {
   hot?: PolicyExtras["hot"];
   /** the venue's open cost in SOL, for the policy's sizing (defaults to the Meteora estimate) */
   openCostSol?: number;
+  /** whether a held straddle may re-lay bigger this cycle (one money move a pass); defaults to allowed */
+  grow?: PolicyExtras["grow"];
 }
 
 /** An engine directive stands in for the model this cycle: the LLM is not called. */
@@ -74,7 +76,7 @@ export function policyMayTradeLive(env: NodeJS.ProcessEnv = process.env): boolea
 /** The desk policy's proposal, as the decision the model would otherwise have made. */
 export function policyDecideResult(observation: Observation, note: string, opts: DecideOptions = {}, dryRun: boolean = config.dryRun, env: NodeJS.ProcessEnv = process.env): DecideResult {
   try {
-    const r = policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol });
+    const r = policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow });
     const trades = r.decision.action === "OPEN_POSITION" || r.decision.action === "REBALANCE";
     if (trades && !dryRun && !policyMayTradeLive(env)) {
       const verb = r.decision.action === "OPEN_POSITION" ? "open" : "rebalance";
