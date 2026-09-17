@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The FLOW SCOUT: reads every swap in the pools the live desk works, within seconds of it landing,
+  and writes data-mainnet/flow.json for the desk. No wallet, nothing sent. Runs beside the live desk.
+  Install:  cp ops/com.bands.mrbands.flow.plist ~/Library/LaunchAgents/
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bands.mrbands.flow.plist
+  Stop:     launchctl bootout gui/$(id -u)/com.bands.mrbands.flow
+  Watch:    tail -f data-mainnet/flow.log
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.bands.mrbands.flow</string>
+  <key>WorkingDirectory</key><string>/Users/zach/Bands.Finance/mr-bands</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>set -a; . ./ops/live.env; set +a; exec /usr/local/bin/npm run flow</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-mainnet/flow.log</string>
+  <key>StandardErrorPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-mainnet/flow.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>
