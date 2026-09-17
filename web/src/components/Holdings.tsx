@@ -1,4 +1,4 @@
-import type { BandCard, Book as BookModel, Status } from "../model";
+import type { BandCard, Book as BookModel, PoolFlow, Status } from "../model";
 import type { ScreenResult, StockTag } from "../types";
 import { ago, duration, fmtPrice } from "../format";
 import { num } from "../narrative";
@@ -15,6 +15,8 @@ export interface HoldingsProps {
   status: Status;
   now: number;
   agentName: string;
+  /** the flow scout's last hour per pool, when the desk journaled it */
+  flows?: Map<string, PoolFlow>;
 }
 
 const ISSUER: Record<string, string> = { xstocks: "xStocks", backpack: "Backpack", ondo: "Ondo", unknown: "" };
@@ -44,7 +46,7 @@ function statusOfBand(b: BandCard): { word: string; tone: "good" | "wait" | "bad
 
 const signed = (n: number, d = 2) => `${n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(n).toFixed(d)}`;
 
-export function Holdings({ book, screen, status, now, agentName }: HoldingsProps) {
+export function Holdings({ book, screen, status, now, agentName, flows }: HoldingsProps) {
   const bands = book.bands;
   if (bands.length === 0) {
     return (
@@ -108,6 +110,21 @@ export function Holdings({ book, screen, status, now, agentName }: HoldingsProps
                 <span className="hold__bar-lo">{fmtPrice(b.lowerPrice)}</span>
                 <span className="hold__bar-hi">{fmtPrice(b.upperPrice)}</span>
               </div>
+              {(() => {
+                const pf = flows?.get(b.poolAddress);
+                if (!pf) return null;
+                const f = pf.flow;
+                const q = f.quoteSymbol;
+                const age = Math.max(0, Math.round((now - f.asOf) / 60_000));
+                return (
+                  <p className="hold__flow" title="Read from the chain by the flow scout: every swap in this pool, decoded from Meteora's own events">
+                    <span className="hold__flow-k">Last hour</span> {f.swaps60m} swaps, {num(f.volume60mQuote)} {q} traded, {num(f.fees60mQuote)} {q} in fees
+                    {f.feesPerDayQuote60m !== null ? <>, a {num(f.feesPerDayQuote60m)} {q}/day pace</> : null}
+                    {f.swaps15m > 0 ? <>. <span className="hold__flow-k">Last 15 min</span> {f.swaps15m} swaps, {num(f.fees15mQuote)} {q} in fees</> : <>. Quiet in the last 15 minutes</>}
+                    <span className="hold__flow-age"> · {age === 0 ? "just now" : `${age} min ago`}</span>
+                  </p>
+                );
+              })()}
               <footer className="hold__foot">
                 {b.putIn !== null && <span>Put in {num(b.putIn)} SOL</span>}
                 {b.pacePerDay !== null && <span>{num(b.pacePerDay)} SOL/day</span>}

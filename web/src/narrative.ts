@@ -1,4 +1,4 @@
-import type { AgentRecord, DayRow, Status } from "./model";
+import type { AgentRecord, DayRow, FlowTotals, Status } from "./model";
 
 /**
  * The note at the top of the page, written from the numbers: what a person at the desk would say
@@ -19,7 +19,8 @@ export function num(x: number): string {
   if (a >= 100) return Math.round(a).toString();
   if (a >= 10) return a.toFixed(1).replace(/\.0$/, "");
   if (a >= 1) return a.toFixed(1);
-  return a.toFixed(2);
+  if (a >= 0.01) return a.toFixed(2);
+  return a.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 const WEEKDAY = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -53,7 +54,7 @@ const MODE_SENTENCE: Record<Status["mode"], string> = {
   demo: "This is a scripted demo, written to show how he decides; no wallet, no money.",
 };
 
-export function narrativeOf(o: { record: AgentRecord | null; status: Status; agentName: string; now: number }): Narrative {
+export function narrativeOf(o: { record: AgentRecord | null; status: Status; agentName: string; now: number; flow?: FlowTotals | null; bandsOpen?: number; atWorkSol?: number }): Narrative {
   const { record, status, agentName, now } = o;
   if (!record) return { headline: "Reading the journal.", story: [MODE_SENTENCE[status.mode]] };
   const dir = upDown(record.net);
@@ -62,12 +63,21 @@ export function narrativeOf(o: { record: AgentRecord | null; status: Status; age
   const story: string[] = [];
   const fees = record.feesRealized + record.feesUnclaimed;
   const elapsedDays = (now - record.startTs) / 86400e3;
-  if (fees >= 0.005) {
+  const bands = o.bandsOpen ?? 0;
+  const atWork = o.atWorkSol ?? record.atWork;
+  if (bands > 0 && atWork > 0) story.push(`He has ${num(atWork)} SOL at work in ${bands} band${bands === 1 ? "" : "s"}.`);
+  if (fees >= 0.0005) {
     const span = elapsedDays < 1.5 ? "since he started" : `over ${Math.round(elapsedDays)} days`;
     const pace = elapsedDays >= 2 ? `, about ${num(fees / elapsedDays)} a day` : "";
-    story.push(`He has earned ${num(fees)} SOL in fees ${span}${pace}.`);
+    const where = record.feesRealized < 0.0005 && record.feesUnclaimed >= 0.0005 ? ", still sitting in the bands" : "";
+    story.push(`He has earned ${num(fees)} SOL in fees ${span}${pace}${where}.`);
   } else {
     story.push("He has not earned a fee yet.");
+  }
+  if (o.flow && o.flow.swaps60m > 0) {
+    const f = o.flow;
+    const ours = f.ours60mSol >= 0.0005 ? `; ${num(f.ours60mSol)} of that was paid in the bins he covers` : "";
+    story.push(`In the last hour his ${f.pools === 1 ? "pool" : `${f.pools} pools`} traded ${num(f.volume60mSol)} SOL across ${f.swaps60m} swaps and paid ${num(f.fees60mSol)} SOL in fees${ours}.`);
   }
 
   const days: DayRow[] = record.days.filter((d) => Number.isFinite(d.open) && Number.isFinite(d.close));

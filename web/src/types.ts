@@ -151,7 +151,27 @@ export interface JournalEntry {
       maxHoldMin: number;
     };
   };
-  screen?: { rank: number; rankedPools: number; score: number; feeToTvl24hPct: number | null } | null;
+  screen?: { rank: number; rankedPools: number; score: number; feeToTvl24hPct: number | null; flow?: FlowContext | null } | null;
+}
+
+/** The flow scout's last hour for a pool, as the desk journals it (src/scouts/flow.ts on the desk). Quote units. */
+export interface FlowContext {
+  asOf: number;
+  quoteSymbol: string;
+  swaps15m: number;
+  volume15mQuote: number;
+  fees15mQuote: number;
+  /** fees paid in the bins his band covers (the bins' whole fees, not yet his share) */
+  ours15mQuote: number;
+  swaps60m: number;
+  volume60mQuote: number;
+  fees60mQuote: number;
+  ours60mQuote: number;
+  feesPerDayQuote60m: number | null;
+  feesPerDayQuote15m: number | null;
+  lastPrice: number | null;
+  lastSwapAt: number | null;
+  largest15m: { volumeQuote: number; dir: "buy" | "sell" } | null;
 }
 
 /** One point of the desk's equity per cycle, from its own marks (src/journal EquityPoint on the desk). */

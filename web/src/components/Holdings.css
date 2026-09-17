@@ -134,3 +134,13 @@
   font-size: 13px;
   color: var(--ink-3);
 }
+
+.hold__flow {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.hold__flow-k { font-weight: 600; color: var(--ink); }
+.hold__flow-age { color: var(--ink-3); }

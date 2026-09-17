@@ -3,7 +3,7 @@
  * Every component reads from here so the words and the numbers cannot disagree.
  */
 import { bookCycle, completeCycles, cycleEquity, cyclesOf, equityOf, feesInSol, POSITION_RENT_SOL } from "./derive";
-import type { Action, Decision, EquityHistoryPoint, JournalEntry, Position, StockTag } from "./types";
+import type { Action, Decision, EquityHistoryPoint, FlowContext, JournalEntry, Position, StockTag } from "./types";
 
 /* ---------- words ---------- */
 
@@ -725,4 +725,56 @@ export function actionsOf(newestFirst: JournalEntry[], limit = 200): ActionRow[]
     });
   }
   return out;
+}
+
+/* ---------- the flow: what traded in his pools in the last hour ---------- */
+
+export interface PoolFlow {
+  poolAddress: string;
+  poolLabel: string;
+  flow: FlowContext;
+  /** one quote unit in SOL, so pools quoted in USDC add up with the SOL ones */
+  quotePriceInSol: number;
+}
+
+export interface FlowTotals {
+  pools: number;
+  swaps60m: number;
+  volume60mSol: number;
+  fees60mSol: number;
+  ours60mSol: number;
+  swaps15m: number;
+  fees15mSol: number;
+  /** the newest reading among the pools, epoch ms */
+  asOf: number;
+}
+
+/** The flow the desk journaled for each pool of the newest cycle; a pool without a fresh reading is absent. */
+export function flowOf(newestFirst: JournalEntry[]): Map<string, PoolFlow> {
+  const out = new Map<string, PoolFlow>();
+  const cycle = bookCycle(newestFirst);
+  for (const e of cycle?.entries ?? []) {
+    const f = e.screen?.flow;
+    if (!f) continue;
+    const q = e.pool as JournalEntry["pool"] & { quotePriceInSol?: number };
+    out.set(e.pool.address, { poolAddress: e.pool.address, poolLabel: e.pool.label, flow: f, quotePriceInSol: typeof q.quotePriceInSol === "number" && q.quotePriceInSol > 0 ? q.quotePriceInSol : 1 });
+  }
+  return out;
+}
+
+/** PURE. The pools' flow added up in SOL; null when no pool has a reading. */
+export function flowTotalsOf(flows: Map<string, PoolFlow>): FlowTotals | null {
+  if (!flows.size) return null;
+  const t: FlowTotals = { pools: 0, swaps60m: 0, volume60mSol: 0, fees60mSol: 0, ours60mSol: 0, swaps15m: 0, fees15mSol: 0, asOf: 0 };
+  for (const { flow: f, quotePriceInSol: px } of flows.values()) {
+    t.pools += 1;
+    t.swaps60m += f.swaps60m;
+    t.volume60mSol += f.volume60mQuote * px;
+    t.fees60mSol += f.fees60mQuote * px;
+    t.ours60mSol += f.ours60mQuote * px;
+    t.swaps15m += f.swaps15m;
+    t.fees15mSol += f.fees15mQuote * px;
+    t.asOf = Math.max(t.asOf, f.asOf);
+  }
+  return t;
 }

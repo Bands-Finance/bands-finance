@@ -78,6 +78,7 @@ export function DashNote({ narrative, record, summary, solPriceUsd, status, wall
   const fees = record ? record.feesRealized + record.feesUnclaimed : null;
   const rows: { label: string; value: ReactNode }[] = [
     { label: "The book", value: record ? <>{num(record.equityNow)} SOL{usd(record.equityNow, solPriceUsd) ? <span className="dash-ledger__aside"> ≈ {usd(record.equityNow, solPriceUsd)}</span> : null}</> : "·" },
+    { label: "At work", value: record ? `${num(record.atWork)} SOL` : "·" },
     { label: "Fees earned", value: fees !== null ? `${num(fees)} SOL` : "·" },
     { label: "Started with", value: record ? `${num(record.startEquity)} SOL, ${dateWord(record.startTs)}` : "·" },
     { label: "Bands", value: summary ? `${summary.bandsOpen} open, ${summary.bandsInRange} in range` : "·" },

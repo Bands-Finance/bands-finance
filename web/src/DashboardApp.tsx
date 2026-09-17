@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { isDemoJournal } from "./api";
 import { groupAgents } from "./derive";
-import { actionsOf, bookOf, recordOf, statusOf } from "./model";
+import { actionsOf, bookOf, flowOf, flowTotalsOf, recordOf, statusOf } from "./model";
 import { narrativeOf } from "./narrative";
 import { useJournalFeed } from "./hooks/useJournalFeed";
 import { DashFooter, DashNav, DashNote, DashSection } from "./components/Dash";
@@ -26,10 +26,15 @@ export default function DashboardApp() {
   const record = useMemo(() => recordOf(agentEntries, equity), [agentEntries, equity]);
   const book = useMemo(() => bookOf(agentEntries), [agentEntries]);
   const actions = useMemo(() => actionsOf(agentEntries), [agentEntries]);
+  const flows = useMemo(() => flowOf(agentEntries), [agentEntries]);
+  const flowTotals = useMemo(() => flowTotalsOf(flows), [flows]);
   const agentName = selected?.name ?? "Mr Bands";
   const walletAddress = agentEntries[0]?.wallet.address ?? null;
   const solPriceUsd = screen?.solPriceUsd ?? null;
-  const narrative = useMemo(() => narrativeOf({ record, status, agentName, now }), [record, status, agentName, now]);
+  const narrative = useMemo(
+    () => narrativeOf({ record, status, agentName, now, flow: flowTotals, bandsOpen: selected?.bandsOpen ?? 0, atWorkSol: record?.atWork }),
+    [record, status, agentName, now, flowTotals, selected],
+  );
 
   // The sections mount once the journal has loaded, so a deep link (#made, #did) has nothing to
   // scroll to on first paint: honour it when the content appears.
@@ -68,7 +73,7 @@ export default function DashboardApp() {
               <Record record={record} solPriceUsd={solPriceUsd} status={status} agentName={agentName} compact />
             </DashSection>
             <DashSection id="holds" title="What he holds right now">
-              <Holdings book={book} screen={screen} status={status} now={now} agentName={agentName} />
+              <Holdings book={book} screen={screen} status={status} now={now} agentName={agentName} flows={flows} />
             </DashSection>
             <DashSection id="did" title="What he did" sub="Every move he made, newest first. Holds are not moves.">
               <Actions actions={actions} status={status} now={now} agentName={agentName} />

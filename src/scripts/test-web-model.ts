@@ -7,7 +7,7 @@
  *   npx tsx src/scripts/test-web-model.ts
  */
 import assert from "node:assert/strict";
-import { actionsOf, bookOf, recordOf } from "../../web/src/model";
+import { actionsOf, bookOf, flowOf, flowTotalsOf, recordOf } from "../../web/src/model";
 import { bookCycle, completeCycles, cycleEquity, cyclesOf, equitySeriesOf, summarize } from "../../web/src/derive";
 import type { EquityHistoryPoint, JournalEntry, Position } from "../../web/src/types";
 import { dayWord, narrativeOf, num, sinceWord } from "../../web/src/narrative";
@@ -311,6 +311,27 @@ async function main() {
     assert.equal(sinceWord(now - 3600e3, now), "today");
   });
 
+  await test("flowOf and flowTotalsOf: the newest cycle's journaled flow per pool, added up in SOL across quotes", () => {
+    const chrono = [...fixture()].reverse();
+    const flow = (over: Partial<import("../../web/src/types").FlowContext>) => ({ asOf: T0 + 31 * 60_000, quoteSymbol: "SOL", swaps15m: 2, volume15mQuote: 4, fees15mQuote: 0.01, ours15mQuote: 0.01, swaps60m: 10, volume60mQuote: 20, fees60mQuote: 0.05, ours60mQuote: 0.04, feesPerDayQuote60m: 1.2, feesPerDayQuote15m: 0.96, lastPrice: 1, lastSwapAt: T0, largest15m: null, ...over });
+    const a = chrono[chrono.length - 2]; // cycle 4, AAA (SOL-quoted)
+    const c = chrono[chrono.length - 1]; // cycle 4, CCC (USDC-quoted, 0.01 SOL per USDC)
+    (a as { screen?: unknown }).screen = { rank: 1, rankedPools: 1, score: 1, feeToTvl24hPct: null, flow: flow({}) };
+    (c as { screen?: unknown }).screen = { rank: 1, rankedPools: 1, score: 1, feeToTvl24hPct: null, flow: flow({ quoteSymbol: "USDC", volume60mQuote: 5000, fees60mQuote: 12, ours60mQuote: 6, swaps60m: 30, asOf: T0 + 32 * 60_000 }) };
+    const flows = flowOf([...chrono].reverse());
+    assert.deepEqual([...flows.keys()].sort(), ["AAA", "CCC"]);
+    assert.equal(flows.get("CCC")!.quotePriceInSol, 0.01);
+    const t = flowTotalsOf(flows)!;
+    assert.equal(t.pools, 2);
+    assert.equal(t.swaps60m, 40);
+    assert.ok(Math.abs(t.volume60mSol - (20 + 50)) < 1e-9, "5,000 USDC is 50 SOL");
+    assert.ok(Math.abs(t.fees60mSol - (0.05 + 0.12)) < 1e-9);
+    assert.ok(Math.abs(t.ours60mSol - (0.04 + 0.06)) < 1e-9);
+    assert.equal(t.asOf, T0 + 32 * 60_000);
+    assert.equal(flowTotalsOf(new Map()), null);
+    assert.equal(flowOf(fixture()).size, 0, "no journaled flow: nothing");
+  });
+
   await test("narrativeOf: a headline and a short honest story from the record; the worst day named, today reported, the mode said plainly", () => {
     const now = Date.parse("2026-09-17T03:00:00Z");
     const status = { mode: "paper", lastTs: now, ageMs: 0, sentence: "s", short: "paper" } as const;
@@ -339,6 +360,17 @@ async function main() {
     ]);
     const flat = narrativeOf({ record: { ...(rec as object), net: 0.01 } as never, status: status as never, agentName: "Mr Bands", now });
     assert.equal(flat.headline, "Mr Bands is about flat since Monday.");
+    // live, an hour in: what is at work, fees still in the bands, and the last hour's flow
+    const liveRec = { ...(rec as object), startTs: now - 3600e3, startEquity: 19.79, equityNow: 19.6, net: -0.19, feesRealized: 0, feesUnclaimed: 0.0031, atWork: 14.94, days: [] } as never;
+    const live = narrativeOf({ record: liveRec, status: { ...status, mode: "live" } as never, agentName: "Mr Bands", now, bandsOpen: 3, atWorkSol: 14.94, flow: { pools: 3, swaps60m: 91, volume60mSol: 84.2, fees60mSol: 0.152, ours60mSol: 0.152, swaps15m: 19, fees15mSol: 0.021, asOf: now } });
+    assert.equal(live.headline, "Mr Bands is down 0.19 SOL today.");
+    assert.deepEqual(live.story, [
+      "He has 14.9 SOL at work in 3 bands.",
+      "He has earned 0.0031 SOL in fees since he started, still sitting in the bands.",
+      "In the last hour his 3 pools traded 84.2 SOL across 91 swaps and paid 0.15 SOL in fees; 0.15 of that was paid in the bins he covers.",
+      "This is his own wallet on Solana; every move below links to its transaction.",
+    ]);
+    assert.deepEqual([num(0.0031), num(0.15), num(0.0001)], ["0.0031", "0.15", "0.0001"]);
     const none = narrativeOf({ record: null, status: { ...status, mode: "live" } as never, agentName: "Mr Bands", now });
     assert.equal(none.headline, "Reading the journal.");
     assert.match(none.story[0], /his own wallet on Solana/);
