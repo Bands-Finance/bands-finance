@@ -812,13 +812,15 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
       quoteOk(p.quoteSymbol) &&
       watchlistRefusal(p, watch) === null &&
       (p.volume24hUsd ?? 0) >= minVolume &&
-      p.score > 0 &&
+      p.score >= Math.max(1e-9, policyEnv().minScore) &&
       !p.flags.includes("thin") &&
       !p.flags.includes("no-24h-data"),
   );
   // Rank what is left by the money: fees earned per dollar of liquidity in the last 24h, which is what
   // a seat here is paid. The score still decides who qualifies (it brakes thin, new, wild and one-sided
-  // pools); this decides the order among those that do.
+  // pools), at the POLICY's floor: a pick the policy refuses on score wastes the seat for the cycle
+  // (pill/SOL and EMBER/SOL, score 4.7 and 5.6 against a floor of 20, were picked and refused three
+  // cycles running on 2026-09-17); this decides the order among those that qualify.
   const byYield = [...candidates].sort((a, b) => (b.feeToTvl24hPct ?? -1) - (a.feeToTvl24hPct ?? -1) || b.score - a.score);
   for (const p of byYield) {
     if (set.size >= ordinaryCap) break;
