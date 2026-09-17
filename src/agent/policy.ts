@@ -78,6 +78,7 @@ import { launchEnv, launchSeatSol, type LaunchEnv } from "../screener/launch";
 import { pairEnv, pairHouseSeatSol, pairSeatSol, type PairEnv } from "../screener/pair";
 import { pairStockEnv, pairStockSeatSol, type PairStockEnv } from "../screener/pairStock";
 import { swapDepthWithin } from "../screener/seatYield";
+import { applyTuning, readTuningCached, tuneEnv } from "../learn/lessons";
 import { OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, quoteOf, type PoolSnapshot, type PositionSnapshot, type QuoteView } from "../tools/dlmm";
 import { jupiterEnv, meteoraOnlyRoutes } from "../tools/jupiter";
 import { bookEnv, type Book } from "../venues/env";
@@ -129,6 +130,13 @@ const num = (v: string | undefined, d: number): number => {
 };
 
 export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
+  const base = policyEnvBase(env);
+  // the self-learning tuner's knobs on top (TUNING_FILE, src/learn/lessons.ts), inside its bounds
+  const file = (env.TUNING_FILE ?? "").trim();
+  return file ? applyTuning(base, readTuningCached(file), tuneEnv(env)) : base;
+}
+
+function policyEnvBase(env: NodeJS.ProcessEnv): PolicyEnv {
   return {
     coverPct: Math.max(0.1, num(env.POLICY_COVER_PCT, 5)),
     stockCoverPct: Math.max(0.05, num(env.STOCK_COVER_PCT, STOCK_COVER_PCT_DEFAULT)),

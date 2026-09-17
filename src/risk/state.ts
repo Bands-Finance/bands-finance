@@ -56,6 +56,10 @@ export interface RiskState {
   lastMoveByPool?: Record<string, number>;
   /** epoch ms a pool's seat was given up by the yield ranking (ROTATE): it sits out METEORA_STOCK_REENTRY_MIN before it may be seated again */
   rotatedOutAt?: Record<string, number>;
+  /** position address -> what the desk knew when it laid the band (src/learn/lessons.ts BandMeta); the lesson is written from it at the close */
+  bandMeta?: Record<string, import("../learn/lessons").BandMeta>;
+  /** position address -> cycles observed and cycles in range, for the lesson's time in range */
+  rangeStats?: Record<string, { cycles: number; inRange: number }>;
   /**
    * position address -> the opening mark of a LAUNCH-lane band (src/screener/launch.ts): which pool
    * it is in, when it opened and what the pool's last hour was trading then. Its PRESENCE is what
@@ -91,6 +95,8 @@ export function emptyState(day = todayUtc()): RiskState {
     priceHistory: {},
     lastMoveByPool: {},
     rotatedOutAt: {},
+    bandMeta: {},
+    rangeStats: {},
     launchBands: {},
     pairPools: {},
   };
@@ -110,6 +116,8 @@ export function loadState(): RiskState {
       priceHistory: parsed.priceHistory ?? {},
       lastMoveByPool: parsed.lastMoveByPool ?? {},
       rotatedOutAt: parsed.rotatedOutAt ?? {},
+      bandMeta: parsed.bandMeta ?? {},
+      rangeStats: parsed.rangeStats ?? {},
       launchBands: parsed.launchBands ?? {},
       pairPools: parsed.pairPools ?? {},
     };

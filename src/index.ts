@@ -79,7 +79,8 @@ import { jupiterEnv as swapEnv, meteoraOnlyRoutes } from "./tools/jupiter";
 import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairHouseSeats, pairHouseSeatSol, pairLaunchEnv, pairMintOf, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict, type PairSeatOptions } from "./screener/pair";
 import { createPairVenue, hotRowForPool, isPairPool as isPairVenuePool } from "./venues/pair";
 import { pairStockCandidateFor, pairStockCandidatesOf, pairStockEnv, pairStockReserve, pairStockSeats, pairStockSeatSol, chooseStockFeeBps, stockPairModel, type PairStockCandidate } from "./screener/pairStock";
-import { MIN_BAND_SOL, stockBinsPerSide } from "./agent/policy";
+import { coveragePct, MIN_BAND_SOL, stockBinsPerSide } from "./agent/policy";
+import { appendLesson, endReasonOf, LESSONS_FILE, lessonLine, lessonOf, readLessons, readTuning, TUNING_FILE, tuneEnv, tuneFromLessons, writeTuning, type BandMeta } from "./learn/lessons";
 import { loadHotFileCached } from "./hot/store";
 import type { ScreenResult } from "./screener/types";
 import { KNOWN_TOKENS, PoolSnapshot, PositionSnapshot, quoteOf, QuotePriceUnknownError, setSolPriceUsd, UnsupportedQuoteError } from "./tools/dlmm";
@@ -1244,6 +1245,12 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   const lastPrice = previousPrice(state, o.address);
   const guardState: RiskState = { ...state, lastPrice };
   trackOutOfRange(state, positions, now);
+  // for the lesson at the close: how much of its life the band spent in range
+  for (const p of positions) {
+    const rs = ((state.rangeStats ??= {})[p.address] ??= { cycles: 0, inRange: 0 });
+    rs.cycles += 1;
+    if (p.inRange) rs.inRange += 1;
+  }
   trackFeesPending(state, positions, snapshot, now, cfg.collectFloorSol);
   const others = all.filter((x) => x !== o);
   // The other pools' bands as observed at the start of the cycle, plus what the pools decided before
@@ -1449,6 +1456,38 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   for (const row of execution.ledger ?? []) {
     const quoteLeg = quoteIsSol || typeof row.quoteDelta !== "number" ? "" : ` (${row.quoteDelta.toFixed(4)} ${q.symbol})`;
     console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)}${quoteLeg} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
+  }
+  // THE LESSON (src/learn/lessons.ts): a closed seat becomes a record before its bookkeeping is forgotten
+  if (execution.ok && execution.closed) {
+    const meta = state.bandMeta?.[execution.closed];
+    if (meta) {
+      try {
+        const lesson = lessonOf({ meta, position: execution.closed, stats: state.rangeStats?.[execution.closed] ?? null, rows: readLedgerRows(), closedAt: Date.now(), endReason: endReasonOf(directive?.kind ?? null, app.rotateOut?.pool === o.address ? app.rotateOut.reason : null, llm.decision.headline), headline: llm.decision.headline });
+        appendLesson(path.join(path.resolve(process.cwd(), config.dataDir), LESSONS_FILE), lesson);
+        console.log(`${tag} ${lessonLine(lesson)}`);
+      } catch (err) {
+        console.error(`${tag} lesson not written: ${(err as Error).message}`);
+      }
+    }
+    if (state.bandMeta) delete state.bandMeta[execution.closed];
+    if (state.rangeStats) delete state.rangeStats[execution.closed];
+  }
+  if (execution.ok && execution.opened && verdict.decision.open) {
+    const op = verdict.decision.open;
+    const bins = op.binsBelowActive + op.binsAboveActive + 1;
+    const kind: BandMeta["kind"] = screen?.stock || basisRow ? "stock" : snapshot.pair ? "other" : "memecoin";
+    (state.bandMeta ??= {})[execution.opened.address] = {
+      pool: o.address,
+      label: snapshot.label,
+      kind,
+      openedAt: Date.now(),
+      seatSol: execution.opened.entryValueSol,
+      bins,
+      binStep: snapshot.binStep,
+      coverPct: coveragePct(snapshot.binStep, Math.max(op.binsBelowActive, op.binsAboveActive)),
+      travelBins60m: screen?.flow?.range60mBins ?? null,
+      predictedYieldPct: null,
+    };
   }
   if (execution.ok && (execution.opened || execution.closed)) {
     app.movedThisCycle = true;
@@ -1824,6 +1863,7 @@ async function runIteration(app: App): Promise<void> {
         const upper = Math.max(...o.positions.map((p) => p.upperBinId));
         const y = seatYield({ seatQuote: seatSol / q.priceInSol, binsEachSide: Math.max(0, Math.floor((upper - lower) / 2)), activeBinId: o.snapshot.activeBinId, bins: o.snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote: flow.feesPerDayQuote240m });
         const line = fadeFactor * pEnvNow.minSeatYieldPct;
+        for (const p of o.positions) if (state.bandMeta?.[p.address]) state.bandMeta[p.address].predictedYieldPct = Math.round(y.yieldPctPerDay * 100) / 100;
         const streak = y.yieldPctPerDay < line ? (app.fadeStreak.get(o.address) ?? 0) + 1 : 0;
         app.fadeStreak.set(o.address, streak);
         const openedAt = state.lastMoveByPool?.[o.address] ?? null;
@@ -1874,6 +1914,23 @@ async function runIteration(app: App): Promise<void> {
     console.log(`[cycle ${app.cycle}] marks skipped: the wallet holds ${usdcAtStart.toFixed(2)} USDC and no SOL price is known to value it`);
   } else {
     console.log(`[cycle ${app.cycle}] marks skipped: ${observed.length}/${pools.length} pools observed, ${entries.length} decided`);
+  }
+  // THE TUNER (src/learn/lessons.ts): the recent lessons may move one knob one step
+  if ((process.env.TUNING_FILE ?? "").trim()) {
+    try {
+      const dataDir = path.resolve(process.cwd(), config.dataDir);
+      const tfile = path.resolve(process.cwd(), process.env.TUNING_FILE!.trim());
+      const tuning = readTuning(tfile) ?? { history: [] };
+      const tenv = tuneEnv();
+      const current = { volMultiple: policyEnv().volMultiple };
+      const change = tuneFromLessons(readLessons(path.join(dataDir, LESSONS_FILE), now - 24 * 3_600_000), current, tuning, tenv, now);
+      if (change) {
+        writeTuning(tfile, { ...tuning, volMultiple: change.to, history: [...tuning.history, change] });
+        console.log(`[cycle ${app.cycle}] [tuning] band width multiple ${change.from} -> ${change.to}: ${change.why}`);
+      }
+    } catch (err) {
+      console.error(`[cycle ${app.cycle}] tuner failed: ${(err as Error).message}`);
+    }
   }
   await runSkim(app);
   // The site shows what the desk just did: push once the cycle's decisions are on disk, throttled.
