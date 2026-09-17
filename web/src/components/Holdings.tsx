@@ -66,8 +66,10 @@ export function Holdings({ book, screen, status, now, agentName, flows }: Holdin
       </p>
       <div className="hold__grid">
         {bands.map((b) => {
-          const { base, quote } = split(b.poolLabel);
+          const { base: rawBase, quote } = split(b.poolLabel);
           const stock = stockOf(screen, b);
+          // a token the desk names by mint suffix ("MRVL…46jo") reads as its ticker on the card
+          const base = rawBase.includes("…") && stock ? stock.ticker : rawBase;
           const st = statusOfBand(b);
           const move = b.marketMove;
           const pos = b.upperPrice > b.lowerPrice ? Math.min(1, Math.max(0, (b.activePrice - b.lowerPrice) / (b.upperPrice - b.lowerPrice))) : 0.5;
