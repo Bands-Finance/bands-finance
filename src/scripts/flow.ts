@@ -301,11 +301,8 @@ function seedFromScreenHistory(w: AccountWatch, full: AccountPoolMeta, now: numb
     const h = JSON.parse(fs.readFileSync(path.join(dataDir, "screen-history.json"), "utf8")) as Record<string, { t: number; fb: string; fq: string; bin: number }[]>;
     const rows = (h[full.address] ?? []).filter((r) => now - r.t <= 4 * 3_600_000 + 60_000 && now - r.t > 0);
     const seeds = rows.map((r) => {
-      const base = Number(r.fb);
-      const quote = Number(r.fq);
-      return full.quoteSide === "Y"
-        ? { ts: r.t, activeId: r.bin, feeX: base / Math.pow(10, full.xDecimals), feeY: quote / Math.pow(10, full.yDecimals) }
-        : { ts: r.t, activeId: r.bin, feeX: quote / Math.pow(10, full.xDecimals), feeY: base / Math.pow(10, full.yDecimals) };
+      // the screener stores the account's amount_x as "fb" and amount_y as "fq" whichever side the quote is on
+      return { ts: r.t, activeId: r.bin, feeX: Number(r.fb) / Math.pow(10, full.xDecimals), feeY: Number(r.fq) / Math.pow(10, full.yDecimals) };
     });
     if (seeds.length && !w.samples.length) w.samples = seeds.sort((a, b) => a.ts - b.ts);
   } catch {
