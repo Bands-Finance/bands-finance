@@ -113,22 +113,25 @@ export function rankSeats(candidates: readonly RankedSeat[], env: SeatRankingEnv
 }
 
 /**
- * PURE. The held seat to give up, if any: the weakest, under the floor, older than the minimum, not
- * pinned, when the best candidate not already held beats it by the factor. One per cycle.
+ * PURE. The held seat to give up, if any: the weakest, older than the minimum, not pinned, when the
+ * best candidate not already held beats it by the factor (against the floor when the seat is under
+ * it). Zach (2026-09-17): "I want to really focus on entering the highest earning pool", so a seat
+ * that earns is still given up when something earns clearly more. One per cycle.
  */
 export function weakSeatRotation(held: readonly HeldSeat[], ranked: readonly RankedSeat[], env: SeatRankingEnv, now: number): SeatRotation | null {
   const heldAddrs = new Set(held.map((h) => h.address));
   const best = ranked.find((c) => !heldAddrs.has(c.address));
   if (!best) return null;
-  const eligible = held.filter((h) => !h.pinned && h.yieldPctPerDay < env.minYieldPct && (h.openedAt === null || now - h.openedAt >= env.minAgeMin * 60_000));
+  const eligible = held.filter((h) => !h.pinned && (h.openedAt === null || now - h.openedAt >= env.minAgeMin * 60_000));
   if (!eligible.length) return null;
   const weakest = eligible.reduce((w, h) => (h.yieldPctPerDay < w.yieldPctPerDay ? h : w));
   const bar = Math.max(env.minYieldPct, weakest.yieldPctPerDay) * env.rotateFactor;
   if (best.yieldPctPerDay < bar) return null;
+  const under = weakest.yieldPctPerDay < env.minYieldPct;
   return {
     pool: weakest.address,
     label: weakest.label,
-    reason: `${weakest.label} earns about ${weakest.yieldPctPerDay.toFixed(2)}% a day on its seat, under the ${env.minYieldPct}% floor, while ${best.label} would earn about ${best.yieldPctPerDay.toFixed(2)}% (${best.sharePct.toFixed(1)}% of its bins, ${best.feeSource === "flow-60m" ? "the last hour's fees" : "the day's fees"})`,
+    reason: `${weakest.label} earns about ${weakest.yieldPctPerDay.toFixed(2)}% a day on its seat${under ? `, under the ${env.minYieldPct}% floor` : ""}, while ${best.label} would earn about ${best.yieldPctPerDay.toFixed(2)}% (${best.sharePct.toFixed(1)}% of its bins, ${best.feeSource === "flow-60m" ? "the last hour's fees" : "the day's fees"}), ${(best.yieldPctPerDay / Math.max(weakest.yieldPctPerDay, 1e-9)).toFixed(1)}x as much`,
   };
 }
 

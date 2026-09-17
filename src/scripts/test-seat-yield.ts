@@ -59,7 +59,7 @@ async function main() {
     assert.deepEqual(ranked.map((r) => r.label), ["MRVL", "BROS", "NVDAx"]);
   });
 
-  await test("weakSeatRotation: the weakest held seat under the floor makes way for a candidate that beats it by the factor; pins, young bands and near-misses stay", () => {
+  await test("weakSeatRotation: the weakest held seat makes way for a candidate that beats it by the factor, floor or not; pins, young bands and near-misses stay", () => {
     const now = Date.parse("2026-09-17T13:00:00Z");
     const env = { minYieldPct: 1, rotateFactor: 2, minAgeMin: 60 };
     const c = (label: string, y: number): RankedSeat => ({ address: label, label, mint: `m-${label}`, yieldPctPerDay: y, sharePct: 9, feesPerDayQuote: 0.5, quoteSymbol: "SOL", feeSource: "flow-60m" });
@@ -68,11 +68,15 @@ async function main() {
     const ranked = rankSeats([c("BROS", 3), c("MRVL", 20)], env);
     const rot = weakSeatRotation(held, ranked, env, now)!;
     assert.equal(rot.pool, "MCDx", "the weakest unpinned seat under the floor");
-    assert.match(rot.reason, /MCDx earns about 0\.40% a day on its seat, under the 1% floor, while BROS would earn about 3\.00% \(9\.0% of its bins, the last hour's fees\)/);
+    assert.match(rot.reason, /MCDx earns about 0\.40% a day on its seat, under the 1% floor, while BROS would earn about 3\.00% \(9\.0% of its bins, the last hour's fees\), 7\.5x as much/);
     assert.equal(weakSeatRotation([h("MCDx", 0.4, 30)], ranked, env, now), null, "thirty minutes old: too young");
     assert.equal(weakSeatRotation([h("NVDAx", 0.4, 90, true)], ranked, env, now), null, "a pin never rotates");
     assert.equal(weakSeatRotation([h("MCDx", 0.4, 90)], rankSeats([c("BROS", 1.5)], env), env, now), null, "1.5% does not beat 2 x the floor");
-    assert.equal(weakSeatRotation([h("MCDx", 1.2, 90)], ranked, env, now), null, "a seat over the floor stays");
+    assert.equal(weakSeatRotation([h("MCDx", 1.2, 90)], rankSeats([c("BROS", 3)], env), env, now)?.pool, "MCDx", "a seat over the floor still makes way for one 2x better");
+    assert.equal(weakSeatRotation([h("MCDx", 2, 90)], rankSeats([c("BROS", 3)], env), env, now), null, "3% is not 2 x 2%: it stays");
+    const focus = weakSeatRotation([h("MRVL", 1.9, 90), h("NVDAx", 1.1, 90)], rankSeats([c("DKNG", 51)], env), env, now)!;
+    assert.equal(focus.pool, "NVDAx", "the weakest seat goes first, one per cycle");
+    assert.match(focus.reason, /46\.4x as much/);
     assert.equal(weakSeatRotation(held, rankSeats([c("MRVL", 20)], env), env, now), null, "the only candidate is already held");
     const e = seatRankingEnv({});
     assert.deepEqual([e.minYieldPct, e.rotateFactor, e.minAgeMin, e.rankTop], [1, 2, 60, 8]);
