@@ -493,7 +493,7 @@ async function refreshMemeHistory(app: App, funds: Set<"SOL" | "USDC">): Promise
     if (i > 0) await new Promise((r) => setTimeout(r, 2500));
     const rec = await fetchPoolHistory(address, hist.minDays, { connection: app.connection, address: new PublicKey(address), minTxPerDay: hist.minTxPerDay, maxPages: hist.maxPages });
     app.memeHistory.set(address, rec);
-    console.log(`[cycle ${app.cycle}] memecoin history ${w.symbol} (${address.slice(0, 6)}): ${rec.metrics ? historyPhrase(rec.metrics) : `unreadable (${rec.error})`}${rec.metrics && rec.metrics.days < hist.minDays ? `; under the ${hist.minDays} days the desk wants` : ""}`);
+    console.log(`[cycle ${app.cycle}] memecoin history ${w.symbol} (${address.slice(0, 6)}): ${rec.metrics ? historyPhrase(rec.metrics) : `unreadable (${rec.error})`}${rec.metrics && rec.metrics.days < hist.minDays && !(rec.metrics.firstSeenAt === null && (rec.metrics.coveredHours ?? Infinity) < hist.minDays * 24) ? `; under the ${hist.minDays} days the desk wants` : ""}`);
   }
 }
 
