@@ -6,7 +6,7 @@ import { narrativeOf } from "./narrative";
 import { useJournalFeed } from "./hooks/useJournalFeed";
 import { DashFooter, DashNav, DashNote, DashSection } from "./components/Dash";
 import { Record } from "./components/Record";
-import { Book } from "./components/Book";
+import { Holdings } from "./components/Holdings";
 import { MadePairs } from "./components/MadePairs";
 import { Actions } from "./components/Actions";
 
@@ -69,8 +69,8 @@ export default function DashboardApp() {
             <DashSection id="made" title="What he made" sub="The fees he claimed, and every day on the book since he started.">
               <Record record={record} solPriceUsd={solPriceUsd} status={status} agentName={agentName} compact />
             </DashSection>
-            <DashSection id="holds">
-              <Book book={book} status={status} agentName={agentName} compact />
+            <DashSection id="holds" title="What he holds right now">
+              <Holdings book={book} screen={screen} status={status} now={now} agentName={agentName} />
               {madePairs.length > 0 && <MadePairs pairs={madePairs} status={status} agentName={agentName} />}
             </DashSection>
             <DashSection id="did" title="What he did" sub="Every move he made, newest first. Holds are not moves.">

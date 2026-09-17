@@ -1,0 +1,136 @@
+/* One card per band: title, pairing, two big figures, the price bar, small facts. Paper tokens from Dash.css. */
+
+.hold__line {
+  margin: 0 0 20px;
+  font-family: var(--font-serif);
+  font-size: 17px;
+  color: var(--ink-2);
+}
+.hold__flat {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 18px;
+  color: var(--ink-2);
+  max-width: 60ch;
+}
+.hold__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+.hold__card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 22px 16px;
+  background: var(--paper-card);
+  border: 1px solid var(--rule-strong);
+  border-radius: 10px;
+  box-shadow: 0 1px 0 rgba(22, 18, 15, 0.05), 0 10px 26px -22px rgba(22, 18, 15, 0.45);
+}
+.hold__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.hold__name { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.hold__base {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 24px;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.hold__quote { font-family: var(--font-body); font-size: 14px; color: var(--ink-3); }
+.hold__pill {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-2);
+  background: rgba(22, 18, 15, 0.04);
+}
+.hold__pill--good { color: var(--good); border-color: rgba(31, 122, 77, 0.35); background: rgba(31, 122, 77, 0.08); }
+.hold__pill--bad { color: var(--bad); border-color: rgba(184, 50, 31, 0.35); background: rgba(184, 50, 31, 0.07); }
+.hold__pair {
+  margin: -4px 0 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.hold__pair b { color: var(--ink); font-weight: 600; }
+.hold__issuer { color: var(--ink-3); }
+
+.hold__stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  padding-top: 6px;
+}
+.hold__stat { display: flex; flex-direction: column; gap: 4px; }
+.hold__big {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 30px;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.hold__big small { font-size: 14px; font-weight: 500; color: var(--ink-3); letter-spacing: 0; }
+.hold__big--good { color: var(--good); }
+.hold__label { font-family: var(--font-body); font-size: 13px; color: var(--ink-3); }
+.hold__up { color: var(--good); }
+.hold__down { color: var(--bad); }
+
+.hold__bar {
+  position: relative;
+  height: 30px;
+  margin-top: 2px;
+}
+.hold__bar-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 8px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(22, 18, 15, 0.12);
+}
+.hold__bar-dot {
+  position: absolute;
+  top: 3px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 50%;
+  background: var(--good);
+  border: 2px solid var(--paper-card);
+  box-shadow: 0 0 0 1px rgba(31, 122, 77, 0.4);
+}
+.hold__bar-dot--out { background: var(--bad); box-shadow: 0 0 0 1px rgba(184, 50, 31, 0.4); }
+.hold__bar-lo, .hold__bar-hi {
+  position: absolute;
+  top: 17px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.hold__bar-lo { left: 0; }
+.hold__bar-hi { right: 0; }
+
+.hold__foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink-3);
+}

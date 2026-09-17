@@ -103,6 +103,8 @@ export interface JournalPool {
   tokenPriceInQuote?: number;
   /** the venue the pool lives on; absent on entries written before venues: meteora-dlmm */
   venue?: "meteora-dlmm" | "raydium-clmm" | "orca-whirlpool";
+  /** the tokenized stock on the base side, when the desk knew it; absent on older entries */
+  stock?: StockTag | null;
 }
 
 export interface JournalEntry {

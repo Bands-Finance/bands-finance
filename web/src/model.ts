@@ -3,7 +3,7 @@
  * Every component reads from here so the words and the numbers cannot disagree.
  */
 import { bookCycle, completeCycles, cycleEquity, cyclesOf, equityOf, feesInSol, POSITION_RENT_SOL } from "./derive";
-import type { Action, Decision, EquityHistoryPoint, JournalEntry, Position } from "./types";
+import type { Action, Decision, EquityHistoryPoint, JournalEntry, Position, StockTag } from "./types";
 
 /* ---------- words ---------- */
 
@@ -255,6 +255,8 @@ export interface BandCard {
   side: string;
   strategy: string | null;
   openTx: string | null;
+  /** the tokenized stock behind the pool, when the journal entry carries it */
+  stock: StockTag | null;
 }
 
 /** A pool the desk made (the pair lane), as of its newest journal entry. */
@@ -396,6 +398,7 @@ export function bookOf(newestFirst: JournalEntry[]): Book {
         side: opened?.decision.open ? sideWords(opened.decision.open.side, quoteOf(e.pool)) : p.amountX > 0 && p.amountY > 0 ? SIDE_WORDS.BOTH : solY ? sideWords(p.amountY > 0 ? "SOL_ONLY" : "TOKEN_ONLY", quoteOf(e.pool)) : "",
         strategy: opened?.decision.open?.strategy ?? null,
         openTx: opened?.execution.txs.find((t) => t.signature)?.signature ?? null,
+        stock: (e.pool as JournalEntry["pool"] & { stock?: StockTag | null }).stock ?? null,
       });
     }
   }

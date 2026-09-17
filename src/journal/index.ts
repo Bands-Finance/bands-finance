@@ -17,6 +17,8 @@ import type { VenueId } from "../venues/types";
 export interface JournalPool {
   address: string;
   label: string;
+  /** the tokenized stock on the base side, when the desk knew it (the screen's tag, the Meteora map, a pin); the sites read it */
+  stock?: { ticker: string; issuer: string } | null;
   tokenX: { symbol: string; decimals: number };
   tokenY: { symbol: string; decimals: number };
   solSide: "X" | "Y" | null;

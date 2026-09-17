@@ -1407,7 +1407,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     // the journal says paper when the book is paper; the ledger keeps its own two-valued mode
     mode: journalMode(app),
     agent: { id: config.agentId, name: config.agentName },
-    pool: toJournalPool(snapshot),
+    pool: { ...toJournalPool(snapshot), stock: observation.screen?.stock ?? snapshot.pair?.stock ?? null },
     wallet: observation.wallet,
     positions,
     analytics,
