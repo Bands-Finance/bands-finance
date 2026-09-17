@@ -70,6 +70,9 @@ export interface WindowStats {
   /** flow that crossed our bins, weighted by the share of crossed bins inside the band */
   ours: { swaps: number; volumeQuote: number; feesQuote: number };
   largest: { volumeQuote: number; sig: string; ts: number; dir: "buy" | "sell" } | null;
+  /** the lowest and highest bin the window's swaps touched (start or end): the price's measured travel, in bins */
+  binLow: number | null;
+  binHigh: number | null;
 }
 
 export interface FlowPool extends PoolMeta {
@@ -255,7 +258,7 @@ export function swapOf(ev: RawSwapEvent, meta: { sig: string; slot: number; ts: 
 
 /* ---------- windows ---------- */
 
-const emptyWindow = (): WindowStats => ({ swaps: 0, buys: 0, sells: 0, volumeQuote: 0, feesQuote: 0, ours: { swaps: 0, volumeQuote: 0, feesQuote: 0 }, largest: null });
+const emptyWindow = (): WindowStats => ({ swaps: 0, buys: 0, sells: 0, volumeQuote: 0, feesQuote: 0, ours: { swaps: 0, volumeQuote: 0, feesQuote: 0 }, largest: null, binLow: null, binHigh: null });
 
 /** PURE. The window's numbers from the swaps inside it (the band's share re-read from `band`, so a band opened after the swap counts from then on). */
 export function windowStats(swaps: readonly FlowSwap[], now: number, windowMs: number, band: PoolMeta["band"]): WindowStats {
@@ -275,6 +278,10 @@ export function windowStats(swaps: readonly FlowSwap[], now: number, windowMs: n
       w.ours.feesQuote += s.feeQuote * share;
     }
     if (!w.largest || s.volumeQuote > w.largest.volumeQuote) w.largest = { volumeQuote: s.volumeQuote, sig: s.sig, ts: s.ts, dir: s.dir };
+    const lo = Math.min(s.startBinId, s.endBinId);
+    const hi = Math.max(s.startBinId, s.endBinId);
+    if (w.binLow === null || lo < w.binLow) w.binLow = lo;
+    if (w.binHigh === null || hi > w.binHigh) w.binHigh = hi;
   }
   return w;
 }
@@ -370,6 +377,9 @@ export interface FlowContext {
   coveredMin: number | null;
   /** the four-hour pace over the covered time (null under an hour of coverage): the ranking's basis */
   feesPerDayQuote240m: number | null;
+  /** how many bins the price travelled (highest minus lowest bin the swaps touched) in the last hour and four hours; null with no swaps */
+  range60mBins: number | null;
+  range240mBins: number | null;
   feesPerDayQuote60m: number | null;
   feesPerDayQuote15m: number | null;
   lastPrice: number | null;
@@ -396,6 +406,11 @@ export function flowContextOf(p: FlowPool): FlowContext {
     fees240mQuote: p.windows["240m"]?.feesQuote ?? 0,
     coveredMin: p.watchedSince === null || p.watchedSince === undefined ? null : Math.round(Math.max(0, Math.min(LONGEST_WINDOW_MS, p.asOf - p.watchedSince)) / 60_000),
     feesPerDayQuote240m: p.feesPerDayQuote240m ?? null,
+    range60mBins: w60.binLow !== null && w60.binLow !== undefined && w60.binHigh !== null && w60.binHigh !== undefined ? w60.binHigh - w60.binLow : null,
+    range240mBins: (() => {
+      const w = p.windows["240m"];
+      return w && w.binLow !== null && w.binLow !== undefined && w.binHigh !== null && w.binHigh !== undefined ? w.binHigh - w.binLow : null;
+    })(),
     feesPerDayQuote60m: p.feesPerDayQuote60m,
     feesPerDayQuote15m: p.feesPerDayQuote15m,
     lastPrice: p.lastPrice,

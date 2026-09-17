@@ -110,6 +110,8 @@ export interface PolicyEnv {
   stockGrowMinAgeMin: number;
   /** POLICY_MAX_SWAP_IMPACT_PCT: a straddle's seat is capped so its token half is bought inside this much price impact in the pool's own bins (0 = no cap) */
   maxSwapImpactPct: number;
+  /** POLICY_REQUIRE_FLOW: a board pool is not opened until the flow scout has read it (the venue's day figure is not an entry) */
+  requireFlow: boolean;
   /** the one-time cost of a seat (rent that never comes back plus the swap round trip) must be earned back inside this many hours (POLICY_MAX_PAYBACK_HOURS) */
   maxPaybackHours: number;
   /** a seat under this share of the book's max exposure is not worth its rent and attention (POLICY_MIN_SEAT_PCT) */
@@ -142,6 +144,7 @@ export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
     stockGrowMinPct: Math.max(0, num(env.STOCK_GROW_MIN_PCT, 50)),
     stockGrowMinAgeMin: Math.max(0, num(env.STOCK_GROW_MIN_AGE_MIN, 15)),
     maxSwapImpactPct: Math.max(0, num(env.POLICY_MAX_SWAP_IMPACT_PCT, 1.5)),
+    requireFlow: (env.POLICY_REQUIRE_FLOW ?? "").trim().toLowerCase() === "true",
     maxPaybackHours: Math.max(0, num(env.POLICY_MAX_PAYBACK_HOURS, 24)),
     minScore: num(env.POLICY_MIN_SCORE, 20),
     book: bookEnv(env),
@@ -188,7 +191,7 @@ export interface PolicyExtras {
   grow?: { allowed: boolean };
 }
 
-export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "recentre-wait" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
+export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "recentre-wait" | "flow-wait" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
 
 export interface PolicyResult {
   decision: Decision;
@@ -244,21 +247,26 @@ export function stockBinsPerSide(binStep: number, coverPct: number, maxBinWidth:
  * because a tight band there is out of range before the transaction confirms. With no recent move to
  * read (a fresh screen, a quiet pool) the configured cover stands.
  */
-export function coverPctFor(o: Pick<Observation, "screen">, env: PolicyEnv, base: number, hot: { priceChange1hPct: number | null }): { coverPct: number; from: string } {
-  // The measured travel of the price in the last hour, then the hot list's 1h change: the first is the
-  // range the band must survive, the second is only the net move, so it understates a pool that went
-  // up and came back. Either beats a fixed percentage.
+export function coverPctFor(o: Pick<Observation, "screen"> & { snapshot?: { binStep: number } }, env: PolicyEnv, base: number, hot: { priceChange1hPct: number | null }): { coverPct: number; from: string } {
+  // The pool's own swaps first (the flow scout: every bin the last hour's trades touched, exact), then
+  // the measured travel of the price from the loop's samples, then the hot list's 1h change: the first
+  // two are the range the band must survive, the last is only the net move, so it understates a pool
+  // that went up and came back. Any of them beats a fixed percentage.
+  const scoutBins = o.screen?.flow?.range60mBins;
+  const binStep = o.snapshot?.binStep;
+  const scouted = typeof scoutBins === "number" && scoutBins >= 0 && typeof binStep === "number" && binStep > 0 && (o.screen?.flow?.swaps60m ?? 0) >= 3 ? coveragePct(binStep, scoutBins) : null;
   const measured = o.screen?.recentMovePct;
-  const move = typeof measured === "number" && Number.isFinite(measured) ? measured : hot.priceChange1hPct;
+  const move = scouted !== null ? scouted : typeof measured === "number" && Number.isFinite(measured) ? measured : hot.priceChange1hPct;
+  const how = scouted !== null ? `the price travelled ${r(Math.abs(move ?? 0), 2)}% (${scoutBins} bins) in the last hour's swaps` : `the price travelled ${r(Math.abs(move ?? 0), 2)}% in the last hour`;
   if (env.volMultiple <= 0 || move === null || !Number.isFinite(move)) return { coverPct: base, from: `${r(base, 2)}% each way (configured)` };
   const raw = Math.abs(move) * env.volMultiple;
   const coverPct = Math.min(env.maxCoverPct, Math.max(env.minCoverPct, raw));
   const why =
     raw < env.minCoverPct
-      ? `${r(coverPct, 2)}% each way (the floor: the price travelled ${r(Math.abs(move), 2)}% in the last hour)`
+      ? `${r(coverPct, 2)}% each way (the floor: ${how})`
       : raw > env.maxCoverPct
-        ? `${r(coverPct, 2)}% each way (the cap: the price travelled ${r(Math.abs(move), 2)}% in the last hour)`
-        : `${r(coverPct, 2)}% each way (${env.volMultiple}x the ${r(Math.abs(move), 2)}% the price travelled in the last hour)`;
+        ? `${r(coverPct, 2)}% each way (the cap: ${how})`
+        : `${r(coverPct, 2)}% each way (${env.volMultiple}x: ${how})`;
   return { coverPct, from: why };
 }
 
@@ -418,7 +426,8 @@ export function seatEarnings(o: Observation, x: PolicyExtras, seatSol: number, s
   // and a quiet hour or a busy one is what the seat will actually earn next.
   const flow = o.screen?.flow ?? null;
   const q = quoteOf(o.snapshot);
-  const flowFeesPerDayUsd = flow && flow.feesPerDayQuote60m !== null ? flow.feesPerDayQuote60m * q.priceInSol * solPriceUsd : null;
+  const flowPace = flow ? (flow.feesPerDayQuote240m ?? flow.feesPerDayQuote60m) : null;
+  const flowFeesPerDayUsd = flowPace !== null && flowPace !== undefined ? flowPace * q.priceInSol * solPriceUsd : null;
   if (flowFeesPerDayUsd === null && (!tvlUsd || feeToTvl === null || !Number.isFinite(feeToTvl))) return null;
   const poolFeesPerDayUsd = flowFeesPerDayUsd ?? (tvlUsd! * feeToTvl!) / 100;
   const feesPerDayUsd = poolFeesPerDayUsd * (Math.min(sharePct, 50) / 100) * 0.5;
@@ -969,6 +978,16 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
         );
       }
     }
+  }
+  // A board pool is not opened on the venue's day figure: the scout reads it first (POLICY_REQUIRE_FLOW).
+  // Pinned stocks, the lanes and our own pools are not board pools.
+  if (env.requireFlow && !pinned && !launch && !pair && !o.screen?.flow) {
+    return hold(
+      `No band in ${o.poolLabel} (${priceLine}). The flow scout has not read this pool yet: the desk seats on what it measures, not on the venue's day figure, so it waits a cycle for the reading. ${poolClause(o, hot)}.`,
+      "Waiting for the scout's reading. Not seated on the day figure.",
+      "flow-wait",
+      "the flow scout has not read the pool yet (POLICY_REQUIRE_FLOW)",
+    );
   }
   // Is the seat worth taking? What it earns, against what it costs.
   const seatSolPreview = straddleHere ? (szPreview as StraddleSizing).seatSol : (szPreview as Sizing).amountSol;

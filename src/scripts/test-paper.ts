@@ -508,8 +508,9 @@ async function main(): Promise<void> {
     assert.deepEqual(policy.policyEnv({}), { coverPct: 5, stockCoverPct: 1.5,
     stockGrowMinAgeMin: 15,
     stockGrowMinPct: 50,
-    maxSwapImpactPct: 1.5, minSeatPct: 5, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 20, book: "all", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200 });
-    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 10, book: "stocks", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200, stockGrowMinPct: 50, stockGrowMinAgeMin: 15, maxSwapImpactPct: 1.5 });
+    maxSwapImpactPct: 1.5,
+    requireFlow: false, minSeatPct: 5, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 20, book: "all", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200 });
+    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 10, book: "stocks", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200, stockGrowMinPct: 50, stockGrowMinAgeMin: 15, maxSwapImpactPct: 1.5, requireFlow: false });
     const tuned = policy.policyEnv({ STOCK_MIN_COVER_PCT: "0.5", STOCK_RECENTRE_MAX_PAYBACK_HOURS: "0", STOCK_RECENTRE_MAX_WAIT_MIN: "30" });
     assert.deepEqual([tuned.stockMinCoverPct, tuned.stockRecentreMaxPaybackHours, tuned.stockRecentreMaxWaitSec], [0.5, 0, 1800]);
   });
@@ -517,10 +518,10 @@ async function main(): Promise<void> {
     // the measured travel wins over the hot list's net move: a pool that went up 3% and came back reads as 3%, not 0%
     const measured = policy.coverPctFor({ screen: { recentMovePct: 3 } as never }, policy.policyEnv({}), 5, { priceChange1hPct: 0 });
     assert.equal(measured.coverPct, 3);
-    assert.match(measured.from, /1x the 3% the price travelled in the last hour/);
+    assert.match(measured.from, /1x: the price travelled 3% in the last hour/);
     const calm = policy.coverPctFor({ screen: null }, policy.policyEnv({}), 5, { priceChange1hPct: 0.2 });
     assert.equal(calm.coverPct, 0.2, "a pool that moved 0.2% in an hour gets a 0.2% band each way");
-    assert.match(calm.from, /1x the 0.2% the price travelled/);
+    assert.match(calm.from, /1x: the price travelled 0.2% in the last hour/);
     const tiny = policy.coverPctFor({ screen: null }, policy.policyEnv({}), 5, { priceChange1hPct: 0.01 });
     assert.equal(tiny.coverPct, 0.15, "the floor holds");
     assert.match(tiny.from, /the floor/);

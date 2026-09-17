@@ -200,6 +200,16 @@ export function consolidation(held: readonly HeldSeat[], env: SeatRankingEnv, no
   };
 }
 
+/**
+ * PURE. Whether a held seat's own measured flow says it has faded: its yield (the pool's fees over the
+ * scout's window x our share of the band / the seat) under `fadeFactor` x the floor for `cyclesNeeded`
+ * consecutive readings, on a band old enough to judge. Zach (2026-09-17): "we need to be sure we are
+ * rebalancing and monitoring volume based on data accumulated on the specific token we are currently in".
+ */
+export function seatFaded(i: { yieldPctPerDay: number; floorPct: number; fadeFactor: number; streak: number; cyclesNeeded: number; ageOk: boolean }): boolean {
+  return i.ageOk && i.floorPct > 0 && i.yieldPctPerDay < i.floorPct * i.fadeFactor && i.streak >= i.cyclesNeeded;
+}
+
 export const feeSourceWord = (f: RankedSeat["feeSource"]): string => (f === "flow-4h" ? "the last four hours' fees" : f === "flow-60m" ? "the last hour's fees" : "the day's fees");
 
 const num = (v: string | undefined, d: number): number => {

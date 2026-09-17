@@ -4,7 +4,7 @@
  *   npx tsx src/scripts/test-seat-yield.ts
  */
 import assert from "node:assert/strict";
-import { binQuote, consolidation, rankSeats, seatRankingEnv, seatYield, sittingOut, swapDepthWithin, weakSeatRotation, type HeldSeat, type RankedSeat } from "../screener/seatYield";
+import { binQuote, consolidation, rankSeats, seatFaded, seatRankingEnv, seatYield, sittingOut, swapDepthWithin, weakSeatRotation, type HeldSeat, type RankedSeat } from "../screener/seatYield";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -103,6 +103,12 @@ async function main() {
     assert.equal(consolidation([h("NVDAx", 1.9, 90, true, 5), dk], env, now, 0.75), null, "pinned");
     assert.equal(consolidation([h("MRVL", 0.9, 90, false, 5), h("DKNG", 0.4, 90, false, 5, 15)], env, now, 0.75), null, "a best seat under the floor grows nothing");
     assert.equal(consolidation([h("MRVL", 1.9, 90, false, null), dk], env, now, 0.75), null, "a seat not yet observed is not judged");
+    // FADE: the seat's own measured flow under half the floor for three cycles, on a band old enough
+    assert.equal(seatFaded({ yieldPctPerDay: 0.4, floorPct: 2, fadeFactor: 0.5, streak: 3, cyclesNeeded: 3, ageOk: true }), true);
+    assert.equal(seatFaded({ yieldPctPerDay: 0.4, floorPct: 2, fadeFactor: 0.5, streak: 2, cyclesNeeded: 3, ageOk: true }), false, "two readings are not three");
+    assert.equal(seatFaded({ yieldPctPerDay: 1.2, floorPct: 2, fadeFactor: 0.5, streak: 5, cyclesNeeded: 3, ageOk: true }), false, "1.2% is over half of 2%");
+    assert.equal(seatFaded({ yieldPctPerDay: 0.4, floorPct: 2, fadeFactor: 0.5, streak: 3, cyclesNeeded: 3, ageOk: false }), false, "too young");
+    assert.equal(seatFaded({ yieldPctPerDay: 0.4, floorPct: 0, fadeFactor: 0.5, streak: 3, cyclesNeeded: 3, ageOk: true }), false, "no floor, no fade");
     const e = seatRankingEnv({});
     assert.deepEqual([e.minYieldPct, e.rotateFactor, e.minAgeMin, e.rankTop, e.reentryMin], [1, 2, 60, 8, 60]);
     assert.equal(seatRankingEnv({ METEORA_STOCK_MIN_SEAT_YIELD_PCT: "2.5", METEORA_STOCK_RANK_TOP: "5" }).minYieldPct, 2.5);

@@ -344,7 +344,7 @@ async function main(): Promise<void> {
     const o = obs({});
     const base = policy.seatEarnings(o, x, 20, 10, false)!;
     assert.ok(base.poolFeesPerDayUsd > 0);
-    const flow = { asOf: T0, quoteSymbol: "USDC", swaps15m: 4, volume15mQuote: 1000, fees15mQuote: 1, ours15mQuote: 1, swaps60m: 12, volume60mQuote: 4000, fees60mQuote: 4, ours60mQuote: 4, swaps240m: 40, fees240mQuote: 16, coveredMin: 240, feesPerDayQuote240m: null, feesPerDayQuote60m: 96, feesPerDayQuote15m: 96, lastPrice: null, lastSwapAt: T0, largest15m: null };
+    const flow = { asOf: T0, quoteSymbol: "USDC", swaps15m: 4, volume15mQuote: 1000, fees15mQuote: 1, ours15mQuote: 1, swaps60m: 12, volume60mQuote: 4000, fees60mQuote: 4, ours60mQuote: 4, swaps240m: 40, fees240mQuote: 16, coveredMin: 240, feesPerDayQuote240m: null, range60mBins: 4, range240mBins: 9, feesPerDayQuote60m: 96, feesPerDayQuote15m: 96, lastPrice: null, lastSwapAt: T0, largest15m: null };
     const withFlow = policy.seatEarnings(obs({ screen: { ...o.screen!, flow } }), x, 20, 10, false)!;
     // 96 USDC a day at 0.01 SOL per USDC and the fixture's SOL price
     near(withFlow.poolFeesPerDayUsd, 96 * 0.01 * o.snapshot.solPriceUsd!, 1e-9);

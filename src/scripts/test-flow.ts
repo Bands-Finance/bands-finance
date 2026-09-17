@@ -93,6 +93,7 @@ async function main() {
     near(w15.ours.feesQuote, 0.02 + 0.06 * 0.4, 1e-12, "the 12-minute swap crossed 10 bins, 4 inside the band");
     assert.equal(w15.ours.swaps, 2);
     assert.equal(w15.largest!.volumeQuote, 30);
+    assert.deepEqual([w15.binLow, w15.binHigh], [1500, 1541], "the bins the window's swaps touched");
     const p = flowPoolOf(NVDAX_SOL, swaps, T);
     assert.equal(p.windows["1m"].swaps, 1);
     assert.equal(p.windows["60m"].swaps, 4, "the 70-minute swap is outside the hour");
@@ -148,6 +149,8 @@ async function main() {
     near(f.fees240mQuote, 0.07, 1e-12);
     const read = flowContextOf(flowPoolOf(NVDAX_SOL, [s(1, 10, 0.02), s(2, 5, 0.01), s(30, 20, 0.04)], T, T - 2 * 3600_000));
     assert.equal(read.coveredMin, 120);
+    assert.equal(read.range60mBins, 1, "1540 to 1541");
+    assert.equal(flowContextOf(flowPoolOf(NVDAX_SOL, [], T, T - 2 * 3600_000)).range60mBins, null, "no swaps: no travel to report");
     near(read.feesPerDayQuote240m!, 0.07 * 12, 1e-9);
     assert.deepEqual(f.largest15m, { volumeQuote: 10, dir: "buy" });
     assert.equal(f.quoteSymbol, "SOL");

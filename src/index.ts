@@ -67,7 +67,7 @@ import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/wat
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
 import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
 import { flowByPool, flowContextLine, readFlowFile, type FlowContext, type PoolMeta as FlowPoolMeta } from "./scouts/flow";
-import { consolidation, rankSeats, seatLine, seatRankingEnv, seatYield, sittingOut, swapDepthWithin, weakSeatRotation, type HeldSeat, type RankedSeat, type SeatRotation } from "./screener/seatYield";
+import { consolidation, rankSeats, seatFaded, seatLine, seatRankingEnv, seatYield, sittingOut, swapDepthWithin, weakSeatRotation, type HeldSeat, type RankedSeat, type SeatRotation } from "./screener/seatYield";
 import { pinRotateMinAgeMin, pinSeatAction, rotationCandidate, type RotationBand } from "./engine/rotation";
 import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
 import { fetchPoolHistory, historyFresh, historyPhrase, historyRefusal, memeHistoryEnv, type HistoryRecord } from "./screener/memeHistory";
@@ -135,6 +135,10 @@ interface App {
   /** money moved this pass (an open or a close ran): the other pools' exposure was read before it, so no seat grows on it */
   /** exposure each pool added (opened) or freed (closed) so far this pass, SOL: the pools decided after it see the true book, not the cycle-start read */
   exposureDelta: Map<string, number>;
+  /** the pools the scout is asked to watch this cycle (held, picked, ranked), written once after observation */
+  flowWatch: Map<string, FlowPoolMeta>;
+  /** consecutive cycles a held seat's own measured yield read under the fade line */
+  fadeStreak: Map<string, number>;
   movedThisCycle: boolean;
   /** base mints whose wallet balance has been attributed to a pool's hedge this cycle */
   mintAttributed: Set<string>;
@@ -575,7 +579,7 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
   if (unread.length) {
     console.log(`[cycle ${app.cycle}] seat yield: the scout has not read ${unread.map((h) => h.label).join(", ")} yet; no rotation this cycle`);
     app.seatRanking = { ranked: worth, held: [], at: now };
-    writeFlowWatch(watch, now);
+    for (const w of watch) app.flowWatch.set(w.address, w);
     return;
   }
   const rot = weakSeatRotation(held, worth, rEnv, now);
@@ -583,7 +587,7 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
     app.seatRotation = rot;
     console.log(`[cycle ${app.cycle}] seat yield: rotating out ${rot.label} (${rot.pool.slice(0, 6)}): ${rot.reason}`);
   }
-  writeFlowWatch(watch, now);
+  for (const w of watch) app.flowWatch.set(w.address, w);
 }
 
 /** The candidates go to the scout (DATA_DIR/flow-watch.json), so the next ranking has their reading too. */
@@ -1252,9 +1256,10 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   };
   const screen = screenContext(app, o.address, state, snapshot);
   // the flow scout's last hour for this pool, when its file is fresh (src/scouts/flow.ts)
+  // the scout's reading, once it covers the pool (a backfill in progress is not a reading)
   const flow = app.flow.get(o.address) ?? null;
-  if (screen && flow) screen.flow = flow;
-  if (flow) console.log(`[cycle ${app.cycle} ${snapshot.label}] ${flowContextLine(flow)}`);
+  if (screen && flow && flow.coveredMin !== null) screen.flow = flow;
+  if (flow) console.log(`[cycle ${app.cycle} ${snapshot.label}] ${flowContextLine(flow)}${flow.coveredMin === null ? " (backfilling: not a reading yet)" : ""}`);
   const isPair = !!snapshot.pair;
 
   // The engine's view of this pool: breakers, bench, regime, knife, collects.
@@ -1740,6 +1745,7 @@ async function runIteration(app: App): Promise<void> {
   app.mintAttributed.clear();
   app.movedThisCycle = false;
   app.exposureDelta.clear();
+  app.flowWatch.clear();
   await refreshPerpMarks(app, pools);
 
   const solPriceUsd = solPriceOf(app);
@@ -1785,6 +1791,52 @@ async function runIteration(app: App): Promise<void> {
   // them the best seat by yield goes first, so the room a closed seat left grows the seat that earns most.
   const heldYield = new Map((app.seatRanking?.held ?? []).map((h) => [h.address, h.yieldPctPerDay] as const));
   observed.sort((a, b) => b.positions.length - a.positions.length || (heldYield.get(b.address) ?? -1) - (heldYield.get(a.address) ?? -1));
+  // Every pool worked this cycle goes to the scout (held, picked, or ranked): the next cycle decides on
+  // its measured flow. Written once, after observation, so the picks are read before they are seated.
+  for (const o of observed) {
+    try {
+      const q = quoteOf(o.snapshot);
+      const band = o.positions.length ? { lowerBinId: Math.min(...o.positions.map((p) => p.lowerBinId)), upperBinId: Math.max(...o.positions.map((p) => p.upperBinId)) } : null;
+      app.flowWatch.set(o.address, { address: o.address, label: o.snapshot.label, quoteSide: q.side, quoteSymbol: q.symbol, xDecimals: o.snapshot.tokenX.decimals, yDecimals: o.snapshot.tokenY.decimals, band });
+    } catch {
+      /* a pool the quote view cannot price is not watched */
+    }
+  }
+  writeFlowWatch([...app.flowWatch.values()], now);
+  // FADE (src/screener/seatYield.ts): a held seat is judged on its own pool's measured flow. Its yield
+  // (the scout's four-hour fee pace x our share of the band's bins / the seat) under half the floor for
+  // three cycles running, on a band old enough, and it comes off: the flow it was seated for is gone.
+  if (!app.rotateOut) {
+    const pEnvNow = policyEnv();
+    const rEnvNow = seatRankingEnv();
+    const fadeFactor = Math.max(0, Number(process.env.SEAT_FADE_FACTOR ?? "0.5") || 0.5);
+    const fadeCycles = Math.max(1, Math.floor(Number(process.env.SEAT_FADE_CYCLES ?? "3") || 3));
+    for (const o of observed) {
+      if (!o.positions.length) continue;
+      const flow = app.flow.get(o.address);
+      if (!flow || flow.coveredMin === null || flow.feesPerDayQuote240m === null) continue;
+      try {
+        const q = quoteOf(o.snapshot);
+        const seatSol = o.positions.reduce((t, p) => t + p.valueInSol, 0);
+        const lower = Math.min(...o.positions.map((p) => p.lowerBinId));
+        const upper = Math.max(...o.positions.map((p) => p.upperBinId));
+        const y = seatYield({ seatQuote: seatSol / q.priceInSol, binsEachSide: Math.max(0, Math.floor((upper - lower) / 2)), activeBinId: o.snapshot.activeBinId, bins: o.snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote: flow.feesPerDayQuote240m });
+        const line = fadeFactor * pEnvNow.minSeatYieldPct;
+        const streak = y.yieldPctPerDay < line ? (app.fadeStreak.get(o.address) ?? 0) + 1 : 0;
+        app.fadeStreak.set(o.address, streak);
+        const openedAt = state.lastMoveByPool?.[o.address] ?? null;
+        const ageOk = openedAt === null || now - openedAt >= rEnvNow.minAgeMin * 60_000;
+        console.log(`[cycle ${app.cycle} ${o.snapshot.label}] seat check: ${y.yieldPctPerDay.toFixed(2)}%/day on the ${seatSol.toFixed(2)} SOL seat from the pool's last ${flow.coveredMin} min (${flow.feesPerDayQuote240m.toFixed(3)} ${q.symbol}/day pool pace x ${y.sharePct.toFixed(1)}% of the band's bins)${streak ? `; under the fade line ${line.toFixed(2)}% for ${streak} cycle(s)` : ""}`);
+        if (seatFaded({ yieldPctPerDay: y.yieldPctPerDay, floorPct: pEnvNow.minSeatYieldPct, fadeFactor, streak, cyclesNeeded: fadeCycles, ageOk })) {
+          app.rotateOut = { pool: o.address, label: o.snapshot.label, reason: `its own flow faded: the seat reads ${y.yieldPctPerDay.toFixed(2)}%/day from the pool's last ${flow.coveredMin} min, under ${line.toFixed(2)}% for ${streak} cycles` };
+          console.log(`[cycle ${app.cycle}] seat check: rotating out ${o.snapshot.label} (${o.address.slice(0, 6)}): ${app.rotateOut.reason}`);
+          break;
+        }
+      } catch {
+        /* unpriced: no judgement */
+      }
+    }
+  }
   // CONSOLIDATION (src/screener/seatYield.ts): now that the seats' sizes are read, a weak seat makes
   // way for the best held one when that one could hold more; the policy's grow rule moves the money next cycle.
   if (!app.rotateOut && app.seatRanking) {
@@ -1896,6 +1948,8 @@ async function main(): Promise<void> {
     hedgedThisCycle: new Map(),
     movedThisCycle: false,
     exposureDelta: new Map(),
+    flowWatch: new Map(),
+    fadeStreak: new Map(),
     mintAttributed: new Set(),
     pairVenue,
     pinned: null,
