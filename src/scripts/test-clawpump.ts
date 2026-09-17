@@ -29,7 +29,7 @@ const fake = (handler: (url: string, init?: RequestInit) => Response) => {
   return { f, calls };
 };
 const goodToken = { TOKEN_NAME: "Mr Bands", TOKEN_SYMBOL: "bands", TOKEN_DESCRIPTION: "An autonomous market maker for Meteora that publishes every decision.", TOKEN_IMAGE_URL: "https://bands.finance/logo.png", TOKEN_DEV_BUY_SOL: "0" };
-const req = (): LaunchRequest => ({ agentId: "1ae4e084-8b35-4b24-943d-7ea453e400c6", agentName: "Mr Bands", walletAddress: "9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW", token: tokenSpec(goodToken) });
+const req = (): LaunchRequest => ({ agentId: "00000000-0000-4000-8000-000000000001", agentName: "Mr Bands", walletAddress: "9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW", token: tokenSpec(goodToken) });
 
 async function main(): Promise<void> {
   console.log("env and the token spec");
@@ -91,10 +91,10 @@ async function main(): Promise<void> {
   await test("earnings is public (no key needed) and parses the documented fields", async () => {
     const { f, calls } = fake(() => json(200, { totalEarned: 1.073, totalSent: 1.073, totalPending: 0, totalHeld: 0, recentDistributions: [{ x: 1 }] }));
     const c = new ClawPumpClient({ fetch: f });
-    const e = await c.earnings("1ae4e084-8b35-4b24-943d-7ea453e400c6");
+    const e = await c.earnings("00000000-0000-4000-8000-000000000001");
     assert.equal(e.totalEarned, 1.073);
     assert.equal(e.recentDistributions.length, 1);
-    assert.equal(calls[0].url, "https://clawpump.tech/api/agents/1ae4e084-8b35-4b24-943d-7ea453e400c6/earnings");
+    assert.equal(calls[0].url, "https://clawpump.tech/api/agents/00000000-0000-4000-8000-000000000001/earnings");
     assert.equal((calls[0].init?.headers as Record<string, string>).authorization, undefined, "no bearer on a public read");
   });
   await test("keyed reads refuse without a key, and send the bearer with one", async () => {
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
     const sent = JSON.parse(String(calls[0].init?.body));
     assert.equal(sent.preflight, true);
     assert.equal(sent.symbol, "BANDS");
-    assert.equal(sent.agentId, "1ae4e084-8b35-4b24-943d-7ea453e400c6");
+    assert.equal(sent.agentId, "00000000-0000-4000-8000-000000000001");
   });
   await test("launchComplete carries the proof and returns the mint; an answer without a mint throws", async () => {
     const { f, calls } = fake(() => json(200, { status: "launched", mintAddress: "MINT111", txHash: "tx1", pumpUrl: "https://pump.fun/coin/MINT111", idempotent: true, meta: { requestId: "req-3" } }));
