@@ -133,6 +133,8 @@ interface App {
   /** perp symbol -> contracts the pools decided so far this cycle target (live: they share one Backpack position) */
   hedgedThisCycle: Map<string, number>;
   /** money moved this pass (an open or a close ran): the other pools' exposure was read before it, so no seat grows on it */
+  /** exposure each pool added (opened) or freed (closed) so far this pass, SOL: the pools decided after it see the true book, not the cycle-start read */
+  exposureDelta: Map<string, number>;
   movedThisCycle: boolean;
   /** base mints whose wallet balance has been attributed to a pool's hedge this cycle */
   mintAttributed: Set<string>;
@@ -1204,11 +1206,15 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   trackOutOfRange(state, positions, now);
   trackFeesPending(state, positions, snapshot, now, cfg.collectFloorSol);
   const others = all.filter((x) => x !== o);
+  // The other pools' bands as observed at the start of the cycle, plus what the pools decided before
+  // this one opened or closed since (app.exposureDelta): with one band allowed the whole stake, two
+  // opens in a pass sized from the cycle-start read would each take it.
+  const movedSol = [...app.exposureDelta].filter(([a]) => a !== o.address).reduce((t, [, d]) => t + d, 0);
   const portfolio = {
     activePools: all.map((x) => x.snapshot.label),
     poolsWithBands: others.filter((x) => x.positions.length > 0).length,
     maxActivePools: config.maxActivePools,
-    otherExposureSol: others.reduce((s, x) => s + x.positions.reduce((t, p) => t + p.valueInSol, 0), 0),
+    otherExposureSol: Math.max(0, others.reduce((s, x) => s + x.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + movedSol),
   };
   const screen = screenContext(app, o.address, state, snapshot);
   // the flow scout's last hour for this pool, when its file is fresh (src/scouts/flow.ts)
@@ -1403,7 +1409,11 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     const quoteLeg = quoteIsSol || typeof row.quoteDelta !== "number" ? "" : ` (${row.quoteDelta.toFixed(4)} ${q.symbol})`;
     console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)}${quoteLeg} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
   }
-  if (execution.ok && (execution.opened || execution.closed)) app.movedThisCycle = true;
+  if (execution.ok && (execution.opened || execution.closed)) {
+    app.movedThisCycle = true;
+    const closedSol = execution.closed ? (positions.find((p) => p.address === execution.closed)?.valueInSol ?? 0) : 0;
+    app.exposureDelta.set(o.address, (app.exposureDelta.get(o.address) ?? 0) + (execution.opened?.entryValueSol ?? 0) - closedSol);
+  }
   updateState(state, execution, positions, snapshot, (screen?.launch?.ok || screen?.pair?.ok) && !noLaneExits ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null);
 
   // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
@@ -1694,6 +1704,7 @@ async function runIteration(app: App): Promise<void> {
   app.hedgedThisCycle.clear();
   app.mintAttributed.clear();
   app.movedThisCycle = false;
+  app.exposureDelta.clear();
   await refreshPerpMarks(app, pools);
 
   const solPriceUsd = solPriceOf(app);
@@ -1849,6 +1860,7 @@ async function main(): Promise<void> {
     perpMarks: new Map(),
     hedgedThisCycle: new Map(),
     movedThisCycle: false,
+    exposureDelta: new Map(),
     mintAttributed: new Set(),
     pairVenue,
     pinned: null,
