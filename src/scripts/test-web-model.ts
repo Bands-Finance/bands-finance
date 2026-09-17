@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { actionsOf, bookOf, recordOf } from "../../web/src/model";
 import { bookCycle, completeCycles, cycleEquity, cyclesOf, equitySeriesOf, summarize } from "../../web/src/derive";
 import type { EquityHistoryPoint, JournalEntry, Position } from "../../web/src/types";
+import { dayWord, narrativeOf, num, sinceWord } from "../../web/src/narrative";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -283,6 +284,10 @@ async function main() {
     ], "newest first; the vetoed close and every hold are absent");
     assert.equal(rows[0].forced, true);
     assert.equal(rows[0].what, "18 SOL back, −2 SOL vs entry");
+    assert.equal(rows[0].sentence, "The guards closed his band in AAA/SOL: 18 SOL back, −2 SOL vs entry.");
+    assert.equal(rows[1].sentence, "Opened a band in CCC/USDC with 500 USDC + 5 CCC across 21 bins, both sides of the price.");
+    assert.equal(rows[2].sentence, "Claimed 0.05 SOL of fees from AAA/SOL.");
+    assert.equal(rows[4].sentence, "Closed the band in BBB/USDC: 50 SOL back, +0 SOL vs entry.");
     assert.equal(rows[0].resultSol, -2);
     assert.equal(rows[1].what, "500 USDC + 5 CCC across 21 bins, both sides of the price");
     assert.equal(rows[2].what, "0.05 SOL of fees to the wallet");
@@ -290,6 +295,53 @@ async function main() {
     assert.equal(rows[4].what, "50 SOL back, +0 SOL vs entry");
     assert.equal(rows[0].href, null, "no signature in paper");
     assert.equal(actionsOf(fixture(), 1).length, 1);
+  });
+
+  console.log("the note");
+  await test("num, dayWord, sinceWord: numbers and days the way a person says them", () => {
+    assert.deepEqual([num(35.01), num(246.9), num(6.42), num(0.4321), num(-12.04), num(10.0)], ["35", "247", "6.4", "0.43", "12", "10"]);
+    const now = Date.parse("2026-09-17T03:00:00Z"); // a Thursday, UTC
+    assert.equal(dayWord("2026-09-17", now), "today");
+    assert.equal(dayWord("2026-09-16", now), "yesterday");
+    assert.equal(dayWord("2026-09-15", now), "Tuesday");
+    assert.equal(dayWord("2026-09-14", now), "Monday");
+    assert.equal(dayWord("2026-09-11", now), "Friday");
+    assert.equal(dayWord("2026-09-10", now), "Sep 10");
+    assert.equal(sinceWord(Date.parse("2026-09-14T22:42:00Z"), now), "since Monday");
+    assert.equal(sinceWord(now - 3600e3, now), "today");
+  });
+
+  await test("narrativeOf: a headline and a short honest story from the record; the worst day named, today reported, the mode said plainly", () => {
+    const now = Date.parse("2026-09-17T03:00:00Z");
+    const status = { mode: "paper", lastTs: now, ageMs: 0, sentence: "s", short: "paper" } as const;
+    const rec = {
+      startTs: Date.parse("2026-09-14T22:42:00Z"),
+      startEquity: 246.9,
+      equityNow: 211.9,
+      net: -35.0,
+      netPct: -14.2,
+      feesRealized: 21.85,
+      feesUnclaimed: 0.82,
+      days: [
+        { date: "2026-09-14", fees: 1.24, open: 246.9, close: 244.88, moves: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 },
+        { date: "2026-09-15", fees: 17.22, open: 245.14, close: 214.76, moves: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 },
+        { date: "2026-09-16", fees: 1.31, open: 214.77, close: 211.6, moves: 10, vetoed: 0, overrides: 6, holds: 374, decisions: 400 },
+        { date: "2026-09-17", fees: 2.07, open: 211.65, close: 211.9, moves: 35, vetoed: 0, overrides: 3, holds: 172, decisions: 200 },
+      ],
+    } as unknown as Parameters<typeof narrativeOf>[0]["record"];
+    const n = narrativeOf({ record: rec, status: status as never, agentName: "Mr Bands", now });
+    assert.equal(n.headline, "Mr Bands is down 35 SOL since Monday.");
+    assert.deepEqual(n.story, [
+      "He has earned 22.7 SOL in fees over 2 days, about 10.4 a day.",
+      "Tuesday cost 30.4 SOL: his bands earned 17.2 in fees and lost 47.6 to the price moving through them.",
+      "Today he has banked 2.1 SOL of fees and the book is up 0.25.",
+      "This is paper trading: real pools at live prices, a pretend wallet, nothing sent to Solana.",
+    ]);
+    const flat = narrativeOf({ record: { ...(rec as object), net: 0.01 } as never, status: status as never, agentName: "Mr Bands", now });
+    assert.equal(flat.headline, "Mr Bands is about flat since Monday.");
+    const none = narrativeOf({ record: null, status: { ...status, mode: "live" } as never, agentName: "Mr Bands", now });
+    assert.equal(none.headline, "Reading the journal.");
+    assert.match(none.story[0], /his own wallet on Solana/);
   });
 
   console.log(`\n${passed} web model tests passed`);

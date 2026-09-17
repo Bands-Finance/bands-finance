@@ -645,6 +645,8 @@ export interface ActionRow {
   headline: string;
   /** the move in numbers: what went in, what came back, what was banked */
   what: string;
+  /** the move as one plain sentence: "Claimed 0.03 SOL of fees from MRVL/SOL." */
+  sentence: string;
   /** the money the move realised, in SOL, when the journal carries it: fees banked, a close's result vs entry */
   resultSol: number | null;
   /** the guards forced it (a stop, a breaker) */
@@ -694,6 +696,15 @@ export function actionsOf(newestFirst: JournalEntry[], limit = 200): ActionRow[]
       what = `${r4(held)} SOL out${vs !== null ? ` (${vs >= 0 ? "+" : "−"}${r4(Math.abs(vs))} vs entry)` : ""}${e.decision.open ? `, back in as ${openWords(e.decision.open)}` : ""}`;
       resultSol = vs;
     }
+    const pool = e.pool.label;
+    const sentence =
+      a === "OPEN_POSITION"
+        ? `Opened a band in ${pool}${what ? ` with ${what}` : ""}.`
+        : a === "CLAIM_FEES"
+          ? `Claimed ${r4(fees)} SOL of fees from ${pool}.`
+          : a === "CLOSE_POSITION"
+            ? `${v === "override" ? "The guards closed his band" : "Closed the band"} in ${pool}: ${what}.`
+            : `Moved the band in ${pool}: ${what}.`;
     const sig = e.execution.txs.find((t) => t.signature)?.signature;
     out.push({
       id: e.id,
@@ -704,6 +715,7 @@ export function actionsOf(newestFirst: JournalEntry[], limit = 200): ActionRow[]
       poolAddress: e.pool.address,
       headline: e.headline || e.decision.headline,
       what,
+      sentence,
       resultSol,
       forced: v === "override",
       href: sig ? `https://solscan.io/tx/${sig}` : null,
