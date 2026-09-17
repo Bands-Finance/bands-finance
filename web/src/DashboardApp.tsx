@@ -3,8 +3,8 @@ import { isDemoJournal } from "./api";
 import { groupAgents } from "./derive";
 import { bookOf, madePairsOf, recordOf, statusOf } from "./model";
 import { useJournalFeed } from "./hooks/useJournalFeed";
-import { DashFooter, DashStats, DashTop } from "./components/Dash";
-import { ModeBanner } from "./components/ModeBanner";
+import { useScrollFx } from "./hooks/useScrollFx";
+import { DashAtmosphere, DashFooter, DashHero, DashNav, DashSection } from "./components/Dash";
 import { Record } from "./components/Record";
 import { Book } from "./components/Book";
 import { MadePairs } from "./components/MadePairs";
@@ -14,10 +14,11 @@ import { Guards } from "./components/Guards";
 /**
  * The dashboard site: just Mr Bands at work. The same journal, the same model (src/model.ts) and the
  * same Record, Book and Desk as the platform, with the platform's navigation, hero, screener and
- * account pages left out. What is on this page: the numbers, the honest mode sentence, the money,
- * the open bands, the pools he made (when he made any), the desk feed, and the guards.
+ * account pages left out. One thing per screen: the number first, then the record, the open bands,
+ * the pools he made (when he made any), the desk feed, and the guards.
  */
 export default function DashboardApp() {
+  useScrollFx();
   const { entries, screen, limits, equity, error, now, embedded } = useJournalFeed();
 
   const agents = useMemo(() => (entries ? groupAgents(entries) : []), [entries]);
@@ -30,6 +31,18 @@ export default function DashboardApp() {
   const madePairs = useMemo(() => madePairsOf(agentEntries), [agentEntries]);
   const agentName = selected?.name ?? "Mr Bands";
   const walletAddress = agentEntries[0]?.wallet.address ?? null;
+  const solPriceUsd = screen?.solPriceUsd ?? null;
+
+  // The sections mount once the journal has loaded, so a deep link (#record, #desk) has nothing to
+  // scroll to on first paint: honour it when the content appears.
+  const loaded = entries !== null;
+  useEffect(() => {
+    if (!loaded) return;
+    const hash = window.location.hash;
+    if (!hash || hash === "#top") return;
+    const el = document.querySelector(hash);
+    if (el) window.requestAnimationFrame(() => el.scrollIntoView({ block: "start" }));
+  }, [loaded]);
 
   useEffect(() => {
     const net = record ? `${record.net >= 0 ? "+" : "−"}${Math.abs(record.net).toFixed(2)} SOL` : null;
@@ -40,10 +53,10 @@ export default function DashboardApp() {
 
   return (
     <div className="dash">
-      <DashTop status={status} walletAddress={walletAddress} agentName={agentName} />
+      <DashAtmosphere />
+      <DashNav status={status} agentName={agentName} />
+      <DashHero record={record} summary={selected} solPriceUsd={solPriceUsd} status={status} walletAddress={walletAddress} agentName={agentName} />
       <main className="dash__main">
-        <DashStats record={record} summary={selected} solPriceUsd={screen?.solPriceUsd ?? null} status={status} />
-        {entries && <ModeBanner status={status} />}
         {error && !entries && (
           <div className="error">
             Could not load the journal: <code>{error}</code>.
@@ -51,11 +64,19 @@ export default function DashboardApp() {
         )}
         {entries && (
           <>
-            <Record record={record} solPriceUsd={screen?.solPriceUsd ?? null} status={status} agentName={agentName} />
-            <Book book={book} status={status} agentName={agentName} />
-            {madePairs.length > 0 && <MadePairs pairs={madePairs} status={status} agentName={agentName} />}
-            <Desk id="desk" entries={agentEntries} status={status} limits={limits} screen={screen} agentName={agentName} />
-            <Guards limits={limits} record={record} />
+            <DashSection id="record" kicker="the record">
+              <Record record={record} solPriceUsd={solPriceUsd} status={status} agentName={agentName} />
+            </DashSection>
+            <DashSection id="bands" kicker="on the book">
+              <Book book={book} status={status} agentName={agentName} />
+              {madePairs.length > 0 && <MadePairs pairs={madePairs} status={status} agentName={agentName} />}
+            </DashSection>
+            <DashSection id="desk" kicker="the desk">
+              <Desk id="desk-feed" entries={agentEntries} status={status} limits={limits} screen={screen} agentName={agentName} />
+            </DashSection>
+            <DashSection id="guards-sec" kicker="the rules">
+              <Guards limits={limits} record={record} />
+            </DashSection>
           </>
         )}
       </main>
