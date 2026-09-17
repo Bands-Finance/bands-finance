@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { binShare, decodeSwapEvents, flowPoolOf, poolsFromLatest, swapOf, trimSwaps, windowStats, type FlowSwap, type PoolMeta } from "../scouts/flow";
+import { binShare, decodeSwapEvents, flowByPool, flowContextOf, flowPoolOf, poolsFromLatest, swapOf, trimSwaps, windowStats, type FlowSwap, type PoolMeta } from "../scouts/flow";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -122,6 +122,25 @@ async function main() {
     assert.deepEqual([a.quoteSide, a.quoteSymbol, a.xDecimals, a.yDecimals], ["Y", "SOL", 8, 9]);
     assert.equal(pools.find((p) => p.address === "B")!.band, null);
     assert.deepEqual(poolsFromLatest(null), []);
+  });
+
+  console.log("what the desk reads");
+  await test("flowByPool: the file's pools by address only while the file is fresh; flowContextOf carries the two windows, the pace and the largest print", () => {
+    const T = Date.parse("2026-09-17T12:00:00Z");
+    const s = (min: number, vol: number, fee: number): FlowSwap => ({ sig: `s${min}`, slot: 1, ts: T - min * 60_000, pool: NVDAX_SOL.address, from: "f", dir: "buy", volumeQuote: vol, amountBase: vol / 2, feeQuote: fee, price: 2, startBinId: 1540, endBinId: 1541, feeBps: 20, ourBinShare: 1 });
+    const pool = flowPoolOf(NVDAX_SOL, [s(1, 10, 0.02), s(2, 5, 0.01), s(30, 20, 0.04)], T);
+    const file = { generatedAt: new Date(T - 60_000).toISOString(), pollSec: 5, pools: [pool] };
+    const fresh = flowByPool(file, T);
+    const f = fresh.get(NVDAX_SOL.address)!;
+    assert.deepEqual([f.swaps15m, f.swaps60m], [2, 3]);
+    near(f.fees15mQuote, 0.03, 1e-12);
+    near(f.ours60mQuote, 0.07, 1e-12);
+    near(f.feesPerDayQuote60m!, 0.07 * 24, 1e-12);
+    assert.deepEqual(f.largest15m, { volumeQuote: 10, dir: "buy" });
+    assert.equal(f.quoteSymbol, "SOL");
+    assert.equal(flowByPool(file, T + 4 * 60_000).size, 0, "four minutes old: stale, the desk falls back to the 24h figures");
+    assert.equal(flowByPool(null, T).size, 0);
+    assert.equal(flowContextOf(pool).lastSwapAt, T - 60_000);
   });
 
   console.log(`\n${passed} flow scout tests passed`);

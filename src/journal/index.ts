@@ -13,6 +13,7 @@ import type { ExecutionResult } from "../executor";
 import { quoteOf, SOL_MINT, type BinRow, type PoolSnapshot, type PositionSnapshot, type QuoteSymbol } from "../tools/dlmm";
 import type { PoolAnalytics } from "../tools/lpagent";
 import type { VenueId } from "../venues/types";
+import type { FlowContext } from "../scouts/flow";
 
 export interface JournalPool {
   address: string;
@@ -85,7 +86,7 @@ export interface JournalEntry {
   emergency: boolean;
   execution: ExecutionResult;
   headline: string;
-  screen?: { rank: number; rankedPools: number; score: number; feeToTvl24hPct: number | null } | null;
+  screen?: { rank: number; rankedPools: number; score: number; feeToTvl24hPct: number | null; flow?: FlowContext | null } | null;
   /** the engine's view for this pool this cycle (src/engine); absent in entries written before it existed */
   engine?: JournalEngine;
   /** stock pools: the hedge plan for this pool after execution (src/engine/hedgeDesk.ts); absent elsewhere */

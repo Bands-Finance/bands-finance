@@ -340,6 +340,19 @@ async function main(): Promise<void> {
     assert.match(wait.decision.reasoning, /5 bins above straddle .* Out of range 100s against the engine minimum 600s/);
     voice(wait.decision);
   });
+  await test("seatEarnings: the flow scout's last hour sets the pool's fee pace when it is there; the 24h figure otherwise", () => {
+    const o = obs({});
+    const base = policy.seatEarnings(o, x, 20, 10, false)!;
+    assert.ok(base.poolFeesPerDayUsd > 0);
+    const flow = { asOf: T0, quoteSymbol: "USDC", swaps15m: 4, volume15mQuote: 1000, fees15mQuote: 1, ours15mQuote: 1, swaps60m: 12, volume60mQuote: 4000, fees60mQuote: 4, ours60mQuote: 4, feesPerDayQuote60m: 96, feesPerDayQuote15m: 96, lastPrice: null, lastSwapAt: T0, largest15m: null };
+    const withFlow = policy.seatEarnings(obs({ screen: { ...o.screen!, flow } }), x, 20, 10, false)!;
+    // 96 USDC a day at 0.01 SOL per USDC and the fixture's SOL price
+    near(withFlow.poolFeesPerDayUsd, 96 * 0.01 * o.snapshot.solPriceUsd!, 1e-9);
+    assert.notEqual(withFlow.poolFeesPerDayUsd, base.poolFeesPerDayUsd);
+    const quiet = policy.seatEarnings(obs({ screen: { ...o.screen!, flow: { ...flow, feesPerDayQuote60m: null } } }), x, 20, 10, false)!;
+    near(quiet.poolFeesPerDayUsd, base.poolFeesPerDayUsd, 1e-9, "under three swaps in the hour the 24h figure stands");
+  });
+
   await test("half a straddle: the band holds only its USDC half while the wallet holds the SPYx half: REBALANCE that re-lays both without a swap; with no SPYx in the wallet the in-range hold stands", () => {
     const inr = straddleAt(ACTIVE + 5);
     assert.ok(inr.pos.amountX > 0.5, `the fixture's band holds ${inr.pos.amountX} SPYx`);

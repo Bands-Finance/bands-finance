@@ -12,6 +12,8 @@
  *
  * Everything here is pure except decodeEvents (which needs anchor's parser); the loop injects the chain.
  */
+import fs from "node:fs";
+import path from "node:path";
 import bs58 from "bs58";
 import { BorshCoder } from "@coral-xyz/anchor";
 import { IDL, LBCLMM_PROGRAM_IDS } from "@meteora-ag/dlmm";
@@ -330,4 +332,78 @@ export function poolsFromLatest(latest: unknown): PoolMeta[] {
     });
   }
   return [...out.values()];
+}
+
+/* ---------- what the desk reads ---------- */
+
+/** The slice of a pool's flow the desk and the journal carry: fresh, small, in quote units. */
+export interface FlowContext {
+  asOf: number;
+  quoteSymbol: string;
+  swaps15m: number;
+  volume15mQuote: number;
+  fees15mQuote: number;
+  /** fees in the bins our band covers (the whole bins' fees, not yet our share of them) */
+  ours15mQuote: number;
+  swaps60m: number;
+  volume60mQuote: number;
+  fees60mQuote: number;
+  ours60mQuote: number;
+  feesPerDayQuote60m: number | null;
+  feesPerDayQuote15m: number | null;
+  lastPrice: number | null;
+  lastSwapAt: number | null;
+  largest15m: { volumeQuote: number; dir: "buy" | "sell" } | null;
+}
+
+/** A pool's file entry as the desk's context. Pure. */
+export function flowContextOf(p: FlowPool): FlowContext {
+  const w15 = p.windows["15m"];
+  const w60 = p.windows["60m"];
+  return {
+    asOf: p.asOf,
+    quoteSymbol: p.quoteSymbol,
+    swaps15m: w15.swaps,
+    volume15mQuote: w15.volumeQuote,
+    fees15mQuote: w15.feesQuote,
+    ours15mQuote: w15.ours.feesQuote,
+    swaps60m: w60.swaps,
+    volume60mQuote: w60.volumeQuote,
+    fees60mQuote: w60.feesQuote,
+    ours60mQuote: w60.ours.feesQuote,
+    feesPerDayQuote60m: p.feesPerDayQuote60m,
+    feesPerDayQuote15m: p.feesPerDayQuote15m,
+    lastPrice: p.lastPrice,
+    lastSwapAt: p.lastSwapAt,
+    largest15m: w15.largest ? { volumeQuote: w15.largest.volumeQuote, dir: w15.largest.dir } : null,
+  };
+}
+
+export const FLOW_MAX_AGE_MS = 3 * 60_000;
+
+/** PURE. The file's pools by address, only when the file is fresh (the scout may be down; stale flow is worse than none). */
+export function flowByPool(file: FlowFile | null, now: number, maxAgeMs = FLOW_MAX_AGE_MS): Map<string, FlowContext> {
+  const out = new Map<string, FlowContext>();
+  if (!file || !Array.isArray(file.pools)) return out;
+  const at = Date.parse(file.generatedAt);
+  if (!Number.isFinite(at) || now - at > maxAgeMs) return out;
+  for (const p of file.pools) out.set(p.address, flowContextOf(p));
+  return out;
+}
+
+/** DATA_DIR/flow.json, or null when it is missing or unreadable. */
+export function readFlowFile(dataDir: string): FlowFile | null {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dataDir, FLOW_FILE), "utf8")) as FlowFile;
+  } catch {
+    return null;
+  }
+}
+
+/** One line for the cycle log. */
+export function flowContextLine(f: FlowContext): string {
+  const q = f.quoteSymbol;
+  const d = q === "SOL" ? 3 : 1;
+  const age = Math.round((Date.now() - f.asOf) / 1000);
+  return `flow (${age}s old): 15m ${f.swaps15m} swaps, ${f.volume15mQuote.toFixed(d)} ${q}, fees ${f.fees15mQuote.toFixed(d + 1)} (${f.ours15mQuote.toFixed(d + 1)} in our bins) | 60m ${f.swaps60m} swaps, fees ${f.fees60mQuote.toFixed(d + 1)} ${q}${f.feesPerDayQuote60m !== null ? `, ${f.feesPerDayQuote60m.toFixed(d)} ${q}/day pace` : ", under 3 swaps"}${f.largest15m ? ` | largest ${f.largest15m.dir} ${f.largest15m.volumeQuote.toFixed(d)} ${q}` : ""}`;
 }

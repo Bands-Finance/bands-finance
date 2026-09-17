@@ -401,8 +401,14 @@ export function seatEarnings(o: Observation, x: PolicyExtras, seatSol: number, s
   const solPriceUsd = o.snapshot.solPriceUsd ?? null;
   const tvlUsd = o.screen?.tvlUsd ?? null;
   const feeToTvl = o.screen?.feeToTvl24hPct ?? null;
-  if (!solPriceUsd || !tvlUsd || feeToTvl === null || !Number.isFinite(feeToTvl) || seatSol <= 0) return null;
-  const poolFeesPerDayUsd = (tvlUsd * feeToTvl) / 100;
+  if (!solPriceUsd || seatSol <= 0) return null;
+  // The flow scout's last hour beats the 24h figure: it is the pool's own swaps, read minutes ago,
+  // and a quiet hour or a busy one is what the seat will actually earn next.
+  const flow = o.screen?.flow ?? null;
+  const q = quoteOf(o.snapshot);
+  const flowFeesPerDayUsd = flow && flow.feesPerDayQuote60m !== null ? flow.feesPerDayQuote60m * q.priceInSol * solPriceUsd : null;
+  if (flowFeesPerDayUsd === null && (!tvlUsd || feeToTvl === null || !Number.isFinite(feeToTvl))) return null;
+  const poolFeesPerDayUsd = flowFeesPerDayUsd ?? (tvlUsd! * feeToTvl!) / 100;
   const feesPerDayUsd = poolFeesPerDayUsd * (Math.min(sharePct, 50) / 100) * 0.5;
   const seatUsd = seatSol * solPriceUsd;
   const yieldPctPerDay = (feesPerDayUsd / seatUsd) * 100;

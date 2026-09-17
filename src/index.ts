@@ -66,6 +66,7 @@ import { loadScreen, runScreen, tradableVenue } from "./screener";
 import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
 import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
+import { flowByPool, flowContextLine, readFlowFile, type FlowContext } from "./scouts/flow";
 import { pinRotateMinAgeMin, pinSeatAction, rotationCandidate, type RotationBand } from "./engine/rotation";
 import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
 import { fetchPoolHistory, historyFresh, historyPhrase, historyRefusal, memeHistoryEnv, type HistoryRecord } from "./screener/memeHistory";
@@ -136,6 +137,8 @@ interface App {
   pairVenue: ReturnType<typeof createPairVenue>;
   /** the Meteora pools of the stocks the agent is paired with (PAIR_STOCK_PINNED_TICKERS), and when they were read */
   pinned: PinnedStocks | null;
+  /** the flow scout's fresh readings by pool address, re-read each cycle; empty when the scout is off or stale */
+  flow: Map<string, FlowContext>;
   pinnedAt: number;
   /** the band the picker named this cycle to make room for a pin (src/engine/rotation.ts); null when none */
   rotateOut: { pool: string; label: string; reason: string } | null;
@@ -1117,6 +1120,10 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     otherExposureSol: others.reduce((s, x) => s + x.positions.reduce((t, p) => t + p.valueInSol, 0), 0),
   };
   const screen = screenContext(app, o.address, state, snapshot);
+  // the flow scout's last hour for this pool, when its file is fresh (src/scouts/flow.ts)
+  const flow = app.flow.get(o.address) ?? null;
+  if (screen && flow) screen.flow = flow;
+  if (flow) console.log(`[cycle ${app.cycle} ${snapshot.label}] ${flowContextLine(flow)}`);
   const isPair = !!snapshot.pair;
 
   // The engine's view of this pool: breakers, bench, regime, knife, collects.
@@ -1422,7 +1429,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     emergency: verdict.emergency,
     execution,
     headline: voiceLine(verdict.decision.headline),
-    screen: screen ? { rank: screen.rank, rankedPools: screen.rankedPools, score: screen.score, feeToTvl24hPct: screen.feeToTvl24hPct } : null,
+    screen: screen ? { rank: screen.rank, rankedPools: screen.rankedPools, score: screen.score, feeToTvl24hPct: screen.feeToTvl24hPct, flow: screen.flow ?? null } : null,
     engine: journalEngine,
     ...(hedgeJournal ? { hedge: hedgeJournal } : {}),
   };
@@ -1580,6 +1587,9 @@ async function runIteration(app: App): Promise<void> {
   }
   const funds = fundableQuotes(app, solAtStart, usdcAtStart);
   await refreshMeteoraStocks(app);
+  // the flow scout's file, when it is running and fresh: the desk's fastest view of its pools
+  app.flow = flowByPool(readFlowFile(path.resolve(process.cwd(), config.dataDir)), Date.now());
+  if (app.flow.size) console.log(`[cycle ${app.cycle}] flow scout: ${app.flow.size} pool(s) read from the chain in the last ${Math.round(3)} min`);
   await refreshPinned(app);
   await refreshMemeHistory(app, funds);
   const pools = pickPools(app, withPositions, funds);
@@ -1734,6 +1744,7 @@ async function main(): Promise<void> {
     mintAttributed: new Set(),
     pairVenue,
     pinned: null,
+    flow: new Map(),
     pinnedAt: 0,
     rotateOut: null,
     memeHistory: new Map(),

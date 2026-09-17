@@ -1,5 +1,6 @@
 import { quoteOf, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
 import type { PoolAnalytics } from "../tools/lpagent";
+import type { FlowContext } from "../scouts/flow";
 
 export interface ScreenContext {
   rank: number;
@@ -38,6 +39,8 @@ export interface ScreenContext {
    * are waived; the guards, the stop, the basis check and the session rules are not.
    */
   pinned?: { ok: true; ticker: string } | null;
+  /** the flow scout's last hour for this pool (src/scouts/flow.ts), when the scout is running and fresh */
+  flow?: FlowContext | null;
   alternatives: { name: string; score: number; feeToTvl24hPct: number | null; tvlUsd: number | null }[];
   /** the fast watch's surges (src/hot): what printed fees in the last hour, across every venue */
   hot?: {
@@ -169,6 +172,10 @@ export function formatObservation(o: Observation): string {
     lines.push(`- 24h txns: ${a.txns24h ?? "n/a"}`);
   } else {
     lines.push("- unavailable this cycle");
+  }
+  if (o.screen?.flow) {
+    const f = o.screen.flow;
+    lines.push(`- FLOW, read from the chain by the scout (${Math.round((Date.now() - f.asOf) / 1000)}s ago): last 15 min ${f.swaps15m} swaps, ${r(f.volume15mQuote, 3)} ${f.quoteSymbol} traded, ${r(f.fees15mQuote, 4)} ${f.quoteSymbol} of LP fees (${r(f.ours15mQuote, 4)} in the bins your band covers); last hour ${f.swaps60m} swaps, ${r(f.fees60mQuote, 4)} ${f.quoteSymbol} of fees${f.feesPerDayQuote60m !== null ? `, a ${r(f.feesPerDayQuote60m, 3)} ${f.quoteSymbol}/day pace` : ""}. This beats the 24h figures above when they disagree.`);
   }
   lines.push("");
   lines.push(`## Wallet ${o.wallet.address}`);
