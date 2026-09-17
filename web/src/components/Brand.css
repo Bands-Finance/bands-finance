@@ -1,0 +1,68 @@
+/* The house plates: engraved on the same paper as the page, so they sit on it rather than in boxes. */
+
+.brand-portrait {
+  display: block;
+  width: min(100%, 320px);
+  height: auto;
+  margin: 6px auto 30px;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  user-select: none;
+}
+
+.brand-plates {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px;
+  margin: 0;
+  padding: 0;
+}
+.brand-plate {
+  margin: 0;
+  background: var(--paper-card);
+  border: 1px solid var(--rule-strong);
+  box-shadow: 0 1px 0 rgba(22, 18, 15, 0.06), 0 14px 30px -24px rgba(22, 18, 15, 0.55);
+  overflow: hidden;
+  transform: rotate(var(--tilt, 0deg));
+  transition: transform 220ms ease;
+}
+.brand-plate:nth-child(8n + 1) { --tilt: -0.6deg; }
+.brand-plate:nth-child(8n + 3) { --tilt: 0.5deg; }
+.brand-plate:nth-child(8n + 6) { --tilt: -0.4deg; }
+.brand-plate:nth-child(8n + 8) { --tilt: 0.7deg; }
+.brand-plate:hover { transform: rotate(0deg) translateY(-2px); }
+.brand-plate img {
+  display: block;
+  width: 100%;
+  height: auto;
+  mix-blend-mode: multiply;
+}
+
+.brand-figure {
+  display: block;
+  width: min(100%, 220px);
+  height: auto;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+@media (max-width: 860px) {
+  .brand-plates {
+    display: flex;
+    gap: 14px;
+    overflow-x: auto;
+    padding: 4px 4px 14px;
+    margin: 0 -4px;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+  .brand-plate {
+    flex: 0 0 62vw;
+    max-width: 280px;
+    scroll-snap-align: start;
+    transform: none;
+  }
+  .brand-figure { width: min(100%, 160px); }
+}

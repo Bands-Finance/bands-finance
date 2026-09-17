@@ -6,6 +6,7 @@ import type { AgentSummary } from "../derive";
 import type { Narrative } from "../narrative";
 import { num } from "../narrative";
 import { PLATFORM_URL } from "../site";
+import { BrandFigure, BrandPortrait } from "./Brand";
 import "./Dash.css";
 
 /**
@@ -105,7 +106,7 @@ export function DashNote({ narrative, record, summary, solPriceUsd, status, wall
         ))}
       </div>
       <aside className="dash-side">
-      <img className="dash-mark" src="/art/stack.webp" alt="" width="616" height="404" aria-hidden="true" />
+      <BrandPortrait agentName={agentName} />
       <div className="dash-ledger" aria-label="The figures">
         <span className={`dash-stamp dash-stamp--${status.mode}`} title={status.sentence} aria-hidden="true">
           {MODE_WORD[status.mode]}
@@ -145,10 +146,16 @@ export function DashSection({ id, title, sub, children }: { id: string; title?: 
 export function DashFooter({ agentName }: { agentName: string }) {
   return (
     <footer className="dash-foot">
-      <p className="dash-foot__legal">
-        {agentName} is experimental software and trades a wallet of his own. Nothing here is advice, and nothing on this page
-        can touch your money. Every move above is published as it happened, including the ones that lost.
-      </p>
+      <div className="dash-foot__row">
+        <BrandFigure agentName={agentName} />
+        <div className="dash-foot__text">
+          <p className="dash-foot__motto">Liquidity in between.</p>
+          <p className="dash-foot__legal">
+            {agentName} is experimental software and trades a wallet of his own. Nothing here is advice, and nothing on this page
+            can touch your money. Every move above is published as it happened, including the ones that lost.
+          </p>
+        </div>
+      </div>
       <nav className="dash-foot__links" aria-label="Footer">
         <a href={PLATFORM_URL} target="_blank" rel="noreferrer">bands.finance</a>
         <a href={`${PLATFORM_URL}/#/learn`} target="_blank" rel="noreferrer">How it works</a>

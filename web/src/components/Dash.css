@@ -288,6 +288,16 @@
   flex-direction: column;
   gap: 14px;
 }
+.dash-foot__row { display: flex; align-items: flex-end; gap: 28px; }
+.dash-foot__text { display: flex; flex-direction: column; gap: 10px; }
+.dash-foot__motto {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 22px;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+}
 .dash-foot__legal {
   margin: 0;
   font-family: var(--font-serif);

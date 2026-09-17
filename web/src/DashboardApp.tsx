@@ -8,6 +8,7 @@ import { DashFooter, DashNav, DashNote, DashSection } from "./components/Dash";
 import { Record } from "./components/Record";
 import { Holdings } from "./components/Holdings";
 import { Actions } from "./components/Actions";
+import { BrandPlates } from "./components/Brand";
 
 /**
  * The agent's own site: a landing page of actions and results, nothing else. A note written from
@@ -77,6 +78,9 @@ export default function DashboardApp() {
             </DashSection>
             <DashSection id="did" title="What he did" sub="Every move he made, newest first. Holds are not moves.">
               <Actions actions={actions} status={status} now={now} agentName={agentName} />
+            </DashSection>
+            <DashSection id="house" title="The house" sub="What he stands for, in eight plates.">
+              <BrandPlates />
             </DashSection>
           </>
         )}
