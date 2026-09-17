@@ -13,6 +13,8 @@ export interface BookProps {
   book: BookModel;
   status: Status;
   agentName: string;
+  /** the dashboard: the bands alone, none of the explaining */
+  compact?: boolean;
 }
 
 const PULSE: Record<Status["mode"], { word: string; cls: string; gloss: string | undefined }> = {
@@ -40,7 +42,7 @@ function useMinuteTick(): number {
   return Date.now();
 }
 
-export function Book({ book, status, agentName }: BookProps) {
+export function Book({ book, status, agentName, compact = false }: BookProps) {
   const now = useMinuteTick();
   const pulse = PULSE[status.mode];
   const bands = book.bands;
@@ -53,12 +55,12 @@ export function Book({ book, status, agentName }: BookProps) {
         <span className={`livepos__pulse ${pulse.cls}`} title={pulse.gloss}>{pulse.word}</span>
         {book.asOf !== null && <span className="livepos__asof">as of {ago(book.asOf, now)}</span>}
       </div>
-      <p className="livepos__gloss">
+      {!compact && <p className="livepos__gloss">
         // every band {agentName} holds this second, from the newest cycle in the journal · a ‘<span className="term" title={GLOSS.band}>band</span>’ is a slice of
         price he has put SOL into · ‘<span className="term" title={GLOSS.inRange}>in range</span>’ means the current price is inside it, so every trade pays
         him · ‘out by 3 <span className="term" title={GLOSS.bin}>bins</span>’ means the price walked out and it earns nothing until it comes back or he
         moves it
-      </p>
+      </p>}
 
       {bands.length === 0 ? (
         <p className="livepos__flat">
@@ -75,7 +77,7 @@ export function Book({ book, status, agentName }: BookProps) {
         </div>
       )}
 
-      {bands.length > 0 && (
+      {!compact && bands.length > 0 && (
         <p className="livepos__foot">
           Each band holds SOL (or the token) in a slice of price, earning the pool's fee on every trade through it while the dot
           stays inside the bar. Below the band, his SOL is slowly swapped into the token as the price falls; above it, the token
@@ -83,13 +85,13 @@ export function Book({ book, status, agentName }: BookProps) {
           to what he holds, and what fees earned back. Fees only go up; the market line breathes.
         </p>
       )}
-      {bands.length > 0 && waiting > 0 && (
+      {!compact && bands.length > 0 && waiting > 0 && (
         <p className="livepos__foot">
           <strong>{feeSol(waiting)}</strong> of fees is sitting inside these bands, earned trade by trade and not yet claimed.
           Claiming is one of his decisions; the journal shows when he makes it.
         </p>
       )}
-      <p className="livepos__foot">{status.sentence}</p>
+      {!compact && <p className="livepos__foot">{status.sentence}</p>}
     </section>
   );
 }

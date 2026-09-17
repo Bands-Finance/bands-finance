@@ -7,7 +7,7 @@
  *   npx tsx src/scripts/test-web-model.ts
  */
 import assert from "node:assert/strict";
-import { bookOf, recordOf } from "../../web/src/model";
+import { actionsOf, bookOf, recordOf } from "../../web/src/model";
 import { bookCycle, completeCycles, cycleEquity, cyclesOf, equitySeriesOf, summarize } from "../../web/src/derive";
 import type { EquityHistoryPoint, JournalEntry, Position } from "../../web/src/types";
 
@@ -263,6 +263,33 @@ async function main() {
     // stale history (its last point long before the newest cycle) is not trusted for "now"
     const stale = recordOf(fixture(), history.slice(0, 3))!;
     assert.equal(stale.sinceStart, false);
+  });
+
+  console.log("actions");
+  await test("actionsOf: executed moves only, newest first, with the numbers from the decision and the band; holds and vetoes are not actions", () => {
+    const chrono = [...fixture()].reverse();
+    const claim = entry({ cycle: 5, min: 40, pool: "AAA", sol: 5, positions: [band("a1", 20, { feeY: 0.05 })], action: "CLAIM_FEES" });
+    const vetoed = { ...entry({ cycle: 5, min: 41, pool: "CCC", sol: 5, usdc: 5000, positions: [band("c1", 10)], action: "CLOSE_POSITION" }), allowed: false, execution: { mode: "paper", ok: true, txs: [], notes: [] } } as unknown as JournalEntry;
+    const opened = entry({ cycle: 6, min: 50, pool: "CCC", sol: 5, usdc: 5000, positions: [], action: "OPEN_POSITION" });
+    (opened.decision as { open: unknown }).open = { side: "BOTH", amountSol: 500, amountToken: 5, binsBelowActive: 10, binsAboveActive: 10, strategy: "Spot" };
+    const forced = { ...entry({ cycle: 7, min: 60, pool: "AAA", sol: 5, positions: [band("a1", 18, { entryValueSol: 20 })], action: "CLOSE_POSITION", closed: "a1" }), emergency: true } as JournalEntry;
+    const rows = actionsOf([...chrono, claim, vetoed, opened, forced].reverse());
+    assert.deepEqual(rows.map((r) => [r.action, r.poolLabel]), [
+      ["CLOSE_POSITION", "AAA/SOL"],
+      ["OPEN_POSITION", "CCC/USDC"],
+      ["CLAIM_FEES", "AAA/SOL"],
+      ["OPEN_POSITION", "CCC/USDC"],
+      ["CLOSE_POSITION", "BBB/USDC"],
+    ], "newest first; the vetoed close and every hold are absent");
+    assert.equal(rows[0].forced, true);
+    assert.equal(rows[0].what, "18 SOL back, −2 SOL vs entry");
+    assert.equal(rows[0].resultSol, -2);
+    assert.equal(rows[1].what, "500 USDC + 5 CCC across 21 bins, both sides of the price");
+    assert.equal(rows[2].what, "0.05 SOL of fees to the wallet");
+    assert.equal(rows[2].resultSol, 0.05);
+    assert.equal(rows[4].what, "50 SOL back, +0 SOL vs entry");
+    assert.equal(rows[0].href, null, "no signature in paper");
+    assert.equal(actionsOf(fixture(), 1).length, 1);
   });
 
   console.log(`\n${passed} web model tests passed`);

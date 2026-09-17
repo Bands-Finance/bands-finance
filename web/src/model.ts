@@ -3,7 +3,7 @@
  * Every component reads from here so the words and the numbers cannot disagree.
  */
 import { bookCycle, completeCycles, cycleEquity, cyclesOf, equityOf, feesInSol, POSITION_RENT_SOL } from "./derive";
-import type { Action, EquityHistoryPoint, JournalEntry, Position } from "./types";
+import type { Action, Decision, EquityHistoryPoint, JournalEntry, Position } from "./types";
 
 /* ---------- words ---------- */
 
@@ -630,4 +630,84 @@ export function statusOf(newestFirst: JournalEntry[], now: number, demo: boolean
     return { mode, lastTs, ageMs, short: "dry run", sentence: `Rehearsal mode: Mr Bands is deciding on a real pool with a wallet that sends nothing. Every transaction is built and simulated, never broadcast. Last decision ${ago}.` };
   }
   return { mode, lastTs, ageMs, short: "live", sentence: `Live: Mr Bands is trading a small wallet of his own on Solana. Every action below links to its transaction. Last decision ${ago}.` };
+}
+
+/* ---------- actions: what he actually did ---------- */
+
+export interface ActionRow {
+  id: string;
+  ts: string;
+  action: Action;
+  verdict: Verdict;
+  poolLabel: string;
+  poolAddress: string;
+  /** his own words for it */
+  headline: string;
+  /** the move in numbers: what went in, what came back, what was banked */
+  what: string;
+  /** the money the move realised, in SOL, when the journal carries it: fees banked, a close's result vs entry */
+  resultSol: number | null;
+  /** the guards forced it (a stop, a breaker) */
+  forced: boolean;
+  href: string | null;
+}
+
+const r4 = (n: number, d = 4) => Number(n.toFixed(d)).toString();
+
+/**
+ * Every executed move, newest first: opens, closes, moves and claims that were sent (or simulated),
+ * including the ones the guards forced. Holds, vetoes and failures are not actions. The numbers come
+ * from the decision (what he asked for) and the entry's own positions (what the band held when he
+ * acted); nothing is read from the narrative.
+ */
+export function actionsOf(newestFirst: JournalEntry[], limit = 200): ActionRow[] {
+  const out: ActionRow[] = [];
+  for (const e of newestFirst) {
+    if (out.length >= limit) break;
+    const v = verdictOf(e);
+    if (v !== "placed" && v !== "simulated" && v !== "override") continue;
+    const a = e.decision.action;
+    if (a === "HOLD") continue;
+    const q = quoteOf(e.pool);
+    const sym = isSolY(e) ? e.pool.tokenX.symbol : e.pool.tokenY.symbol;
+    const targets = e.decision.positionAddress ? e.positions.filter((p) => p.address === e.decision.positionAddress) : e.positions;
+    const fees = targets.reduce((s, p) => s + feesInSol(p, e), 0);
+    const held = targets.reduce((s, p) => s + p.valueInSol, 0);
+    const entry = targets.reduce((s, p) => s + (p.entryValueSol ?? NaN), 0);
+    const openWords = (o: NonNullable<Decision["open"]>) => {
+      const bins = o.binsBelowActive + o.binsAboveActive + (o.side === "BOTH" ? 1 : 0);
+      const legs = [o.amountSol > 0 ? `${r4(o.amountSol, q.symbol === "SOL" ? 4 : 2)} ${q.symbol}` : null, o.amountToken > 0 ? `${r4(o.amountToken)} ${sym}` : null].filter(Boolean).join(" + ");
+      return `${legs} across ${bins} bins, ${sideWords(o.side, q)}`;
+    };
+    let what = "";
+    let resultSol: number | null = null;
+    if (a === "OPEN_POSITION" && e.decision.open) what = openWords(e.decision.open);
+    else if (a === "CLAIM_FEES") {
+      what = `${r4(fees)} SOL of fees to the wallet`;
+      resultSol = fees;
+    } else if (a === "CLOSE_POSITION") {
+      const vs = Number.isFinite(entry) && entry > 0 ? held - entry : null;
+      what = `${r4(held)} SOL back${vs !== null ? `, ${vs >= 0 ? "+" : "−"}${r4(Math.abs(vs))} SOL vs entry` : ""}${fees > 0.00005 ? `, ${r4(fees)} SOL of fees with it` : ""}`;
+      resultSol = vs;
+    } else if (a === "REBALANCE") {
+      const vs = Number.isFinite(entry) && entry > 0 ? held - entry : null;
+      what = `${r4(held)} SOL out${vs !== null ? ` (${vs >= 0 ? "+" : "−"}${r4(Math.abs(vs))} vs entry)` : ""}${e.decision.open ? `, back in as ${openWords(e.decision.open)}` : ""}`;
+      resultSol = vs;
+    }
+    const sig = e.execution.txs.find((t) => t.signature)?.signature;
+    out.push({
+      id: e.id,
+      ts: e.ts,
+      action: a,
+      verdict: v,
+      poolLabel: e.pool.label,
+      poolAddress: e.pool.address,
+      headline: e.headline || e.decision.headline,
+      what,
+      resultSol,
+      forced: v === "override",
+      href: sig ? `https://solscan.io/tx/${sig}` : null,
+    });
+  }
+  return out;
 }

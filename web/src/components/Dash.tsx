@@ -39,10 +39,9 @@ export interface DashNavProps {
 }
 
 const SECTIONS: { id: string; label: string }[] = [
-  { id: "record", label: "record" },
+  { id: "results", label: "results" },
   { id: "bands", label: "bands" },
-  { id: "desk", label: "desk" },
-  { id: "guards", label: "guards" },
+  { id: "actions", label: "actions" },
 ];
 
 export function DashNav({ status, agentName }: DashNavProps) {
@@ -161,8 +160,8 @@ export function DashHero({ record, summary, solPriceUsd, status, walletAddress, 
         ))}
       </dl>
 
-      <a className="dash-hero__cta r-item" style={ri(4)} href="#record">
-        the record ↓
+      <a className="dash-hero__cta r-item" style={ri(4)} href="#results">
+        the results ↓
       </a>
     </section>
   );
@@ -189,11 +188,8 @@ export function DashFooter({ agentName }: { agentName: string }) {
   return (
     <footer className="dash-foot">
       <p className="dash-foot__legal">
-        {agentName} is experimental software: an autonomous liquidity agent on Meteora DLMM, Solana. Nothing here is
-        financial or investment advice. He trades a small wallet of his own; this page never asks for yours and nothing
-        on it can move your money. Providing liquidity can lose money: a band the price walks through ends up holding
-        the token that fell, and fees may not cover it. Every decision above is published as written, including the
-        ones that lost.
+        {agentName} is experimental software and trades a wallet of his own; nothing here is advice and nothing on this
+        page can touch your money. Every move above is published as it happened, including the ones that lost.
       </p>
       <nav className="dash-foot__links" aria-label="Footer">
         <a href={PLATFORM_URL} target="_blank" rel="noreferrer">bands.finance</a>

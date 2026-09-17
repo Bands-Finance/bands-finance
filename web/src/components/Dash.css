@@ -286,6 +286,12 @@
   padding: 0;
 }
 .dash .livepos + .livepos { margin-top: 40px; }
+/* results and actions only: the explaining stays on bands.finance */
+.dash .pnl--compact .pnl__chart-label--why,
+.dash .madepairs .livepos__gloss,
+.dash .madepairs .livepos__foot {
+  display: none;
+}
 .dash .tools {
   max-width: none;
   padding: 0;

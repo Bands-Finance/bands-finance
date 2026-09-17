@@ -16,6 +16,8 @@ export interface RecordProps {
   solPriceUsd: number | null;
   status: Status;
   agentName: string;
+  /** the dashboard: the chart and the daily board only; the page's first screen already said the number */
+  compact?: boolean;
 }
 
 /* ---------- money words ---------- */
@@ -56,7 +58,7 @@ class SectionBoundary extends Component<{ children: ReactNode }, { dead: boolean
   render() { return this.state.dead ? null : this.props.children; }
 }
 
-export function Record({ record, solPriceUsd, status, agentName }: RecordProps) {
+export function Record({ record, solPriceUsd, status, agentName, compact = false }: RecordProps) {
   if (!record) {
     return (
       <section className="pnl" aria-label={`The record of ${agentName}, loading`}>
@@ -84,6 +86,18 @@ export function Record({ record, solPriceUsd, status, agentName }: RecordProps) 
   if (c.overrides) tally.push(plural(c.overrides, "guard override"));
   tally.push(plural(c.pools, "pool"));
 
+  if (compact) {
+    return (
+      <section className="pnl pnl--compact" aria-label={`The record of ${agentName}`}>
+        <SectionBoundary>
+          <EarningsChart points={record.feePoints} feesUnclaimed={record.feesUnclaimed} solPriceUsd={solPriceUsd} agentName={agentName} />
+        </SectionBoundary>
+        <SectionBoundary>
+          {record.days.length > 0 && <ConsistencyBoard days={record.days} feesRealized={record.feesRealized} solPriceUsd={solPriceUsd} />}
+        </SectionBoundary>
+      </section>
+    );
+  }
   return (
     <section className="pnl" aria-label={`The record of ${agentName}`}>
       <div className="pnl__num">
@@ -429,7 +443,7 @@ function EarningsChart({ points, feesUnclaimed, solPriceUsd, agentName }: { poin
           </g>
         )}
       </svg>
-      <span className="pnl__chart-label">
+      <span className="pnl__chart-label pnl__chart-label--why">
         cumulative fees {agentName} has claimed, from the journal his own loop writes. the curve never rises above a claim that
         has not happened; every dot is one claim, sized by amount · click a dot to open its transaction on Solscan when the
         journal holds the signature{anySim ? " · simulated claims are drawn hollow" : ""}
@@ -499,7 +513,7 @@ function ConsistencyBoard({ days, feesRealized, solPriceUsd }: { days: DayRow[];
           </tbody>
         </table>
       </div>
-      <span className="pnl__chart-label">
+      <span className="pnl__chart-label pnl__chart-label--why">
         days roll at midnight UTC, the journal's clock. fees are income and cannot retrace; the book breathes with the market.
         Red is printed as plainly as green. A band the price walks through ends the day holding the token that fell; that shows
         up here, unedited.
