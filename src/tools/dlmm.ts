@@ -1,4 +1,4 @@
-import DLMM, { LbPosition, StrategyType } from "@meteora-ag/dlmm";
+import DLMM, { deriveBinArray, LbPosition, StrategyType } from "@meteora-ag/dlmm";
 import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import BN from "bn.js";
 import { config } from "../config";
@@ -95,6 +95,8 @@ export interface PoolSnapshot {
   hasDynamicFee?: boolean;
   /** CLMM only: the tick state behind the bins (src/venues/raydium.ts) */
   clmm?: ClmmState;
+  /** Meteora only: which bin arrays around the price exist on chain (src/venues/meteora.ts sizes rent from it) */
+  dlmm?: DlmmState;
   /** a pool the desk made (or will make) for a pump.fun token, the PAIR LANE (src/venues/pair.ts, src/screener/pair.ts); absent elsewhere */
   pair?: PairSnapshotInfo;
 }
@@ -169,6 +171,22 @@ export interface ClmmState {
   /** start ticks of the tick arrays that exist on chain around the price; a band landing outside them pays tick-array rent */
   initializedTickArrays: number[];
 }
+
+/** Bins per Meteora bin array (the SDK's MAX_BIN_ARRAY_SIZE). */
+export const BINS_PER_BIN_ARRAY = 70;
+/** Bin arrays read either side of the active one: a band wider than this pays for what it cannot see. */
+export const BIN_ARRAYS_EACH_SIDE = 2;
+
+/** What a DLMM snapshot keeps of the pool's bin arrays, enough to size a band's rent without the chain. */
+export interface DlmmState {
+  /** indexes of the bin arrays that exist on chain, of the ones read around the active bin */
+  initializedBinArrays: number[];
+  /** the indexes that were read; an index outside them is unknown and priced as fresh */
+  readBinArrays: number[];
+}
+
+/** PURE. The bin array holding a bin (floor division, as the SDK's binIdToBinArrayIndex). */
+export const binArrayIndexOf = (binId: number): number => Math.floor(binId / BINS_PER_BIN_ARRAY);
 
 /** The quote side of a snapshot with the SOL-pool defaults filled in. */
 export interface QuoteView {
@@ -352,6 +370,19 @@ export async function getPoolSnapshot(dlmm: DLMM, binsEachSide = 10, opts: Snaps
   const fee = dlmm.getFeeInfo();
   const dyn = dlmm.getDynamicFee();
 
+  // Which bin arrays around the price exist: an open only pays rent for the ones it creates. A failed
+  // read leaves the state out, and the open is priced at the two-array estimate.
+  let dlmmState: DlmmState | undefined;
+  try {
+    const mid = binArrayIndexOf(active.binId);
+    const readBinArrays = Array.from({ length: 2 * BIN_ARRAYS_EACH_SIDE + 1 }, (_, i) => mid - BIN_ARRAYS_EACH_SIDE + i);
+    const keys = readBinArrays.map((i) => deriveBinArray(dlmm.pubkey, new BN(i), dlmm.program.programId)[0]);
+    const infos = await dlmm.program.provider.connection.getMultipleAccountsInfo(keys);
+    dlmmState = { readBinArrays, initializedBinArrays: readBinArrays.filter((_, k) => !!infos[k]) };
+  } catch {
+    dlmmState = undefined;
+  }
+
   const bins: BinRow[] = around.bins.map((b) => ({
     binId: b.binId,
     price: Number(b.pricePerToken),
@@ -387,6 +418,7 @@ export async function getPoolSnapshot(dlmm: DLMM, binsEachSide = 10, opts: Snaps
     fetchedAt: new Date().toISOString(),
     priceModel: "meteora-dlmm",
     venue: "meteora-dlmm",
+    ...(dlmmState ? { dlmm: dlmmState } : {}),
   };
 }
 

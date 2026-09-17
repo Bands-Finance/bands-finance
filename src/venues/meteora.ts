@@ -10,6 +10,8 @@ import {
   buildOpenPositionTx,
   getPoolSnapshot,
   getUserPositions,
+  binArrayIndexOf,
+  BIN_ARRAY_RENT_SOL,
   loadPool,
   OPEN_COST_ESTIMATE_SOL,
   POSITION_RENT_SOL,
@@ -28,8 +30,30 @@ const asMeteora = (pool: VenuePool): MeteoraPool => {
   return pool as MeteoraPool;
 };
 
-/** Meteora's open cost is the same for every band: position rent plus two bin arrays that may need creating. */
-export const meteoraOpenCost = (): OpenCost => ({ total: OPEN_COST_ESTIMATE_SOL, refundable: POSITION_RENT_SOL, note: "position + 2 bin arrays" });
+/**
+ * PURE. What opening a band costs on Meteora: the position's rent (refunded on close) plus rent for every
+ * bin array the band touches that does not exist yet (0.0715 SOL each, never refunded). A busy stock pool
+ * already has its arrays around the price, so a band there pays position rent only; paper used to charge
+ * two fresh arrays on every open, 0.14 SOL a band, which a desk re-centring hourly could not earn back.
+ *
+ * Without a plan the band is assumed to cover the active bin's array. Without the snapshot's bin array
+ * state (an old snapshot, a failed read) the old two-array estimate stands.
+ */
+export function meteoraOpenCost(snapshot?: Pick<PoolSnapshot, "activeBinId" | "dlmm"> | null, plan?: Pick<OpenPlan, "minBinId" | "maxBinId"> | null): OpenCost {
+  const refundable = POSITION_RENT_SOL;
+  const state = snapshot?.dlmm;
+  if (!snapshot || !state) return { total: OPEN_COST_ESTIMATE_SOL, refundable, note: "position + 2 bin arrays (bin arrays not read)" };
+  const lo = binArrayIndexOf(plan ? Math.min(plan.minBinId, plan.maxBinId) : snapshot.activeBinId);
+  const hi = binArrayIndexOf(plan ? Math.max(plan.minBinId, plan.maxBinId) : snapshot.activeBinId);
+  const fresh: number[] = [];
+  for (let i = lo; i <= hi; i++) if (!state.initializedBinArrays.includes(i)) fresh.push(i);
+  const total = refundable + fresh.length * BIN_ARRAY_RENT_SOL;
+  const unread = fresh.filter((i) => !state.readBinArrays.includes(i)).length;
+  const note = fresh.length
+    ? `position + ${fresh.length} bin array(s) to create at ${fresh.join(", ")}${unread ? ` (${unread} not read, assumed fresh)` : ""} (${BIN_ARRAY_RENT_SOL} SOL each, not refunded)`
+    : "bin arrays exist; position rent only (refunded on close)";
+  return { total, refundable, note };
+}
 
 export const meteoraVenue: Venue = {
   id: "meteora-dlmm",
@@ -68,8 +92,8 @@ export const meteoraVenue: Venue = {
     return txs.map((tx, i) => ({ tx, signers: [], label: `claim fees ${i + 1}/${txs.length}` }));
   },
 
-  openCostSol(): OpenCost {
-    return meteoraOpenCost();
+  openCostSol(snapshot, plan): OpenCost {
+    return meteoraOpenCost(snapshot, plan);
   },
 
   async poolsWithPositions(connection: Connection, owner: PublicKey): Promise<string[]> {

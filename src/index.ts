@@ -64,7 +64,7 @@ import { loadScreen, runScreen, tradableVenue } from "./screener";
 import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
 import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
-import { pinRotateMinAgeMin, rotationCandidate, type RotationBand } from "./engine/rotation";
+import { pinRotateMinAgeMin, pinSeatAction, rotationCandidate, type RotationBand } from "./engine/rotation";
 import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
 import { fetchPoolHistory, historyFresh, historyPhrase, historyRefusal, memeHistoryEnv, type HistoryRecord } from "./screener/memeHistory";
 import { fetchMeteoraStockPools, meteoraStockCandidates, meteoraStockEnv, saveStockMints, stockMintMap, stockTagFromMap, type MeteoraStockPool } from "./screener/meteoraStocks";
@@ -567,9 +567,12 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
       console.log(`[cycle ${app.cycle}] pinned ${ticker}: ${entry?.note ?? (entry ? "no Meteora pool the wallet can fund" : "not discovered yet")}; the stock pair lane makes our own ${ticker}x/SOL pool`);
       continue;
     }
-    if (set.has(pool.address)) continue; // held already
+    // held already: this pool, or another pool of the same token (one seat per token)
+    const tokenHeld = takenTokens.has(pool.mint) || [...set].some((a) => pinnedPoolAt(app.pinned, a)?.ticker === ticker);
+    const action = pinSeatAction({ poolHeld: set.has(pool.address), tokenHeld, bookFull: set.size >= config.maxActivePools });
+    if (action === "held") continue;
     if (watchlistDenial({ address: pool.address, baseSymbol: pool.symbol, baseMint: pool.mint, name: `${pool.symbol} / ${pool.quoteSymbol}` }, watch)) continue;
-    if (set.size >= config.maxActivePools) {
+    if (action === "rotate") {
       // the book is full and there is no general rotation: one band makes room for the pin, one per cycle
       if (!app.rotateOut) {
         const pick = rotationCandidate(rotationBands(app, [...set]), { now: Date.now(), tradable: (v) => isTradableVenue(v), minAgeMin: pinRotateMinAgeMin(), forTicker: ticker });

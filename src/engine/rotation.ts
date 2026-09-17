@@ -41,6 +41,17 @@ export function pinRotateMinAgeMin(env: NodeJS.ProcessEnv = process.env): number
   return Number.isFinite(n) && n >= 0 ? n : PIN_ROTATE_MIN_AGE_MIN_DEFAULT;
 }
 
+/**
+ * PURE. What the picker does for a pin this cycle. "held" when the ticker already has its seat: the chosen
+ * pool, or any other pool of the same token (NVDAx/SOL held while NVDAx/USDC ranks first). Without that,
+ * a full book rotated a band out for a pin that could never take the freed seat (its token was taken),
+ * other lanes refilled it, and the desk closed a healthy band every cycle (paper, 2026-09-16).
+ */
+export function pinSeatAction(o: { poolHeld: boolean; tokenHeld: boolean; bookFull: boolean }): "held" | "rotate" | "take" {
+  if (o.poolHeld || o.tokenHeld) return "held";
+  return o.bookFull ? "rotate" : "take";
+}
+
 const pacePct = (b: RotationBand): number | null => (b.feesPerDaySol !== null && b.valueSol > 0 ? (b.feesPerDaySol / b.valueSol) * 100 : null);
 
 /** PURE. The band to close for a pin, or null when nothing may go. */

@@ -20,7 +20,7 @@ import {
   withFee,
   type PinnedPool,
 } from "../screener/pinnedStock";
-import { pinRotateMinAgeMin, rotationCandidate, type RotationBand } from "../engine/rotation";
+import { pinRotateMinAgeMin, pinSeatAction, rotationCandidate, type RotationBand } from "../engine/rotation";
 
 const T0 = Date.parse("2026-09-15T16:00:00Z");
 
@@ -195,6 +195,14 @@ async function main(): Promise<void> {
     assert.equal(pinRotateMinAgeMin({}), 60);
     assert.equal(pinRotateMinAgeMin({ PIN_ROTATE_MIN_AGE_MIN: "15" }), 15);
     assert.equal(pinRotateMinAgeMin({ PIN_ROTATE_MIN_AGE_MIN: "-3" }), 60);
+  });
+
+  await test("pinSeatAction: a pin whose token already holds a seat (any of its pools) never rotates a band out", () => {
+    assert.equal(pinSeatAction({ poolHeld: true, tokenHeld: true, bookFull: true }), "held");
+    assert.equal(pinSeatAction({ poolHeld: false, tokenHeld: true, bookFull: true }), "held", "NVDAx/SOL held while NVDAx/USDC ranks first: the loop of 2026-09-16");
+    assert.equal(pinSeatAction({ poolHeld: false, tokenHeld: true, bookFull: false }), "held");
+    assert.equal(pinSeatAction({ poolHeld: false, tokenHeld: false, bookFull: true }), "rotate");
+    assert.equal(pinSeatAction({ poolHeld: false, tokenHeld: false, bookFull: false }), "take");
   });
 
   console.log(`\n${passed} pinned stock tests passed`);

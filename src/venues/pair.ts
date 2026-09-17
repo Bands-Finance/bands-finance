@@ -838,11 +838,11 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
       return txs.map((tx, i) => ({ tx, signers: [], label: `claim fees ${i + 1}/${txs.length}` }));
     },
 
-    openCostSol(snapshot: PoolSnapshot): OpenCost {
+    openCostSol(snapshot: PoolSnapshot, plan?: OpenPlan): OpenCost {
       if (snapshot.pair && !snapshot.pair.exists) {
         return { total: PAIR_OPEN_COST_SOL, refundable: POSITION_RENT_SOL, note: "pool creation (lb pair + 2 reserves + oracle) + position + 2 bin arrays" };
       }
-      return meteoraOpenCost();
+      return meteoraOpenCost(snapshot, plan);
     },
 
     /** The create transaction for a pool that does not exist yet: the pure params, then the SDK. */

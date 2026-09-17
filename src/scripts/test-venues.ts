@@ -329,9 +329,36 @@ async function main(): Promise<void> {
     // a two-sided band straddling an array boundary: [20380 - 100, 20390 + 600) -> 19800 and 20400, both known
     const both = raydium.clmmOpenCost(s, { minBinId: ACTIVE - 10, maxBinId: ACTIVE + 60, side: "BOTH" });
     near(both.total, raydium.CLMM_OPEN_COST_DEFAULT_SOL, 1e-12);
-    assert.deepEqual(venues.meteoraOpenCost(), { total: dlmm.OPEN_COST_ESTIMATE_SOL, refundable: dlmm.POSITION_RENT_SOL, note: "position + 2 bin arrays" });
-    assert.deepEqual(venues.venueOf("meteora-dlmm").openCostSol(s), venues.meteoraOpenCost());
+    assert.deepEqual(venues.meteoraOpenCost(), { total: dlmm.OPEN_COST_ESTIMATE_SOL, refundable: dlmm.POSITION_RENT_SOL, note: "position + 2 bin arrays (bin arrays not read)" });
+    assert.deepEqual(venues.venueOf("meteora-dlmm").openCostSol(s), venues.meteoraOpenCost(), "a snapshot without bin array state keeps the two-array estimate");
     near(venues.venueOf("raydium-clmm").openCostSol(s, { minBinId: ACTIVE - 200, maxBinId: ACTIVE, side: "SOL_ONLY" } as never).total, far.total, 1e-12);
+  });
+
+  await test("meteoraOpenCost: rent only for the bin arrays a band touches that do not exist; unread arrays are priced as fresh", () => {
+    // active bin 100 sits in array 1 ([70, 139]); arrays 0..3 read, 0..2 exist
+    const m = { activeBinId: 100, dlmm: { readBinArrays: [-1, 0, 1, 2, 3], initializedBinArrays: [0, 1, 2] } };
+    const inside = venues.meteoraOpenCost(m, { minBinId: 90, maxBinId: 110 });
+    near(inside.total, dlmm.POSITION_RENT_SOL, 1e-12);
+    assert.equal(inside.refundable, dlmm.POSITION_RENT_SOL);
+    assert.equal(inside.note, "bin arrays exist; position rent only (refunded on close)");
+    near(venues.meteoraOpenCost(m).total, dlmm.POSITION_RENT_SOL, 1e-12, "no plan: the active array only");
+    const across = venues.meteoraOpenCost(m, { minBinId: 60, maxBinId: 150 });
+    near(across.total, dlmm.POSITION_RENT_SOL, 1e-12, "arrays 0, 1 and 2 all exist");
+    const up = venues.meteoraOpenCost(m, { minBinId: 100, maxBinId: 215 });
+    near(up.total, dlmm.POSITION_RENT_SOL + dlmm.BIN_ARRAY_RENT_SOL, 1e-12);
+    assert.match(up.note!, /position \+ 1 bin array\(s\) to create at 3 \(0\.0715 SOL each, not refunded\)/);
+    const beyond = venues.meteoraOpenCost(m, { minBinId: 100, maxBinId: 300 });
+    near(beyond.total, dlmm.POSITION_RENT_SOL + 2 * dlmm.BIN_ARRAY_RENT_SOL, 1e-12, "arrays 3 (read, missing) and 4 (not read)");
+    assert.match(beyond.note!, /at 3, 4 \(1 not read, assumed fresh\)/);
+    const below = venues.meteoraOpenCost({ activeBinId: -5, dlmm: { readBinArrays: [-3, -2, -1, 0, 1], initializedBinArrays: [0] } }, { minBinId: -5, maxBinId: 5 });
+    near(below.total, dlmm.POSITION_RENT_SOL + dlmm.BIN_ARRAY_RENT_SOL, 1e-12, "bin -5 is in array -1 (floor division)");
+    assert.equal(dlmm.binArrayIndexOf(-1), -1);
+    assert.equal(dlmm.binArrayIndexOf(-70), -1);
+    assert.equal(dlmm.binArrayIndexOf(-71), -2);
+    assert.equal(dlmm.binArrayIndexOf(69), 0);
+    assert.equal(dlmm.binArrayIndexOf(70), 1);
+    const s2 = { ...spySnapshot(), venue: "meteora-dlmm", activeBinId: 100, dlmm: m.dlmm } as never;
+    near(venues.venueOf("meteora-dlmm").openCostSol(s2, { minBinId: 90, maxBinId: 110 } as never).total, dlmm.POSITION_RENT_SOL, 1e-12, "the venue passes the snapshot and plan through");
   });
 
   console.log("venue lookup and env");
@@ -507,10 +534,18 @@ async function main(): Promise<void> {
     const meteoraSnap = spySnapshot({ priceModel: "meteora-dlmm", venue: "meteora-dlmm", clmm: undefined });
     const m = policy.policyDecide(plain({ positions: [band(ACTIVE - 1)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 100 } } }, meteoraSnap), { limits, env: { book: "stocks" }, now: T0 });
     assert.equal(m.branch, "idle-wait");
-    // the stock pool itself: one bin out for 5000s is a re-centre, not a rest
+    // the stock pool itself: one bin out for 5000s is not a rest. The re-centre buys half the seat in the
+    // stock, which the pool's fees take past STOCK_RECENTRE_MAX_PAYBACK_HOURS to earn back: it waits first
     const stock = policy.policyDecide(obs({ positions: [band(ACTIVE - 1)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 5000 } } }), { limits, env: { book: "stocks" }, now: T0 });
-    assert.equal(stock.branch, "rebalance");
-    assert.equal(stock.decision.open!.side, "BOTH");
+    assert.equal(stock.branch, "recentre-wait");
+    assert.match(stock.decision.reasoning, /re-centring costs about [\d.]+ SOL \([\d.]+ SOL of swap at [\d.]+%, [\d.]+ SOL of rent\) and the seat's fees, about [\d.]+ SOL a day, take [\d.]+h to earn it back, past the 4h limit/);
+    assert.match(stock.decision.reasoning, /up to 120 minutes out of range/);
+    // past the wait, or with the gate off, it re-centres
+    const late = policy.policyDecide(obs({ positions: [band(ACTIVE - 1)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 7300 } } }), { limits, env: { book: "stocks" }, now: T0 });
+    assert.equal(late.branch, "rebalance");
+    assert.equal(late.decision.open!.side, "BOTH");
+    const off = policy.policyDecide(obs({ positions: [band(ACTIVE - 1)], engine: { ...obs().engine!, outOfRangeSec: { nftmint111: 5000 } } }), { limits, env: { book: "stocks", stockRecentreMaxPaybackHours: 0 }, now: T0 });
+    assert.equal(off.branch, "rebalance");
   });
 
   console.log("the paper executor on a CLMM snapshot");

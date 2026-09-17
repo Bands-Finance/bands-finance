@@ -179,7 +179,8 @@ async function main(): Promise<void> {
       ...over,
     };
   }
-  const x = { limits, env: { book: "stocks" as const }, now: T0, openCostSol: raydium.CLMM_OPEN_COST_DEFAULT_SOL };
+  // the re-centre cost gate is off here (these tests are about the re-centre itself); its own test turns it on
+  const x = { limits, env: { book: "stocks" as const, stockRecentreMaxPaybackHours: 0 }, now: T0, openCostSol: raydium.CLMM_OPEN_COST_DEFAULT_SOL };
   const guardCtx = (o: Observation, over: Partial<Parameters<typeof evaluate>[1]> = {}) => ({
     now: T0,
     snapshot: o.snapshot,
@@ -358,6 +359,33 @@ async function main(): Promise<void> {
     const state = { ...emptyState(), entryValueSol: { [out.pos.address]: out.pos.entryValueSol! } };
     const v = evaluate(d, guardCtx(o, { state, engine: { haltedUntil: null, standDownUntil: null, sizeMultiplier: 1, benched: false, benchReason: null, regimeReason: null, knife: null, outOfRangeSince: { [out.pos.address]: T0 - 700e3 }, stops: {}, outOfRangeSec: 600 } }), limits);
     assert.deepEqual(v.violations, []);
+  });
+  await test("re-centre cost gate: a re-centre the seat's fees take past STOCK_RECENTRE_MAX_PAYBACK_HOURS to earn back waits for the price, up to STOCK_RECENTRE_MAX_WAIT_MIN; a cheap one goes at once", () => {
+    const out = straddleAt(ACTIVE + 20);
+    const o = (sec: number, screen?: Partial<NonNullable<Observation["screen"]>>) =>
+      obs({ positions: [out.pos], wallet: { address: "w", sol: 100, token: 0, tokenSymbol: "SPYx", quote: 3000, quoteSymbol: "USDC" }, engine: engineObs({ outOfRangeSec: { [out.pos.address]: sec } }), ...(screen ? { screen: { ...obs().screen!, ...screen } } : {}) }, out.snap);
+    const gated = { ...x, env: { book: "stocks" as const } };
+    const wait = policy.policyDecide(o(700), gated);
+    assert.equal(wait.branch, "recentre-wait", wait.reason);
+    assert.equal(wait.decision.action, "HOLD");
+    assert.match(wait.decision.reasoning, /A fresh 31-bin straddle is allowed, but re-centring costs about [\d.]+ SOL \([\d.]+ SOL of swap at [\d.]+%\) and the seat's fees, about [\d.]+ SOL a day, take [\d.]+h to earn it back/);
+    assert.match(wait.reason, /re-centre pays back in [\d.]+h > 4h, waiting up to 120m/);
+    voice(wait.decision);
+    // the pure cost: the swap is the token bought at the route's fee, the rent what the venue does not refund
+    const sz = { acquireToken: 2, surplusToken: 0, seatSol: 20, sharePct: 10 };
+    const q = { side: "Y", symbol: "USDC", token: out.snap.quoteToken!, priceInSol: 0.01, tokenPriceInQuote: 500 } as never;
+    const rc = policy.recentreCost(o(700), { ...x, openCostSol: 0.2, openCostRefundableSol: 0.05 } as never, q, sz);
+    near(rc.swapSol, 2 * 500 * 0.01 * (policy.swapFeePctFor(out.snap) / 100), 1e-12);
+    near(rc.rentSol, 0.15, 1e-12);
+    near(rc.costSol, rc.swapSol + 0.15, 1e-12);
+    // past the wait it re-centres anyway
+    assert.equal(policy.policyDecide(o(7300), gated).branch, "rebalance");
+    // a pool whose fees pay the re-centre back fast: no wait
+    assert.equal(policy.policyDecide(o(700, { tvlUsd: 100_000, feeToTvl24hPct: 400 }), { ...gated, openCostSol: 0, openCostRefundableSol: 0 }).branch, "rebalance");
+    // a pool nothing priced (no fee figure): the gate does not guess, it re-centres
+    assert.equal(policy.policyDecide(o(700, { feeToTvl24hPct: null }), gated).branch, "rebalance");
+    assert.equal(policy.swapFeePctFor({ baseFeePct: 0.5 }, { SWAP_DEXES: "Meteora DLMM", SWAP_FEE_PCT: "0.1" }), 0.5, "Meteora-only routes pay the pool's fee");
+    assert.equal(policy.swapFeePctFor({ baseFeePct: 0.5 }, { SWAP_FEE_PCT: "0.1" }), 0.1);
   });
   await test("price below the band: the old straddle is all SPYx, the re-centre sells the surplus back (no purchase)", () => {
     const out = straddleAt(ACTIVE - 20);

@@ -77,8 +77,8 @@ import type { RiskLimits } from "../risk/limits";
 import { launchEnv, launchSeatSol, type LaunchEnv } from "../screener/launch";
 import { pairEnv, pairHouseSeatSol, pairSeatSol, type PairEnv } from "../screener/pair";
 import { pairStockEnv, pairStockSeatSol, type PairStockEnv } from "../screener/pairStock";
-import { OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, quoteOf, type PositionSnapshot, type QuoteView } from "../tools/dlmm";
-import { jupiterEnv } from "../tools/jupiter";
+import { OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, quoteOf, type PoolSnapshot, type PositionSnapshot, type QuoteView } from "../tools/dlmm";
+import { jupiterEnv, meteoraOnlyRoutes } from "../tools/jupiter";
 import { bookEnv, type Book } from "../venues/env";
 import type { Observation } from "./observation";
 import { holdDecision, type Decision, type OpenParams } from "./schema";
@@ -97,6 +97,12 @@ export interface PolicyEnv {
   /** the tightest and widest the volatility-derived band may be, in percent of price each way */
   minCoverPct: number;
   maxCoverPct: number;
+  /** stock straddles: the tightest a band may be, in percent of price each way (STOCK_MIN_COVER_PCT) */
+  stockMinCoverPct: number;
+  /** stock straddles: a re-centre whose cost the seat's fees take longer than this to earn back waits (STOCK_RECENTRE_MAX_PAYBACK_HOURS; 0 = off) */
+  stockRecentreMaxPaybackHours: number;
+  /** stock straddles: the longest a costly re-centre waits for the price to come back, in seconds (STOCK_RECENTRE_MAX_WAIT_MIN) */
+  stockRecentreMaxWaitSec: number;
   /** the one-time cost of a seat (rent that never comes back plus the swap round trip) must be earned back inside this many hours (POLICY_MAX_PAYBACK_HOURS) */
   maxPaybackHours: number;
   /** a seat under this share of the book's max exposure is not worth its rent and attention (POLICY_MIN_SEAT_PCT) */
@@ -123,6 +129,9 @@ export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
     volMultiple: Math.max(0, num(env.POLICY_VOL_MULTIPLE, 1)),
     minCoverPct: Math.max(0.01, num(env.POLICY_MIN_COVER_PCT, 0.15)),
     maxCoverPct: Math.max(0.02, num(env.POLICY_MAX_COVER_PCT, 4)),
+    stockMinCoverPct: Math.max(0.01, num(env.STOCK_MIN_COVER_PCT, STOCK_MIN_COVER_PCT_DEFAULT)),
+    stockRecentreMaxPaybackHours: Math.max(0, num(env.STOCK_RECENTRE_MAX_PAYBACK_HOURS, 4)),
+    stockRecentreMaxWaitSec: Math.max(0, num(env.STOCK_RECENTRE_MAX_WAIT_MIN, 120)) * 60,
     maxPaybackHours: Math.max(0, num(env.POLICY_MAX_PAYBACK_HOURS, 24)),
     minScore: num(env.POLICY_MIN_SCORE, 20),
     book: bookEnv(env),
@@ -130,6 +139,12 @@ export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
 }
 
 export const STOCK_COVER_PCT_DEFAULT = 1.5;
+/**
+ * A stock band's floor, each way. The last-hour move made stock bands 3 to 7 bins wide (about 0.3% each
+ * way) on the paper desk (2026-09-16): out of range inside the hour, then a swap to re-centre, every hour.
+ * A tokenized stock moves 2-3% on a normal day; a band has to live through the hour it is set in.
+ */
+export const STOCK_MIN_COVER_PCT_DEFAULT = 1;
 
 export const POLICY_MAX_1H_MOVE_PCT = 15;
 export const POLICY_BLOCK_FLAGS = ["thin", "new", "dumping", "wild"];
@@ -161,7 +176,7 @@ export interface PolicyExtras {
   pairStock?: PairStockEnv;
 }
 
-export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
+export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "recentre-wait" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
 
 export interface PolicyResult {
   decision: Decision;
@@ -404,6 +419,48 @@ export function seatEarnings(o: Observation, x: PolicyExtras, seatSol: number, s
   return { seatUsd, poolFeesPerDayUsd, sharePct, feesPerDayUsd, yieldPctPerDay, costUsd, paybackHours };
 }
 
+/** The fee a swap pays: SWAP_FEE_PCT, or the pool's own base fee when routes are Meteora only (what the paper desk charges). */
+export const swapFeePctFor = (s: Pick<PoolSnapshot, "baseFeePct">, env: NodeJS.ProcessEnv = process.env): number => {
+  const j = jupiterEnv(env);
+  return meteoraOnlyRoutes(j.dexes) ? Math.max(j.feePct, s.baseFeePct) : j.feePct;
+};
+
+/** What re-centring a stock straddle costs, and how long the fresh seat's fees take to earn it back. */
+export interface RecentreCost {
+  swapSol: number;
+  rentSol: number;
+  costSol: number;
+  /** the fresh seat's fees a day in SOL; null when nothing priced the pool */
+  feesPerDaySol: number | null;
+  /** null when the pace is unknown or zero */
+  paybackHours: number | null;
+}
+
+/**
+ * PURE. The swap that evens the halves (the token bought or sold, at the route's fee) plus the rent that
+ * never comes back; the pace is the routing model's for our own pool, else seatEarnings on the pool's 24h fees.
+ */
+export function recentreCost(o: Observation, x: PolicyExtras, q: QuoteView, sz: Pick<StraddleSizing, "acquireToken" | "surplusToken" | "seatSol" | "sharePct">): RecentreCost {
+  const s = o.snapshot;
+  const legSol = (sz.acquireToken + sz.surplusToken) * q.tokenPriceInQuote * q.priceInSol;
+  const swapSol = (legSol * swapFeePctFor(s)) / 100;
+  const openCost = typeof x.openCostSol === "number" && Number.isFinite(x.openCostSol) && x.openCostSol >= 0 ? x.openCostSol : OPEN_COST_ESTIMATE_SOL;
+  const refundable = typeof x.openCostRefundableSol === "number" && x.openCostRefundableSol >= 0 ? x.openCostRefundableSol : Math.min(openCost, POSITION_RENT_SOL);
+  const rentSol = Math.max(0, openCost - refundable);
+  const solPrice = s.solPriceUsd ?? null;
+  let feesPerDaySol: number | null = null;
+  if (solPrice && solPrice > 0) {
+    if (isStockPairPool(o) && s.pair) feesPerDaySol = s.pair.feesPerDayUsd / solPrice;
+    else {
+      const e = seatEarnings(o, x, sz.seatSol, sz.sharePct, false);
+      feesPerDaySol = e ? e.feesPerDayUsd / solPrice : null;
+    }
+  }
+  const costSol = swapSol + rentSol;
+  const paybackHours = feesPerDaySol !== null && feesPerDaySol > 0 ? costSol / (feesPerDaySol / 24) : null;
+  return { swapSol, rentSol, costSol, feesPerDaySol, paybackHours };
+}
+
 interface StraddleSizing {
   /** the whole seat in quote units (both halves) and in SOL */
   seatQuote: number;
@@ -443,7 +500,7 @@ function sizeStraddle(o: Observation, x: PolicyExtras, q: QuoteView, env: Policy
   const slip = limits.maxSlippagePct / 100;
   const openCost = typeof x.openCostSol === "number" && Number.isFinite(x.openCostSol) && x.openCostSol >= 0 ? x.openCostSol : OPEN_COST_ESTIMATE_SOL;
   const widthMultiplier = widthMultiplierFor(o, now);
-  const cover = coverPctFor(o, env, env.stockCoverPct, hotView(o, x));
+  const cover = coverPctFor(o, { ...env, minCoverPct: Math.max(env.minCoverPct, env.stockMinCoverPct) }, env.stockCoverPct, hotView(o, x));
   const bins = stockBinsPerSide(s.binStep, cover.coverPct, limits.maxBinWidth, widthMultiplier);
   // depth on both sides, scaled from the observed bins to the band's reach, in quote units
   const quoteBelow = q.side === "Y";
@@ -1017,6 +1074,20 @@ function stockBandDecide(o: Observation, x: PolicyExtras, env: PolicyEnv, q: Quo
     };
   }
   const width = 2 * sz.bins + 1;
+  // A re-centre pays a swap (and any rent that stays behind). When the fresh seat's fees would take longer
+  // than STOCK_RECENTRE_MAX_PAYBACK_HOURS to earn that back, the band waits for the price to come back, up
+  // to STOCK_RECENTRE_MAX_WAIT_MIN out of range; past that the price is not coming back and it re-centres.
+  const rc = recentreCost(o, x, q, sz);
+  const rcLine = `re-centring costs about ${r(rc.costSol, 3)} SOL (${r(rc.swapSol, 3)} SOL of swap at ${r(swapFeePctFor(s), 2)}%${rc.rentSol > 0 ? `, ${r(rc.rentSol, 3)} SOL of rent` : ""})`;
+  if (env.stockRecentreMaxPaybackHours > 0 && rc.costSol > 0 && rc.feesPerDaySol !== null && (rc.paybackHours === null || rc.paybackHours > env.stockRecentreMaxPaybackHours) && oor < env.stockRecentreMaxWaitSec) {
+    const pay = rc.paybackHours === null ? "and the pool's fees would never earn it back" : `and the seat's fees, about ${r(rc.feesPerDaySol, 3)} SOL a day, take ${r(rc.paybackHours, 1)}h to earn it back, past the ${env.stockRecentreMaxPaybackHours}h limit`;
+    return hold(
+      `Price is ${dist} bins ${where} straddle ${addr} ${range}${own} (${priceLine}) for ${oor}s and the band ${bandClause(o, band, q)}. A fresh ${width}-bin straddle is allowed, but ${rcLine} ${pay}. Waiting for the price to come back, up to ${Math.round(env.stockRecentreMaxWaitSec / 60)} minutes out of range, before paying for it.`,
+      `${dist} bins ${where} the straddle. Re-centring costs ${r(rc.costSol, 2)} SOL. Waiting on the price.`,
+      "recentre-wait",
+      `straddle ${addr} ${where} the price for ${oor}s; ${rc.paybackHours === null ? "re-centre never pays back" : `re-centre pays back in ${r(rc.paybackHours, 1)}h > ${env.stockRecentreMaxPaybackHours}h`}, waiting up to ${Math.round(env.stockRecentreMaxWaitSec / 60)}m`,
+    );
+  }
   return {
     decision: {
       action: "REBALANCE",

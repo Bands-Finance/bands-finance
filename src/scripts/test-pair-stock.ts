@@ -734,7 +734,7 @@ async function main(): Promise<void> {
     assert.equal(p3[0].binsFromRange, 3);
     const wait = policy.policyDecide(observe(s3, p3, 0, { [bandAddr]: 30 }), { limits, now: clock, pairStock: senv });
     assert.equal(wait.branch, "churn-wait");
-    const re = policy.policyDecide(observe(s3, p3, 0, { [bandAddr]: 700 }), { limits, now: clock, openCostSol: pv.openCostSol(s3).total, pairStock: senv });
+    const re = policy.policyDecide(observe(s3, p3, 0, { [bandAddr]: 700 }), { limits, now: clock, openCostSol: pv.openCostSol(s3).total, pairStock: senv, env: { stockRecentreMaxPaybackHours: 0 } });
     assert.equal(re.decision.action, "REBALANCE", re.reason);
     assert.equal(re.branch, "rebalance");
     assert.equal(re.decision.positionAddress, bandAddr);
