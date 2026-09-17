@@ -1,0 +1,83 @@
+/* THE JOURNEY: a fixed engraved desk behind the top of the page, and the words that pass over it. */
+
+.dash > .journey { position: relative; z-index: 1; }
+.stage { position: fixed; inset: 0; z-index: 0; pointer-events: none; background: var(--paper); }
+.stage__canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; opacity: 0; transition: opacity 1.2s ease; }
+.journey--ready .stage__canvas { opacity: 1; }
+/* a breath of paper over the plate where the words stand, so ink never fights ink */
+.stage__veil { position: absolute; inset: 0; background: linear-gradient(to bottom, rgba(243, 236, 221, 0.78) 0, rgba(243, 236, 221, 0) 110px); }
+/* the plate's vignette: it fades into bare paper on the side where the words stand, like an engraving set into a page of text */
+.stage__mist { position: absolute; inset: 0; pointer-events: none; }
+.stage__mist--l { opacity: var(--mist-l, 0); background: linear-gradient(to right, rgba(243, 236, 221, 0.97) 0, rgba(243, 236, 221, 0.95) 38%, rgba(243, 236, 221, 0.6) 52%, rgba(243, 236, 221, 0) 68%); }
+.stage__mist--r { opacity: var(--mist-r, 0); background: linear-gradient(to left, rgba(243, 236, 221, 0.97) 0, rgba(243, 236, 221, 0.95) 38%, rgba(243, 236, 221, 0.6) 52%, rgba(243, 236, 221, 0) 68%); }
+.stage__mist--t { opacity: var(--mist-t, 1); background: linear-gradient(to bottom, rgba(243, 236, 221, 0.97) 0, rgba(243, 236, 221, 0.85) 40%, rgba(243, 236, 221, 0) 60%); }
+/* no WebGL, or the model failed: the beats stand on plain paper with the house rosette */
+.journey--flat .stage { background: var(--paper) radial-gradient(circle at 72% 40%, rgba(255, 122, 26, 0.08), transparent 55%); }
+
+.beat {
+  position: relative;
+  z-index: 1;
+  min-height: 165vh;
+  padding: 0 var(--gut);
+  display: flex;
+  align-items: center;
+  max-width: calc(var(--dash-max) + 2 * var(--gut));
+  margin: 0 auto;
+}
+.beat--hero { min-height: 118vh; align-items: flex-start; padding-top: clamp(120px, 19vh, 210px); }
+.beat--right { justify-content: flex-end; }
+.beat--right .beat__words { width: min(100%, 470px); }
+.beat__words {
+  position: relative;
+  width: min(100%, 540px);
+  padding: 8px 0;
+}
+.beat--hero .beat__words { width: min(100%, 640px); }
+
+.beat__eyebrow { margin: 0 0 18px; font-size: 12px; color: var(--strap-deep); opacity: 0; transform: translateY(8px); transition: opacity 0.7s ease 0.05s, transform 0.7s cubic-bezier(0.2, 0.7, 0.1, 1) 0.05s; }
+.beat__head { margin: 0; font-family: var(--font-serif); font-weight: 600; font-size: clamp(36px, 4.5vw, 66px); line-height: 1; letter-spacing: -0.025em; color: var(--ink); }
+.beat--hero .beat__head { font-size: clamp(44px, 6.6vw, 104px); }
+.beat__line { display: block; overflow: hidden; padding-bottom: 0.12em; margin-bottom: -0.06em; }
+.beat__line > span { display: block; transform: translateY(108%); transition: transform 1s cubic-bezier(0.2, 0.75, 0.1, 1); }
+.beat__line--accent { color: var(--strap); }
+.beat__line--accent > span { transition-delay: 0.09s; }
+.beat__body { margin-top: 26px; font-family: var(--font-serif); font-size: clamp(17px, 1.3vw, 20px); line-height: 1.5; color: var(--ink-2); max-width: 44ch; opacity: 0; transform: translateY(14px); transition: opacity 0.8s ease 0.28s, transform 0.9s cubic-bezier(0.2, 0.7, 0.1, 1) 0.28s; }
+.beat__body p { margin: 0 0 0.7em; }
+.beat__body p:last-child { margin-bottom: 0; }
+.beat__figure { margin: 26px 0 0; display: flex; flex-direction: column; gap: 6px; padding-top: 16px; max-width: 44ch; border-top: 1px solid var(--rule-strong); opacity: 0; transition: opacity 0.8s ease 0.42s; }
+.beat__figure b { font-family: var(--font-mono, "JetBrains Mono", monospace); font-weight: 500; font-size: clamp(22px, 2.3vw, 32px); color: var(--ink); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.beat__figure span { font-family: var(--font-serif); font-style: italic; font-size: 15px; line-height: 1.45; color: var(--ink-3, var(--ink-2)); }
+.beat__links { margin: 24px 0 0; display: flex; gap: 26px; flex-wrap: wrap; opacity: 0; transition: opacity 0.8s ease 0.5s; }
+.dash .beat__links a { color: var(--ink); text-decoration: none; font-size: 15px; border-bottom: 1px solid var(--ink); padding-bottom: 5px; }
+.dash .beat__links a:hover { color: var(--strap-deep); border-bottom-color: var(--strap); }
+
+.beat.is-seen .beat__eyebrow, .beat.is-seen .beat__body, .beat.is-seen .beat__figure, .beat.is-seen .beat__links { opacity: 1; transform: none; }
+.beat.is-seen .beat__line > span { transform: none; }
+
+/* ---------- the statement, a sheet laid over the desk ---------- */
+.sheet { position: relative; z-index: 2; background: var(--paper); box-shadow: 0 -1px 0 var(--rule-strong), 0 -34px 60px -28px rgba(22, 18, 15, 0.38); }
+.sheet::before { content: ""; position: absolute; left: 0; right: 0; top: -7px; height: 7px; background: radial-gradient(circle at 6px -1px, transparent 5px, var(--paper) 5.5px) 0 0 / 12px 7px repeat-x; }
+
+/* ---------- the floating nav ---------- */
+.dash > .dash-nav--float { position: fixed; z-index: 40; top: 12px; left: 0; right: 0; padding: 0 var(--gut); max-width: none; pointer-events: none; }
+.dash-nav--float .dash-nav__bar { pointer-events: auto; max-width: var(--dash-max); margin: 0 auto; display: flex; align-items: center; gap: 24px; padding: 10px 18px; background: rgba(243, 236, 221, 0.86); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border: 1px solid var(--rule-strong); box-shadow: 0 10px 30px -22px rgba(22, 18, 15, 0.6); }
+
+/* ---------- narrow windows: the desk above, the words below on their mist ---------- */
+@media (max-width: 820px) {
+  .beat { min-height: 150vh; align-items: center; }
+  .beat--hero { min-height: 108vh; align-items: flex-end; padding-top: 0; padding-bottom: 9vh; }
+  .beat--right { justify-content: flex-start; }
+  .beat--right .beat__words, .beat__words { width: 100%; }
+  /* a narrow window has no empty side: the words carry their own paper, soft at the top and bottom, and the plate shows above and below it */
+  .beat__words::before { content: ""; position: absolute; z-index: -1; inset: -70px calc(-1 * var(--gut)) -64px; pointer-events: none; background: linear-gradient(to bottom, rgba(243, 236, 221, 0) 0, rgba(243, 236, 221, 0.95) 58px, rgba(243, 236, 221, 0.95) calc(100% - 52px), rgba(243, 236, 221, 0) 100%); }
+  .stage__mist--l, .stage__mist--r { display: none; }
+  .stage__mist--t { background: linear-gradient(to top, rgba(243, 236, 221, 0.97) 0, rgba(243, 236, 221, 0.92) 40%, rgba(243, 236, 221, 0) 58%); }
+  .dash-nav--float .dash-nav__links { display: none; }
+  .dash-nav--float .dash-nav__bar { justify-content: space-between; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .beat__eyebrow, .beat__body, .beat__figure, .beat__links, .beat__line > span { transition: none; opacity: 1; transform: none; }
+  .stage__canvas { transition: none; }
+}
+html[data-motion="off"] .beat__eyebrow, html[data-motion="off"] .beat__body, html[data-motion="off"] .beat__figure, html[data-motion="off"] .beat__links, html[data-motion="off"] .beat__line > span { transition: none; opacity: 1; transform: none; }

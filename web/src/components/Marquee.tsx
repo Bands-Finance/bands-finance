@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { useMotion } from "../motion";
 import "./Marquee.css";
 
 /**
@@ -10,14 +11,17 @@ import "./Marquee.css";
 export function Marquee({ children, speed = 26, scrollBoost = 5, label, className }: { children: ReactNode; speed?: number; scrollBoost?: number; label?: string; className?: string }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
+  const motion = useMotion();
   useEffect(() => {
     const root = rootRef.current;
     const track = trackRef.current;
     if (!root || !track) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (!motion) {
       root.classList.add("marquee--still");
-      return;
+      track.style.transform = "";
+      return () => root.classList.remove("marquee--still");
     }
+    root.classList.remove("marquee--still");
     let raf = 0;
     let last = performance.now();
     let offset = 0;
@@ -66,7 +70,7 @@ export function Marquee({ children, speed = 26, scrollBoost = 5, label, classNam
       root.removeEventListener("focusout", leave);
       window.removeEventListener("scroll", onScroll);
     };
-  }, [speed, scrollBoost]);
+  }, [speed, scrollBoost, motion]);
   return (
     <div className={`marquee${className ? ` ${className}` : ""}`} ref={rootRef} role="group" aria-label={label}>
       <div className="marquee__track" ref={trackRef}>

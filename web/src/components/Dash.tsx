@@ -10,6 +10,7 @@ import { num } from "../narrative";
 import { PLATFORM_URL } from "../site";
 import { BrandFigure } from "./Brand";
 import { Marquee } from "./Marquee";
+import { motionSystemReduced, setMotionPaused, useMotion } from "../motion";
 import "./Dash.css";
 
 /**
@@ -30,6 +31,7 @@ export interface DashNavProps {
 }
 
 const SECTIONS: { id: string; label: string }[] = [
+  { id: "lays", label: "How he works" },
   { id: "made", label: "What he made" },
   { id: "holds", label: "What he holds" },
   { id: "did", label: "What he did" },
@@ -37,7 +39,8 @@ const SECTIONS: { id: string; label: string }[] = [
 
 export function DashNav({ status, agentName }: DashNavProps) {
   return (
-    <header className="dash-nav" role="banner">
+    <header className="dash-nav dash-nav--float" role="banner">
+      <div className="dash-nav__bar">
       <a className="dash-nav__brand" href="#top" aria-label={`${agentName}, top of page`}>
         <Logo size={26} />
         <span className="dash-nav__name engrave">{agentName}</span>
@@ -55,6 +58,7 @@ export function DashNav({ status, agentName }: DashNavProps) {
       <span className={`dash-nav__mode engrave dash-nav__mode--${status.mode}`} title={status.sentence}>
         <i aria-hidden="true" /> {MODE_WORD[status.mode]}
       </span>
+      </div>
     </header>
   );
 }
@@ -155,7 +159,7 @@ export function DashNote({ narrative, record, summary, solPriceUsd, status, wall
           </div>
           <div className="banknote__text">
             <p className="banknote__date engrave">{longDate(now)}</p>
-            <h1 className={`banknote__headline banknote__headline--${tone}`}>{narrative.headline}</h1>
+            <h2 className={`banknote__headline banknote__headline--${tone}`}>His statement of account.</h2>
             {narrative.story.map((s, i) => (
               <p className="banknote__p" key={i}>
                 {s}
@@ -222,6 +226,8 @@ export function DashSection({ id, title, sub, plate, children }: { id: string; t
 /* ---------- footer ---------- */
 
 export function DashFooter({ agentName }: { agentName: string }) {
+  const motion = useMotion();
+  const system = motionSystemReduced();
   return (
     <footer className="dash-foot">
       <GuillocheRule className="dash-foot__braid" height={14} />
@@ -239,6 +245,9 @@ export function DashFooter({ agentName }: { agentName: string }) {
             <a href="https://app.meteora.ag" target="_blank" rel="noreferrer">Meteora</a>
             <a href="https://github.com/louz514/bands-finance" target="_blank" rel="noreferrer">The code</a>
           </nav>
+          <button type="button" className="dash-foot__motion engrave" aria-pressed={!motion} disabled={system} onClick={() => setMotionPaused(motion)}>
+            {system ? "Reduced motion" : motion ? "Pause motion" : "Resume motion"} <span aria-hidden="true">{motion ? "Ⅱ" : "▷"}</span>
+          </button>
         </div>
       </div>
     </footer>

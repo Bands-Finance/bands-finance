@@ -64,7 +64,7 @@
   content: "";
   position: fixed;
   inset: 0;
-  z-index: 0;
+  z-index: 60;
   pointer-events: none;
   opacity: 0.07;
   mix-blend-mode: multiply;
@@ -347,6 +347,9 @@
 .dash-foot__motto { margin: 0; font-size: 17px; letter-spacing: 0.34em; color: var(--ink); }
 .dash-foot__legal { margin: 0; font-family: var(--font-serif); font-style: italic; font-size: 16px; line-height: 1.55; color: var(--ink-3); max-width: 64ch; }
 .dash-foot__links { display: flex; gap: 22px; flex-wrap: wrap; font-size: 12px; }
+.dash-foot__motion { align-self: flex-start; margin-top: 6px; background: none; border: 1px solid var(--rule-strong); color: var(--ink-2); font-size: 11px; padding: 9px 14px; cursor: pointer; }
+.dash-foot__motion:hover:not(:disabled) { color: var(--ink); border-color: var(--ink); }
+.dash-foot__motion:disabled { opacity: 0.6; cursor: default; }
 .dash-foot__links a { color: var(--ink-2); text-decoration: none; border-bottom: 1px solid var(--rule-strong); padding-bottom: 1px; }
 .dash-foot__links a:hover { color: var(--ink); border-bottom-color: var(--strap); }
 
