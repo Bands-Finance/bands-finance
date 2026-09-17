@@ -23,11 +23,14 @@ export interface StageData {
   bands: StageBand[];
   /** fees earned, in SOL: one coin a tenth */
   feesSol: number;
+  /** the abacus: coins standing on each seat, oldest bucket first; the last entry is the newest bucket and takes the last seat */
+  chart?: number[];
 }
 
 const MAX_ROWS = 2;
 const MAX_BINS = 70;
 const MAX_COINS = 140;
+const MAX_CHART_COINS = 24 * 18;
 const BAND_SHARE = 0.68; // the band takes this share of the scale's length; the rest is room for the price to be outside it
 const tmpM = new THREE.Matrix4();
 const tmpM2 = new THREE.Matrix4();
@@ -57,6 +60,18 @@ export class DeskStage {
   private camPts: THREE.Vector3[] = [];
   private lookPts: THREE.Vector3[] = [];
   private follows: string[] = [];
+  private drifts: THREE.Vector3[] = [];
+  private library = new Map<string, { cam: THREE.Vector3; look: THREE.Vector3; fov: number; follow: string; drift: THREE.Vector3 }>();
+  private routeNames: string[] = [];
+  private hold = 0.5;
+  private holdNow = 0.5;
+  private chartCoins: THREE.InstancedMesh | null = null;
+  private chartOutline: THREE.InstancedMesh | null = null;
+  private chartOrigin = new THREE.Vector3();
+  private chartSeats = 24;
+  private chartPitch = 0.62;
+  /** called after every drawn frame, for labels pinned to things on the desk */
+  onFrame: (() => void) | null = null;
   private frames: { x: number; y: number }[] = [];
   private tallFrames: { x: number; y: number }[] = [];
   private rows: Row[] = [];
@@ -119,22 +134,26 @@ export class DeskStage {
     const groundY = num(info?.userData.ground_z, -0.22);
     this.rowLen = num(info?.userData.row_len, 16);
 
-    // camera stations: Cam.0..N and Look.0..N
-    const cams: THREE.Vector3[] = [];
-    const looks: THREE.Vector3[] = [];
-    for (let i = 0; i < 32; i++) {
-      const c = root.getObjectByName(`Cam${i}`) ?? root.getObjectByName(`Cam.${i}`);
-      const l = root.getObjectByName(`Look${i}`) ?? root.getObjectByName(`Look.${i}`);
-      if (!c || !l) break;
-      cams.push(c.getWorldPosition(new THREE.Vector3()));
-      looks.push(l.getWorldPosition(new THREE.Vector3()));
-      this.fovs.push(num(c.userData.fov, 30));
-      this.follows.push(typeof c.userData.follow === "string" ? c.userData.follow : "");
-    }
-    this.stations = cams.length;
-    this.camPts = cams;
-    this.lookPts = looks;
-    this.route();
+    // camera stations, by name: every Cam.<name> carries its station name, and Look.<name> is what it looks at
+    const looksByName = new Map<string, THREE.Object3D>();
+    root.traverse((o) => {
+      const m = /^Look\.?(.+)$/.exec(o.name);
+      if (m) looksByName.set(m[1], o);
+    });
+    root.traverse((o) => {
+      const name = o.userData.station;
+      if (typeof name !== "string") return;
+      const l = looksByName.get(name);
+      if (!l) return;
+      this.library.set(name, {
+        cam: o.getWorldPosition(new THREE.Vector3()),
+        look: l.getWorldPosition(new THREE.Vector3()),
+        fov: num(o.userData.fov, 30),
+        follow: typeof o.userData.follow === "string" ? o.userData.follow : "",
+        // Blender's (x, y, z) is three's (x, z, -y)
+        drift: new THREE.Vector3(num(o.userData.drift_x, 0), num(o.userData.drift_z, 0), -num(o.userData.drift_y, 0)),
+      });
+    });
 
     // prototypes leave the scene; the rows are built from them
     const protoRoot = root.getObjectByName("Protos");
@@ -165,7 +184,19 @@ export class DeskStage {
       this.scene.add(this.coins, this.coinOutline);
     }
 
+    // the abacus: columns of the same coin on the plinth's seats
+    const seats = root.getObjectByName("ChartSeats") ?? root.getObjectByName("Chart.Seats");
+    if (coinProto && seats) {
+      seats.getWorldPosition(this.chartOrigin);
+      this.chartSeats = num(seats.userData.count, 24);
+      this.chartPitch = num(seats.userData.pitch, 0.62);
+      this.chartCoins = this.instanced(coinProto, MAX_CHART_COINS, "Brass");
+      this.chartOutline = this.instanced(coinProto, MAX_CHART_COINS, null);
+      this.scene.add(this.chartCoins, this.chartOutline);
+    }
+
     for (let i = 0; i < MAX_ROWS; i++) this.rows.push(this.buildRow());
+    this.buildRoute();
     this.ready = true;
     this.applyData();
     this.resize();
@@ -247,18 +278,59 @@ export class DeskStage {
     im.setMatrixAt(i, tmpM2.multiplyMatrices(m, this.offsets.get(im)!));
   }
 
-  /** The camera's road through the stations. A station that follows the cursor slides along the tray to where the price is. */
+  /** The page's beats, in order, each naming the station it stands at. */
+  setRoute(names: string[]) {
+    this.routeNames = names;
+    if (this.ready) this.buildRoute();
+  }
+  private buildRoute() {
+    const names = this.routeNames.length ? this.routeNames : [...this.library.keys()];
+    const known = names.map((n) => this.library.get(n) ?? this.library.get("hero")).filter((s): s is NonNullable<typeof s> => !!s);
+    this.camPts = known.map((s) => s.cam);
+    this.lookPts = known.map((s) => s.look);
+    this.fovs = known.map((s) => s.fov);
+    this.follows = known.map((s) => s.follow);
+    this.drifts = known.map((s) => s.drift);
+    this.stations = known.length;
+    this.route();
+  }
+
+  /**
+   * The camera's road through the stations. A station that follows the cursor slides along the tray to where the
+   * price is; one that follows a row moves with that tray (a lone band sits mid-desk, two sit front and back).
+   */
   private route() {
     if (this.camPts.length < 2) return;
-    const front = this.rows.find((r) => r.group.visible);
-    const cams = this.camPts.map((c) => c.clone());
-    const looks = this.lookPts.map((l, i) => {
-      if (this.follows[i] !== "cursor" || !front) return l;
-      return l.clone().setX(front.group.position.x + front.cursorTarget).setZ(front.group.position.z + 0.4);
-    });
-    // the camera keeps its authored offset from what it looks at, so the framing is the same wherever the price is
-    cams.forEach((c, i) => {
-      if (this.follows[i] === "cursor" && front) c.copy(this.camPts[i]).sub(this.lookPts[i]).add(looks[i]);
+    const authoredZ = [1.9, -2.3];
+    const cams: THREE.Vector3[] = [];
+    const looks: THREE.Vector3[] = [];
+    this.camPts.forEach((c, i) => {
+      const cam = c.clone();
+      const look = this.lookPts[i].clone();
+      const follow = this.follows[i];
+      const front = this.rows.find((r) => r.group.visible);
+      if (follow === "cursor" && front) {
+        const to = new THREE.Vector3(front.group.position.x + front.cursorTarget, look.y, front.group.position.z + 0.4);
+        cam.add(to.clone().sub(look));
+        look.copy(to);
+      } else if (follow === "row0" || follow === "row1") {
+        const k = follow === "row0" ? 0 : 1;
+        const row = this.rows[k];
+        if (row?.group.visible) {
+          const dz = row.group.position.z - authoredZ[k];
+          cam.z += dz;
+          look.z += dz;
+          // and along it to where the price is, so the cursor is what the camera is looking at
+          const dx = Math.max(-4.5, Math.min(4.5, row.group.position.x + row.cursorTarget)) - look.x;
+          cam.x += dx;
+          look.x += dx;
+        }
+      }
+      // two beats at the same spot would make a zero-length leg: nudge the second a hair
+      if (cams.length && cams[cams.length - 1].distanceToSquared(cam) < 1e-6) cam.x += 0.01;
+      if (looks.length && looks[looks.length - 1].distanceToSquared(look) < 1e-6) look.x += 0.01;
+      cams.push(cam);
+      looks.push(look);
     });
     this.camCurve = new THREE.CatmullRomCurve3(cams, false, "centripetal");
     this.lookCurve = new THREE.CatmullRomCurve3(looks, false, "centripetal");
@@ -344,14 +416,45 @@ export class DeskStage {
       this.coins.count = this.coinOutline.count = n;
       this.coins.instanceMatrix.needsUpdate = this.coinOutline.instanceMatrix.needsUpdate = true;
     }
+    if (this.chartCoins && this.chartOutline) {
+      const cols = (this.data.chart ?? []).slice(-this.chartSeats);
+      const firstSeat = this.chartSeats - cols.length;
+      let n = 0;
+      cols.forEach((coins, c) => {
+        for (let k = 0; k < Math.min(18, Math.max(0, Math.round(coins))) && n < MAX_CHART_COINS; k++) {
+          tmpM.compose(tmpP.set(this.chartOrigin.x + (firstSeat + c) * this.chartPitch, this.chartOrigin.y + k * 0.064, this.chartOrigin.z), tmpQ.identity(), tmpS.set(0.86, 1, 0.86));
+          this.put(this.chartCoins!, n, tmpM);
+          this.put(this.chartOutline!, n, tmpM);
+          n++;
+        }
+      });
+      this.chartCoins.count = this.chartOutline.count = n;
+      this.chartCoins.instanceMatrix.needsUpdate = this.chartOutline.instanceMatrix.needsUpdate = true;
+    }
     this.route();
     this.renderer.shadowMap.needsUpdate = true;
     this.dirty = true;
   }
 
+  /** Where a named thing on the desk is in the window, in CSS pixels: "row0.cursor", "row0.low", "row0.high". Null when it is not there. */
+  project(key: string): { x: number; y: number } | null {
+    const m = /^row(\d)\.(cursor|low|high)$/.exec(key);
+    if (!m) return null;
+    const row = this.rows[+m[1]];
+    if (!row?.group.visible) return null;
+    const bandLen = this.rowLen * BAND_SHARE;
+    const x = m[2] === "cursor" ? row.cursorX : m[2] === "low" ? -bandLen / 2 : bandLen / 2;
+    const y = m[2] === "cursor" ? 1.75 : 0.5;
+    const z = m[2] === "cursor" ? 0 : 1.55;
+    tmpP.set(row.group.position.x + x, y, row.group.position.z + z).project(this.camera);
+    if (tmpP.z > 1) return null;
+    return { x: ((tmpP.x + 1) / 2) * (this.canvas.clientWidth || 1), y: ((1 - tmpP.y) / 2) * (this.canvas.clientHeight || 1) };
+  }
+
   // ------------------------------------------------------------------ the journey
   /** p is the station the page is at, a float: 0 is the hero, 1.5 is half way from the first beat to the second. */
-  setProgress(p: number) {
+  setProgress(p: number, hold = 0.5) {
+    this.hold = hold;
     this.pTarget = Math.max(0, Math.min(Math.max(0, this.stations - 1), p));
     if (!this.motion) this.pNow = this.pTarget;
     this.dirty = true;
@@ -407,6 +510,7 @@ export class DeskStage {
         this.pNow += dp * (this.motion ? 1 - Math.exp(-dt * 7) : 1);
         moving = true;
       }
+      if (Math.abs(this.hold - this.holdNow) > 0.002) moving = true;
       const dx = this.pointer.x - this.pointerNow.x;
       const dy = this.pointer.y - this.pointerNow.y;
       if (Math.abs(dx) + Math.abs(dy) > 0.0005) {
@@ -439,6 +543,7 @@ export class DeskStage {
       this.dirty = false;
       this.place();
       this.renderer.render(this.scene, this.camera);
+      this.onFrame?.();
       // a slow machine gets a coarser plate, not a stuttering one: step the pixel ratio down while frames run long
       if (moving && dt > 0.034) {
         if (++this.slow > 24 && this.dprCap > 1) {
@@ -474,6 +579,16 @@ export class DeskStage {
     const i = Math.min(this.fovs.length - 2, Math.floor(this.pNow));
     const f = this.pNow - i;
     const fov = this.fovs.length > 1 ? this.fovs[i] * (1 - f) + this.fovs[i + 1] * f : 30;
+    // while a long block of words scrolls past, the camera wanders along its station's drift
+    const k = Math.round(this.pNow);
+    const near = Math.max(0, 1 - Math.abs(this.pNow - k) * 2.5);
+    const drift = this.drifts[k];
+    if (drift && near > 0 && drift.lengthSq() > 0) {
+      this.holdNow += (this.hold - this.holdNow) * 0.12;
+      const w = (this.holdNow - 0.5) * near;
+      pos.addScaledVector(drift, w);
+      look.addScaledVector(drift, w);
+    }
     // a tall window sees a narrow slice: stand further back so the same things stay in frame
     const aspect = this.camera.aspect;
     const back = aspect < 1.35 ? Math.min(1.55, Math.pow(1.35 / aspect, 0.9)) : 1;

@@ -9,8 +9,10 @@ const bands = [
   { label: "ALLINU/SOL", lowerPrice: 0.0002068, upperPrice: 0.0002588, activePrice: +(q.get("price") ?? 0.0002384), bins: 46 },
   { label: "GP/SOL", lowerPrice: 0.0000601, upperPrice: 0.000071, activePrice: 0.0000735, bins: 23 },
 ].slice(0, n);
-stage.setData({ bands, feesSol: +(q.get("fees") ?? 3.0) });
+stage.setData({ bands, feesSol: +(q.get("fees") ?? 3.0), chart: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 9, 5, 11, 14, 8, 6, 10, 4, 7] });
 stage.setMotion(false);
+// ?s=<station name> stands the camera at a named station
+if (q.get("s")) stage.setRoute([q.get("s")!, "hero"]);
 stage
   .load("/3d/desk.glb")
   .then(() => {

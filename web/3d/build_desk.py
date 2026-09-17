@@ -12,7 +12,7 @@ Conventions the web side relies on:
     Felt, Ink, Strap, Ember, Glass, Tape). Colours here are only for looking at the file in Blender.
   - Proto.* objects are prototypes the web stage instances from live data (one Stack per bin, one Coin
     per 0.1 SOL of fees, one Tray and Cursor per open band). They are parked under the desk.
-  - Cam.N / Look.N empties are the camera stations of the scroll journey (N = beat index).
+  - Cam.<name> / Look.<name> empties are the camera stations of the scroll journey; a beat on the page names its station.
   - A custom property outline=0 asks the web stage not to draw an ink contour around that object.
 """
 import bpy, bmesh, math, os, sys
@@ -304,6 +304,24 @@ for i, (x, y, rz, n) in enumerate([(0, 0, 8, 3), (1.35, 1.0, -12, 2), (-0.2, 1.9
         box(f"Vault.Notes.{i}.{k}", (2.1, 1.0, 0.54), (0, 0, 0.27), "Bill", 0.035, parent=g)
         box(f"Vault.Strap.{i}.{k}", (0.42, 1.02, 0.56), (0, 0, 0.27), "Strap", 0.012, parent=g)
 
+# ---- the abacus of fees: a plinth along the front of the blotter with a brass rail of seats. The web stage stands a
+#      column of coins on each seat, one seat a time bucket (an hour or a day), so what he earned reads as a bar chart.
+CHART_SEATS = 24
+CHART_PITCH = 0.62
+chart = empty("Chart", (-2.2, -5.35, 0), desk)
+CH_LEN = CHART_SEATS * CHART_PITCH + 0.7
+box("Chart.Plinth", (CH_LEN, 1.5, 0.22), (0, 0, 0.11), "Wood", 0.05, parent=chart, segments=3)
+box("Chart.Rail.F", (CH_LEN - 0.2, 0.06, 0.06), (0, -0.62, 0.25), "Brass", 0.012, parent=chart)
+box("Chart.Rail.B", (CH_LEN - 0.2, 0.06, 0.06), (0, 0.62, 0.25), "Brass", 0.012, parent=chart)
+box("Chart.Scale", (CH_LEN - 0.3, 0.3, 0.05), (0, -0.98, 0.04), "Ivory", 0.015, parent=chart, rot=(math.radians(-24), 0, 0))
+for i in range(CHART_SEATS):
+    x = (i - (CHART_SEATS - 1) / 2) * CHART_PITCH
+    cyl(f"Chart.Seat.{i:02d}", 0.27, 0.025, (x, 0, 0.23), "Brass", 0.006, parent=chart, verts=24, outline=False)
+    if i % 6 == 0:
+        box(f"Chart.Tick.{i:02d}", (0.03, 0.2, 0.012), (x, -0.98, 0.1), "Ink", 0, parent=chart, outline=False, rot=(math.radians(-24), 0, 0))
+seats = empty("Chart.Seats", (-(CHART_SEATS - 1) / 2 * CHART_PITCH, 0, 0.245), chart)
+seats["count"] = CHART_SEATS; seats["pitch"] = CHART_PITCH
+
 # ---------------------------------------------------------------- prototypes (instanced by the web stage)
 protos = empty("Protos", (0, 0, -40))
 ROW_LEN = 16.0          # the scale's length: the web stage maps the band and its margins onto this
@@ -344,18 +362,28 @@ for o in (stack, strap, chip, coin):
     bpy.context.view_layer.objects.active = o
 
 # ---------------------------------------------------------------- camera stations (beat index)
+# Each station is a NAME the page asks for (a beat says which station it stands at), a camera, what it looks at, a field of
+# view, what it follows (the web stage slides a "cursor" station to where the price is and a "row0"/"row1" station to that tray),
+# and a drift: how far the camera may wander while a long block of words scrolls past (the ledger list).
 STATIONS = [
-    # cam (x, y, z)            look (x, y, z)         fov   follow      note
-    ((19.0, -25.0, 8.5),       (2.5, 0.0, 5.2),       33,   "",         "hero: the desk as a landscape along the bottom of the window, the words in the sky above it"),
-    ((-11.0, -12.0, 5.5),      (1.0, -0.5, 0.3),      32,   "",         "he lays SOL under the price: down the rows"),
-    ((2.5, -9.5, 4.2),         (0.6, -1.2, 0.6),      30,   "cursor",   "traders cross his band: on the cursor (the web stage slides this station to where the price is)"),
-    ((5.2, -8.4, 7.2),         (9.5, -0.9, 0.2),      28,   "",         "fees fall: the dish"),
-    ((-1.4, -7.5, 29.0),       (-1.4, -0.4, 0.0),     30,   "",         "price walks away, he lays the band again: the plan view"),
-    ((17.5, -12.5, 7.0),       (11.3, -3.4, 0.5),     30,   "",         "every move on the record: tape and ledger"),
+    # name       cam (x, y, z)             look (x, y, z)          fov  follow     drift (x, y, z)     note
+    ("hero",     (19.0, -25.0, 8.5),       (2.5, 0.0, 5.2),        33,  "",        (0, 0, 0),          "the desk as a landscape along the bottom of the window, the words in the sky above it"),
+    ("rows",     (-11.0, -12.0, 5.5),      (1.0, -0.5, 0.3),       32,  "",        (0, 0, 0),          "he lays SOL under the price: down the rows"),
+    ("cursor",   (2.5, -9.5, 4.2),         (0.6, -1.2, 0.6),       30,  "cursor",  (0, 0, 0),          "traders cross his band: on the cursor"),
+    ("row0",     (-9.5, -8.9, 6.4),        (0.5, -1.9, 0.4),                  30,  "row0",    (1.5, 0, 0),        "what he holds: the first tray, corner to corner"),
+    ("row1",     (-9.5, -4.7, 6.4),        (0.5, 2.3, 0.4),                     30,  "row1",    (1.5, 0, 0),        "what he holds: the second tray"),
+    ("vault",    (-19.0, -9.0, 5.0),       (-11.6, -0.4, 1.0),     30,  "",        (0, 0, 0),          "he holds nothing: his SOL stacked by the hat"),
+    ("dish",     (5.2, -8.4, 7.2),         (9.5, -0.9, 0.2),       28,  "",        (0, 0, 0),          "fees fall: the dish"),
+    ("chart",    (9.0, -12.0, 4.2),        (1.5, -5.3, 0.7),            30,  "",        (-2.0, 0, 0),       "what he made: the abacus of fees"),
+    ("plan",     (-1.4, -7.5, 29.0),       (-1.4, -0.4, 0.0),      30,  "",        (0, 0, 0),          "price walks away, he lays the band again: the plan view"),
+    ("ledger",   (17.5, -12.5, 7.0),       (11.3, -3.4, 0.5),      30,  "",        (0, 0, 0),          "every move on the record: tape and ledger"),
+    ("tape",     (18.5, -4.0, 6.0),        (12.0, 1.6, 1.2),       30,  "",        (0, -3.5, -0.4),    "what he did: the ticker and its tape, the camera following the tape out as the list scrolls"),
+    ("hat",      (-17.5, -7.5, 4.4),       (-10.6, 3.0, 1.7),      30,  "",        (0, 0, 0),          "the close: his hat, his shades, his cigar"),
 ]
-for i, (c, l, fov, follow, note) in enumerate(STATIONS):
-    e = empty(f"Cam.{i}", c); e["fov"] = fov; e["note"] = note; e["follow"] = follow
-    empty(f"Look.{i}", l)
+for (name, c, l, fov, follow, drift, note) in STATIONS:
+    e = empty(f"Cam.{name}", c); e["fov"] = fov; e["note"] = note; e["follow"] = follow; e["station"] = name
+    e["drift_x"] = drift[0]; e["drift_y"] = drift[1]; e["drift_z"] = drift[2]
+    empty(f"Look.{name}", l)
 
 # ---------------------------------------------------------------- bake transforms of prototypes, export
 bpy.context.view_layer.update()
@@ -373,8 +401,8 @@ for o in [o for o in scene.objects if o.type == "FONT"]:
 if OUT_BLEND:
     # a camera and a sun so the file opens to something when Zach looks at it in Blender
     cam_d = bpy.data.cameras.new("Preview"); cam_d.lens = 60
-    cam = link(bpy.data.objects.new("Preview.Camera", cam_d)); cam.location = STATIONS[0][0]
-    look = Vector(STATIONS[0][1]); d = look - Vector(cam.location)
+    cam = link(bpy.data.objects.new("Preview.Camera", cam_d)); cam.location = STATIONS[0][1]
+    look = Vector(STATIONS[0][2]); d = look - Vector(cam.location)
     cam.rotation_euler = d.to_track_quat("-Z", "Y").to_euler()
     scene.camera = cam
     sun_d = bpy.data.lights.new("Key", "SUN"); sun_d.energy = 3.0

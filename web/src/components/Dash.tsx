@@ -32,8 +32,8 @@ export interface DashNavProps {
 
 const SECTIONS: { id: string; label: string }[] = [
   { id: "lays", label: "How he works" },
-  { id: "made", label: "What he made" },
   { id: "holds", label: "What he holds" },
+  { id: "made", label: "What he made" },
   { id: "did", label: "What he did" },
 ];
 
@@ -120,10 +120,10 @@ const dateWord = (t: number) => new Date(t).toLocaleDateString(undefined, { mont
 const longDate = (t: number) => new Date(t).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
 const MICRO = "EVERY MOVE PUBLISHED AS IT HAPPENED · INCLUDING THE ONES THAT LOST · LIQUIDITY IN BETWEEN · ";
 
-export function DashNote({ narrative, record, summary, solPriceUsd, status, walletAddress, agentName, now, stamp }: DashNoteProps) {
-  const live = status.mode === "live";
+/** The statement's lines: the same figures wherever the page prints them. */
+export function statementRows({ record, summary, solPriceUsd, status, now, stamp }: Pick<DashNoteProps, "record" | "summary" | "solPriceUsd" | "status" | "now" | "stamp">): { label: string; value: ReactNode }[] {
   const fees = record ? record.feesRealized + record.feesUnclaimed : null;
-  const rows: { label: string; value: ReactNode }[] = [
+  return [
     { label: "The book", value: record ? <>{num(record.equityNow)} SOL{usd(record.equityNow, solPriceUsd) ? <span className="dash-ledger__aside"> ≈ {usd(record.equityNow, solPriceUsd)}</span> : null}</> : "·" },
     { label: "At work", value: record ? `${num(record.atWork)} SOL` : "·" },
     { label: "Fees earned", value: fees !== null ? `${num(fees)} SOL` : "·" },
@@ -133,6 +133,11 @@ export function DashNote({ narrative, record, summary, solPriceUsd, status, wall
     { label: "Last decision", value: status.lastTs ? ago(status.lastTs, now) : "none yet" },
     ...(stampWord(stamp, now) ? [{ label: "This page", value: stampWord(stamp, now)! }] : []),
   ];
+}
+
+export function DashNote({ narrative, record, summary, solPriceUsd, status, walletAddress, agentName, now, stamp }: DashNoteProps) {
+  const live = status.mode === "live";
+  const rows = statementRows({ record, summary, solPriceUsd, status, now, stamp });
   const tone = record ? (record.net >= 0.05 ? "up" : record.net <= -0.05 ? "down" : "flat") : "flat";
   return (
     <section className="banknote" id="top" aria-label={`${agentName}, how it's going`}>
