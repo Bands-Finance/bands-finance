@@ -1910,10 +1910,14 @@ async function runIteration(app: App): Promise<void> {
       // quiet or unreadable? A scout that stopped decoding this pool reads zero, and zero must not rotate a
       // seat out: when the venue reports a busy day and the scout saw under a twentieth of its pro-rata
       // share of transactions in its four hours, the reading is not judged.
-      const venueTxns = app.screen?.pools.find((p) => p.address === o.address)?.txns24h ?? null;
-      if (typeof venueTxns === "number" && venueTxns >= 500 && flow.coveredMin >= 60 && flow.swaps240m < 0.05 * venueTxns * (Math.min(240, flow.coveredMin) / 1440)) {
+      // measured in FEES, which both scouts read the same way (the account scout's "swaps" are polls that moved, not transactions)
+      const row = app.screen?.pools.find((p) => p.address === o.address) ?? null;
+      const venueFeesUsd = row?.fees24hUsd ?? null;
+      const solUsdNow = solPriceOf(app);
+      const scoutFeesUsd = solUsdNow ? flow.fees240mQuote * (flow.quoteSymbol === "SOL" ? solUsdNow : 1) : null;
+      if (typeof venueFeesUsd === "number" && venueFeesUsd >= 200 && scoutFeesUsd !== null && flow.coveredMin >= 60 && scoutFeesUsd < 0.05 * venueFeesUsd * (Math.min(240, flow.coveredMin) / 1440)) {
         app.fadeStreak.set(o.address, 0);
-        console.log(`[cycle ${app.cycle} ${o.snapshot.label}] seat check: not judged: the scout decoded ${flow.swaps240m} swaps in its last ${flow.coveredMin} min where the venue reports ${venueTxns.toLocaleString("en-US")} transactions a day; unreadable is not quiet`);
+        console.log(`[cycle ${app.cycle} ${o.snapshot.label}] seat check: not judged: the scout read $${scoutFeesUsd.toFixed(0)} of fees in its last ${flow.coveredMin} min where the venue reports $${Math.round(venueFeesUsd).toLocaleString("en-US")} a day; unreadable is not quiet`);
         continue;
       }
       try {
@@ -2152,7 +2156,11 @@ async function main(): Promise<void> {
         /* a flag that cannot be removed would loop: leave without it */
       }
       console.log(`[loop] RESTART flag seen after cycle ${app.cycle}: leaving cleanly for launchd to restart`);
-      break;
+      // the API server and the hot watch keep the event loop alive: leave explicitly, or the process sits there with no loop
+      // (2026-09-17: the first use of the flag left the desk idle for three minutes until it was restarted by hand)
+      hotWatch?.stop();
+      releaseLock();
+      process.exit(0);
     }
     // THE FAST WATCH between cycles: the scout's last bin for every held band, every FAST_WATCH_SEC
     const fenv = fastEnv();
