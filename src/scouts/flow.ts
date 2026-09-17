@@ -20,8 +20,10 @@ import { IDL, LBCLMM_PROGRAM_IDS } from "@meteora-ag/dlmm";
 
 export const FLOW_FILE = "flow.json";
 export const FLOW_EVENTS_FILE = "flow-events.jsonl";
-export const WINDOWS_MIN = [1, 5, 15, 60] as const;
-export type WindowKey = "1m" | "5m" | "15m" | "60m";
+export const WINDOWS_MIN = [1, 5, 15, 60, 240] as const;
+export type WindowKey = "1m" | "5m" | "15m" | "60m" | "240m";
+/** the longest window: what the scout keeps in memory */
+export const LONGEST_WINDOW_MS = 240 * 60_000;
 
 /** What the scout needs to know about a pool to read its swaps in quote units. */
 export interface PoolMeta {
@@ -76,6 +78,14 @@ export interface FlowPool extends PoolMeta {
   /** the last swap's price, quote per base */
   lastPrice: number | null;
   windows: Record<WindowKey, WindowStats>;
+  /** epoch ms the scout's reading of this pool covers from (its backfill start); null until the backfill is done */
+  watchedSince: number | null;
+  /**
+   * LP fees a day at the last four hours' pace, over the time actually covered (null under an hour of
+   * coverage). One 1.5%-fee swap in a thin pool put MRVL/SOL's hour pace from 0.08% to 1.95%/day on
+   * the seat (2026-09-17); four hours dilute a print to what it is.
+   */
+  feesPerDayQuote240m: number | null;
   /** LP fees a day at the last hour's pace (null under 3 swaps in the hour) and the last 15 minutes' pace, quote units */
   feesPerDayQuote60m: number | null;
   feesPerDayQuote15m: number | null;
@@ -269,39 +279,44 @@ export function windowStats(swaps: readonly FlowSwap[], now: number, windowMs: n
   return w;
 }
 
-/** PURE. The pool's flow file entry from its recent swaps. */
-export function flowPoolOf(pool: PoolMeta, swaps: readonly FlowSwap[], now: number): FlowPool {
+/** PURE. The pool's flow file entry from its recent swaps; `watchedSince` is when the scout's reading starts (null while backfilling). */
+export function flowPoolOf(pool: PoolMeta, swaps: readonly FlowSwap[], now: number, watchedSince: number | null = null): FlowPool {
   const windows = {
     "1m": windowStats(swaps, now, 60_000, pool.band),
     "5m": windowStats(swaps, now, 5 * 60_000, pool.band),
     "15m": windowStats(swaps, now, 15 * 60_000, pool.band),
     "60m": windowStats(swaps, now, 60 * 60_000, pool.band),
+    "240m": windowStats(swaps, now, LONGEST_WINDOW_MS, pool.band),
   };
   const last = swaps.reduce<FlowSwap | null>((a, s) => (s.ts <= now && (!a || s.ts > a.ts) ? s : a), null);
+  const coveredMs = watchedSince === null ? null : Math.max(0, Math.min(LONGEST_WINDOW_MS, now - watchedSince));
   return {
     ...pool,
     asOf: now,
     lastSwapAt: last?.ts ?? null,
     lastPrice: last?.price ?? null,
     windows,
+    watchedSince,
+    feesPerDayQuote240m: coveredMs !== null && coveredMs >= 60 * 60_000 ? (windows["240m"].feesQuote / coveredMs) * 86_400_000 : null,
     feesPerDayQuote60m: windows["60m"].swaps >= 3 ? windows["60m"].feesQuote * 24 : null,
     feesPerDayQuote15m: windows["15m"].swaps >= 3 ? windows["15m"].feesQuote * 96 : null,
   };
 }
 
 /** PURE. Keep only the swaps still inside the longest window (plus a minute of slack). */
-export const trimSwaps = (swaps: readonly FlowSwap[], now: number): FlowSwap[] => swaps.filter((s) => now - s.ts <= 61 * 60_000);
+export const trimSwaps = (swaps: readonly FlowSwap[], now: number): FlowSwap[] => swaps.filter((s) => now - s.ts <= LONGEST_WINDOW_MS + 60_000);
 
 /** One log line per pool, only worth printing when the last poll saw a swap. */
 export function flowLine(p: FlowPool, sinceMs: number, now: number): string {
   const q = p.quoteSymbol;
   const f = (n: number, d = q === "SOL" ? 3 : 1) => n.toFixed(d);
   void sinceMs;
-  void now;
   const w15 = p.windows["15m"];
   const w60 = p.windows["60m"];
+  const w240 = p.windows["240m"];
   const ours = p.band ? ` (${f(w15.ours.feesQuote)} through our bins)` : "";
-  return `[flow] ${p.label}: 15m ${w15.swaps} swaps, ${f(w15.volumeQuote)} ${q}, fees ${f(w15.feesQuote)} ${q}${ours} | 60m ${w60.swaps} swaps, ${f(w60.volumeQuote)} ${q}, fees ${f(w60.feesQuote)} ${q}${p.feesPerDayQuote60m !== null ? ` (${f(p.feesPerDayQuote60m)} ${q}/day pace)` : ""}${w15.largest ? ` | largest ${w15.largest.dir} ${f(w15.largest.volumeQuote)} ${q}` : ""}`;
+  const covered = p.watchedSince === null ? "" : `, ${Math.round(Math.min(LONGEST_WINDOW_MS, now - p.watchedSince) / 60_000)} min covered`;
+  return `[flow] ${p.label}: 15m ${w15.swaps} swaps, ${f(w15.volumeQuote)} ${q}, fees ${f(w15.feesQuote)} ${q}${ours} | 60m ${w60.swaps} swaps, ${f(w60.volumeQuote)} ${q}, fees ${f(w60.feesQuote)} ${q}${p.feesPerDayQuote60m !== null ? ` (${f(p.feesPerDayQuote60m)} ${q}/day pace)` : ""} | 4h ${w240.swaps} swaps, fees ${f(w240.feesQuote)} ${q}${p.feesPerDayQuote240m !== null ? ` (${f(p.feesPerDayQuote240m)} ${q}/day pace${covered})` : covered}${w15.largest ? ` | largest ${w15.largest.dir} ${f(w15.largest.volumeQuote)} ${q}` : ""}`;
 }
 
 /* ---------- reading the desk's view of its pools ---------- */
@@ -349,6 +364,12 @@ export interface FlowContext {
   volume60mQuote: number;
   fees60mQuote: number;
   ours60mQuote: number;
+  swaps240m: number;
+  fees240mQuote: number;
+  /** minutes the scout's reading covers, up to 240; null while it backfills */
+  coveredMin: number | null;
+  /** the four-hour pace over the covered time (null under an hour of coverage): the ranking's basis */
+  feesPerDayQuote240m: number | null;
   feesPerDayQuote60m: number | null;
   feesPerDayQuote15m: number | null;
   lastPrice: number | null;
@@ -371,6 +392,10 @@ export function flowContextOf(p: FlowPool): FlowContext {
     volume60mQuote: w60.volumeQuote,
     fees60mQuote: w60.feesQuote,
     ours60mQuote: w60.ours.feesQuote,
+    swaps240m: p.windows["240m"]?.swaps ?? 0,
+    fees240mQuote: p.windows["240m"]?.feesQuote ?? 0,
+    coveredMin: p.watchedSince === null || p.watchedSince === undefined ? null : Math.round(Math.max(0, Math.min(LONGEST_WINDOW_MS, p.asOf - p.watchedSince)) / 60_000),
+    feesPerDayQuote240m: p.feesPerDayQuote240m ?? null,
     feesPerDayQuote60m: p.feesPerDayQuote60m,
     feesPerDayQuote15m: p.feesPerDayQuote15m,
     lastPrice: p.lastPrice,

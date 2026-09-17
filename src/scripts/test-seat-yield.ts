@@ -4,7 +4,7 @@
  *   npx tsx src/scripts/test-seat-yield.ts
  */
 import assert from "node:assert/strict";
-import { binQuote, consolidation, rankSeats, seatRankingEnv, seatYield, weakSeatRotation, type HeldSeat, type RankedSeat } from "../screener/seatYield";
+import { binQuote, consolidation, rankSeats, seatRankingEnv, seatYield, sittingOut, weakSeatRotation, type HeldSeat, type RankedSeat } from "../screener/seatYield";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -56,15 +56,15 @@ async function main() {
   console.log("ranking and rotation");
   await test("rankSeats: candidates under the floor drop out; the rest best first", () => {
     const c = (label: string, y: number): RankedSeat => ({ address: label, label, mint: `m-${label}`, yieldPctPerDay: y, sharePct: 5, feesPerDayQuote: 0.1, quoteSymbol: "SOL", feeSource: "24h", capSol: 15 });
-    const ranked = rankSeats([c("MCDx", 0.8), c("MRVL", 60), c("NVDAx", 1.2), c("BROS", 3)], { minYieldPct: 1, rotateFactor: 2, minAgeMin: 60 });
+    const ranked = rankSeats([c("MCDx", 0.8), c("MRVL", 60), c("NVDAx", 1.2), c("BROS", 3)], { minYieldPct: 1, rotateFactor: 2, minAgeMin: 60, reentryMin: 60 });
     assert.deepEqual(ranked.map((r) => r.label), ["MRVL", "BROS", "NVDAx"]);
   });
 
   await test("weakSeatRotation: the weakest held seat makes way for a candidate that beats it by the factor, floor or not; pins, young bands and near-misses stay", () => {
     const now = Date.parse("2026-09-17T13:00:00Z");
-    const env = { minYieldPct: 1, rotateFactor: 2, minAgeMin: 60 };
+    const env = { minYieldPct: 1, rotateFactor: 2, minAgeMin: 60, reentryMin: 60 };
     const c = (label: string, y: number, feeSource: RankedSeat["feeSource"] = "flow-60m"): RankedSeat => ({ address: label, label, mint: `m-${label}`, yieldPctPerDay: y, sharePct: 9, feesPerDayQuote: 0.5, quoteSymbol: "SOL", feeSource, capSol: 15 });
-    const h = (label: string, y: number, ageMin: number, pinned = false, heldSol: number | null = null, capSol = 15): HeldSeat => ({ address: label, label, yieldPctPerDay: y, openedAt: now - ageMin * 60_000, pinned, capSol, heldSol });
+    const h = (label: string, y: number, ageMin: number, pinned = false, heldSol: number | null = null, capSol = 15): HeldSeat => ({ address: label, label, yieldPctPerDay: y, openedAt: now - ageMin * 60_000, pinned, capSol, heldSol, feeSource: "flow-4h" });
     const held = [h("MCDx", 0.4, 90), h("NVDAx", 0.9, 90, true), h("MRVL", 20, 90)];
     const ranked = rankSeats([c("BROS", 3), c("MRVL", 20)], env);
     const rot = weakSeatRotation(held, ranked, env, now)!;
@@ -81,6 +81,10 @@ async function main() {
     assert.equal(weakSeatRotation(held, rankSeats([c("MRVL", 20)], env), env, now), null, "the only candidate is already held");
     assert.equal(weakSeatRotation([h("MCDx", 0.4, 90)], rankSeats([c("DKNG", 51, "24h")], env), env, now), null, "the venue's day figure alone (DKNG read 51% that way, 1.7% by the scout) rotates nothing");
     assert.equal(weakSeatRotation([h("MCDx", 0.4, 90)], rankSeats([c("DKNG", 51, "24h"), c("BROS", 3)], env), env, now)?.label, "MCDx", "the best candidate the scout has read decides");
+    assert.match(weakSeatRotation([h("MCDx", 0.4, 90)], rankSeats([c("BROS", 3, "flow-4h")], env), env, now)!.reason, /the last four hours' fees/);
+    assert.equal(sittingOut(now - 30 * 60_000, env, now), true, "given up half an hour ago: sits out");
+    assert.equal(sittingOut(now - 61 * 60_000, env, now), false);
+    assert.equal(sittingOut(undefined, env, now), false);
     // CONSOLIDATION: the best held seat could hold more, a weaker seat funds it
     const dk = h("DKNG", 30, 90, false, 10, 15);
     const con = consolidation([h("MRVL", 1.9, 90, false, 5), dk, h("NVDAx", 1.1, 90, false, 5)], env, now, 0.75)!;
@@ -94,7 +98,7 @@ async function main() {
     assert.equal(consolidation([h("MRVL", 0.9, 90, false, 5), h("DKNG", 0.4, 90, false, 5, 15)], env, now, 0.75), null, "a best seat under the floor grows nothing");
     assert.equal(consolidation([h("MRVL", 1.9, 90, false, null), dk], env, now, 0.75), null, "a seat not yet observed is not judged");
     const e = seatRankingEnv({});
-    assert.deepEqual([e.minYieldPct, e.rotateFactor, e.minAgeMin, e.rankTop], [1, 2, 60, 8]);
+    assert.deepEqual([e.minYieldPct, e.rotateFactor, e.minAgeMin, e.rankTop, e.reentryMin], [1, 2, 60, 8, 60]);
     assert.equal(seatRankingEnv({ METEORA_STOCK_MIN_SEAT_YIELD_PCT: "2.5", METEORA_STOCK_RANK_TOP: "5" }).minYieldPct, 2.5);
   });
 

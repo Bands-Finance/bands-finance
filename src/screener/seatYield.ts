@@ -82,8 +82,8 @@ export interface RankedSeat {
   sharePct: number;
   feesPerDayQuote: number;
   quoteSymbol: string;
-  /** where the pool's fee figure came from: the flow scout's own reading of the last hour, or the venue's 24h figure */
-  feeSource: "flow-60m" | "24h";
+  /** where the pool's fee figure came from: the flow scout's own reading (its four hours, or its hour while coverage is short), or the venue's 24h figure */
+  feeSource: "flow-4h" | "flow-60m" | "24h";
   /** the seat the desk could hold there, SOL: the max band or half the band's depth, whichever is less */
   capSol: number;
 }
@@ -99,6 +99,8 @@ export interface HeldSeat {
   capSol: number;
   /** what the seat holds now, SOL; null before the cycle has observed it */
   heldSol: number | null;
+  /** where the seat's fee figure came from; "24h" means the scout has not read the pool (yet) */
+  feeSource: RankedSeat["feeSource"];
 }
 
 export interface SeatRankingEnv {
@@ -108,7 +110,13 @@ export interface SeatRankingEnv {
   rotateFactor: number;
   /** a band younger than this is not rotated (PIN_ROTATE_MIN_AGE_MIN) */
   minAgeMin: number;
+  /** a pool the ranking gave up sits out this long before it may be seated again (METEORA_STOCK_REENTRY_MIN) */
+  reentryMin: number;
 }
+
+/** PURE. Whether a pool given up at `rotatedOutAt` is still sitting out. */
+export const sittingOut = (rotatedOutAt: number | null | undefined, env: Pick<SeatRankingEnv, "reentryMin">, now: number): boolean =>
+  typeof rotatedOutAt === "number" && now - rotatedOutAt < env.reentryMin * 60_000;
 
 export interface SeatRotation {
   pool: string;
@@ -133,7 +141,7 @@ export function rankSeats(candidates: readonly RankedSeat[], env: SeatRankingEnv
  */
 export function weakSeatRotation(held: readonly HeldSeat[], ranked: readonly RankedSeat[], env: SeatRankingEnv, now: number): SeatRotation | null {
   const heldAddrs = new Set(held.map((h) => h.address));
-  const best = ranked.find((c) => !heldAddrs.has(c.address) && c.feeSource === "flow-60m");
+  const best = ranked.find((c) => !heldAddrs.has(c.address) && c.feeSource !== "24h");
   if (!best) return null;
   const eligible = held.filter((h) => !h.pinned && (h.openedAt === null || now - h.openedAt >= env.minAgeMin * 60_000));
   if (!eligible.length) return null;
@@ -144,7 +152,7 @@ export function weakSeatRotation(held: readonly HeldSeat[], ranked: readonly Ran
   return {
     pool: weakest.address,
     label: weakest.label,
-    reason: `${weakest.label} earns about ${weakest.yieldPctPerDay.toFixed(2)}% a day on its seat${under ? `, under the ${env.minYieldPct}% floor` : ""}, while ${best.label} would earn about ${best.yieldPctPerDay.toFixed(2)}% (${best.sharePct.toFixed(1)}% of its bins, ${best.feeSource === "flow-60m" ? "the last hour's fees" : "the day's fees"}), ${(best.yieldPctPerDay / Math.max(weakest.yieldPctPerDay, 1e-9)).toFixed(1)}x as much`,
+    reason: `${weakest.label} earns about ${weakest.yieldPctPerDay.toFixed(2)}% a day on its seat${under ? `, under the ${env.minYieldPct}% floor` : ""}, while ${best.label} would earn about ${best.yieldPctPerDay.toFixed(2)}% (${best.sharePct.toFixed(1)}% of its bins, ${feeSourceWord(best.feeSource)}), ${(best.yieldPctPerDay / Math.max(weakest.yieldPctPerDay, 1e-9)).toFixed(1)}x as much`,
   };
 }
 
@@ -171,6 +179,8 @@ export function consolidation(held: readonly HeldSeat[], env: SeatRankingEnv, no
   };
 }
 
+export const feeSourceWord = (f: RankedSeat["feeSource"]): string => (f === "flow-4h" ? "the last four hours' fees" : f === "flow-60m" ? "the last hour's fees" : "the day's fees");
+
 const num = (v: string | undefined, d: number): number => {
   if (v === undefined || v.trim() === "") return d;
   const n = Number(v);
@@ -182,10 +192,11 @@ export function seatRankingEnv(env: NodeJS.ProcessEnv = process.env): SeatRankin
     minYieldPct: Math.max(0, num(env.METEORA_STOCK_MIN_SEAT_YIELD_PCT, 1)),
     rotateFactor: Math.max(1, num(env.METEORA_STOCK_ROTATE_FACTOR, 2)),
     minAgeMin: Math.max(0, num(env.PIN_ROTATE_MIN_AGE_MIN, 60)),
+    reentryMin: Math.max(0, num(env.METEORA_STOCK_REENTRY_MIN, 60)),
     rankTop: Math.max(1, Math.floor(num(env.METEORA_STOCK_RANK_TOP, 8))),
   };
 }
 
 /** One line per pool for the log. */
 export const seatLine = (r: RankedSeat): string =>
-  `${r.label}: ${r.yieldPctPerDay.toFixed(2)}%/day on the seat (${r.sharePct.toFixed(1)}% of its bins, ${r.feesPerDayQuote.toFixed(r.quoteSymbol === "SOL" ? 3 : 1)} ${r.quoteSymbol}/day, ${r.feeSource === "flow-60m" ? "last hour" : "24h"})`;
+  `${r.label}: ${r.yieldPctPerDay.toFixed(2)}%/day on the seat (${r.sharePct.toFixed(1)}% of its bins, ${r.feesPerDayQuote.toFixed(r.quoteSymbol === "SOL" ? 3 : 1)} ${r.quoteSymbol}/day, ${r.feeSource === "flow-4h" ? "last 4h" : r.feeSource === "flow-60m" ? "last hour" : "24h"})`;

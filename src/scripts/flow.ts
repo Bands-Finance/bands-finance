@@ -23,7 +23,8 @@ const num = (v: string | undefined, d: number): number => {
   return Number.isFinite(n) && n > 0 ? n : d;
 };
 const POLL_MS = num(process.env.FLOW_POLL_SEC, 5) * 1000;
-const BACKFILL_MS = 60 * 60_000;
+/** FLOW_BACKFILL_MIN: how far back the first pass on a pool reads (240 = the longest window, so the 4h pace is there at once) */
+const BACKFILL_MS = Math.max(1, num(process.env.FLOW_BACKFILL_MIN, 240)) * 60_000;
 const RELIST_MS = 30_000;
 const dataDir = path.resolve(process.cwd(), config.dataDir);
 const connection = new Connection(config.rpcUrl, "confirmed");
@@ -37,6 +38,8 @@ interface Watch {
   /** the newest signature seen; the next poll asks for what came after it */
   newestSig: string | null;
   backfilled: boolean;
+  /** when the reading starts (the backfill's start), once the backfill is done */
+  watchedSince: number | null;
 }
 
 const watches = new Map<string, Watch>();
@@ -71,7 +74,7 @@ function relist(): void {
     const w = watches.get(addr);
     if (w) w.meta = meta; // the band may have changed
     else {
-      watches.set(addr, { meta, swaps: [], newestSig: null, backfilled: false });
+      watches.set(addr, { meta, swaps: [], newestSig: null, backfilled: false, watchedSince: null });
       console.log(`[flow ${stamp()}] watching ${meta.label} (${addr.slice(0, 8)})${meta.band ? `, our band bins [${meta.band.lowerBinId}, ${meta.band.upperBinId}]` : ""}`);
     }
   }
@@ -117,6 +120,7 @@ async function fetchTxs(sigs: string[]): Promise<Map<string, VersionedTransactio
 async function newSignatures(w: Watch): Promise<string[]> {
   const pool = new PublicKey(w.meta.address);
   const sinceSec = Math.floor((Date.now() - BACKFILL_MS) / 1000);
+  if (!w.backfilled && w.watchedSince === null) w.watchedSince = sinceSec * 1000;
   const collected: { signature: string; blockTime?: number | null; err: unknown }[] = [];
   let before: string | undefined;
   for (let page = 0; page < 10; page++) {
@@ -150,7 +154,7 @@ function appendEvents(swaps: FlowSwap[]): void {
 }
 
 function writeFile(now: number): void {
-  const file: FlowFile = { generatedAt: new Date(now).toISOString(), pollSec: POLL_MS / 1000, pools: [...watches.values()].map((w) => flowPoolOf(w.meta, w.swaps, now)) };
+  const file: FlowFile = { generatedAt: new Date(now).toISOString(), pollSec: POLL_MS / 1000, pools: [...watches.values()].map((w) => flowPoolOf(w.meta, w.swaps, now, w.backfilled ? w.watchedSince : null)) };
   const target = path.join(dataDir, FLOW_FILE);
   const tmp = `${target}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(file));
@@ -173,7 +177,7 @@ async function poll(): Promise<void> {
         if (fresh.length) {
           w.swaps = trimSwaps([...w.swaps, ...fresh], now);
           appendEvents(fresh);
-          const p = flowPoolOf(w.meta, w.swaps, now);
+          const p = flowPoolOf(w.meta, w.swaps, now, w.backfilled ? w.watchedSince : null);
           const q = w.meta.quoteSymbol;
           const vol = fresh.reduce((t, s) => t + s.volumeQuote, 0);
           const fee = fresh.reduce((t, s) => t + s.feeQuote, 0);
@@ -184,7 +188,7 @@ async function poll(): Promise<void> {
       }
       if (!w.backfilled) {
         w.backfilled = true;
-        console.log(flowLine(flowPoolOf(w.meta, w.swaps, now), BACKFILL_MS, now));
+        console.log(flowLine(flowPoolOf(w.meta, w.swaps, now, w.watchedSince), BACKFILL_MS, now));
       }
     } catch (err) {
       console.error(`[flow ${stamp()}] ${w.meta.label}: ${(err as Error).message.slice(0, 160)}`);

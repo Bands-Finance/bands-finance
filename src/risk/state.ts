@@ -54,6 +54,8 @@ export interface RiskState {
   priceHistory?: Record<string, PriceSample[]>;
   /** pool address -> epoch ms of the last band move (open, close, rebalance) there; the cooldown is per pool */
   lastMoveByPool?: Record<string, number>;
+  /** epoch ms a pool's seat was given up by the yield ranking (ROTATE): it sits out METEORA_STOCK_REENTRY_MIN before it may be seated again */
+  rotatedOutAt?: Record<string, number>;
   /**
    * position address -> the opening mark of a LAUNCH-lane band (src/screener/launch.ts): which pool
    * it is in, when it opened and what the pool's last hour was trading then. Its PRESENCE is what
@@ -88,6 +90,7 @@ export function emptyState(day = todayUtc()): RiskState {
     feesPendingSince: {},
     priceHistory: {},
     lastMoveByPool: {},
+    rotatedOutAt: {},
     launchBands: {},
     pairPools: {},
   };
@@ -106,6 +109,7 @@ export function loadState(): RiskState {
       feesPendingSince: parsed.feesPendingSince ?? {},
       priceHistory: parsed.priceHistory ?? {},
       lastMoveByPool: parsed.lastMoveByPool ?? {},
+      rotatedOutAt: parsed.rotatedOutAt ?? {},
       launchBands: parsed.launchBands ?? {},
       pairPools: parsed.pairPools ?? {},
     };

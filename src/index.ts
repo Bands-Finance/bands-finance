@@ -67,7 +67,7 @@ import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/wat
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
 import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
 import { flowByPool, flowContextLine, readFlowFile, type FlowContext, type PoolMeta as FlowPoolMeta } from "./scouts/flow";
-import { consolidation, rankSeats, seatLine, seatRankingEnv, seatYield, weakSeatRotation, type HeldSeat, type RankedSeat, type SeatRotation } from "./screener/seatYield";
+import { consolidation, rankSeats, seatLine, seatRankingEnv, seatYield, sittingOut, weakSeatRotation, type HeldSeat, type RankedSeat, type SeatRotation } from "./screener/seatYield";
 import { pinRotateMinAgeMin, pinSeatAction, rotationCandidate, type RotationBand } from "./engine/rotation";
 import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
 import { fetchPoolHistory, historyFresh, historyPhrase, historyRefusal, memeHistoryEnv, type HistoryRecord } from "./screener/memeHistory";
@@ -529,7 +529,11 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
       let feeSource: RankedSeat["feeSource"] = "24h";
       // a pool the scout reads ranks on what the scout saw, a quiet hour included (two swaps in an hour
       // is a quiet pool, not a reason to fall back to the venue's day figure: MRVL/SOL read 160%/day that way)
-      if (flow) {
+      // a pool the scout is still backfilling (no coverage yet) reads as unread: a partial hour is not a pace
+      if (flow && flow.feesPerDayQuote240m !== null) {
+        poolFeesPerDayQuote = flow.feesPerDayQuote240m;
+        feeSource = "flow-4h";
+      } else if (flow && flow.coveredMin !== null) {
         poolFeesPerDayQuote = flow.feesPerDayQuote60m ?? flow.fees60mQuote * 24;
         feeSource = "flow-60m";
       } else if (met?.fees24hUsd !== null && met?.fees24hUsd !== undefined && solPriceUsd) {
@@ -544,25 +548,41 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
       const capSol = Math.max(0, Math.min(riskLimits.maxPositionSol, (y.bandDepthQuote / 2) * q.priceInSol));
       watch.push({ address, label, quoteSide: q.side, quoteSymbol: q.symbol, xDecimals: snapshot.tokenX.decimals, yDecimals: snapshot.tokenY.decimals, band: null });
       if (withPositions.includes(address)) {
-        held.push({ address, label, yieldPctPerDay: y.yieldPctPerDay, openedAt: state.lastMoveByPool?.[address] ?? null, pinned: pinnedTickerOf(app, address, snapshot) !== null, capSol, heldSol: null });
+        held.push({ address, label, yieldPctPerDay: y.yieldPctPerDay, openedAt: state.lastMoveByPool?.[address] ?? null, pinned: pinnedTickerOf(app, address, snapshot) !== null, capSol, heldSol: null, feeSource });
       }
       if (met) ranked.push({ address, label, mint: met.mint, yieldPctPerDay: y.yieldPctPerDay, sharePct: y.sharePct, feesPerDayQuote: y.feesPerDayQuote, quoteSymbol: q.symbol, feeSource, capSol });
     } catch (err) {
       console.log(`[cycle ${app.cycle}] seat yield: ${met?.symbol ?? address.slice(0, 6)} unreadable (${(err as Error).message.slice(0, 80)})`);
     }
   }
-  const worth = rankSeats(ranked, rEnv);
+  // a pool the ranking gave up sits out METEORA_STOCK_REENTRY_MIN: MRVL/SOL was closed at 0.08%/day and
+  // wanted back four minutes later at 1.95% on two swaps (2026-09-17)
+  const satOut = (a: string) => !withPositions.includes(a) && sittingOut(state.rotatedOutAt?.[a], rEnv, now);
+  const worth = rankSeats(ranked.filter((r) => !satOut(r.address)), rEnv);
   app.seatRanking = { ranked: worth, held, at: now };
   if (ranked.length) {
     const all = [...ranked].sort((a, b) => b.yieldPctPerDay - a.yieldPctPerDay);
-    console.log(`[cycle ${app.cycle}] seat yield (${riskLimits.maxPositionSol} SOL seat, floor ${rEnv.minYieldPct}%/day): ${all.map((r) => `${seatLine(r)}${withPositions.includes(r.address) ? " [held]" : ""}${r.yieldPctPerDay < rEnv.minYieldPct ? " [under the floor]" : ""}`).join(" | ")}`);
+    console.log(`[cycle ${app.cycle}] seat yield (${riskLimits.maxPositionSol} SOL seat, floor ${rEnv.minYieldPct}%/day): ${all.map((r) => `${seatLine(r)}${withPositions.includes(r.address) ? " [held]" : ""}${r.yieldPctPerDay < rEnv.minYieldPct ? " [under the floor]" : ""}${satOut(r.address) ? ` [sat out, given up ${Math.round((now - (state.rotatedOutAt?.[r.address] ?? now)) / 60_000)} min ago]` : ""}`).join(" | ")}`);
+  }
+  // no seat is judged on the venue's day figure: while the scout has not read a held pool (it is
+  // backfilling, or just restarted), nothing rotates and nothing consolidates
+  const unread = held.filter((h) => h.feeSource === "24h");
+  if (unread.length) {
+    console.log(`[cycle ${app.cycle}] seat yield: the scout has not read ${unread.map((h) => h.label).join(", ")} yet; no rotation this cycle`);
+    app.seatRanking = { ranked: worth, held: [], at: now };
+    writeFlowWatch(watch, now);
+    return;
   }
   const rot = weakSeatRotation(held, worth, rEnv, now);
   if (rot) {
     app.seatRotation = rot;
     console.log(`[cycle ${app.cycle}] seat yield: rotating out ${rot.label} (${rot.pool.slice(0, 6)}): ${rot.reason}`);
   }
-  // the scout watches the candidates too, so the next ranking has their last hour
+  writeFlowWatch(watch, now);
+}
+
+/** The candidates go to the scout (DATA_DIR/flow-watch.json), so the next ranking has their reading too. */
+function writeFlowWatch(watch: FlowPoolMeta[], now: number): void {
   try {
     const file = path.join(path.resolve(process.cwd(), config.dataDir), "flow-watch.json");
     const tmp = `${file}.${process.pid}.tmp`;
@@ -1411,6 +1431,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   }
   if (execution.ok && (execution.opened || execution.closed)) {
     app.movedThisCycle = true;
+    if (directive?.kind === "ROTATE" && execution.closed) state.rotatedOutAt = { ...(state.rotatedOutAt ?? {}), [o.address]: now };
     const closedSol = execution.closed ? (positions.find((p) => p.address === execution.closed)?.valueInSol ?? 0) : 0;
     app.exposureDelta.set(o.address, (app.exposureDelta.get(o.address) ?? 0) + (execution.opened?.entryValueSol ?? 0) - closedSol);
   }

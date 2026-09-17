@@ -100,7 +100,15 @@ async function main() {
     near(p.feesPerDayQuote15m!, 0.088 * 96, 1e-12);
     assert.equal(p.lastSwapAt, T - 30_000);
     assert.equal(flowPoolOf(NVDAX_SOL, swaps.slice(3), T).feesPerDayQuote60m, null, "under three swaps: no pace");
-    assert.equal(trimSwaps(swaps, T).length, 4);
+    assert.equal(p.windows["240m"].swaps, 5, "the 70-minute swap is inside the four hours");
+    assert.equal(p.feesPerDayQuote240m, null, "no coverage known: no four-hour pace");
+    assert.equal(p.watchedSince, null);
+    const covered = flowPoolOf(NVDAX_SOL, swaps, T, T - 90 * 60_000);
+    near(covered.feesPerDayQuote240m!, (0.29 / (90 * 60_000)) * 86_400_000, 1e-9, "ninety minutes covered: the five swaps' fees over ninety minutes, a day");
+    near(flowPoolOf(NVDAX_SOL, swaps, T, T - 6 * 3600_000).feesPerDayQuote240m!, 0.29 * 6, 1e-9, "six hours watched: the window is four hours");
+    assert.equal(flowPoolOf(NVDAX_SOL, swaps, T, T - 30 * 60_000).feesPerDayQuote240m, null, "under an hour covered: no four-hour pace yet");
+    assert.equal(trimSwaps(swaps, T).length, 5);
+    assert.equal(trimSwaps([...swaps, s(245, 1, 0.001, "buy", [1540, 1540])], T).length, 5, "past four hours and a minute: dropped");
   });
 
   console.log("the desk's pools");
@@ -136,6 +144,11 @@ async function main() {
     near(f.fees15mQuote, 0.03, 1e-12);
     near(f.ours60mQuote, 0.07, 1e-12);
     near(f.feesPerDayQuote60m!, 0.07 * 24, 1e-12);
+    assert.deepEqual([f.swaps240m, f.coveredMin, f.feesPerDayQuote240m], [3, null, null], "the fixture's pool carries no coverage");
+    near(f.fees240mQuote, 0.07, 1e-12);
+    const read = flowContextOf(flowPoolOf(NVDAX_SOL, [s(1, 10, 0.02), s(2, 5, 0.01), s(30, 20, 0.04)], T, T - 2 * 3600_000));
+    assert.equal(read.coveredMin, 120);
+    near(read.feesPerDayQuote240m!, 0.07 * 12, 1e-9);
     assert.deepEqual(f.largest15m, { volumeQuote: 10, dir: "buy" });
     assert.equal(f.quoteSymbol, "SOL");
     assert.equal(flowByPool(file, T + 4 * 60_000).size, 0, "four minutes old: stale, the desk falls back to the 24h figures");
