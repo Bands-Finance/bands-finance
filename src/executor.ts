@@ -646,6 +646,18 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
     if (d.action === "OPEN_POSITION" || d.action === "REBALANCE") {
       if (!d.open) throw new Error("open parameters missing");
       let o: OpenParams = d.open;
+      // A quote-only band being laid (or re-laid) has no use for base tokens in the wallet: on a quote-only book
+      // they are fee claims, or what a close just handed back with its fees. A re-lay closes without liquidating,
+      // so without this the tokens only ever left at a CLAIM, and a band that is re-laid often never claims
+      // (2026-09-17: 1.2 SOL of ALLINU and GP sat in the wallet, outside every stop). Sold first, once worth the minimum.
+      if (ctx.sweepWalletToken && o.side === "SOL_ONLY" && !(o.acquireToken && o.acquireToken > 0)) {
+        const held = (await readWalletToken(ctx)) ?? (ctx.walletToken ?? 0) + tokensBack;
+        const sell = sweepAmount(held, quoteOf(ctx.snapshot).tokenPriceInQuote, ctx.sweepWalletToken.minQuote);
+        if (sell > 0) {
+          const leg = await runSwapLeg(ctx, "sweep", floorTo(sell, tokenDec), result, ledger);
+          if (!leg.ok) result.notes.push(`sweep: the swap failed; ${fmtUnits(sell, tokenDec)} ${ctx.snapshot.baseToken.symbol} stays in the wallet for the next move`);
+        }
+      }
       // A made pair whose pool is not on chain yet: create it first (src/venues/pair.ts). Anything short
       // of a landed creation (dry-run, the PAIR_LIVE gate, a failure) is journaled and ends the cycle here.
       if (isPairPool(ctx.pool) && !ctx.pool.dlmm) {
