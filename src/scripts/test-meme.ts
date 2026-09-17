@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     data: { attributes: { ohlcv_list: Array.from({ length: days }, (_, i) => [T0 + i * DAY, ...f(i)]).reverse() } },
   });
   await test("memeHistoryEnv: 30 days by default, 0 turns the rule off, a 24h cache, a few pools a cycle", () => {
-    assert.deepEqual(memeHistoryEnv({}), { minTxPerDay: 50, maxPages: 40, minDays: 30, ttlHours: 24, lookupsPerCycle: 4 });
+    assert.deepEqual(memeHistoryEnv({}), { minTxPerDay: 50, maxPages: 12, minDays: 30, ttlHours: 24, lookupsPerCycle: 4 });
     assert.equal(memeHistoryEnv({ MEME_MIN_HISTORY_DAYS: "0" }).minDays, 0);
     assert.equal(memeHistoryEnv({ MEME_HISTORY_TTL_HOURS: "0" }).ttlHours, 1, "never an unbounded refetch loop");
   });
@@ -148,6 +148,19 @@ async function main(): Promise<void> {
     assert.match(historyPhrase(m), /^2d of on-chain history \(80 \/ 55 \/ 10 tx a day, yesterday first\)$/);
     assert.equal(historyFromSignatures(sigs, now, 3, 10, false).days, 3);
     assert.equal(historyFromSignatures([], now, 3, 50, true).days, 0);
+    // a capped read on a busy pool: a thousand signatures in four minutes, 900 of them good
+    const busy = Array.from({ length: 1000 }, (_, i) => ({ blockTime: Math.floor(now / 1000) - Math.floor(i * 0.24), err: i % 10 === 0 ? { x: 1 } : null }));
+    const bm = historyFromSignatures(busy, now, 3, 50, false);
+    assert.deepEqual([bm.days, bm.txPerDay], [0, [0, 0, 0]], "nothing of yesterday was reached");
+    assert.ok(bm.coveredHours! >= 0.06 && bm.coveredHours! <= 0.07, `covered ${bm.coveredHours}h`);
+    assert.ok(bm.ratePerDay! > 300_000, `pace ${bm.ratePerDay} a day`);
+    assert.match(historyPhrase(bm), /^0d of on-chain history read \(the read covered 4 min at [\d,]+ tx a day\)$/);
+    const envH = memeHistoryEnv({ MEME_MIN_HISTORY_DAYS: "3" });
+    assert.equal(historyRefusal("ALLINU", { at: now, metrics: bm, error: null }, envH, now, 5.7 * 24), null, "busy and 5.7 days old: admitted on its pace");
+    assert.match(historyRefusal("PAID", { at: now, metrics: bm, error: null }, envH, now, 39)!, /PAID is 1\.6 days old, under the 3 days/);
+    assert.match(historyRefusal("X", { at: now, metrics: bm, error: null }, envH, now, null)!, /X is of unknown age/);
+    const quiet = historyFromSignatures(busy.slice(0, 20).map((s) => ({ ...s, blockTime: s.blockTime - 3600 * 2 })), now, 3, 50, false);
+    assert.match(historyRefusal("Q", { at: now, metrics: { ...quiet, ratePerDay: 20 }, error: null }, envH, now, 200)!, /Q trades at 20 tx a day on chain, under the 50/);
     // the read: pages of 1,000 newest first until a signature is older than the window, or the history ends
     const pages: number[] = [];
     const mk = (n: number, fromSec: number) => Array.from({ length: n }, (_, i) => ({ signature: `s${fromSec}-${i}`, blockTime: fromSec - i * 30, err: null }));

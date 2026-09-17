@@ -652,7 +652,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const hist = memeHistoryEnv();
   // the floor, then the strict rule: a memecoin pool needs a month of its own trading on record
   const memeOk = (c: MemeCandidate, address: string): boolean => {
-    const why = memeRefusal(c, meme) ?? (c.stock || c.house ? null : historyRefusal(c.symbol, app.memeHistory.get(address), hist, Date.now()));
+    const why = memeRefusal(c, meme) ?? (c.stock || c.house ? null : historyRefusal(c.symbol, app.memeHistory.get(address), hist, Date.now(), c.ageHours ?? null));
     if (why && !memeRefused.includes(why)) memeRefused.push(why);
     return why === null;
   };

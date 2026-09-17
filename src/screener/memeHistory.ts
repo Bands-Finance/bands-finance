@@ -38,7 +38,7 @@ const num = (v: string | undefined, d: number): number => {
 export function memeHistoryEnv(env: NodeJS.ProcessEnv = process.env): MemeHistoryEnv {
   return {
     minTxPerDay: Math.max(1, Math.floor(num(env.MEME_MIN_TX_PER_DAY, 50))),
-    maxPages: Math.max(1, Math.floor(num(env.MEME_HISTORY_MAX_PAGES, 40))),
+    maxPages: Math.max(1, Math.floor(num(env.MEME_HISTORY_MAX_PAGES, 12))),
     minDays: Math.max(0, Math.floor(num(env.MEME_MIN_HISTORY_DAYS, 30))),
     ttlHours: Math.max(1, num(env.MEME_HISTORY_TTL_HOURS, 24)),
     lookupsPerCycle: Math.max(0, Math.floor(num(env.MEME_HISTORY_LOOKUPS, 4))),
@@ -61,6 +61,10 @@ export interface HistoryMetrics {
   txPerDay?: number[];
   /** on chain: when the pool's history begins, when the read reached it (else null: older than the window) */
   firstSeenAt?: number | null;
+  /** on chain: hours from the oldest signature read to the newest (a capped read on a busy pool covers hours, not days) */
+  coveredHours?: number;
+  /** on chain: successful transactions a day at the pace of the covered span */
+  ratePerDay?: number;
   /** last close over the first open of the window, percent */
   changePct: number | null;
   /** worst fall from a running peak of closes, percent (negative) */
@@ -144,26 +148,53 @@ export function historyFromSignatures(sigs: readonly { blockTime?: number | null
     if (c >= minTxPerDay) traded++;
     else break;
   }
-  return { days: traded, txPerDay, firstSeenAt: reachedStart ? oldest : null, changePct: null, maxDrawdownPct: null, medianDailyRangePct: null, avgDailyVolumeUsd: null };
+  // the span the read covers and the pace over it: a busy pool (hundreds of transactions a minute)
+  // gives a thousand-signature page of four minutes, so a capped read covers hours, not days
+  let newest: number | null = null;
+  let okCount = 0;
+  for (const s of sigs) {
+    if (typeof s.blockTime !== "number") continue;
+    const ms = s.blockTime * 1000;
+    if (newest === null || ms > newest) newest = ms;
+    if (!s.err) okCount++;
+  }
+  const coveredHours = oldest !== null && newest !== null ? Math.max(1 / 60, (newest - oldest) / 3_600_000) : 0;
+  const ratePerDay = coveredHours > 0 ? (okCount / coveredHours) * 24 : 0;
+  return { days: traded, txPerDay, firstSeenAt: reachedStart ? oldest : null, coveredHours: Math.round(coveredHours * 100) / 100, ratePerDay: Math.round(ratePerDay), changePct: null, maxDrawdownPct: null, medianDailyRangePct: null, avgDailyVolumeUsd: null };
 }
 
 /** The month in one phrase, for the log and the reasons. */
 export const historyPhrase = (m: HistoryMetrics): string =>
   m.txPerDay
-    ? `${m.days}d of on-chain history (${m.txPerDay.map((n) => n.toLocaleString("en-US")).join(" / ")} tx a day, yesterday first${m.firstSeenAt ? `; first seen ${new Date(m.firstSeenAt).toISOString().slice(0, 16)}Z` : ""})`
+    ? m.coveredHours !== undefined && m.coveredHours < m.txPerDay.length * 24 && m.firstSeenAt === null
+      ? `${m.days}d of on-chain history read (the read covered ${m.coveredHours < 1 ? `${Math.round(m.coveredHours * 60)} min` : `${m.coveredHours.toFixed(1)}h`} at ${(m.ratePerDay ?? 0).toLocaleString("en-US")} tx a day)`
+      : `${m.days}d of on-chain history (${m.txPerDay.map((n) => n.toLocaleString("en-US")).join(" / ")} tx a day, yesterday first${m.firstSeenAt ? `; first seen ${new Date(m.firstSeenAt).toISOString().slice(0, 16)}Z` : ""})`
     : historyPhraseCandles(m);
 const historyPhraseCandles = (m: HistoryMetrics): string =>
   `${m.days}d of history: ${m.changePct === null ? "n/a" : `${m.changePct >= 0 ? "+" : ""}${m.changePct}%`} over the window, worst drawdown ${m.maxDrawdownPct ?? "n/a"}%, median day ${m.medianDailyRangePct ?? "n/a"}% high to low`;
 
 /** PURE. Null when the pool has its month of data, else the reason. */
-export function historyRefusal(symbol: string, rec: HistoryRecord | undefined, env: MemeHistoryEnv, now: number): string | null {
+/**
+ * PURE. Null when the pool has its days of history, else the reason. An on-chain read the page cap
+ * cut short (a busy pool) passes on its pace and the pool's age instead: at least minTxPerDay at the
+ * covered span's pace, and `ageHours` (the pair's creation time) past the days wanted.
+ */
+export function historyRefusal(symbol: string, rec: HistoryRecord | undefined, env: MemeHistoryEnv, now: number, ageHours: number | null = null): string | null {
   if (env.minDays <= 0) return null;
   if (!rec) return `${symbol}: its trading history has not been read yet, and the desk wants ${env.minDays} days of it first`;
   if (rec.error && !rec.metrics) return `${symbol}: its trading history could not be read (${rec.error}), and the desk wants ${env.minDays} days of it first`;
   const m = rec.metrics!;
-  if (m.days < env.minDays) return `${symbol} has ${m.days} day${m.days === 1 ? "" : "s"} of trading history, under the ${env.minDays} days the desk wants before entering a memecoin`;
+  if (m.days >= env.minDays) return null;
+  const capped = m.txPerDay !== undefined && m.firstSeenAt === null && m.coveredHours !== undefined && m.coveredHours < env.minDays * 24;
+  if (capped) {
+    const busy = (m.ratePerDay ?? 0) >= env.minTxPerDay;
+    const old = typeof ageHours === "number" && ageHours >= env.minDays * 24;
+    if (busy && old) return null;
+    if (!busy) return `${symbol} trades at ${(m.ratePerDay ?? 0).toLocaleString("en-US")} tx a day on chain, under the ${env.minTxPerDay} a day the desk wants`;
+    return `${symbol} is ${ageHours === null ? "of unknown age" : `${(ageHours / 24).toFixed(1)} days old`}, under the ${env.minDays} days the desk wants before entering a memecoin`;
+  }
   void now;
-  return null;
+  return `${symbol} has ${m.days} day${m.days === 1 ? "" : "s"} of trading history, under the ${env.minDays} days the desk wants before entering a memecoin`;
 }
 
 /** A failed read is retried after this long (a GeckoTerminal 429 must not block a pool for a day). */
