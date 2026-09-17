@@ -25,6 +25,8 @@ export interface SeatYieldInput {
   tokenPriceInQuote: number;
   /** the pool's LP fees a day, quote units */
   poolFeesPerDayQuote: number;
+  /** a HELD seat: our own liquidity per bin already inside `bins`, quote units; it is taken out of "theirs" (absent: 0) */
+  ownPerBinQuote?: number;
 }
 
 export interface SeatYield {
@@ -55,7 +57,8 @@ export function seatYield(i: SeatYieldInput): SeatYield {
   const oursPerBinQuote = i.seatQuote > 0 ? i.seatQuote / width : 0;
   const inBand = i.bins.filter((b) => Math.abs(b.binId - i.activeBinId) <= i.binsEachSide);
   const covered = inBand.length ? inBand : i.bins.filter((b) => b.binId === i.activeBinId);
-  const theirsPerBinQuote = covered.length ? covered.reduce((t, b) => t + binQuote(b, i.quoteSide, i.tokenPriceInQuote), 0) / covered.length : 0;
+  const seenPerBinQuote = covered.length ? covered.reduce((t, b) => t + binQuote(b, i.quoteSide, i.tokenPriceInQuote), 0) / covered.length : 0;
+  const theirsPerBinQuote = Math.max(0, seenPerBinQuote - Math.max(0, i.ownPerBinQuote ?? 0));
   const active = i.bins.find((b) => b.binId === i.activeBinId);
   const activeBinQuote = active ? binQuote(active, i.quoteSide, i.tokenPriceInQuote) : theirsPerBinQuote;
   const share = oursPerBinQuote > 0 ? oursPerBinQuote / (theirsPerBinQuote + oursPerBinQuote) : 0;

@@ -8,7 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { config, riskLimits } from "../config";
 import { buildSystemPrompt } from "./persona";
-import { policyDecide, type PolicyExtras } from "./policy";
+import { policyDecide, type PolicyExtras, type PolicyResult } from "./policy";
 import { Decision, DecisionSchema, holdDecision } from "./schema";
 import { formatObservation, Observation } from "./observation";
 
@@ -92,6 +92,37 @@ export function policyDecideResult(observation: Observation, note: string, opts:
   }
 }
 
+/**
+ * THE MODEL ADVISES, THE ENTRY RULES BIND. The rules learned on the live desk (the scout reads a pool before
+ * it is seated, an hour of coverage, the swap-impact cap, the width rule, the grow limits) live in the desk
+ * policy, and the guards enforce none of them. So when the model wants to put money to work (OPEN or
+ * REBALANCE), the policy is asked too: where the policy would not, the model's proposal is a HOLD that says
+ * so; where it would, the policy's own action and sizing are used with the model's words. The model stays
+ * free to hold, to claim and to close, which the guards judge as before. MODEL_ADVISES=false turns this off.
+ * PURE.
+ */
+export function adviseWithPolicy(model: Decision, policy: PolicyResult): { decision: Decision; note: string | null } {
+  const wantsIn = model.action === "OPEN_POSITION" || model.action === "REBALANCE";
+  if (!wantsIn) return { decision: model, note: null };
+  const p = policy.decision;
+  const policyIn = (p.action === "OPEN_POSITION" || p.action === "REBALANCE") && !!p.open;
+  if (!policyIn) {
+    return {
+      decision: holdDecision(
+        `The model proposed ${model.action} (${model.headline}) and the desk's entry rules do not allow it here: ${policy.reason} (${policy.branch}). ${model.reasoning}`.slice(0, 1900),
+        "Model wanted in. The entry rules say no. Holding.",
+      ),
+      note: `model ${model.action} refused by the desk policy's entry rules (${policy.branch}): ${policy.reason}`,
+    };
+  }
+  return {
+    decision: { ...model, action: p.action, open: p.open, positionAddress: p.positionAddress, liquidate: p.liquidate, reasoning: `${model.reasoning} Sized by the desk policy: ${policy.reason}.`.slice(0, 1900) },
+    note: `model ${model.action} taken with the desk policy's action and sizing (${policy.branch}): ${policy.reason}`,
+  };
+}
+
+export const modelAdvises = (env: NodeJS.ProcessEnv = process.env): boolean => (env.MODEL_ADVISES ?? "").trim().toLowerCase() !== "false";
+
 /** A policy result after the model was asked and did not answer usably: the model id goes in the note, the author stays the policy. */
 function policyAfterModel(observation: Observation, note: string, opts: DecideOptions, usage: LlmUsage, model: string): DecideResult {
   const r = policyDecideResult(observation, note, opts);
@@ -133,6 +164,10 @@ export async function decide(observation: Observation, opts: DecideOptions = {})
     const parsed = response.parsed_output;
     if (!parsed) {
       return policyAfterModel(observation, "Model output did not match the decision schema.", opts, usage, response.model);
+    }
+    if (modelAdvises() && (parsed.action === "OPEN_POSITION" || parsed.action === "REBALANCE")) {
+      const advised = adviseWithPolicy(parsed, policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow }));
+      return { decision: advised.decision, source: "llm", model: response.model, usage, note: advised.note ?? undefined };
     }
     return { decision: parsed, source: "llm", model: response.model, usage };
   } catch (err) {

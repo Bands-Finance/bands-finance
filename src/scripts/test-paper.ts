@@ -511,8 +511,11 @@ async function main(): Promise<void> {
     maxSwapImpactPct: 1.5,
     requireFlow: false,
     minFlowCoverMin: 60,
-    idleRelaySec: 0, minSeatPct: 5, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 20, book: "all", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200 });
-    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 10, book: "stocks", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200, stockGrowMinPct: 50, stockGrowMinAgeMin: 15, maxSwapImpactPct: 1.5, requireFlow: false, minFlowCoverMin: 60, idleRelaySec: 0 });
+    idleRelaySec: 0,
+    maxSideSharePct: 50,
+    sizeRefTravelPct: 0,
+    sizeMinMultiple: 0.33, minSeatPct: 5, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 20, book: "all", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200 });
+    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 10, book: "stocks", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200, stockGrowMinPct: 50, stockGrowMinAgeMin: 15, maxSwapImpactPct: 1.5, requireFlow: false, minFlowCoverMin: 60, idleRelaySec: 0, maxSideSharePct: 50, sizeRefTravelPct: 0, sizeMinMultiple: 0.33 });
     const tuned = policy.policyEnv({ STOCK_MIN_COVER_PCT: "0.5", STOCK_RECENTRE_MAX_PAYBACK_HOURS: "0", STOCK_RECENTRE_MAX_WAIT_MIN: "30" });
     assert.deepEqual([tuned.stockMinCoverPct, tuned.stockRecentreMaxPaybackHours, tuned.stockRecentreMaxWaitSec], [0.5, 0, 1800]);
   });
@@ -603,6 +606,21 @@ async function main(): Promise<void> {
     const shallow = policy.policyDecide(obs({}, snapAt(260, { liquidityBelowY: 4 })), x); // 0.4 SOL/bin x 25 bins = 10 SOL of depth
     assert.equal(shallow.decision.open!.amountSol, 10);
     assert.match(shallow.decision.reasoning, /bound by half the band's depth \(10 SOL\); our share of the band 50%/);
+    // POLICY_MAX_SIDE_SHARE_PCT: a quarter of the band with ours in it is a third of what the others hold
+    const quarter = policy.policyDecide(obs({}, snapAt(260, { liquidityBelowY: 12 })), { ...x, env: { maxSideSharePct: 25 } }); // 30 SOL of depth
+    near(quarter.decision.open!.amountSol, 10, 1e-9);
+    assert.match(quarter.decision.reasoning, /bound by 25% of the band's depth with ours in it \(30 SOL of others' there\); our share of the band 25%/);
+    near(policy.depthCapQuote(10, 50), 10, 1e-12);
+    near(policy.depthCapQuote(10, 25), 10 / 3, 1e-12);
+    // POLICY_SIZE_REF_TRAVEL_PCT: a pool travelling 27% an hour against a 15% reference seats 0.56 of the max band; never under the floor
+    near(policy.travelSizeMultiple(27, 15, 0.33), 15 / 27, 1e-12);
+    assert.equal(policy.travelSizeMultiple(10, 15, 0.33), 1);
+    assert.equal(policy.travelSizeMultiple(90, 15, 0.33), 0.33);
+    assert.equal(policy.travelSizeMultiple(null, 15, 0.33), 1);
+    assert.equal(policy.travelSizeMultiple(90, 0, 0.33), 1, "0 turns it off");
+    const wild = policy.policyDecide(obs({ screen: { ...obs().screen!, recentMovePct: 14 } }), { ...x, env: { sizeRefTravelPct: 7, maxCoverPct: 25 } });
+    near(wild.decision.open!.amountSol, Math.floor((limits.maxPositionSol * 0.5) * 1e4) / 1e4, 1e-9);
+    assert.match(wild.decision.reasoning, /bound by 14% of hourly travel against the 7% reference: 0\.5 of the max band/);
     const poor = policy.policyDecide(obs({ wallet: { address: "w", sol: 10, token: 0, tokenSymbol: "ANSEM", quote: 10, quoteSymbol: "SOL" } }), x);
     // 10 SOL, 1 SOL reserve, rent for this seat and for the 3 seats still to open (4 pools, none held)
     near(poor.decision.open!.amountSol, Math.floor((10 - 1 - dlmm.OPEN_COST_ESTIMATE_SOL - 3 * dlmm.OPEN_COST_ESTIMATE_SOL) * 1e4) / 1e4, 1e-9);

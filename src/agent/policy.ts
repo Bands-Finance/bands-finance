@@ -117,6 +117,12 @@ export interface PolicyEnv {
   minFlowCoverMin: number;
   /** POLICY_IDLE_RELAY_SEC: an idle all-quote band (the price ran off its quote side) is re-laid after this long instead of 3x the out-of-range minimum; it needs no swap (0 = the 3x rule) */
   idleRelaySec: number;
+  /** POLICY_MAX_SIDE_SHARE_PCT: our liquidity as a share of a band's depth, at most (50 = as deep as everybody else together) */
+  maxSideSharePct: number;
+  /** POLICY_SIZE_REF_TRAVEL_PCT: a pool that is not a stock travelling more than this in an hour gets a proportionally smaller seat (0 = off) */
+  sizeRefTravelPct: number;
+  /** POLICY_SIZE_MIN_MULTIPLE: and never smaller than this share of the max band */
+  sizeMinMultiple: number;
   /** the self-learning tuner's band width multiple (src/learn/lessons.ts), learned from memecoin seats and applied to pools that are not stocks; absent without a tuning file */
   tunedVolMultiple?: number;
   /** the one-time cost of a seat (rent that never comes back plus the swap round trip) must be earned back inside this many hours (POLICY_MAX_PAYBACK_HOURS) */
@@ -161,6 +167,9 @@ function policyEnvBase(env: NodeJS.ProcessEnv): PolicyEnv {
     requireFlow: (env.POLICY_REQUIRE_FLOW ?? "").trim().toLowerCase() === "true",
     minFlowCoverMin: Math.max(0, num(env.POLICY_MIN_FLOW_COVER_MIN, 60)),
     idleRelaySec: Math.max(0, num(env.POLICY_IDLE_RELAY_SEC, 0)),
+    maxSideSharePct: Math.min(90, Math.max(1, num(env.POLICY_MAX_SIDE_SHARE_PCT, 50))),
+    sizeRefTravelPct: Math.max(0, num(env.POLICY_SIZE_REF_TRAVEL_PCT, 0)),
+    sizeMinMultiple: Math.min(1, Math.max(0.05, num(env.POLICY_SIZE_MIN_MULTIPLE, 0.33))),
     maxPaybackHours: Math.max(0, num(env.POLICY_MAX_PAYBACK_HOURS, 24)),
     minScore: num(env.POLICY_MIN_SCORE, 20),
     book: bookEnv(env),
@@ -266,7 +275,7 @@ export function stockBinsPerSide(binStep: number, coverPct: number, maxBinWidth:
 /** The scout's reading for this pool: on the screen context for a board pool, on the observation itself for a pick off the board. */
 export const flowOf = (o: { screen?: Observation["screen"]; flow?: Observation["flow"] }): NonNullable<Observation["flow"]> | null => o.screen?.flow ?? o.flow ?? null;
 
-export function coverPctFor(o: Pick<Observation, "screen"> & Partial<Pick<Observation, "engine" | "flow">> & { snapshot?: { binStep: number } }, env: PolicyEnv, base: number, hot: { priceChange1hPct: number | null }): { coverPct: number; from: string } {
+export function coverPctFor(o: Pick<Observation, "screen"> & Partial<Pick<Observation, "engine" | "flow">> & { snapshot?: { binStep: number } }, env: PolicyEnv, base: number, hot: { priceChange1hPct: number | null }): { coverPct: number; from: string; movePct: number | null } {
   // The pool's own swaps first (the flow scout: every bin the trades touched, exact): the larger of the
   // last hour's travel and half the last four hours', so one quiet hour does not lay a narrow band on a
   // token that travels (GP/SOL: 6 bins in the hour, 13 in four, laid 6 wide and idle in minutes). Then the
@@ -288,7 +297,7 @@ export function coverPctFor(o: Pick<Observation, "screen"> & Partial<Pick<Observ
   const how = fromScout
     ? `the price travelled ${r(Math.abs(move ?? 0), 2)}% (${bins60 ?? "n/a"} bins in the last hour's swaps, ${bins240 ?? "n/a"} in four hours)`
     : `the price travelled ${r(Math.abs(move ?? 0), 2)}% in the last hour`;
-  if (multiple <= 0 || move === null || !Number.isFinite(move)) return { coverPct: base, from: `${r(base, 2)}% each way (configured)` };
+  if (multiple <= 0 || move === null || !Number.isFinite(move)) return { coverPct: base, from: `${r(base, 2)}% each way (configured)`, movePct: move !== null && Number.isFinite(move) ? Math.abs(move) : null };
   const raw = Math.abs(move) * multiple;
   const coverPct = Math.min(env.maxCoverPct, Math.max(env.minCoverPct, raw));
   const why =
@@ -297,8 +306,18 @@ export function coverPctFor(o: Pick<Observation, "screen"> & Partial<Pick<Observ
       : raw > env.maxCoverPct
         ? `${r(coverPct, 2)}% each way (the cap: ${how})`
         : `${r(coverPct, 2)}% each way (${multiple}x: ${how})`;
-  return { coverPct, from: why };
+  return { coverPct, from: why, movePct: Math.abs(move) };
 }
+
+/** PURE. The depth cap as a quote amount: ours at most `maxSharePct` of (theirs + ours). 50% is "as deep as everybody else". */
+export const depthCapQuote = (theirsQuote: number, maxSharePct: number): number => {
+  const sh = Math.min(0.9, Math.max(0.01, maxSharePct / 100));
+  return Math.max(0, theirsQuote) * (sh / (1 - sh));
+};
+
+/** PURE. The seat's share of the max band for a pool's measured hourly travel: 1 up to the reference, then in proportion, never under the floor. */
+export const travelSizeMultiple = (movePct: number | null, refPct: number, minMultiple: number): number =>
+  refPct > 0 && movePct !== null && movePct > refPct ? Math.max(minMultiple, refPct / movePct) : 1;
 
 export function widthMultiplierFor(o: Pick<Observation, "screen" | "engine">, now: number): number {
   if (!isStockPool(o)) return 1;
@@ -391,9 +410,12 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
   const quoteBelow = q.side === "Y";
   const lowerBinId = quoteBelow ? s.activeBinId - bins : s.activeBinId;
   const upperBinId = quoteBelow ? s.activeBinId : s.activeBinId + bins;
-  const depthQuote = bandDepthQuote({ quoteSide: q.side, lowerBinId, upperBinId }, s);
   const closingQuote = closing ? (closing.quoteInPosition ?? closing.solInPosition / q.priceInSol) : 0;
   const closingSol = closing ? closing.valueInSol : 0;
+  // the depth that is not ours: a band being re-laid over its own bins must not count itself as the pool's depth
+  const overlaps = !!closing && closing.lowerBinId <= upperBinId && closing.upperBinId >= lowerBinId;
+  const depthQuote = Math.max(0, bandDepthQuote({ quoteSide: q.side, lowerBinId, upperBinId }, s) - (overlaps ? closingQuote : 0));
+  const travelMultiple = isStockPool(o) ? 1 : travelSizeMultiple(cover.movePct, env.sizeRefTravelPct, env.sizeMinMultiple);
   const walletQuote = (o.wallet.quote ?? (quoteIsSol ? o.wallet.sol : 0)) + closingQuote;
   const effectiveMaxSol = Math.min(limits.maxPositionSol, o.engine?.effectiveMaxPositionSol ?? limits.maxPositionSol);
   const thisPoolExposure = o.positions.reduce((t, p) => t + p.valueInSol, 0);
@@ -401,8 +423,9 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
   const caps: { name: string; quote: number }[] = [
     { name: `max band ${r(effectiveMaxSol)} SOL`, quote: effectiveMaxSol / q.priceInSol },
     { name: `95% of the wallet's ${r(walletQuote, quoteIsSol ? 4 : 2)} ${q.symbol}`, quote: walletQuote * WALLET_SHARE },
-    { name: `half the band's depth (${r(depthQuote, 2)} ${q.symbol})`, quote: depthQuote },
+    { name: env.maxSideSharePct === 50 ? `half the band's depth (${r(depthQuote, 2)} ${q.symbol})` : `${env.maxSideSharePct}% of the band's depth with ours in it (${r(depthQuote, 2)} ${q.symbol} of others' there)`, quote: depthCapQuote(depthQuote, env.maxSideSharePct) },
     { name: `exposure room ${r(roomSol)} SOL`, quote: roomSol / q.priceInSol },
+    ...(travelMultiple < 1 ? [{ name: `${r(cover.movePct ?? 0, 1)}% of hourly travel against the ${env.sizeRefTravelPct}% reference: ${r(travelMultiple, 2)} of the max band`, quote: (effectiveMaxSol * travelMultiple) / q.priceInSol }] : []),
   ];
   // The launch lane's seat cap, on top of everything else. A brand-new pool may be the best-paying
   // thing on the board and still only get a tenth of the book: the lane admits a category, and a
@@ -566,10 +589,13 @@ function sizeStraddle(o: Observation, x: PolicyExtras, q: QuoteView, env: Policy
   const observedToken = s.bins.filter((b) => (quoteBelow ? b.binId > a : b.binId < a)).length || 1;
   const quoteSideLiq = quoteBelow ? s.liquidityBelowY : s.liquidityAboveX;
   const tokenSideLiq = quoteBelow ? s.liquidityAboveX : s.liquidityBelowY;
-  const depthQuote = (quoteSideLiq / observedQuote) * bins + (tokenSideLiq / observedToken) * bins * p;
   // what the wallet (and a closing band) can put up
   const closingQuote = closing ? (closing.quoteInPosition ?? closing.solInPosition / q.priceInSol) : 0;
   const closingToken = closing ? (q.side === "X" ? closing.amountY + closing.feeY : closing.amountX + closing.feeX) : 0;
+  // the depth that is not ours: a held straddle sits in the very bins the snapshot sums, and counting it as the pool's
+  // depth lets successive re-lays walk past the share rule (each one sees a deeper pool: its own)
+  const ownInBand = closing ? closingQuote + (q.side === "X" ? closing.amountY : closing.amountX) * p : 0;
+  const depthQuote = Math.max(0, (quoteSideLiq / observedQuote) * bins + (tokenSideLiq / observedToken) * bins * p - ownInBand);
   const closingSol = closing ? closing.valueInSol : 0;
   const walletQuote = (o.wallet.quote ?? (quoteIsSol ? o.wallet.sol : 0)) + closingQuote;
   const heldToken = o.wallet.token + closingToken;
@@ -589,7 +615,7 @@ function sizeStraddle(o: Observation, x: PolicyExtras, q: QuoteView, env: Policy
   const caps: { name: string; quote: number }[] = [
     { name: `max band ${r(effectiveMaxSol)} SOL`, quote: effectiveMaxSol / q.priceInSol },
     { name: `the wallet's ${r(walletQuote, quoteIsSol ? 4 : 2)} ${q.symbol} and ${r(heldToken, 4)} ${s.baseToken.symbol} (95%, the token half bought at ${limits.maxSlippagePct}% slippage${quoteIsSol ? `, after rent, the ${limits.gasReserveSol} SOL gas reserve and ${r(rentBudget, 3)} SOL of rent kept for ${otherSeats} more seat(s)` : ""})`, quote: Math.max(0, walletCap) },
-    ...(stockPair ? [] : [{ name: `half the band's depth on both sides (${r(depthQuote, 2)} ${q.symbol})`, quote: depthQuote }]),
+    ...(stockPair ? [] : [{ name: env.maxSideSharePct === 50 ? `half the band's depth on both sides (${r(depthQuote, 2)} ${q.symbol})` : `${env.maxSideSharePct}% of the band's depth on both sides with ours in it (${r(depthQuote, 2)} ${q.symbol} of others' there)`, quote: depthCapQuote(depthQuote, env.maxSideSharePct) }]),
     { name: `exposure room ${r(roomSol)} SOL`, quote: roomSol / q.priceInSol },
   ];
   // the token half is bought through this pool's bins (and sold back the same way): the seat is capped

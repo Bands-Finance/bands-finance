@@ -51,6 +51,10 @@ async function main() {
     near(lumpy.theirsPerBinQuote, (30 + 4 * 10) / 5, 1e-9, "the mean over the band's five bins");
     assert.equal(seatYield({ seatQuote: 0, binsEachSide: 2, activeBinId: 100, bins, quoteSide: "Y", tokenPriceInQuote: 2.35, poolFeesPerDayQuote: 1 }).sharePct, 0);
     near(binQuote({ xAmount: 2, yAmount: 3 }, "X", 4), 2 + 12, 1e-12, "quote on the X side: Y priced into X");
+    // a HELD seat: our own liquidity is already inside the bins the snapshot shows; it is not "theirs"
+    const held = seatYield({ seatQuote: 5, binsEachSide: 2, activeBinId: 100, bins: flat(11, 2.35), quoteSide: "Y", tokenPriceInQuote: 2.35, poolFeesPerDayQuote: 1, ownPerBinQuote: 1 });
+    near(held.theirsPerBinQuote, 10, 1e-9, "11 seen a bin, 1 of it ours");
+    near(held.sharePct, (1 / 11) * 100, 1e-9, "the same share as a candidate seat of that size in a 10-a-bin pool");
     // the token liquidity a buy reaches inside the impact cap: 1.25% bins reach one bin past the active inside 1.5%, 0.2% bins reach seven
     near(swapDepthWithin(flat(10, 2.35), 100, "Y", 2.35, 125, 1.5), 10, 1e-9, "MRVL-like: the active bin holds no token, the next holds 10 SOL of it");
     near(swapDepthWithin(flat(10, 2.35), 100, "Y", 2.35, 20, 1.5), 70, 1e-9, "NVDAx-like: seven bins of 10");

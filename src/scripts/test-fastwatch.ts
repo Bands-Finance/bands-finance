@@ -5,6 +5,9 @@
 import assert from "node:assert/strict";
 import { earlyCycleAllowed, fastEnv, fastTrigger, type WatchedBand } from "../engine/fastwatch";
 import { sweepAmount } from "../executor";
+import { adviseWithPolicy, modelAdvises } from "../agent/decide";
+import type { Decision } from "../agent/schema";
+import type { PolicyResult } from "../agent/policy";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -72,6 +75,26 @@ async function main() {
     assert.equal(sweepAmount(0, 1, 0.05), 0);
     assert.equal(sweepAmount(100, 0, 0.05), 0, "no price, no sale");
     assert.equal(sweepAmount(1e-7, 1_000_000, 0.05), 0, "dust by units");
+  });
+
+  await test("adviseWithPolicy: the model may hold, claim and close as it likes; to put money to work it needs the policy's entry rules, and takes the policy's sizing", () => {
+    const open = { side: "SOL_ONLY" as const, amountSol: 15, amountToken: 0, binsBelowActive: 3, binsAboveActive: 0, strategy: "Spot" as const };
+    const model = (action: Decision["action"], over: Partial<Decision> = {}): Decision => ({ action, open: action === "OPEN_POSITION" ? open : null, positionAddress: null, reasoning: "the model's case", confidence: 0.8, headline: "model headline", ...over });
+    const policyOpen: PolicyResult = { decision: { action: "OPEN_POSITION", open: { ...open, amountSol: 4.2, binsBelowActive: 20 }, positionAddress: null, reasoning: "r", confidence: 0.6, headline: "h" }, reason: "open 4.2 SOL across 21 bins", branch: "open" };
+    const policyWait: PolicyResult = { decision: { action: "HOLD", open: null, positionAddress: null, reasoning: "r", confidence: 0.5, headline: "h" }, reason: "the scout's reading covers 18 min < 60 (POLICY_MIN_FLOW_COVER_MIN)", branch: "flow-wait" };
+    const taken = adviseWithPolicy(model("OPEN_POSITION"), policyOpen);
+    assert.equal(taken.decision.action, "OPEN_POSITION");
+    assert.deepEqual([taken.decision.open!.amountSol, taken.decision.open!.binsBelowActive], [4.2, 20], "the policy's size and width, not the model's 15 SOL in 4 bins");
+    assert.match(taken.decision.reasoning, /^the model's case Sized by the desk policy: open 4\.2 SOL across 21 bins\.$/);
+    assert.equal(taken.decision.headline, "model headline");
+    const refused = adviseWithPolicy(model("OPEN_POSITION"), policyWait);
+    assert.equal(refused.decision.action, "HOLD");
+    assert.equal(refused.decision.headline, "Model wanted in. The entry rules say no. Holding.");
+    assert.match(refused.note!, /refused by the desk policy's entry rules \(flow-wait\): the scout's reading covers 18 min/);
+    assert.equal(adviseWithPolicy(model("REBALANCE", { open, positionAddress: "POS" }), policyWait).decision.action, "HOLD");
+    for (const a of ["HOLD", "CLOSE_POSITION", "CLAIM_FEES"] as const) assert.equal(adviseWithPolicy(model(a), policyWait).decision.action, a, `${a} passes as it is`);
+    assert.equal(modelAdvises({}), true);
+    assert.equal(modelAdvises({ MODEL_ADVISES: "false" }), false);
   });
 
   console.log(`\n${passed} fast watch tests passed`);

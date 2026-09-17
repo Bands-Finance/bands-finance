@@ -210,6 +210,18 @@ function banner(app: App): void {
   console.log("=".repeat(72));
   console.log(`${config.agentName}  |  ${mode}`);
   console.log(`pools     ${config.pinnedPools.length ? `pinned ${config.pinnedPools.join(", ")} + ` : ""}screener top picks, max ${config.maxActivePools} at once`);
+  // the effective rules, as the code reads them now (a typo in the env falls back to a default: this line shows what is in force)
+  {
+    const pe = policyEnv();
+    const fe = fastEnv();
+    console.log(
+      `rules     book ${pe.book} | width ${pe.tunedVolMultiple !== undefined ? `${pe.tunedVolMultiple}x (tuned; ${pe.volMultiple}x for stocks)` : `${pe.volMultiple}x`} of measured travel, ${pe.minCoverPct}% to ${pe.maxCoverPct}% each way | ` +
+        `entry: ${pe.requireFlow ? `the scout's reading first, ${pe.minFlowCoverMin} min of it` : "no flow gate"}, seat yield >= ${pe.minSeatYieldPct}%/day, score > ${pe.minScore}, 24h volume >= $${pe.minVolume24hUsd.toLocaleString("en-US")} | ` +
+        `size: side share <= ${pe.maxSideSharePct}%${pe.sizeRefTravelPct > 0 ? `, scaled down past ${pe.sizeRefTravelPct}% of hourly travel (floor ${pe.sizeMinMultiple})` : ""}, swap impact <= ${pe.maxSwapImpactPct}% | ` +
+        `idle re-lay ${pe.idleRelaySec > 0 ? `${pe.idleRelaySec}s` : "3x the out-of-range minimum"} | fast watch ${fe.everySec > 0 ? `every ${fe.everySec}s` : "off"} | ` +
+        `fee tokens ${(process.env.SWEEP_FEE_TOKENS ?? "").trim().toLowerCase() === "false" ? "kept" : `sold from ${process.env.SWEEP_MIN_SOL ?? "0.05"} SOL`} | tuner ${(process.env.TUNING_FILE ?? "").trim() || "off"}`,
+    );
+  }
   console.log(`venues    tradable ${tradableVenues().join(", ") || "none"} | live ${liveVenues().filter((v) => isTradableVenue(v)).join(", ") || "none"} (a tradable venue off LIVE_VENUES trades in paper and dry-run only) | book ${bookEnv()}${bookEnv() === "stocks" ? ` (tokenized stocks first, liquidity >= $${stockMinLiquidityUsd().toLocaleString("en-US")})` : ""}`);
   console.log(`quotes    SOL and USDC (a USDC pool is valued at the screen's SOL price: ${app.screen?.solPriceUsd ? `$${app.screen.solPriceUsd.toFixed(2)}` : "none yet, USDC pools skipped until a screen lands"})`);
   console.log(`wallet    ${app.wallet.publicKey.toBase58()}${app.wallet.ephemeral ? "  (ephemeral, no key configured)" : ""}${cfg.expectedWallet ? `  expected ${cfg.expectedWallet}` : ""}`);
@@ -832,7 +844,22 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // pools), at the POLICY's floor: a pick the policy refuses on score wastes the seat for the cycle
   // (pill/SOL and EMBER/SOL, score 4.7 and 5.6 against a floor of 20, were picked and refused three
   // cycles running on 2026-09-17); this decides the order among those that qualify.
-  const byYield = [...candidates].sort((a, b) => (b.feeToTvl24hPct ?? -1) - (a.feeToTvl24hPct ?? -1) || b.score - a.score);
+  // P6: the order is the scout's MEASURED fee on depth where it has an hour of the pool (its four-hour LP fee
+  // pace in SOL a day over the pool's depth in SOL), the venue's day figure only behind every measured one.
+  const solUsd = solPriceOf(app);
+  const measuredFeeOnDepth = (p: { address: string; tvlUsd: number | null; quoteSymbol: string }): number | null => {
+    const f = app.flow.get(p.address);
+    if (!f || f.feesPerDayQuote240m === null || (f.coveredMin ?? 0) < 60 || !p.tvlUsd || !solUsd) return null;
+    const feesUsd = p.quoteSymbol === "SOL" ? f.feesPerDayQuote240m * solUsd : f.feesPerDayQuote240m;
+    return (feesUsd / p.tvlUsd) * 100;
+  };
+  const byYield = [...candidates]
+    .map((p) => ({ p, m: measuredFeeOnDepth(p) }))
+    .sort((a, b) => (a.m === null ? 1 : 0) - (b.m === null ? 1 : 0) || (b.m ?? b.p.feeToTvl24hPct ?? -1) - (a.m ?? a.p.feeToTvl24hPct ?? -1) || b.p.score - a.p.score)
+    .map((x) => x.p);
+  if (byYield.length) {
+    console.log(`[cycle ${app.cycle}] board order (measured fee on depth a day; the venue's figure where the scout has under an hour): ${byYield.slice(0, 6).map((p) => { const m = measuredFeeOnDepth(p); return `${p.name.replace(/\s*\/\s*/, "/")} ${m !== null ? `${m.toFixed(1)}% measured` : `${(p.feeToTvl24hPct ?? 0).toFixed(1)}% venue`}`; }).join(" | ")}`);
+  }
   for (const p of byYield) {
     if (set.size >= ordinaryCap) break;
     if (takenTokens.has(p.baseMint) || set.has(p.address)) continue;
@@ -1894,7 +1921,8 @@ async function runIteration(app: App): Promise<void> {
         const seatSol = o.positions.reduce((t, p) => t + p.valueInSol, 0);
         const lower = Math.min(...o.positions.map((p) => p.lowerBinId));
         const upper = Math.max(...o.positions.map((p) => p.upperBinId));
-        const y = seatYield({ seatQuote: seatSol / q.priceInSol, binsEachSide: Math.max(0, Math.floor((upper - lower) / 2)), activeBinId: o.snapshot.activeBinId, bins: o.snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote: flow.feesPerDayQuote240m });
+        const widthBins = Math.max(1, upper - lower + 1);
+        const y = seatYield({ seatQuote: seatSol / q.priceInSol, binsEachSide: Math.max(0, Math.floor((upper - lower) / 2)), activeBinId: o.snapshot.activeBinId, bins: o.snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote: flow.feesPerDayQuote240m, ownPerBinQuote: seatSol / q.priceInSol / widthBins });
         const line = fadeFactor * pEnvNow.minSeatYieldPct;
         for (const p of o.positions) app.predictedYield.set(p.address, Math.round(y.yieldPctPerDay * 100) / 100);
         const streak = y.yieldPctPerDay < line ? (app.fadeStreak.get(o.address) ?? 0) + 1 : 0;
