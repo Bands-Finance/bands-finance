@@ -93,6 +93,18 @@ export interface ExecutionContext {
   paper?: Omit<PaperExecutionContext, "snapshot" | "positions" | "openCost">;
   /** the wallet's base-token balance before execution, UI units: the swap legs size against it (absent: 0) */
   walletToken?: number;
+  /**
+   * A quote-only book (memecoin bands): base tokens in the wallet are fee claims or what a failed
+   * liquidation left, never inventory. With this set a claim sells them once they are worth `minQuote`
+   * and a liquidation sells them with the band's. Never set for a straddle, which re-uses its token.
+   */
+  sweepWalletToken?: { minQuote: number };
+}
+
+/** PURE. The base-token amount a sweep sells: everything held, once it is worth the minimum in the quote; else 0. */
+export function sweepAmount(heldToken: number, tokenPriceInQuote: number, minQuote: number): number {
+  if (!(heldToken > SWAP_DUST_TOKEN) || !(tokenPriceInQuote > 0)) return 0;
+  return heldToken * tokenPriceInQuote >= minQuote ? heldToken : 0;
 }
 
 /** token amounts under this are dust: no swap leg is worth a transaction */
@@ -400,7 +412,7 @@ export async function settleWalletToken(
 }
 const floorTo = (n: number, d: number) => Math.floor(n * 10 ** d) / 10 ** d;
 
-type SwapLeg = "acquire" | "liquidate" | "shortfall" | "surplus";
+type SwapLeg = "acquire" | "liquidate" | "shortfall" | "surplus" | "sweep";
 
 interface SwapLegOutcome {
   ok: boolean;
@@ -575,6 +587,18 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
         }
       }
       if (result.ok && built.length > 0) ledger(collectRow(ctx, snaps, outcomes));
+      // the claim paid part of the fees in the base token: on a quote-only book that is exposure nothing
+      // manages, so it is sold once it is worth a transaction (with whatever earlier claims left)
+      if (result.ok && built.length > 0 && ctx.sweepWalletToken) {
+        const dec = ctx.snapshot.baseToken.decimals;
+        const claimed = snaps.reduce((t, p) => t + (quoteOf(ctx.snapshot).side === "Y" ? p.feeX : p.feeY), 0);
+        const held = (await readWalletToken(ctx)) ?? (ctx.walletToken ?? 0) + claimed;
+        const sell = sweepAmount(held, quoteOf(ctx.snapshot).tokenPriceInQuote, ctx.sweepWalletToken.minQuote);
+        if (sell > 0) {
+          const leg = await runSwapLeg(ctx, "sweep", floorTo(sell, dec), result, ledger);
+          if (!leg.ok) result.notes.push(`sweep: the swap failed; ${fmtUnits(sell, dec)} ${ctx.snapshot.baseToken.symbol} of claimed fees stays in the wallet for the next claim`);
+        }
+      }
       return result;
     }
 
@@ -605,6 +629,8 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       }
       if (d.action === "CLOSE_POSITION") {
         if (d.liquidate === true) {
+          // on a quote-only book the wallet's own base tokens (claimed fees) go with the band's
+          if (ctx.sweepWalletToken) tokensBack += Math.max(0, ctx.walletToken ?? 0);
           if (tokensBack > SWAP_DUST_TOKEN) {
             const leg = await runSwapLeg(ctx, "liquidate", floorTo(tokensBack, tokenDec), result, ledger);
             result.ok = result.ok && leg.ok;

@@ -80,6 +80,7 @@ import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv,
 import { createPairVenue, hotRowForPool, isPairPool as isPairVenuePool } from "./venues/pair";
 import { pairStockCandidateFor, pairStockCandidatesOf, pairStockEnv, pairStockReserve, pairStockSeats, pairStockSeatSol, chooseStockFeeBps, stockPairModel, type PairStockCandidate } from "./screener/pairStock";
 import { coveragePct, MIN_BAND_SOL, stockBinsPerSide } from "./agent/policy";
+import { earlyCycleAllowed, fastEnv, fastTrigger, type WatchedBand } from "./engine/fastwatch";
 import { appendLesson, endReasonOf, LESSONS_FILE, lessonLine, lessonOf, readLessons, readTuning, TUNING_FILE, tuneEnv, tuneFromLessons, writeTuning, type BandMeta } from "./learn/lessons";
 import { loadHotFileCached } from "./hot/store";
 import type { ScreenResult } from "./screener/types";
@@ -142,6 +143,10 @@ interface App {
   fadeStreak: Map<string, number>;
   /** position address -> the seat check's yield this cycle, written onto the band's meta by runPool (whose copy of state is the one saved) */
   predictedYield: Map<string, number>;
+  /** the bands the fast watch looks at between cycles (src/engine/fastwatch.ts), rebuilt at the end of every cycle */
+  watched: WatchedBand[];
+  /** epoch ms of the early cycles the fast watch started */
+  earlyCycles: number[];
   movedThisCycle: boolean;
   /** base mints whose wallet balance has been attributed to a pool's hedge this cycle */
   mintAttributed: Set<string>;
@@ -1457,6 +1462,10 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     // on Meteora-only routes (SWAP_DEXES) a paper swap pays at least the pool's own base fee, not a deep route's
     paper: paper ? { book: paper, slippagePct: app.paperEnv.slippagePct, now, ...(meteoraOnlyRoutes(swapEnv().dexes) ? { swapFeePct: Math.max(swapEnv().feePct, snapshot.baseFeePct) } : {}) } : undefined,
     walletToken: token.ui,
+    // a quote-only book: base tokens in the wallet are claimed fees, sold once worth SWEEP_MIN_SOL (SWEEP_FEE_TOKENS=false keeps them)
+    ...(!screen?.stock && !basisRow && !isPair && (process.env.SWEEP_FEE_TOKENS ?? "").trim().toLowerCase() !== "false"
+      ? { sweepWalletToken: { minQuote: Math.max(0, Number(process.env.SWEEP_MIN_SOL ?? "0.05") || 0.05) / q.priceInSol } }
+      : {}),
   });
   if (paper) savePaperBook(paper);
   for (const t of execution.txs) {
@@ -1871,6 +1880,15 @@ async function runIteration(app: App): Promise<void> {
       if (!o.positions.length) continue;
       const flow = app.flow.get(o.address);
       if (!flow || flow.coveredMin === null || flow.feesPerDayQuote240m === null) continue;
+      // quiet or unreadable? A scout that stopped decoding this pool reads zero, and zero must not rotate a
+      // seat out: when the venue reports a busy day and the scout saw under a twentieth of its pro-rata
+      // share of transactions in its four hours, the reading is not judged.
+      const venueTxns = app.screen?.pools.find((p) => p.address === o.address)?.txns24h ?? null;
+      if (typeof venueTxns === "number" && venueTxns >= 500 && flow.coveredMin >= 60 && flow.swaps240m < 0.05 * venueTxns * (Math.min(240, flow.coveredMin) / 1440)) {
+        app.fadeStreak.set(o.address, 0);
+        console.log(`[cycle ${app.cycle} ${o.snapshot.label}] seat check: not judged: the scout decoded ${flow.swaps240m} swaps in its last ${flow.coveredMin} min where the venue reports ${venueTxns.toLocaleString("en-US")} transactions a day; unreadable is not quiet`);
+        continue;
+      }
       try {
         const q = quoteOf(o.snapshot);
         const seatSol = o.positions.reduce((t, p) => t + p.valueInSol, 0);
@@ -1928,6 +1946,27 @@ async function runIteration(app: App): Promise<void> {
     console.log(`[cycle ${app.cycle}] marks skipped: the wallet holds ${usdcAtStart.toFixed(2)} USDC and no SOL price is known to value it`);
   } else {
     console.log(`[cycle ${app.cycle}] marks skipped: ${observed.length}/${pools.length} pools observed, ${entries.length} decided`);
+  }
+  // THE FAST WATCH's list (src/engine/fastwatch.ts): the bands held as this cycle observed them, less the ones it closed
+  try {
+    const st = loadState();
+    const closedNow = new Set(entries.map((e) => e.execution?.closed).filter((a): a is string => !!a));
+    app.watched = observed.flatMap((o) => {
+      let side: "X" | "Y";
+      try {
+        side = quoteOf(o.snapshot).side;
+      } catch {
+        return [];
+      }
+      return o.positions
+        .filter((p) => !closedNow.has(p.address))
+        .map((p) => {
+          const entry = st.entryValueSol[p.address] ?? p.entryValueSol ?? p.valueInSol;
+          return { pool: o.address, label: o.snapshot.label, position: p.address, lowerBinId: p.lowerBinId, upperBinId: p.upperBinId, quoteSide: side, binStep: o.snapshot.binStep, inRange: p.inRange, stopPct: st.stops?.[p.address] ?? riskLimits.stopLossPct, drawdownPct: entry > 0 ? (1 - p.valueInSol / entry) * 100 : 0 };
+        });
+    });
+  } catch {
+    app.watched = [];
   }
   // THE TUNER (src/learn/lessons.ts): the recent lessons may move one knob one step
   if ((process.env.TUNING_FILE ?? "").trim()) {
@@ -2025,6 +2064,8 @@ async function main(): Promise<void> {
     flowWatch: new Map(),
     fadeStreak: new Map(),
     predictedYield: new Map(),
+    watched: [],
+    earlyCycles: [],
     mintAttributed: new Set(),
     pairVenue,
     pinned: null,
@@ -2073,7 +2114,46 @@ async function main(): Promise<void> {
       console.log(`[loop] MAX_CYCLES=${config.maxCycles} reached; stopping cleanly`);
       break;
     }
-    await sleepInterruptible(config.cycleIntervalSec * 1000);
+    // RESTART WHEN IDLE: `touch DATA_DIR/RESTART` and the loop leaves here, after its marks, with nothing
+    // in flight; launchd (KeepAlive) brings it back on the code and config then on disk.
+    const restartFlag = path.join(path.resolve(process.cwd(), config.dataDir), "RESTART");
+    if (fs.existsSync(restartFlag)) {
+      try {
+        fs.unlinkSync(restartFlag);
+      } catch {
+        /* a flag that cannot be removed would loop: leave without it */
+      }
+      console.log(`[loop] RESTART flag seen after cycle ${app.cycle}: leaving cleanly for launchd to restart`);
+      break;
+    }
+    // THE FAST WATCH between cycles: the scout's last bin for every held band, every FAST_WATCH_SEC
+    const fenv = fastEnv();
+    const until = Date.now() + config.cycleIntervalSec * 1000;
+    while (!stopping && Date.now() < until) {
+      await sleepInterruptible(Math.min(fenv.everySec > 0 ? fenv.everySec * 1000 : until - Date.now(), Math.max(0, until - Date.now())));
+      if (stopping || fenv.everySec <= 0 || app.watched.length === 0) continue;
+      if (fs.existsSync(restartFlag)) break;
+      try {
+        const file = readFlowFile(path.resolve(process.cwd(), config.dataDir));
+        const at = file ? Date.parse(file.generatedAt) : NaN;
+        const now = Date.now();
+        const trig = app.watched
+          .map((b) => {
+            const p = file?.pools.find((x) => x.address === b.pool);
+            const w1 = p?.windows?.["1m"];
+            const bin = p ? (p.lastBinId ?? (w1 && w1.binLow !== null && w1.binLow !== undefined && w1.binHigh !== null && w1.binHigh !== undefined ? (b.quoteSide === "Y" ? w1.binLow : w1.binHigh) : null)) : null;
+            return fastTrigger(b, p && Number.isFinite(at) ? { bin, asOf: at } : null, now, fenv);
+          })
+          .find((t) => t !== null);
+        if (trig && earlyCycleAllowed(app.earlyCycles, now, fenv)) {
+          app.earlyCycles = [...app.earlyCycles.filter((t) => now - t < 3_600_000), now];
+          console.log(`[fast] ${trig.label}: ${trig.kind}: ${trig.detail}; starting the cycle now`);
+          break;
+        }
+      } catch {
+        /* the scout's file is optional: no reading, no early cycle */
+      }
+    }
   }
   hotWatch?.stop();
   releaseLock();

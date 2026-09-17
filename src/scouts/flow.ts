@@ -80,6 +80,8 @@ export interface FlowPool extends PoolMeta {
   lastSwapAt: number | null;
   /** the last swap's price, quote per base */
   lastPrice: number | null;
+  /** the bin the last swap ended in: the pool's price as a bin, five seconds fresh (the desk's fast watch reads it) */
+  lastBinId?: number | null;
   windows: Record<WindowKey, WindowStats>;
   /** epoch ms the scout's reading of this pool covers from (its backfill start); null until the backfill is done */
   watchedSince: number | null;
@@ -302,6 +304,7 @@ export function flowPoolOf(pool: PoolMeta, swaps: readonly FlowSwap[], now: numb
     asOf: now,
     lastSwapAt: last?.ts ?? null,
     lastPrice: last?.price ?? null,
+    lastBinId: last?.endBinId ?? null,
     windows,
     watchedSince,
     feesPerDayQuote240m: coveredMs !== null && coveredMs >= 60 * 60_000 ? (windows["240m"].feesQuote / coveredMs) * 86_400_000 : null,
