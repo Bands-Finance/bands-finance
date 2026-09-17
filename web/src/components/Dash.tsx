@@ -103,7 +103,9 @@ export function DashNote({ narrative, record, summary, solPriceUsd, status, wall
           </p>
         ))}
       </div>
-      <aside className="dash-ledger" aria-label="The figures">
+      <aside className="dash-side">
+      <img className="dash-mark" src="/art/stack.webp" alt="" width="616" height="404" aria-hidden="true" />
+      <div className="dash-ledger" aria-label="The figures">
         <span className={`dash-stamp dash-stamp--${status.mode}`} title={status.sentence} aria-hidden="true">
           {MODE_WORD[status.mode]}
         </span>
@@ -115,6 +117,7 @@ export function DashNote({ narrative, record, summary, solPriceUsd, status, wall
             </div>
           ))}
         </dl>
+      </div>
       </aside>
     </section>
   );
