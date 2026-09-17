@@ -52,7 +52,7 @@ import { config, riskLimits } from "./config";
 import { decide, engineDecideResult, proposalDecideResult } from "./agent/decide";
 import type { Decision } from "./agent/schema";
 import { policyEnv } from "./agent/policy";
-import { OPEN_COST_ESTIMATE_SOL } from "./tools/dlmm";
+import { POSITION_RENT_SOL } from "./tools/dlmm";
 import { approvedProposals, markExecuted, Proposal } from "./platform/proposals";
 import type { EngineObservation, Observation, ScreenContext } from "./agent/observation";
 import { evaluate, EngineGuardContext } from "./risk/guards";
@@ -302,14 +302,19 @@ function launchOf(row: HotRow | undefined, env: LaunchEnv = launchEnv()): { ok: 
 const launchCandidates = (): LaunchCandidate[] =>
   (loadHot()?.rows ?? []).map((r) => ({ ...launchRowOf(r), address: r.address, baseMint: r.baseMint, baseSymbol: r.baseSymbol, name: r.name, venue: r.venue, heat: r.heat }));
 
-/** Which quotes the wallet can seat at the policy's minimum: SOL above the gas reserve and the rent budget, USDC at the SOL price. */
+/**
+ * Which quotes the wallet can seat at the policy's minimum: SOL above the gas reserve and the rent budget,
+ * USDC at the SOL price. A pre-filter only: rent is counted at a position's (the least any Meteora open
+ * pays; bin arrays around a busy pool's price already exist), and the policy checks the pool's real open
+ * cost against the gas reserve before it proposes anything.
+ */
 function fundableQuotes(app: App, sol: number, usdc: number): Set<"SOL" | "USDC"> {
   const minSeatSol = Math.max(0.05, (riskLimits.maxTotalExposureSol * policyEnv().minSeatPct) / 100);
-  const rentBudget = OPEN_COST_ESTIMATE_SOL * config.maxActivePools;
+  const rentBudget = POSITION_RENT_SOL * config.maxActivePools;
   const solPrice = solPriceOf(app);
   const out = new Set<"SOL" | "USDC">();
   if (sol - riskLimits.gasReserveSol - rentBudget >= minSeatSol) out.add("SOL");
-  if (solPrice !== null && usdc / solPrice >= minSeatSol && sol - OPEN_COST_ESTIMATE_SOL >= riskLimits.gasReserveSol) out.add("USDC");
+  if (solPrice !== null && usdc / solPrice >= minSeatSol && sol - POSITION_RENT_SOL >= riskLimits.gasReserveSol) out.add("USDC");
   return out;
 }
 
@@ -562,9 +567,11 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   app.rotateOut = null;
   for (const ticker of pinnedTickers()) {
     const entry = app.pinned?.tickers.find((t) => t.ticker === ticker);
+    // already seated in one of its Meteora pools: nothing to find
+    if ([...set].some((a) => pinnedPoolAt(app.pinned, a)?.ticker === ticker)) continue;
     const pool = choosePinnedPool(entry, (q) => quoteOk(q));
     if (!pool) {
-      console.log(`[cycle ${app.cycle}] pinned ${ticker}: ${entry?.note ?? (entry ? "no Meteora pool the wallet can fund" : "not discovered yet")}; the stock pair lane makes our own ${ticker}x/SOL pool`);
+      console.log(`[cycle ${app.cycle}] pinned ${ticker}: ${entry?.note ?? (entry ? "no Meteora pool the wallet can fund" : "not discovered yet")}; ${pairStockEnv().on ? `the stock pair lane makes our own ${ticker}x/SOL pool` : "the stock pair lane is off, so it waits"}`);
       continue;
     }
     // held already: this pool, or another pool of the same token (one seat per token)
