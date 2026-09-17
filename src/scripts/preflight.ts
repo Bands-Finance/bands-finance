@@ -11,11 +11,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import { config, riskLimits } from "../config";
 import { LOCK_FILE, lockBlocks, pidAlive, readLock, staleWindowMs } from "../engine/watchdog";
 import { loadKeypair } from "../tools/wallet";
+import { policyMayTradeLive } from "../agent/decide";
 import { loadScreen } from "../screener";
 import { loadHot } from "../hot";
 import { loadEngineState, circuitHalted, standingDown } from "../engine/breakers";
 import { killSwitchActive } from "../risk/state";
-import { OPEN_COST_ESTIMATE_SOL } from "../tools/dlmm";
+import { OPEN_COST_ESTIMATE_SOL, USDC_MINT } from "../tools/dlmm";
 import { paperEnabled, paperEnv } from "../paper/env";
 
 type Level = "PASS" | "WARN" | "FAIL";
@@ -91,6 +92,16 @@ async function main(): Promise<void> {
     } catch (err) {
       add("SOL balance", "FAIL", `could not read: ${(err as Error).message.slice(0, 80)}`);
     }
+    // USDC: the stock pools the desk works are mostly USDC-quoted; without it only SOL pools can be seated
+    if (!paperOn) {
+      try {
+        const res = await connection.getParsedTokenAccountsByOwner(pubkey, { mint: new PublicKey(USDC_MINT) }, "confirmed");
+        const usdc = res.value.reduce((t, a) => t + Number(a.account.data.parsed?.info?.tokenAmount?.uiAmount ?? 0), 0);
+        add("USDC balance", usdc > 0 ? "PASS" : "WARN", `${usdc.toFixed(2)} USDC${usdc > 0 ? "" : ": USDC-quoted stock pools (AMD, SKHY, MU, NVDAx/USDC) cannot be seated without it"}`);
+      } catch (err) {
+        add("USDC balance", "WARN", `could not read: ${(err as Error).message.slice(0, 80)}`);
+      }
+    }
   }
   add("limits", riskLimits.maxPositionSol * config.maxActivePools <= riskLimits.maxTotalExposureSol + 1e-9 ? "PASS" : "WARN",
     `per band ${riskLimits.maxPositionSol} SOL x ${config.maxActivePools} pools vs total ${riskLimits.maxTotalExposureSol} SOL; stop ${riskLimits.stopLossPct}%; ${riskLimits.maxTxPerDay} actions/day, ${riskLimits.minSecondsBetweenActions}s apart`);
@@ -99,10 +110,12 @@ async function main(): Promise<void> {
   if (!config.anthropicApiKey && !process.env.ANTHROPIC_AUTH_TOKEN) {
     // Without a key the deterministic desk policy (src/agent/policy.ts) proposes instead of the model.
     // That is a working desk, so it is only a failure when real money is at stake.
+    // Live, the desk policy only opens and re-centres with POLICY_LIVE=true (src/agent/decide.ts); without it every open holds.
+    const policyLive = policyMayTradeLive();
     add(
       "anthropic",
-      config.dryRun ? "WARN" : "FAIL",
-      `ANTHROPIC_API_KEY is empty: the desk policy proposes instead of ${config.agentName}${config.dryRun ? " (fine for paper and dry runs)" : "; set a key before trading real money"}`,
+      config.dryRun || policyLive ? "WARN" : "FAIL",
+      `ANTHROPIC_API_KEY is empty: the desk policy proposes instead of ${config.agentName}${config.dryRun ? " (fine for paper and dry runs)" : policyLive ? " (POLICY_LIVE=true: it trades real money)" : "; set a key, or POLICY_LIVE=true to let the policy trade, or every open holds"}`,
     );
   } else {
     try {
