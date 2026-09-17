@@ -50,8 +50,19 @@ function readLatest(): PoolMeta[] {
   }
 }
 
+/** The candidates the desk ranked this cycle (DATA_DIR/flow-watch.json): watched so the next ranking has their last hour. */
+function readWatch(): PoolMeta[] {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(dataDir, "flow-watch.json"), "utf8")) as { pools?: PoolMeta[] };
+    return Array.isArray(j.pools) ? j.pools.filter((p) => p && typeof p.address === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function relist(): void {
   const wanted = new Map<string, PoolMeta>();
+  for (const p of readWatch()) wanted.set(p.address, { ...p, band: null });
   for (const p of readLatest()) wanted.set(p.address, p);
   for (const a of (process.env.FLOW_POOLS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
     if (!wanted.has(a)) wanted.set(a, { address: a, label: a.slice(0, 8), quoteSide: "Y", quoteSymbol: "SOL", xDecimals: 6, yDecimals: 9, band: null });

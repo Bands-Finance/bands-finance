@@ -66,7 +66,8 @@ import { loadScreen, runScreen, tradableVenue } from "./screener";
 import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
 import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refreshPinnedStocks, type PinnedStocks } from "./screener/pinnedStock";
-import { flowByPool, flowContextLine, readFlowFile, type FlowContext } from "./scouts/flow";
+import { flowByPool, flowContextLine, readFlowFile, type FlowContext, type PoolMeta as FlowPoolMeta } from "./scouts/flow";
+import { rankSeats, seatLine, seatRankingEnv, seatYield, weakSeatRotation, type HeldSeat, type RankedSeat, type SeatRotation } from "./screener/seatYield";
 import { pinRotateMinAgeMin, pinSeatAction, rotationCandidate, type RotationBand } from "./engine/rotation";
 import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
 import { fetchPoolHistory, historyFresh, historyPhrase, historyRefusal, memeHistoryEnv, type HistoryRecord } from "./screener/memeHistory";
@@ -139,6 +140,10 @@ interface App {
   pinned: PinnedStocks | null;
   /** the flow scout's fresh readings by pool address, re-read each cycle; empty when the scout is off or stale */
   flow: Map<string, FlowContext>;
+  /** the Meteora stock candidates ranked by what OUR seat would earn (src/screener/seatYield.ts), this cycle */
+  seatRanking: { ranked: RankedSeat[]; held: HeldSeat[]; at: number } | null;
+  /** a weak held seat the ranking wants to give up this cycle (one per cycle), for the ROTATE directive */
+  seatRotation: SeatRotation | null;
   pinnedAt: number;
   /** the band the picker named this cycle to make room for a pin (src/engine/rotation.ts); null when none */
   rotateOut: { pool: string; label: string; reason: string } | null;
@@ -484,6 +489,82 @@ async function refreshMemeHistory(app: App, funds: Set<"SOL" | "USDC">): Promise
   }
 }
 
+/**
+ * SEAT YIELD RANKING (src/screener/seatYield.ts): what a seat of our size would earn a day in each
+ * Meteora stock candidate, from the bins around its price and the pool's fee flow (the scout's last
+ * hour when it has one, else the day's figure). The lane seats by this, not by fee-on-TVL; a held
+ * seat under the floor makes way for a candidate that clearly beats it. The candidates also go to
+ * the scout (DATA_DIR/flow-watch.json) so the next ranking has their last hour too.
+ */
+async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">): Promise<void> {
+  app.seatRanking = null;
+  app.seatRotation = null;
+  const mEnv = meteoraStockEnv();
+  const rEnv = seatRankingEnv();
+  if (!mEnv.on || !app.meteoraStocks) return;
+  const solPriceUsd = solPriceOf(app);
+  const quoteOk = (q: string) => (q === "SOL" && funds.has("SOL")) || (q === "USDC" && funds.has("USDC"));
+  const pEnv = policyEnv();
+  const cover = Math.max(pEnv.stockCoverPct, pEnv.stockMinCoverPct);
+  const candidates = meteoraStockCandidates(app.meteoraStocks.pools, mEnv, { minVolume24hUsd: pEnv.minVolume24hUsd, quoteOk }).slice(0, rEnv.rankTop);
+  const heldLane = withPositions.filter((a) => meteoraStockAt(app, a) || pinnedPoolAt(app.pinned, a));
+  const addresses = [...new Set([...candidates.map((c) => c.address), ...heldLane])];
+  const state = loadState();
+  const now = Date.now();
+  const ranked: RankedSeat[] = [];
+  const held: HeldSeat[] = [];
+  const watch: FlowPoolMeta[] = [];
+  for (const address of addresses) {
+    const met = meteoraStockAt(app, address);
+    try {
+      const { venue, pool } = await getVenuePool(app, address);
+      const snapshot = await venue.snapshot(pool, 10, { solPriceUsd });
+      const q = quoteOf(snapshot);
+      const flow = app.flow.get(address) ?? null;
+      let poolFeesPerDayQuote: number | null = null;
+      let feeSource: RankedSeat["feeSource"] = "24h";
+      if (flow && flow.feesPerDayQuote60m !== null) {
+        poolFeesPerDayQuote = flow.feesPerDayQuote60m;
+        feeSource = "flow-60m";
+      } else if (met?.fees24hUsd !== null && met?.fees24hUsd !== undefined && solPriceUsd) {
+        poolFeesPerDayQuote = met.fees24hUsd / (q.priceInSol * solPriceUsd);
+      }
+      if (poolFeesPerDayQuote === null) continue;
+      const bins = stockBinsPerSide(snapshot.binStep, cover, riskLimits.maxBinWidth, 1);
+      const seatQuote = riskLimits.maxPositionSol / q.priceInSol;
+      const y = seatYield({ seatQuote, binsEachSide: bins, activeBinId: snapshot.activeBinId, bins: snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote });
+      const label = snapshot.label;
+      watch.push({ address, label, quoteSide: q.side, quoteSymbol: q.symbol, xDecimals: snapshot.tokenX.decimals, yDecimals: snapshot.tokenY.decimals, band: null });
+      if (withPositions.includes(address)) {
+        held.push({ address, label, yieldPctPerDay: y.yieldPctPerDay, openedAt: state.lastMoveByPool?.[address] ?? null, pinned: pinnedTickerOf(app, address, snapshot) !== null });
+      }
+      if (met) ranked.push({ address, label, mint: met.mint, yieldPctPerDay: y.yieldPctPerDay, sharePct: y.sharePct, feesPerDayQuote: y.feesPerDayQuote, quoteSymbol: q.symbol, feeSource });
+    } catch (err) {
+      console.log(`[cycle ${app.cycle}] seat yield: ${met?.symbol ?? address.slice(0, 6)} unreadable (${(err as Error).message.slice(0, 80)})`);
+    }
+  }
+  const worth = rankSeats(ranked, rEnv);
+  app.seatRanking = { ranked: worth, held, at: now };
+  if (ranked.length) {
+    const all = [...ranked].sort((a, b) => b.yieldPctPerDay - a.yieldPctPerDay);
+    console.log(`[cycle ${app.cycle}] seat yield (${riskLimits.maxPositionSol} SOL seat, floor ${rEnv.minYieldPct}%/day): ${all.map((r) => `${seatLine(r)}${withPositions.includes(r.address) ? " [held]" : ""}${r.yieldPctPerDay < rEnv.minYieldPct ? " [under the floor]" : ""}`).join(" | ")}`);
+  }
+  const rot = weakSeatRotation(held, worth, rEnv, now);
+  if (rot) {
+    app.seatRotation = rot;
+    console.log(`[cycle ${app.cycle}] seat yield: rotating out ${rot.label} (${rot.pool.slice(0, 6)}): ${rot.reason}`);
+  }
+  // the scout watches the candidates too, so the next ranking has their last hour
+  try {
+    const file = path.join(path.resolve(process.cwd(), config.dataDir), "flow-watch.json");
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ generatedAt: new Date(now).toISOString(), pools: watch }));
+    fs.renameSync(tmp, file);
+  } catch {
+    /* the scout does without */
+  }
+}
+
 /** The pinned ticker a pool belongs to: a pinned Meteora pool, or our own stock pair for a pinned ticker. */
 function pinnedTickerOf(app: App, address: string, snapshot?: PoolSnapshot | null): string | null {
   const pool = pinnedPoolAt(app.pinned, address);
@@ -571,7 +652,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // THE STOCKS THE AGENT IS PAIRED WITH (PAIR_STOCK_PINNED_TICKERS), Meteora only: the ticker's existing
   // Meteora DLMM pool the wallet can fund, best by fee/TVL, supplemented with our liquidity. A ticker
   // Meteora has no such pool for falls through to the stock pair lane below, which makes our own.
-  app.rotateOut = null;
+  app.rotateOut = app.seatRotation; // a weak seat the yield ranking gives up this cycle, else null
   for (const ticker of pinnedTickers()) {
     const entry = app.pinned?.tickers.find((t) => t.ticker === ticker);
     // already seated in one of its Meteora pools: nothing to find
@@ -609,7 +690,11 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const mEnv = meteoraStockEnv();
   if (mEnv.on && app.meteoraStocks) {
     let room = mEnv.maxPools - [...set].filter((a) => meteoraStockAt(app, a)).length;
-    for (const p of meteoraStockCandidates(app.meteoraStocks.pools, mEnv, { minVolume24hUsd: policyEnv().minVolume24hUsd, quoteOk })) {
+    // by what our seat would earn (rankMeteoraSeats), best first, only those over the floor; the
+    // fee-on-TVL order stands in when nothing could be ranked this cycle
+    const byYield = app.seatRanking ? app.seatRanking.ranked.map((r) => meteoraStockAt(app, r.address)).filter((p): p is MeteoraStockPool => !!p) : null;
+    const lane = byYield && (byYield.length || app.seatRanking?.ranked) ? byYield : meteoraStockCandidates(app.meteoraStocks.pools, mEnv, { minVolume24hUsd: policyEnv().minVolume24hUsd, quoteOk });
+    for (const p of lane) {
       if (room <= 0 || set.size >= config.maxActivePools) break;
       if (set.has(p.address) || takenTokens.has(p.mint)) continue;
       if (watchlistDenial({ address: p.address, baseSymbol: p.symbol, baseMint: p.mint, name: `${p.symbol} / ${p.quoteSymbol}` }, watch)) continue;
@@ -1592,6 +1677,7 @@ async function runIteration(app: App): Promise<void> {
   if (app.flow.size) console.log(`[cycle ${app.cycle}] flow scout: ${app.flow.size} pool(s) read from the chain in the last ${Math.round(3)} min`);
   await refreshPinned(app);
   await refreshMemeHistory(app, funds);
+  await rankMeteoraSeats(app, withPositions, funds);
   const pools = pickPools(app, withPositions, funds);
   if (pools.length === 0) {
     console.log(`[cycle ${app.cycle}] nothing to work: no pinned pools, no bands held, no screen picks`);
@@ -1745,6 +1831,8 @@ async function main(): Promise<void> {
     pairVenue,
     pinned: null,
     flow: new Map(),
+    seatRanking: null,
+    seatRotation: null,
     pinnedAt: 0,
     rotateOut: null,
     memeHistory: new Map(),
