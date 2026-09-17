@@ -308,9 +308,14 @@ export function flowLine(p: FlowPool, sinceMs: number, now: number): string {
 export function poolsFromLatest(latest: unknown): PoolMeta[] {
   const entries = Array.isArray(latest) ? latest : latest && typeof latest === "object" ? Object.values(latest as Record<string, unknown>) : [];
   const out = new Map<string, PoolMeta>();
+  const seenTs = new Map<string, number>();
   for (const e of entries as Array<Record<string, any>>) {
     const p = e?.pool;
     if (!p?.address || !p.tokenX || !p.tokenY) continue;
+    // the newest entry per pool decides (the file may hold several cycles, in either order)
+    const ts = typeof e.ts === "string" ? Date.parse(e.ts) : 0;
+    if ((seenTs.get(p.address) ?? -1) > ts) continue;
+    seenTs.set(p.address, ts);
     const quoteSide: "X" | "Y" = p.quoteSide ?? (p.solSide === "X" ? "X" : "Y");
     const positions: Array<{ lowerBinId: number; upperBinId: number }> = Array.isArray(e.positions) ? e.positions : [];
     const band = positions.length ? { lowerBinId: Math.min(...positions.map((x) => x.lowerBinId)), upperBinId: Math.max(...positions.map((x) => x.upperBinId)) } : null;

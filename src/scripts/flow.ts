@@ -88,11 +88,13 @@ function swapsIn(tx: VersionedTransactionResponse, sig: string, pool: PoolMeta):
   return out;
 }
 
+/** Each transaction on its own (the batched call rejects versioned transactions), a few at a time. */
 async function fetchTxs(sigs: string[]): Promise<Map<string, VersionedTransactionResponse>> {
   const out = new Map<string, VersionedTransactionResponse>();
-  for (let i = 0; i < sigs.length; i += 20) {
-    const chunk = sigs.slice(i, i + 20);
-    const txs = await connection.getTransactions(chunk, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+  const CONCURRENCY = 4;
+  for (let i = 0; i < sigs.length; i += CONCURRENCY) {
+    const chunk = sigs.slice(i, i + CONCURRENCY);
+    const txs = await Promise.all(chunk.map((sig) => connection.getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null)));
     txs.forEach((tx, k) => {
       if (tx) out.set(chunk[k], tx);
     });

@@ -109,7 +109,10 @@ async function main() {
       "0": { pool: { address: "A", label: "NVDAx/SOL", tokenX: { symbol: "NVDAx", decimals: 8 }, tokenY: { symbol: "SOL", decimals: 9 }, solSide: "Y", quoteSide: "Y", quoteSymbol: "SOL" }, positions: [{ lowerBinId: 1536, upperBinId: 1550 }] },
       "1": { pool: { address: "B", label: "AMD/USDC", tokenX: { symbol: "AMD", decimals: 6 }, tokenY: { symbol: "USDC", decimals: 6 }, solSide: null, quoteSide: "Y", quoteSymbol: "USDC" }, positions: [] },
       "2": { pool: { address: "C", label: "SOL/DJT", tokenX: { symbol: "SOL", decimals: 9 }, tokenY: { symbol: "DJT", decimals: 6 }, solSide: "X" }, positions: [] },
+      // an older entry for A, listed after the newer one: it must not overwrite the band
+      "3": { ts: "2026-09-17T10:00:00.000Z", pool: { address: "A", label: "NVDAx/SOL", tokenX: { symbol: "NVDAx", decimals: 8 }, tokenY: { symbol: "SOL", decimals: 9 }, solSide: "Y", quoteSide: "Y", quoteSymbol: "SOL" }, positions: [] },
     };
+    (latest["0"] as { ts?: string }).ts = "2026-09-17T10:40:00.000Z";
     const pools = poolsFromLatest(latest);
     assert.equal(pools.length, 3);
     const c = pools.find((p) => p.address === "C")!;
