@@ -123,9 +123,16 @@ async function newSignatures(w: Watch): Promise<string[]> {
   if (!w.backfilled && w.watchedSince === null) w.watchedSince = sinceSec * 1000;
   const collected: { signature: string; blockTime?: number | null; err: unknown }[] = [];
   let before: string | undefined;
-  for (let page = 0; page < 10; page++) {
+  // the first pass pages until it reaches the backfill start (a busy pool has thousands of signatures
+  // in four hours, most of them bots' failed tries); later passes only need what came after newestSig
+  const maxPages = w.backfilled ? 10 : 80;
+  let reached = false;
+  for (let page = 0; page < maxPages; page++) {
     const batch = await connection.getSignaturesForAddress(pool, { limit: 100, before, until: w.newestSig ?? undefined }, "confirmed");
-    if (!batch.length) break;
+    if (!batch.length) {
+      reached = true;
+      break;
+    }
     let stop = false;
     for (const s of batch) {
       if (!w.backfilled && s.blockTime !== null && s.blockTime !== undefined && s.blockTime < sinceSec) {
@@ -134,8 +141,20 @@ async function newSignatures(w: Watch): Promise<string[]> {
       }
       collected.push(s);
     }
-    if (stop || batch.length < 100 || w.newestSig) break;
+    if (stop || batch.length < 100 || w.newestSig) {
+      reached = true;
+      break;
+    }
     before = batch[batch.length - 1].signature;
+  }
+  // the coverage the file claims is what the backfill actually reached: with the page cap hit, the
+  // oldest signature collected (the file said 245 min covered for an hour of swaps, 2026-09-17)
+  if (!w.backfilled && !reached) {
+    const oldest = collected.reduce<number | null>((t, s) => (typeof s.blockTime === "number" && (t === null || s.blockTime < t) ? s.blockTime : t), null);
+    if (oldest !== null) {
+      w.watchedSince = oldest * 1000;
+      console.log(`[flow ${stamp()}] ${w.meta.label}: backfill stopped at ${collected.length} signatures over ${maxPages} pages; coverage from ${new Date(oldest * 1000).toISOString().slice(11, 19)}`);
+    }
   }
   return collected
     .filter((s) => !s.err)
