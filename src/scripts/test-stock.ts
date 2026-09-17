@@ -36,6 +36,7 @@ delete process.env.ANTHROPIC_AUTH_TOKEN;
 process.env.DRY_RUN = "true";
 process.env.WALLET_SECRET_KEY = "";
 process.env.PAPER_SOL = "";
+process.env.PAPER_SOL = "100"; // "Hedged." means the hedge desk acts: paper's virtual hedge here (src/agent/policy.ts hedgeArmed)
 process.env.MAX_POSITION_SOL = "22.5";
 process.env.MAX_TOTAL_EXPOSURE_SOL = "90";
 process.env.GAS_RESERVE_SOL = "1";

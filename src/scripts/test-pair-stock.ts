@@ -63,6 +63,7 @@ import type { PairStockCandidate, PairStockEnv, StockPoolRow } from "../screener
 import type { PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
 import * as sdk from "@meteora-ag/dlmm";
 import { PublicKey } from "@solana/web3.js";
+process.env.PAPER_SOL = "100"; // "Hedged." means the hedge desk acts: paper's virtual hedge here (src/agent/policy.ts hedgeArmed)
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -649,7 +650,12 @@ async function main(): Promise<void> {
     assert.match(r.decision.reasoning, /No Backpack perp is listed for MSFTx: the token half runs unhedged\./);
     assert.match(r.decision.reasoning, /\(the reference pool's price in SOL\)/);
     assert.equal(policy.hedgeWord(o), "Unhedged.");
-    assert.equal(policy.hedgeWord(observe(s0, [])), "Hedged.");
+    assert.equal(policy.hedgeWord(observe(s0, [])), "Hedged.", "paper: the virtual hedge desk acts");
+    assert.equal(policy.hedgeWord(observe(s0, []), {}), "Unhedged.", "a listed perp alone is a plan, not a hedge");
+    assert.equal(policy.hedgeWord(observe(s0, []), { DRY_RUN: "false" }), "Unhedged.", "live without HEDGE_LIVE and keys");
+    assert.equal(policy.hedgeWord(observe(s0, []), { DRY_RUN: "false", HEDGE_LIVE: "true", BACKPACK_API_KEY: "k", BACKPACK_API_SECRET: "s" }), "Hedged.");
+    assert.equal(policy.hedgeArmed({ PAPER_SOL: "100" }), true);
+    assert.equal(policy.hedgeArmed({ PAPER_SOL: "100", DRY_RUN: "false" }), false, "paper needs DRY_RUN on");
     // the ordinary straddle headline says it too (policy.ts, W1 in the review)
     const plain = { ...observe(s0, []), snapshot: { ...s0, pair: undefined }, screen: { ...observe(s0, []).screen!, pair: null, tvlUsd: 268_119, feeToTvl24hPct: null } };
     const plainMsft = { ...plain, engine: { ...plain.engine!, basis: { ...plain.engine!.basis!, perpSymbol: null } } };

@@ -639,7 +639,20 @@ function legClause(sz: StraddleSizing, o: Observation, closing: PositionSnapshot
 const perpClause = (o: Observation): string => (o.engine?.basis?.perpSymbol ? `The ${o.snapshot.baseToken.symbol} half is hedged short on Backpack ${o.engine.basis.perpSymbol}.` : `No Backpack perp is listed for ${o.snapshot.baseToken.symbol}: the token half runs unhedged.`);
 
 /** The last word of every straddle headline: "Hedged." only when Backpack lists a perp for the stock, "Unhedged." otherwise (never a hedge that does not exist). */
-export const hedgeWord = (o: Pick<Observation, "engine">): "Hedged." | "Unhedged." => (o.engine?.basis?.perpSymbol ? "Hedged." : "Unhedged.");
+/**
+ * Whether the hedge desk will actually act on the token half: the paper desk's virtual hedge, or a
+ * live desk with HEDGE_LIVE and Backpack keys. A listed perp alone is a plan, not a hedge; the
+ * rehearsal of 2026-09-17 said "Hedged." on a wallet with no keys, and that word is public.
+ */
+export function hedgeArmed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const dryRun = (env.DRY_RUN ?? "true").trim().toLowerCase() !== "false";
+  const paper = dryRun && Number(env.PAPER_SOL ?? 0) > 0;
+  const live = !dryRun && (env.HEDGE_LIVE ?? "").trim().toLowerCase() === "true" && !!env.BACKPACK_API_KEY && !!env.BACKPACK_API_SECRET;
+  return paper || live;
+}
+
+export const hedgeWord = (o: Pick<Observation, "engine">, env: NodeJS.ProcessEnv = process.env): "Hedged." | "Unhedged." =>
+  o.engine?.basis?.perpSymbol && hedgeArmed(env) ? "Hedged." : "Unhedged.";
 
 /** Bins a quote-only band spans: the active bin plus `bins` past it on Meteora; `bins` strictly past it on a CLMM (src/tools/bins.ts). */
 const bandBins = (o: Pick<Observation, "snapshot">, bins: number): number => (o.snapshot.priceModel === "clmm" ? bins : bins + 1);
