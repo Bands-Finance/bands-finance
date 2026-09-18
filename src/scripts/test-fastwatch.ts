@@ -69,6 +69,19 @@ async function main() {
     assert.equal(earlyCycleAllowed([], NOW, fastEnv({ FAST_WATCH_SEC: "0" })), false);
   });
 
+  await test("fastTrigger idle-due: a band out on the quote side wakes the cycle once its idle wait has run out since the last cycle, and only once", () => {
+    const out: WatchedBand = { ...baton, inRange: false, outSince: NOW - 130_000, idleWaitSec: 120, observedAt: NOW - 100_000 };
+    const above = { bin: -330, asOf: NOW - 5_000 }; // above a Y-quoted band: idle, all SOL
+    const t = fastTrigger(out, above, NOW, env)!;
+    assert.equal(t.kind, "idle-due");
+    assert.match(t.detail, /idle 130s above band \[-337, -333\], past the 120s wait/);
+    assert.equal(fastTrigger({ ...out, outSince: NOW - 90_000 }, above, NOW, env), null, "the wait has not run out");
+    assert.equal(fastTrigger({ ...out, observedAt: NOW - 5_000 }, above, NOW, env), null, "a cycle has already looked since the wait ran out: nothing owed");
+    assert.equal(fastTrigger({ ...out, idleWaitSec: 0 }, above, NOW, env), null, "no idle wait configured: the scheduled cycle decides");
+    assert.equal(fastTrigger(out, { bin: -340, asOf: NOW - 5_000 }, NOW, env)?.kind, undefined, "below the band is the token side: the stop-near rule, not this one");
+    assert.equal(fastTrigger(out, { bin: -335, asOf: NOW - 5_000 }, NOW, env), null, "back inside the band: nothing to wake for");
+  });
+
   await test("sizeUnderCap: the sale is sized to what the market takes under the cap by quoting, never cut into pieces; the caps from the env; a residue's cap rises as it waits", async () => {
     // a bin ladder where impact grows a little faster than size: 13,064 GP quotes 5.78% whole (the sweep of 18 Sep)
     const ladder = (amount: number) => Promise.resolve(5.78 * Math.pow(amount / 13064, 1.15));

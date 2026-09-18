@@ -2052,7 +2052,11 @@ async function runIteration(app: App): Promise<void> {
         .map((p) => {
           // no entry on record: the band's market value stands in, so it reads as no drawdown rather than as its fee share
           const entry = st.entryValueSol[p.address] ?? p.entryValueSol ?? Math.max(0, p.valueInSol - unclaimedFeesSol(p, o.snapshot));
-          return { pool: o.address, label: o.snapshot.label, position: p.address, lowerBinId: p.lowerBinId, upperBinId: p.upperBinId, quoteSide: side, binStep: o.snapshot.binStep, inRange: p.inRange, stopPct: st.stops?.[p.address] ?? riskLimits.stopLossPct, drawdownPct: marketDrawdownPct(p, o.snapshot, entry) ?? 0 };
+          return {
+            pool: o.address, label: o.snapshot.label, position: p.address, lowerBinId: p.lowerBinId, upperBinId: p.upperBinId, quoteSide: side, binStep: o.snapshot.binStep, inRange: p.inRange,
+            stopPct: st.stops?.[p.address] ?? riskLimits.stopLossPct, drawdownPct: marketDrawdownPct(p, o.snapshot, entry) ?? 0,
+            outSince: p.inRange ? null : (st.outOfRangeSince?.[p.address] ?? null), idleWaitSec: policyEnv(process.env).idleRelaySec, observedAt: now,
+          };
         });
     });
   } catch {

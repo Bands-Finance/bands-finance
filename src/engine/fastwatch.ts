@@ -22,6 +22,12 @@ export interface WatchedBand {
   stopPct: number;
   /** drawdown already on the book at the last mark, percent of entry (negative when up) */
   drawdownPct: number;
+  /** epoch ms the band was first seen out of range (state.outOfRangeSince), null when in range */
+  outSince?: number | null;
+  /** the idle re-lay wait the policy applies to it, seconds (POLICY_IDLE_RELAY_SEC) */
+  idleWaitSec?: number;
+  /** epoch ms of the cycle that last observed it: a wake-up is owed only for a wait that ran out since */
+  observedAt?: number;
 }
 
 export interface FastReading {
@@ -63,7 +69,7 @@ export function fastEnv(env: NodeJS.ProcessEnv = process.env): FastEnv {
 export interface FastTrigger {
   pool: string;
   label: string;
-  kind: "left-band" | "stop-near";
+  kind: "left-band" | "stop-near" | "idle-due";
   detail: string;
 }
 
@@ -92,6 +98,13 @@ export function fastTrigger(b: WatchedBand, reading: FastReading | null, now: nu
   }
   if (b.inRange && outside) {
     return { pool: b.pool, label: b.label, kind: "left-band", detail: `the last swap is at bin ${bin}, outside band [${b.lowerBinId}, ${b.upperBinId}] that was in range at the last cycle` };
+  }
+  // the idle wait ran out since the last cycle: the re-lay is due now, not at the next scheduled cycle
+  if (!b.inRange && outside && !throughTokenSide && b.outSince && b.idleWaitSec && b.idleWaitSec > 0) {
+    const due = b.outSince + b.idleWaitSec * 1000;
+    if (now >= due && (b.observedAt ?? 0) < due) {
+      return { pool: b.pool, label: b.label, kind: "idle-due", detail: `idle ${Math.round((now - b.outSince) / 1000)}s ${b.quoteSide === "Y" ? "above" : "below"} band [${b.lowerBinId}, ${b.upperBinId}], past the ${b.idleWaitSec}s wait: the re-lay is due` };
+    }
   }
   return null;
 }
