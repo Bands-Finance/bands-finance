@@ -52,6 +52,7 @@ const Raw = z.object({
   ENGINE_PORTFOLIO_FLOOR_SOL: z.coerce.number().default(0.15),
   ENGINE_COLLECT_MIN_SOL: z.coerce.number().default(0.005),
   ENGINE_COLLECT_FLOOR_SOL: z.coerce.number().default(0.001),
+  /** claims per UTC day; 0 is no cap (a memecoin seat claims small amounts often) */
   ENGINE_COLLECT_MAX_PER_DAY: z.coerce.number().default(30),
   ENGINE_SKIM: z.string().default("false"),
   ENGINE_FLOAT_TARGET_SOL: z.coerce.number().default(1),

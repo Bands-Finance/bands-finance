@@ -188,7 +188,7 @@ export function engineDirective(ctx: DirectiveContext): Directive | null {
           action: "CLAIM_FEES",
           open: null,
           positionAddress: plan.positionAddress,
-          reasoning: `Engine directive COLLECT: ${plan.reason}. Claim ${ctx.collectsToday + 1} of ${ctx.cfg.collectMaxPerDay} today.`,
+          reasoning: `Engine directive COLLECT: ${plan.reason}. Claim ${ctx.collectsToday + 1}${ctx.cfg.collectMaxPerDay > 0 ? ` of ${ctx.cfg.collectMaxPerDay}` : ""} today.`,
           confidence: 1,
           headline: `Fees to the wallet. ${plan.feesSol.toFixed(4)} SOL banked.`,
         },

@@ -443,6 +443,7 @@ test("collect: claim at >= min, or after 2h pending above the floor, capped per 
   assert.equal(plan.positionAddress, "pos1");
   assert.match(plan.reason, /collect: 0.00600 SOL unclaimed on pos1 >= 0.005 SOL/);
   assert.equal(collectDirective([big], snapshot, state, T0, cfg, 30), null, "daily cap");
+  assert.equal(collectDirective([big], snapshot, state, T0, { ...cfg, collectMaxPerDay: 0 }, 30)!.positionAddress, "pos1", "a cap of 0 is no cap: the 31st claim of the day goes through");
   const small = position({ address: "pos2", feeY: 0.002 });
   assert.equal(collectDirective([small], snapshot, state, T0, cfg, 0), null, "below min, no pending clock yet");
   trackFeesPending(state, [small], snapshot, T0 - 3 * H, cfg.collectFloorSol);

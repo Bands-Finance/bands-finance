@@ -64,7 +64,7 @@ export interface CollectPlan {
 /**
  * CLAIM_FEES when a band's unclaimed fees reach collectMinSol, or when fees above collectFloorSol
  * have been pending for 2h; capped at collectMaxPerDay claims per UTC day (collectsToday comes
- * from the ledger). Picks the band with the most fees among those that qualify.
+ * from the ledger), no cap when that is 0. Picks the band with the most fees among those that qualify.
  */
 export function collectDirective(
   positions: readonly PositionSnapshot[],
@@ -74,7 +74,7 @@ export function collectDirective(
   cfg: Pick<EngineConfig, "collectMinSol" | "collectFloorSol" | "collectMaxPerDay">,
   collectsToday: number,
 ): CollectPlan | null {
-  if (collectsToday >= cfg.collectMaxPerDay) return null;
+  if (cfg.collectMaxPerDay > 0 && collectsToday >= cfg.collectMaxPerDay) return null;
   let best: CollectPlan | null = null;
   for (const p of positions) {
     const fees = unclaimedFeesSol(p, snapshot);
