@@ -270,9 +270,10 @@ async function main() {
     assert.equal(d0.close, 240);
     assert.equal(d0.fees, 1);
     // a fee claim is counted as a claim, not as a band move (18 Sep: 49 claims read as "57 moves" on the site)
-    const total = r.days.reduce((s, d) => s + d.moves + d.claims, 0);
-    const claims = r.days.reduce((s, d) => s + d.claims, 0);
-    assert.ok(claims >= 1 && total > claims, `claims ${claims} of ${total} executed actions are kept apart from moves`);
+    const withClaim = recordOf([entry({ cycle: 9, min: 200, pool: "AAA", sol: 5, positions: [band("a1", 20, { feeY: 0.05 })], action: "CLAIM_FEES" }), ...fixture()], history)!;
+    const lastDay = withClaim.days[withClaim.days.length - 1];
+    assert.equal(lastDay.claims, 1, "the claim is a claim");
+    assert.equal(lastDay.moves, r.days[r.days.length - 1].moves, "and not a move");
     const last = r.days[r.days.length - 1];
     assert.equal(last.close, 84.9);
     assert.ok(Math.abs(last.fees - 1.5) < 1e-9, "4.5 claimed by the end of the day, 3 by the end of the day before");
