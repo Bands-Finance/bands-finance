@@ -35,6 +35,8 @@ export interface DecideOptions {
   openCostSol?: number;
   /** whether a held straddle may re-lay bigger this cycle (one money move a pass); defaults to allowed */
   grow?: PolicyExtras["grow"];
+  /** the ask bands on the book and the ask exit's settings, for the policy (src/engine/askExit.ts) */
+  askExit?: PolicyExtras["askExit"];
 }
 
 /** An engine directive stands in for the model this cycle: the LLM is not called. */
@@ -76,7 +78,7 @@ export function policyMayTradeLive(env: NodeJS.ProcessEnv = process.env): boolea
 /** The desk policy's proposal, as the decision the model would otherwise have made. */
 export function policyDecideResult(observation: Observation, note: string, opts: DecideOptions = {}, dryRun: boolean = config.dryRun, env: NodeJS.ProcessEnv = process.env): DecideResult {
   try {
-    const r = policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow });
+    const r = policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow, askExit: opts.askExit });
     const trades = r.decision.action === "OPEN_POSITION" || r.decision.action === "REBALANCE";
     if (trades && !dryRun && !policyMayTradeLive(env)) {
       const verb = r.decision.action === "OPEN_POSITION" ? "open" : "rebalance";
@@ -102,6 +104,14 @@ export function policyDecideResult(observation: Observation, note: string, opts:
  * PURE.
  */
 export function adviseWithPolicy(model: Decision, policy: PolicyResult): { decision: Decision; note: string | null } {
+  // an ASK band (src/engine/askExit.ts) is worked off by its own rules: the model may not end the chain with a sale
+  // while the policy says it is working, waiting or following the price (the stop and the hold are the engine's)
+  if (model.action === "CLOSE_POSITION" && policy.branch.startsWith("ask-") && policy.decision.action !== "CLOSE_POSITION" && policy.decision.positionAddress === model.positionAddress) {
+    return {
+      decision: { ...policy.decision, reasoning: `${model.reasoning} The ask band is worked off by the desk's rules: ${policy.reason}.`.slice(0, 1900) },
+      note: `model CLOSE of an ask band replaced by the desk policy's ${policy.decision.action} (${policy.branch}): ${policy.reason}`,
+    };
+  }
   const wantsIn = model.action === "OPEN_POSITION" || model.action === "REBALANCE";
   if (!wantsIn) return { decision: model, note: null };
   const p = policy.decision;
@@ -116,7 +126,7 @@ export function adviseWithPolicy(model: Decision, policy: PolicyResult): { decis
     };
   }
   return {
-    decision: { ...model, action: p.action, open: p.open, positionAddress: p.positionAddress, liquidate: p.liquidate, reasoning: `${model.reasoning} Sized by the desk policy: ${policy.reason}.`.slice(0, 1900) },
+    decision: { ...model, action: p.action, open: p.open, positionAddress: p.positionAddress, liquidate: p.liquidate, exitAsk: p.exitAsk, reasoning: `${model.reasoning} Sized by the desk policy: ${policy.reason}.`.slice(0, 1900) },
     note: `model ${model.action} taken with the desk policy's action and sizing (${policy.branch}): ${policy.reason}`,
   };
 }
@@ -166,7 +176,7 @@ export async function decide(observation: Observation, opts: DecideOptions = {})
       return policyAfterModel(observation, "Model output did not match the decision schema.", opts, usage, response.model);
     }
     if (modelAdvises() && (parsed.action === "OPEN_POSITION" || parsed.action === "REBALANCE")) {
-      const advised = adviseWithPolicy(parsed, policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow }));
+      const advised = adviseWithPolicy(parsed, policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow, askExit: opts.askExit }));
       return { decision: advised.decision, source: "llm", model: response.model, usage, note: advised.note ?? undefined };
     }
     return { decision: parsed, source: "llm", model: response.model, usage };

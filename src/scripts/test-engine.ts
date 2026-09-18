@@ -21,7 +21,9 @@ import {
   summary,
   workingSol,
 } from "../engine/ledger";
-import { antiChurn, bandStopPct, drawdownPct, dropOverWindowPct, forgetBand, knifeReason, recordPrice, rollStop, trackOutOfRange, moveAfterSec, rangeOverWindowPct } from "../engine/exit";
+import { antiChurn, bandStopPct, drawdownPct, dropOverWindowPct, forgetBand, knifeReason, recordPrice, rollStop, stopEntryOf, trackOutOfRange, moveAfterSec, rangeOverWindowPct } from "../engine/exit";
+import { askBandRecord, askBinsFor, askExitEnv, askExitOf, askExpiry, askOnlyPools, askOpenParams, askPoolsOf, isAskExit } from "../engine/askExit";
+import type { Decision } from "../agent/schema";
 import {
   benchMultiplier,
   benchView,
@@ -707,5 +709,143 @@ test("moveAfterSec: a band moves once the fees it is missing cover the move", ()
   assert.equal(moveAfterSec(21, 0.5, 60), 3600);
 });
 
+// ---- the ask exit (src/engine/askExit.ts) --------------------------------------------------------
 
-console.log(`${n} engine tests passed (with USDC-quote checks)`);
+test("askExitEnv: off unless EXIT_ASK=true; the knobs default and floor", () => {
+  assert.equal(askExitEnv({}).on, false);
+  assert.equal(askExitEnv({ EXIT_ASK: "TRUE " }).on, true);
+  assert.deepEqual(askExitEnv({}), { on: false, coverPct: 3, minSol: 0.2, stopPct: 10, maxHoldMin: 240, relaySec: 180 });
+  const e = askExitEnv({ EXIT_ASK: "true", EXIT_ASK_COVER_PCT: "5", EXIT_ASK_MIN_SOL: "0.5", EXIT_ASK_STOP_PCT: "8", EXIT_ASK_MAX_MIN: "0", EXIT_ASK_RELAY_SEC: "-5" });
+  assert.deepEqual(e, { on: true, coverPct: 5, minSol: 0.5, stopPct: 8, maxHoldMin: 0, relaySec: 0 });
+  assert.equal(askExitEnv({ EXIT_ASK_COVER_PCT: "abc" }).coverPct, 3);
+});
+
+test("askBinsFor: the bins that reach the cover at this step, at least one, inside the width", () => {
+  assert.equal(askBinsFor(100, 3, 69), 3); // 1%/bin: three bins for 3%
+  assert.equal(askBinsFor(20, 3, 69), 15); // 0.2%/bin
+  assert.equal(askBinsFor(100, 0.1, 69), 1);
+  assert.equal(askBinsFor(1, 50, 69), 68); // capped at the width less the active bin
+});
+
+const throughBand = (over: Partial<PositionSnapshot> = {}): PositionSnapshot =>
+  position({ inRange: false, binsFromRange: -3, amountX: 130, amountY: 0, feeX: 2, feeY: 0.0004, valueInSol: 0.2644, solInPosition: 0.0004, entryValueSol: 0.3, ...over });
+
+const closeOf = (over: Partial<Decision> = {}): Decision => ({ action: "CLOSE_POSITION", open: null, positionAddress: "pos1", liquidate: true, reasoning: "Through the band.", confidence: 0.75, headline: "3 bins through the band and 700s out. Off the table.", ...over });
+
+test("askExitOf: a close that would sell the token becomes a REBALANCE into a TOKEN_ONLY ask band from the active bin up, marked exitAsk", () => {
+  const env = askExitEnv({ EXIT_ASK: "true" });
+  const d = askExitOf(closeOf(), { snapshot, positions: [throughBand()], walletToken: 0.5, askBands: {}, env, maxBinWidth: 69 })!;
+  assert.ok(d);
+  assert.equal(d.action, "REBALANCE");
+  assert.equal(d.exitAsk, true);
+  assert.equal(d.liquidate, undefined);
+  assert.equal(d.positionAddress, "pos1");
+  // the band's token incl. its base fees, plus the wallet's, floored to six decimals; SOL side zero; from the active bin 3% up at 0.2%/bin
+  assert.deepEqual(d.open, { side: "TOKEN_ONLY", amountSol: 0, amountToken: 132.5, binsBelowActive: 0, binsAboveActive: 15, strategy: "Spot" });
+  assert.ok(d.headline.endsWith("Laid as an ask."), d.headline);
+  assert.ok(d.headline.includes("through the band"), "the lesson still reads the reason off the headline");
+  assert.ok(d.reasoning.includes("laid as an ask band from bin 260 15 bins up"));
+  assert.ok(isAskExit(d));
+  assert.ok(!isAskExit(closeOf()));
+});
+
+test("askExitOf: stays a sale when off, when the token is not worth a position, for an ask band's own close, or for a band not on the book", () => {
+  const on = askExitEnv({ EXIT_ASK: "true" });
+  assert.equal(askExitOf(closeOf(), { snapshot, positions: [throughBand()], walletToken: 0, askBands: {}, env: askExitEnv({}), maxBinWidth: 69 }), null);
+  // 130 ANSEM at 0.002 = 0.26 SOL: over the 0.2 SOL default, under a 0.5 SOL floor
+  assert.equal(askExitOf(closeOf(), { snapshot, positions: [throughBand()], walletToken: 0, askBands: {}, env: askExitEnv({ EXIT_ASK: "true", EXIT_ASK_MIN_SOL: "0.5" }), maxBinWidth: 69 }), null);
+  // an all-SOL band (idle, pulled) holds no token: nothing to lay
+  assert.equal(askExitOf(closeOf(), { snapshot, positions: [position()], walletToken: 0, askBands: {}, env: on, maxBinWidth: 69 }), null);
+  const ask = askBandRecord(undefined, { pool: "pool", from: "bid", tokens: 130, markSol: 0.26, now: T0 });
+  assert.equal(askExitOf(closeOf(), { snapshot, positions: [throughBand()], walletToken: 0, askBands: { pos1: ask }, env: on, maxBinWidth: 69 }), null);
+  assert.equal(askExitOf(closeOf({ positionAddress: "nope" }), { snapshot, positions: [throughBand()], walletToken: 0, askBands: {}, env: on, maxBinWidth: 69 }), null);
+  assert.equal(askExitOf(closeOf({ action: "HOLD" }), { snapshot, positions: [throughBand()], walletToken: 0, askBands: {}, env: on, maxBinWidth: 69 }), null);
+});
+
+test("askOpenParams: the ask sits on the token side of the active bin (up when the quote is Y, down when it is X)", () => {
+  const up = askOpenParams(100, snapshot, { coverPct: 2 }, 69);
+  assert.deepEqual([up.binsBelowActive, up.binsAboveActive], [0, 10]);
+  const usdcX: PoolSnapshot = { ...snapshot, tokenX: { mint: USDC_MINT, symbol: "USDC", decimals: 6, reserve: 1 }, tokenY: { mint: "nvdax", symbol: "NVDAx", decimals: 8, reserve: 1 }, baseToken: { mint: "nvdax", symbol: "NVDAx", decimals: 8, reserve: 1 }, solSide: null, quoteSide: "X", quotePriceInSol: 0.005, tokenPriceInQuote: 180, tokenPriceInSol: 0.9 };
+  const down = askOpenParams(1.23456789, usdcX, { coverPct: 2 }, 69);
+  assert.deepEqual([down.binsBelowActive, down.binsAboveActive], [10, 0]);
+  assert.equal(down.amountToken, 1.234567, "floored to six decimals");
+});
+
+test("askBandRecord: the first ask starts the chain at this mark and clock; a re-lay carries them and counts", () => {
+  const first = askBandRecord(undefined, { pool: "pool", from: "bid", tokens: 130, markSol: 0.26, now: T0 });
+  assert.deepEqual(first, { pool: "pool", since: T0, basisSol: 0.26, from: "bid", tokens: 130, relays: 0 });
+  const again = askBandRecord(first, { pool: "pool", from: "ask1", tokens: 131, markSol: 0.22, now: T0 + 10 * M });
+  assert.deepEqual(again, { pool: "pool", since: T0, basisSol: 0.26, from: "bid", tokens: 131, relays: 1 });
+});
+
+test("stopEntryOf: an ask band's stop reads the chain's basis, every other band its entry", () => {
+  const ask = askBandRecord(undefined, { pool: "pool", from: "bid", tokens: 130, markSol: 0.26, now: T0 });
+  const state = freshState({ entryValueSol: { ask1: 0.22, pos1: 0.3 }, askBands: { ask1: ask } });
+  assert.equal(stopEntryOf(state, position({ address: "ask1" })), 0.26);
+  assert.equal(stopEntryOf(state, position({ address: "pos1" })), 0.3);
+  assert.equal(stopEntryOf(state, position({ address: "pos9", entryValueSol: 0.1 })), 0.1);
+});
+
+test("directives: STOP measures an ask band against the chain's basis, not the re-lay's mark", () => {
+  const ask = askBandRecord(undefined, { pool: "pool", from: "bid", tokens: 130, markSol: 0.3, now: T0 });
+  // re-laid at 0.25; now worth 0.26: 13% under the chain's basis, up on its own entry
+  const state = freshState({ entryValueSol: { ask1: 0.25 }, stops: { ask1: 10 }, askBands: { ask1: ask } });
+  const p = position({ address: "ask1", inRange: false, binsFromRange: -4, amountX: 130, amountY: 0, feeX: 0, feeY: 0, valueInSol: 0.26, solInPosition: 0 });
+  const d = engineDirective(dctx({ positions: [p], state }))!;
+  assert.equal(d.kind, "STOP");
+  assert.ok(d.reason.includes("ask band ask1") && d.reason.includes("13.3% below the mark its chain was laid at"), d.reason);
+  // the same band on its own entry alone would be up: no stop
+  const own = freshState({ entryValueSol: { ask1: 0.25 }, stops: { ask1: 10 } });
+  assert.equal(engineDirective(dctx({ positions: [p], state: own })), null);
+});
+
+test("directives: EXPIRE ends an ask chain past EXIT_ASK_MAX_MIN, liquidating; not before, not without a limit", () => {
+  const ask = askBandRecord(undefined, { pool: "pool", from: "bid", tokens: 130, markSol: 0.26, now: T0 - 241 * M });
+  const state = freshState({ entryValueSol: { ask1: 0.26 }, askBands: { ask1: ask } });
+  const p = position({ address: "ask1", inRange: false, binsFromRange: -2, amountX: 130, amountY: 0, feeX: 0, feeY: 0, valueInSol: 0.26, solInPosition: 0 });
+  const d = engineDirective(dctx({ positions: [p], state, askExit: { maxHoldMin: 240 } }))!;
+  assert.equal(d.kind, "EXPIRE");
+  assert.equal(d.decision.action, "CLOSE_POSITION");
+  assert.equal(d.decision.liquidate, true);
+  assert.ok(d.reason.includes("241 min (limit 240"), d.reason);
+  assert.equal(engineDirective(dctx({ positions: [p], state, askExit: { maxHoldMin: 300 } })), null);
+  assert.equal(engineDirective(dctx({ positions: [p], state, askExit: { maxHoldMin: 0 } })), null);
+  assert.equal(engineDirective(dctx({ positions: [p], state })), null);
+  // another pool's ask is not this pool's
+  assert.equal(askExpiry([p], { ask1: { ...ask, pool: "other" } }, "pool", T0, 240), null);
+});
+
+test("antiChurn: a sold-out ask closes at once; one under the price follows it after the relay wait; its final close is never churn", () => {
+  const ask = askBandRecord(undefined, { pool: "pool", from: "bid", tokens: 130, markSol: 0.26, now: T0 - 10 * M });
+  const state = freshState({ entryValueSol: { ask1: 0.26 }, stops: { ask1: 10 }, outOfRangeSince: { ask1: T0 - 30_000 }, askBands: { ask1: ask } });
+  const close = closeOf({ positionAddress: "ask1" });
+  const relay: Decision = { ...close, action: "REBALANCE", liquidate: undefined, exitAsk: true, open: askOpenParams(130, snapshot, { coverPct: 3 }, 69) };
+  const sold = position({ address: "ask1", inRange: false, binsFromRange: 5, amountX: 0, amountY: 0.27, valueInSol: 0.27, solInPosition: 0.27 });
+  const under = position({ address: "ask1", inRange: false, binsFromRange: -5, amountX: 130, amountY: 0, valueInSol: 0.25, solInPosition: 0 });
+  const askArg = { relaySec: 180, quoteSide: "Y" as const };
+  assert.equal(antiChurn(close, [sold], state, limits, 600, T0, snapshot, undefined, askArg), null, "sold out: the close is the exit's completion");
+  assert.equal(antiChurn(relay, [sold], state, limits, 600, T0, snapshot, undefined, askArg), null);
+  assert.match(antiChurn(relay, [under], state, limits, 600, T0, snapshot, undefined, askArg)!, /ask band ask1 is under the price for 30s, it follows the price after 180s/);
+  assert.equal(antiChurn(relay, [under], state, limits, 600, T0 + 160_000, snapshot, undefined, askArg), null, "past the relay wait");
+  assert.equal(antiChurn(close, [under], state, limits, 600, T0, snapshot, undefined, askArg), null, "the chain's end is an exit");
+  // a bid band is judged as before; its ask exit (a REBALANCE marked exitAsk, no sale) waits the ask's wait, not the paid-move minimum
+  const bid = freshState({ entryValueSol: { pos1: 0.3 }, outOfRangeSince: { pos1: T0 - 30_000 } });
+  assert.match(antiChurn(closeOf(), [throughBand({ valueInSol: 0.29 })], bid, limits, 600, T0, snapshot, undefined, askArg)!, /anti-churn: pos1 is out of range for 30s, minimum 600s/);
+  const exitAsk: Decision = { ...closeOf(), action: "REBALANCE", liquidate: undefined, exitAsk: true, open: askOpenParams(132, snapshot, { coverPct: 3 }, 69) };
+  assert.match(antiChurn(exitAsk, [throughBand({ valueInSol: 0.29 })], bid, limits, 600, T0, snapshot, undefined, askArg)!, /minimum 180s/);
+  assert.equal(antiChurn(exitAsk, [throughBand({ valueInSol: 0.29 })], bid, limits, 600, T0 + 160_000, snapshot, undefined, askArg), null);
+  assert.match(antiChurn(exitAsk, [throughBand({ valueInSol: 0.29 })], bid, limits, 600, T0 + 160_000, snapshot, undefined, undefined)!, /minimum 600s/, "without the ask's wait the ordinary minimum stands");
+});
+
+test("forgetBand clears the ask record; askPoolsOf / askOnlyPools read the book", () => {
+  const ask = askBandRecord(undefined, { pool: "pool", from: "bid", tokens: 130, markSol: 0.26, now: T0 });
+  const state = freshState({ entryValueSol: { ask1: 0.26 }, askBands: { ask1: ask, ask2: { ...ask, pool: "pool2" } } });
+  assert.deepEqual([...askPoolsOf(state.askBands)].sort(), ["pool", "pool2"]);
+  const only = askOnlyPools(state.askBands, new Map([["pool", [position({ address: "ask1" })]], ["pool2", [position({ address: "ask2" }), position({ address: "bid2" })]], ["pool3", []]]));
+  assert.deepEqual([...only], ["pool"]);
+  forgetBand(state, "ask1");
+  assert.deepEqual(Object.keys(state.askBands!), ["ask2"]);
+  assert.equal(askOnlyPools(undefined, new Map()).size, 0);
+});
+
+console.log(`${n} engine tests passed (with USDC-quote and ask-exit checks)`);

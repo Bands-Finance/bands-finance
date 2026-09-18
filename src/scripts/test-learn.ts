@@ -110,6 +110,11 @@ async function main() {
     assert.equal(endReasonOf(null, null, "4 bins through the band and 1512s out. Off the table."), "through-band");
     assert.equal(endReasonOf(null, null, "Price ran off the top. Idle 2000s, off the table."), "idle");
     assert.equal(endReasonOf(null, null, "Closing."), "close");
+    // the ask exit: the bid band's reason survives the suffix; the ask's own end is "sold" or the engine's
+    assert.equal(endReasonOf(null, null, "4 bins through the band and 1512s out. Off the table. Laid as an ask."), "through-band");
+    assert.equal(endReasonOf("STOP", null, "Stop hit. Bands off the table. Laid as an ask."), "stop");
+    assert.equal(endReasonOf(null, null, "Sold out through the ask. 2.41 SOL back."), "sold");
+    assert.equal(endReasonOf("EXPIRE", null, "The ask had its time. Selling what is left."), "expire");
   });
 
   console.log("tuning");
@@ -134,6 +139,7 @@ async function main() {
     assert.match(n.why, /sat in range 90% of the time or more and earned under 2%\/day/);
     assert.equal(tuneFromLessons(idle, { volMultiple: 0.5 }, null, env, now), null, "at the floor");
     assert.equal(tuneFromLessons([...idle.slice(1), { ...idle[0], kind: "stock" }], { volMultiple: 1 }, null, env, now), null, "stock seats do not teach the memecoin width");
+    assert.equal(tuneFromLessons([...pricedOut.slice(1), { ...pricedOut[0], ask: true }], { volMultiple: 0.75 }, null, env, now), null, "an ask band's lesson is an exit's, not a seat's: it does not teach the width");
     // only what was learned since the last change counts: after the gap the same five lessons buy nothing more
     const later = now + 7 * 3_600_000;
     const changed = { volMultiple: 1, history: [{ at: now, knob: "volMultiple" as const, from: 0.75, to: 1, why: "" }] };

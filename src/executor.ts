@@ -842,6 +842,37 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
     // the base token a closing band handed the wallet: what a liquidate sells, what a re-laid straddle re-uses
     let tokensBack = 0;
     const tokenDec = ctx.snapshot.baseToken.decimals;
+    /**
+     * Sell `tokens` of the base back to the quote: what fits under the exit cap now, in one swap. Then the rest is quoted as a
+     * whole: sold at once if that costs no more than the hard cap, else left as a residue the desk comes back for on later
+     * cycles. Only a SOL-quoted pool is capped: a residue is sold into SOL, and every book but the memecoin book is USDC-quoted
+     * or a straddle. `why` names the leg in the notes (a liquidation, or the ask exit falling back to the sale).
+     */
+    const liquidateBack = async (tokens: number, why: string): Promise<void> => {
+      if (!(tokens > SWAP_DUST_TOKEN)) {
+        result.notes.push(`${why}: no token came back, nothing to sell`);
+        return;
+      }
+      const q = quoteOf(ctx.snapshot);
+      const caps = ctx.swapImpact && q.token.mint === SOL_MINT && ctx.swapImpact.exitPct > 0 ? ctx.swapImpact : null;
+      const first = await sellUnderCap(ctx, "liquidate", floorTo(tokens, tokenDec), caps?.exitPct ?? 0, result, ledger);
+      let left = first.left;
+      let failed = first.failed;
+      if (left > SWAP_DUST_TOKEN && !failed && caps) {
+        const rest = await runSwapLeg(ctx, "liquidate", left, result, ledger, caps.hardPct);
+        if (rest.ok) left = 0;
+        else if (!rest.refused) failed = true;
+      }
+      result.ok = result.ok && !failed;
+      if (left > SWAP_DUST_TOKEN && !caps) {
+        // a pool this desk does not cap (not SOL-quoted, or exits uncapped): the old behaviour, a note and nothing more
+        result.notes.push(`${why}: the swap failed; ${fmtUnits(left, tokenDec)} ${ctx.snapshot.baseToken.symbol} stays in the wallet`);
+      } else if (left > SWAP_DUST_TOKEN) {
+        result.residue = { pool: ctx.snapshot.address, position: d.positionAddress ?? null, mint: ctx.snapshot.baseToken.mint, symbol: ctx.snapshot.baseToken.symbol, decimals: tokenDec, quoteMint: q.token.mint, amountUi: left, markTokenInSol: ctx.snapshot.tokenPriceInSol, since: Date.now(), cycle: ctx.cycle ?? 0, cycles: 0 };
+        result.notes.push(`${why}: ${failed ? "the swap failed" : "the rest would move the price over the hard cap"}; ${fmtUnits(left, tokenDec)} ${ctx.snapshot.baseToken.symbol} stays in the wallet as a residue the desk sells on later cycles (${caps ? `${caps.exitPct}% for ${caps.residueCycles} attempts, then ${caps.hardPct}%` : "any price"})`);
+      }
+    };
+
     if (d.action === "CLOSE_POSITION" || d.action === "REBALANCE") {
       const raw = findRaw(d.positionAddress);
       if (raw === undefined) throw new Error(`position ${d.positionAddress} not found`);
@@ -868,31 +899,7 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
         if (d.liquidate === true) {
           // on a quote-only book the wallet's own base tokens (claimed fees) go with the band's
           if (ctx.sweepWalletToken) tokensBack += Math.max(0, ctx.walletToken ?? 0);
-          if (tokensBack > SWAP_DUST_TOKEN) {
-            // What fits under the exit cap now, in one swap. Then the rest is quoted as a whole: sold at once if that costs
-            // no more than the hard cap, else left as a residue the desk comes back for on later cycles. Only a SOL-quoted
-            // pool is capped: a residue is sold into SOL, and every book but the memecoin book is USDC-quoted or a straddle.
-            const q = quoteOf(ctx.snapshot);
-            const caps = ctx.swapImpact && q.token.mint === SOL_MINT && ctx.swapImpact.exitPct > 0 ? ctx.swapImpact : null;
-            const first = await sellUnderCap(ctx, "liquidate", floorTo(tokensBack, tokenDec), caps?.exitPct ?? 0, result, ledger);
-            let left = first.left;
-            let failed = first.failed;
-            if (left > SWAP_DUST_TOKEN && !failed && caps) {
-              const rest = await runSwapLeg(ctx, "liquidate", left, result, ledger, caps.hardPct);
-              if (rest.ok) left = 0;
-              else if (!rest.refused) failed = true;
-            }
-            result.ok = result.ok && !failed;
-            if (left > SWAP_DUST_TOKEN && !caps) {
-              // a pool this desk does not cap (not SOL-quoted, or exits uncapped): the old behaviour, a note and nothing more
-              result.notes.push(`liquidate: the swap failed; ${fmtUnits(left, tokenDec)} ${ctx.snapshot.baseToken.symbol} stays in the wallet`);
-            } else if (left > SWAP_DUST_TOKEN) {
-              result.residue = { pool: ctx.snapshot.address, position: d.positionAddress ?? null, mint: ctx.snapshot.baseToken.mint, symbol: ctx.snapshot.baseToken.symbol, decimals: tokenDec, quoteMint: q.token.mint, amountUi: left, markTokenInSol: ctx.snapshot.tokenPriceInSol, since: Date.now(), cycle: ctx.cycle ?? 0, cycles: 0 };
-              result.notes.push(`liquidate: ${failed ? "the swap failed" : "the rest would move the price over the hard cap"}; ${fmtUnits(left, tokenDec)} ${ctx.snapshot.baseToken.symbol} stays in the wallet as a residue the desk sells on later cycles (${caps ? `${caps.exitPct}% for ${caps.residueCycles} attempts, then ${caps.hardPct}%` : "any price"})`);
-            }
-          } else {
-            result.notes.push("liquidate: no token came back, nothing to sell");
-          }
+          await liquidateBack(tokensBack, "liquidate");
         }
         return result;
       }
@@ -954,16 +961,49 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
           o = { ...o, amountToken: clamped };
         }
       }
+      // THE ASK EXIT (src/engine/askExit.ts): the closing band's token, and the wallet's, laid as an ask band. The
+      // deposit takes what the wallet actually holds once the close has settled, never more (the decision sized it
+      // from the snapshot; a live fill can land a little under); the read has to catch up with the close first.
+      const askExit = d.action === "REBALANCE" && d.exitAsk === true && o.side === "TOKEN_ONLY";
+      if (askExit) {
+        const read = await readWalletToken(ctx);
+        if (read !== null) {
+          const held = await settleWalletToken(() => readWalletToken(ctx), o.amountToken * 0.995);
+          if (held !== null && held + 1e-9 < o.amountToken) {
+            const clamped = floorTo(held, Math.min(tokenDec, 8));
+            result.notes.push(`ask exit: token leg clamped to the wallet's ${fmtUnits(held, tokenDec)} ${ctx.snapshot.baseToken.symbol} (planned ${o.amountToken})`);
+            o = { ...o, amountToken: clamped };
+          }
+        }
+        if (!(o.amountToken > SWAP_DUST_TOKEN)) {
+          result.notes.push(`ask exit: the wallet holds no ${ctx.snapshot.baseToken.symbol} to lay after the close; nothing opened`);
+          return result;
+        }
+      }
       const plan = toOpenPlan(o, ctx.snapshot);
-      const built = await ctx.venue.buildOpen(ctx.pool, owner, plan, ctx.snapshot);
-      if (built.notes?.length) result.notes.push(...built.notes);
-      const out = await runTx(ctx.wallet, built.label, built.tx, built.signers, result.txs, quoteMint);
+      let out: TxOutcome;
+      let built: BuiltTx | null = null;
+      try {
+        built = await ctx.venue.buildOpen(ctx.pool, owner, plan, ctx.snapshot);
+        if (built.notes?.length) result.notes.push(...built.notes);
+        out = await runTx(ctx.wallet, built.label, built.tx, built.signers, result.txs, quoteMint);
+      } catch (err) {
+        // the ask exit must not leave the token in the wallet outside every stop: a build error falls back to the sale below
+        if (!askExit) throw err;
+        result.txs.push({ label: `open ${o.side} band`, ok: false, error: (err as Error).message });
+        out = { ok: false, signature: null, cash: null };
+      }
       result.ok = result.ok && out.ok;
       if (out.ok) {
-        const address = built.positionAddress ?? built.signers[0]?.publicKey.toBase58();
+        const address = built?.positionAddress ?? built?.signers[0]?.publicKey.toBase58();
         if (!address) throw new Error("the venue returned no position address for the open");
         result.opened = { address, entryValueSol: entryValueOf(o, ctx.snapshot) };
         ledger(openRow(ctx, o, address, [out]));
+      } else if (askExit) {
+        // the close landed and the ask did not: the token is sold the old way rather than left in the wallet
+        result.notes.push(`ask exit: the ask band could not be laid (${result.txs[result.txs.length - 1]?.error ?? "the open failed"}); selling the ${ctx.snapshot.baseToken.symbol} instead`);
+        result.ok = true;
+        await liquidateBack(o.amountToken, "ask exit fallback");
       }
     }
   } catch (err) {

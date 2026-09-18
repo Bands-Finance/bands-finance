@@ -130,6 +130,8 @@ function intentOf(e: JournalEntry, d: JournalEntry["decision"]): string {
     const pct = (width * e.pool.binStep) / 100;
     const q = quoteOf(e.pool);
     const amount = o.amountSol > 0 ? (q.symbol === "SOL" ? fmtSol(o.amountSol, 2) : `${o.amountSol.toFixed(2)} ${q.symbol}`) : `${o.amountToken} ${e.wallet.tokenSymbol}`;
+    // the ask exit: the token a closed band handed back, laid over the price to be bought out at the pool's fee rather than sold into it
+    if (d.exitAsk) return `${amount} as an ask just over the price (sold on at the pool's fee, not into it), ${width} bins wide (about ${pct.toFixed(1)}% of price)`;
     return `${amount} as ${sideWords(o.side, q)}, ${width} bins wide (about ${pct.toFixed(1)}% of price)`;
   }
   if (d.action === "CLOSE_POSITION" || d.action === "CLAIM_FEES") {

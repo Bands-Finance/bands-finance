@@ -11,6 +11,8 @@
  *            A STOCK-pair band (src/screener/pairStock.ts) sees it for one reason only: its reference
  *            pool has been off the board for PAIR_STOCK_REF_GONE_CYCLES cycles, so nothing prices
  *            our pool; it is marked at the last price and closed, liquidating.
+ *            An ASK band (src/engine/askExit.ts) sees it when its chain has been on the book for
+ *            EXIT_ASK_MAX_MIN: what the asks did not sell is sold.
  *   COLLECT  the collect policy wants a claim, and the guards' rate limits would let it through
  *
  *   ROTATE   a stock the agent is paired with (PAIR_STOCK_PINNED_TICKERS) cannot be seated because the
@@ -26,9 +28,10 @@ import type { RiskLimits } from "../risk/limits";
 import type { RiskState } from "../risk/state";
 import { launchExpiry, type LaunchEnv } from "../screener/launch";
 import type { PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
+import { askExpiry } from "./askExit";
 import { standingDown, type EngineState } from "./breakers";
 import { collectDirective } from "./collect";
-import { bandStopPct, marketDrawdownPct } from "./exit";
+import { bandStopPct, marketDrawdownPct, stopEntryOf } from "./exit";
 
 export type DirectiveKind = "FLATTEN" | "STOP" | "EXPIRE" | "ROTATE" | "COLLECT";
 
@@ -61,6 +64,8 @@ export interface DirectiveContext {
   pairStock?: { ticker: string; refGoneCycles: number; maxCycles: number };
   /** the loop named this pool to make room for a pin (src/engine/rotation.ts); absent for every other pool */
   rotate?: { reason: string } | null;
+  /** the ask exit's maximum hold (EXIT_ASK_MAX_MIN) for the ask bands in state.askBands; absent = no hold limit */
+  askExit?: { maxHoldMin: number };
 }
 
 const close = (positionAddress: string, reasoning: string, headline: string, liquidate = false): Decision => ({
@@ -101,17 +106,19 @@ export function engineDirective(ctx: DirectiveContext): Directive | null {
     };
   }
 
-  // STOP: the per-band stop, rolled at open, or the configured limit when none was rolled.
+  // STOP: the per-band stop, rolled at open, or the configured limit when none was rolled. An ask band is
+  // measured against the mark the first ask of its chain was laid at (stopEntryOf), so the chain's stop bounds the chain.
   let worst: { p: PositionSnapshot; dd: number; stop: number } | null = null;
   for (const p of positions) {
-    const dd = marketDrawdownPct(p, ctx.snapshot, state.entryValueSol[p.address] ?? p.entryValueSol);
+    const dd = marketDrawdownPct(p, ctx.snapshot, stopEntryOf(state, p));
     if (dd === null) continue;
     const stop = bandStopPct(state.stops, p.address, ctx.limits);
     if (dd >= stop && (!worst || dd > worst.dd)) worst = { p, dd, stop };
   }
   if (worst) {
-    const entry = state.entryValueSol[worst.p.address] ?? worst.p.entryValueSol ?? 0;
-    const reason = `stop: ${worst.p.address.slice(0, 6)} is ${worst.dd.toFixed(1)}% below entry on its market value, fees aside (${entry.toFixed(4)} -> ${worst.p.valueInSol.toFixed(4)} SOL with fees), stop ${worst.stop.toFixed(2)}%`;
+    const entry = stopEntryOf(state, worst.p) ?? 0;
+    const ask = state.askBands?.[worst.p.address];
+    const reason = `stop: ${ask ? "ask band " : ""}${worst.p.address.slice(0, 6)} is ${worst.dd.toFixed(1)}% below ${ask ? "the mark its chain was laid at" : "entry"} on its market value, fees aside (${entry.toFixed(4)} -> ${worst.p.valueInSol.toFixed(4)} SOL with fees), stop ${worst.stop.toFixed(2)}%`;
     return {
       kind: "STOP",
       reason,
@@ -140,6 +147,22 @@ export function engineDirective(ctx: DirectiveContext): Directive | null {
         ),
       };
     }
+  }
+
+  // EXPIRE (ask band): the chain has been on the book for the ask exit's maximum hold. The asks had their
+  // time; what they did not sell is sold the old way (liquidate, under the caps, residue for the rest).
+  const askDue = askExpiry(positions, state.askBands, ctx.snapshot.address, now, ctx.askExit?.maxHoldMin ?? 0);
+  if (askDue) {
+    return {
+      kind: "EXPIRE",
+      reason: askDue.reason,
+      decision: close(
+        askDue.position,
+        `Engine directive EXPIRE: ${askDue.reason}. The ask had its time on the book; the ${ctx.snapshot.baseToken.symbol} it still holds is sold back to the quote.`,
+        "The ask had its time. Selling what is left.",
+        true,
+      ),
+    };
   }
 
   // EXPIRE (stock pair): the reference pool has been off the board for the lane's limit. Nothing prices

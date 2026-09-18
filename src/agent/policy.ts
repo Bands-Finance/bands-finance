@@ -74,6 +74,7 @@ import { sessionWidthMultiplier } from "../basis/verdict";
 import type { HotRow } from "../hot/types";
 import { bandDepthQuote, shareOfBand } from "../paper/mark";
 import type { RiskLimits } from "../risk/limits";
+import { askOpenParams, baseTokenOf, type AskBand, type AskExitEnv } from "../engine/askExit";
 import { launchEnv, launchSeatSol, type LaunchEnv } from "../screener/launch";
 import { pairEnv, pairHouseSeatSol, pairSeatSol, type PairEnv } from "../screener/pair";
 import { pairStockEnv, pairStockSeatSol, type PairStockEnv } from "../screener/pairStock";
@@ -217,9 +218,11 @@ export interface PolicyExtras {
   pairStock?: PairStockEnv;
   /** whether a held straddle may re-lay bigger this cycle (the loop allows one money move a pass); defaults to allowed */
   grow?: { allowed: boolean };
+  /** the ask bands on the book (state.askBands) and the ask exit's settings (src/engine/askExit.ts); absent = no ask bands */
+  askExit?: { bands: Record<string, AskBand>; env: AskExitEnv };
 }
 
-export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "recentre-wait" | "flow-wait" | "lively" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
+export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "recentre-wait" | "flow-wait" | "lively" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size" | "ask-working" | "ask-sold" | "ask-wait" | "ask-relay" | "ask-pulled";
 
 export interface PolicyResult {
   decision: Decision;
@@ -860,6 +863,8 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
 
   // ---- a band is open in this pool -------------------------------------------------------------
   const band = [...o.positions].sort((a, b) => b.valueInSol - a.valueInSol)[0];
+  const askBand = band && x.askExit?.bands[band.address];
+  if (band && askBand) return askBandDecide(o, x, q, band, askBand, x.askExit!.env, now);
   if (band && isPairPool(o) && !straddlePool(o)) return pairBandDecide(o, x, env, q, band, now);
   if (band && straddlePool(o)) return stockBandDecide(o, x, env, q, band, now);
   if (band) {
@@ -879,16 +884,22 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
     const bandIsToken = quoteBelow ? band.binsFromRange < 0 : band.binsFromRange > 0;
     if (bandIsToken) {
       const where = quoteBelow ? "below" : "above";
-      if (oor < minSec) {
+      // THE ASK EXIT (src/engine/askExit.ts): a band the price fell through already sits over the price holding token, an
+      // ask laid too high. The close the loop turns into an ask at the price is a close and an open with no sale, so it
+      // waits the ask's own re-lay wait, not the paid-move minimum (a sale's cost against the fees missed); and a hot
+      // pool gets no extra cycle to come back: an ask at the price catches the bounce better than a band above it.
+      const askOn = !!x.askExit?.env.on && q.symbol === "SOL" && !isStockPool(o) && !isPairPool(o) && !isLaunchPool(o) && !o.state.killSwitch;
+      const throughWait = askOn ? Math.min(minSec, x.askExit!.env.relaySec) : minSec;
+      if (oor < throughWait) {
         return hold(
-          `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) and the band ${bandClause(o, band, q)}. Out of range ${oor}s against the engine minimum ${minSec}s: moving it now is churn.`,
+          `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) and the band ${bandClause(o, band, q)}. Out of range ${oor}s against the ${askOn ? `${throughWait}s the ask exit waits before laying the token at the price` : `engine minimum ${throughWait}s`}: moving it now is churn.`,
           `${dist} bins through the band, ${oor}s out. Not long enough. Holding.`,
           "churn-wait",
-          `band ${addr} through, ${oor}s < ${minSec}s minimum`,
+          `band ${addr} through, ${oor}s < ${throughWait}s minimum`,
         );
       }
       const heldOnce = o.recent[0]?.action === "HOLD" && o.recent[0]?.headline === HOT_HOLD_HEADLINE;
-      if (hot.onList && !heldOnce) {
+      if (hot.onList && !heldOnce && !askOn) {
         return hold(
           `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s, past the ${minSec}s minimum; the band ${bandClause(o, band, q)}. The pool is still on the hot list (heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}, 1h ${hot.priceChange1hPct === null ? "n/a" : pct(hot.priceChange1hPct)}), so it gets one more cycle to come back.`,
           HOT_HOLD_HEADLINE,
@@ -904,7 +915,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
           // The book is denominated in the quote. Token left in the wallet after an exit is not a
           // position anyone chose, and it is capital the desk cannot lay into the next band.
           liquidate: true,
-          reasoning: `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s, past the ${minSec}s minimum. The quote turned into token: the band ${bandClause(o, band, q)}. ${hot.onList ? "The pool is still hot but already had its extra cycle" : "The pool is not on the hot list"}; closing and selling the token back to ${q.symbol}.`,
+          reasoning: `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s, past the ${throughWait}s minimum. The quote turned into token: the band ${bandClause(o, band, q)}. ${askOn ? "The token comes off this band" : `${hot.onList ? "The pool is still hot but already had its extra cycle" : "The pool is not on the hot list"}; closing and selling the token back to ${q.symbol}`}.`,
           confidence: 0.75,
           headline: clip(`${dist} bins through the band and ${oor}s out. Off the table.`),
         },
@@ -1177,6 +1188,92 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
     },
     reason: `open ${r(sz.amountQuote, 2)} ${q.symbol} across ${bandBins(o, sz.bins)} bins (${worth})`,
     branch: "open",
+  };
+}
+
+/**
+ * An ASK band (src/engine/askExit.ts): the token a closed bid band handed back, laid over the price so
+ * traders buy it from us at the pool's fee. Above it (all quote): it sold out; CLOSE at once, the SOL is
+ * back and a sold-out ask left alone is a bid nobody chose. Inside it: HOLD, it is selling bin by bin.
+ * Under it (all token): after EXIT_ASK_RELAY_SEC it follows the price down, another ask from the new
+ * active bin (an exitAsk REBALANCE: no sale, the chain's basis and clock carried). The kill switch ends
+ * the chain with the sale; the stop and the maximum hold are the engine's (STOP / EXPIRE directives).
+ */
+function askBandDecide(o: Observation, x: PolicyExtras, q: QuoteView, band: PositionSnapshot, ask: AskBand, aenv: AskExitEnv, now: number): PolicyResult {
+  const s = o.snapshot;
+  const quoteBelow = q.side === "Y";
+  const addr = band.address.slice(0, 6);
+  const range = `[${band.lowerBinId}, ${band.upperBinId}]`;
+  const priceLine = `active bin ${s.activeBinId} at ${s.activePrice.toPrecision(6)} ${s.priceLabel}`;
+  const dist = Math.abs(band.binsFromRange);
+  const oor = Math.round(o.engine?.outOfRangeSec?.[band.address] ?? 0);
+  const held = baseTokenOf(band, s);
+  const soldShare = ask.tokens > 0 ? Math.min(100, Math.max(0, (1 - held / ask.tokens) * 100)) : 0;
+  const ageMin = Math.max(0, Math.round((now - ask.since) / 60_000));
+  const chain = `laid ${ageMin} min ago${ask.relays > 0 ? ` (${ask.relays} re-lay${ask.relays === 1 ? "" : "s"})` : ""} against ${r(ask.basisSol)} SOL at the mark`;
+  if (band.inRange) {
+    return hold(
+      `Ask band ${addr} covers bins ${range} and the ${priceLine} sits inside it: the ${s.baseToken.symbol} is being bought out bin by bin at the pool's ${s.baseFeePct}% fee, ${r(soldShare, 0)}% of it gone (${r(held, 4)} ${s.baseToken.symbol} left, value ${r(band.valueInSol)} SOL); ${chain}. Nothing to move.`,
+      clip(`Ask band working: ${r(soldShare, 0)}% of the ${s.baseToken.symbol} sold on. Holding.`),
+      "ask-working",
+      `ask band ${addr} in range, ${r(soldShare, 0)}% sold`,
+    );
+  }
+  const sold = quoteBelow ? band.binsFromRange > 0 : band.binsFromRange < 0;
+  if (sold) {
+    return {
+      decision: {
+        action: "CLOSE_POSITION",
+        open: null,
+        positionAddress: band.address,
+        liquidate: true,
+        reasoning: `Price is ${dist} bins ${quoteBelow ? "above" : "below"} ask band ${addr} ${range} (${priceLine}): the ${s.baseToken.symbol} it held was bought out through the asks (${r(held, 4)} left), and it holds ${r(band.solInPosition)} ${q.symbol} now; ${chain}. Closing at once: a sold-out ask left in place is a bid laid where we just sold, and nobody chose that seat.`,
+        confidence: 0.85,
+        headline: clip(`Sold out through the ask. ${r(band.solInPosition, 2)} ${q.symbol} back.`),
+      },
+      reason: `ask band ${addr} sold out: ${r(band.solInPosition)} ${q.symbol} back`,
+      branch: "ask-sold",
+    };
+  }
+  // under the price: all token
+  if (o.state.killSwitch) {
+    return {
+      decision: {
+        action: "CLOSE_POSITION",
+        open: null,
+        positionAddress: band.address,
+        liquidate: true,
+        reasoning: `Price is ${dist} bins ${quoteBelow ? "under" : "over"} ask band ${addr} ${range} (${priceLine}) and the kill switch is on; ${chain}. The chain ends here: the ${r(held, 4)} ${s.baseToken.symbol} is sold back to ${q.symbol}.`,
+        confidence: 0.9,
+        headline: "Kill switch. The ask comes off and the token is sold.",
+      },
+      reason: `ask band ${addr} pulled: kill switch`,
+      branch: "ask-pulled",
+    };
+  }
+  if (oor < aenv.relaySec) {
+    return hold(
+      `Price is ${dist} bins ${quoteBelow ? "under" : "over"} ask band ${addr} ${range} (${priceLine}) for ${oor}s; it holds ${r(held, 4)} ${s.baseToken.symbol} (value ${r(band.valueInSol)} SOL), ${chain}. The ask follows the price after ${aenv.relaySec}s (EXIT_ASK_RELAY_SEC); the chain's stop is ${aenv.stopPct}% under its basis${aenv.maxHoldMin > 0 ? ` and it has ${Math.max(0, aenv.maxHoldMin - ageMin)} min left` : ""}.`,
+      clip(`Price ${dist} bins under the ask, ${oor}s. Waiting for the bounce.`),
+      "ask-wait",
+      `ask band ${addr} under the price ${oor}s < ${aenv.relaySec}s`,
+    );
+  }
+  const tokens = held + Math.max(0, o.wallet.token);
+  const open = askOpenParams(tokens, s, aenv, x.limits.maxBinWidth);
+  const bins = Math.max(open.binsAboveActive, open.binsBelowActive);
+  return {
+    decision: {
+      action: "REBALANCE",
+      open,
+      positionAddress: band.address,
+      exitAsk: true,
+      reasoning: `Price is ${dist} bins ${quoteBelow ? "under" : "over"} ask band ${addr} ${range} (${priceLine}) for ${oor}s, past the ${aenv.relaySec}s wait; nothing sells up there. The ${r(open.amountToken, 4)} ${s.baseToken.symbol} (value ${r(tokens * s.tokenPriceInSol)} SOL) is laid again as an ask from bin ${s.activeBinId} ${bins} bins ${quoteBelow ? "up" : "down"} (${aenv.coverPct}% of price), no sale; ${chain}. The chain's stop stays ${aenv.stopPct}% under that basis${aenv.maxHoldMin > 0 ? ` and it has ${Math.max(0, aenv.maxHoldMin - ageMin)} min left` : ""}.`,
+      confidence: 0.7,
+      headline: clip(`Ask ${dist} bins over the price for ${oor}s. Following it down.`),
+    },
+    reason: `ask band ${addr} re-laid ${bins} bins over bin ${s.activeBinId} after ${oor}s under the price`,
+    branch: "ask-relay",
   };
 }
 

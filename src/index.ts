@@ -106,7 +106,8 @@ import {
   saveEngineState,
 } from "./engine/breakers";
 import { clearFeesPending, skimPlan, trackFeesPending, unclaimedFeesSol } from "./engine/collect";
-import { marketDrawdownPct } from "./engine/exit";
+import { marketDrawdownPct, stopEntryOf } from "./engine/exit";
+import { askBandRecord, askExitEnv, askExitOf, askOnlyPools, askPoolsOf, isAskExit, type AskBand } from "./engine/askExit";
 import { sellResidue, swapImpactEnv } from "./executor";
 import { engineDirective } from "./engine/directives";
 import { forgetBand, knifeReason, moveAfterSec, outOfRangeSec, rangeOverWindowPct, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
@@ -228,7 +229,7 @@ function banner(app: App): void {
         `entry: ${pe.requireFlow ? `the scout's reading first, ${pe.minFlowCoverMin} min of it` : "no flow gate"}, seat yield >= ${pe.minSeatYieldPct}%/day, score > ${pe.minScore}, 24h volume >= $${pe.minVolume24hUsd.toLocaleString("en-US")} | ` +
         `size: side share <= ${pe.maxSideSharePct}%${pe.sizeRefTravelPct > 0 ? `, scaled down past ${pe.sizeRefTravelPct}% of hourly travel (floor ${pe.sizeMinMultiple})` : ""}, swap impact <= ${pe.maxSwapImpactPct}% | ` +
         `idle re-lay ${pe.idleRelaySec > 0 ? `${pe.idleRelaySec}s` : "3x the out-of-range minimum"} | fast watch ${fe.everySec > 0 ? `every ${fe.everySec}s` : "off"} | ` +
-        `fee tokens ${(process.env.SWEEP_FEE_TOKENS ?? "").trim().toLowerCase() === "false" ? "kept" : `sold from ${process.env.SWEEP_MIN_SOL ?? "0.05"} SOL`} | sells ${(() => { const c = swapImpactEnv(process.env); return c ? `sized under ${c.sweepPct}% impact for a sweep, ${c.exitPct}% for an exit (the rest at once up to ${c.hardPct}%, else a residue sold over later cycles, SOL books only)` : "one swap, no impact cap"; })()} | stop on market value, fees aside | tuner ${(process.env.TUNING_FILE ?? "").trim() || "off"}`,
+        `fee tokens ${(process.env.SWEEP_FEE_TOKENS ?? "").trim().toLowerCase() === "false" ? "kept" : `sold from ${process.env.SWEEP_MIN_SOL ?? "0.05"} SOL`} | sells ${(() => { const c = swapImpactEnv(process.env); return c ? `sized under ${c.sweepPct}% impact for a sweep, ${c.exitPct}% for an exit (the rest at once up to ${c.hardPct}%, else a residue sold over later cycles, SOL books only)` : "one swap, no impact cap"; })()} | stop on market value, fees aside | exit ${(() => { const a = askExitEnv(process.env); return a.on ? `via an ask band ${a.coverPct}% over the price (token worth >= ${a.minSol} SOL; stop ${a.stopPct}% under the chain's basis, ${a.maxHoldMin > 0 ? `${a.maxHoldMin} min` : "no limit"} on the book, follows the price after ${a.relaySec}s; then the sale)` : "by sale"; })()} | tuner ${(process.env.TUNING_FILE ?? "").trim() || "off"}`,
     );
   }
   console.log(`venues    tradable ${tradableVenues().join(", ") || "none"} | live ${liveVenues().filter((v) => isTradableVenue(v)).join(", ") || "none"} (a tradable venue off LIVE_VENUES trades in paper and dry-run only) | book ${bookEnv()}${bookEnv() === "stocks" ? ` (tokenized stocks first, liquidity >= $${stockMinLiquidityUsd().toLocaleString("en-US")})` : ""}`);
@@ -469,8 +470,11 @@ async function refreshPinned(app: App): Promise<void> {
 }
 
 /** The book's bands as the rotation picker needs them: venue, age, value, fee pace, and whether they are pinned or the house pool. */
-function rotationBands(app: App, held: string[]): RotationBand[] {
+function rotationBands(app: App, heldAll: string[]): RotationBand[] {
   const houseMints = pairEnv().houseMints;
+  // a pool holding an ask band (src/engine/askExit.ts) is not a seat to rotate: rotating it would sell what the ask is working off
+  const askPools = askPoolsOf(loadState().askBands);
+  const held = heldAll.filter((pool) => !askPools.has(pool));
   const venueOf = (pool: string): string | null =>
     app.screen?.pools.find((p) => p.address === pool)?.venue ?? app.pools.get(pool)?.venue.id ?? (isPairAddress(pool) || pinnedPoolAt(app.pinned, pool) ? "meteora-dlmm" : null);
   const flags = (pool: string) => ({
@@ -653,6 +657,12 @@ const stockSeatSol = (): number => Math.min(pairStockSeatSol(riskLimits.maxTotal
 
 function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">): string[] {
   const set = new Set<string>([...config.pinnedPools, ...withPositions]);
+  // An ASK band (src/engine/askExit.ts) is inventory being worked off, not a seat: its pool is worked (observed and
+  // decided every cycle, its token's slot kept) but it leaves its seat free for the lanes. `seatsHeld()` is what counts
+  // against MAX_ACTIVE_POOLS; `set` is what is worked.
+  const askPools = askPoolsOf(loadState().askBands);
+  const askHeld = [...set].filter((a) => askPools.has(a)).length;
+  const seatsHeld = () => set.size - askHeld;
   // One seat per base token. Two pools of the same token move together, so a second seat is
   // concentration, not diversification. Pools already holding a band keep their token's slot.
   const byAddress = new Map((app.screen?.pools ?? []).map((p) => [p.address, p] as const));
@@ -683,7 +693,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const senv = pairStockEnv();
   const stockPairsHeld = withPositions.filter((a) => isStockPairKey(app, a));
   const stockReserve = pairStockReserve(senv, stockPairsHeld.length);
-  const ordinaryCap = Math.max(set.size, config.maxActivePools - reserve - stockReserve);
+  const ordinaryCap = Math.max(seatsHeld(), config.maxActivePools - reserve - stockReserve);
   // The operator's list decides what the desk may put money into; the screener only finds it.
   // Pinned pools and pools already holding a band are added above, so a band can always be managed out.
   const watch = loadWatchlist();
@@ -709,11 +719,11 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
 
   // THE HOUSE TOKEN (PAIR_HOUSE_MINTS): our own launch's pool, right after held and pinned pools, always,
   // whatever the hot watch says about it; only a watchlist DENY keeps it out. Never counted against PAIR_MAX_POOLS.
-  if (penv.houseMints.length && set.size < config.maxActivePools) {
+  if (penv.houseMints.length && seatsHeld() < config.maxActivePools) {
     const rows = pairCandidatesOf(loadHotFileCached()?.rows ?? [], penv.houseMints);
     for (const seat of pairHouseSeats(rows, {
       env: penv,
-      freeSeats: config.maxActivePools - set.size,
+      freeSeats: config.maxActivePools - seatsHeld(),
       quoteOk,
       denied: (row) => watchlistDenial({ address: row.address, baseSymbol: row.baseSymbol, baseMint: row.baseMint, name: row.name }, watch),
       hasPool: (address) => set.has(address),
@@ -753,7 +763,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     }
     // held already: this pool, or another pool of the same token (one seat per token)
     const tokenHeld = takenTokens.has(pool.mint) || [...set].some((a) => pinnedPoolAt(app.pinned, a)?.ticker === ticker);
-    const action = pinSeatAction({ poolHeld: set.has(pool.address), tokenHeld, bookFull: set.size >= config.maxActivePools });
+    const action = pinSeatAction({ poolHeld: set.has(pool.address), tokenHeld, bookFull: seatsHeld() >= config.maxActivePools });
     if (action === "held") continue;
     if (watchlistDenial({ address: pool.address, baseSymbol: pool.symbol, baseMint: pool.mint, name: `${pool.symbol} / ${pool.quoteSymbol}` }, watch)) continue;
     if (action === "rotate") {
@@ -761,7 +771,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
       if (!app.rotateOut) {
         const pick = rotationCandidate(rotationBands(app, [...set]), { now: Date.now(), tradable: (v) => isTradableVenue(v), minAgeMin: pinRotateMinAgeMin(), forTicker: ticker });
         app.rotateOut = pick;
-        console.log(`[cycle ${app.cycle}] pinned ${ticker}: the book is full (${set.size}/${config.maxActivePools}); ${pick ? `rotating out ${pick.label} (${pick.pool.slice(0, 6)}): ${pick.reason}` : "nothing may rotate out (every band is pinned, the house pool, or under the minimum age)"}`);
+        console.log(`[cycle ${app.cycle}] pinned ${ticker}: the book is full (${seatsHeld()}/${config.maxActivePools}); ${pick ? `rotating out ${pick.label} (${pick.pool.slice(0, 6)}): ${pick.reason}` : "nothing may rotate out (every band is pinned, the house pool, or under the minimum age)"}`);
       }
       continue;
     }
@@ -784,7 +794,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     const byYield = app.seatRanking ? app.seatRanking.ranked.map((r) => meteoraStockAt(app, r.address)).filter((p): p is MeteoraStockPool => !!p) : null;
     const lane = byYield && (byYield.length || app.seatRanking?.ranked) ? byYield : meteoraStockCandidates(app.meteoraStocks.pools, mEnv, { minVolume24hUsd: policyEnv().minVolume24hUsd, quoteOk });
     for (const p of lane) {
-      if (room <= 0 || set.size >= config.maxActivePools) break;
+      if (room <= 0 || seatsHeld() >= config.maxActivePools) break;
       if (set.has(p.address) || takenTokens.has(p.mint)) continue;
       if (watchlistDenial({ address: p.address, baseSymbol: p.symbol, baseMint: p.mint, name: `${p.symbol} / ${p.quoteSymbol}` }, watch)) continue;
       if (!take(p.address, p.mint)) continue;
@@ -800,12 +810,12 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // the lane admits, a STOCKx/SOL pool of OUR OWN (key pair-<mint>), best by the stock routing model
   // first, up to PAIR_STOCK_MAX_POOLS counting the ones held, one per ticker. Other pools never refuse
   // it; the existing SOL-quoted ones only split the routed flow with us as competing depth.
-  if (senv.on && set.size < config.maxActivePools) {
+  if (senv.on && seatsHeld() < config.maxActivePools) {
     const px = solPriceOf(app);
     const seatUsd = px ? stockSeatSol() * px : 0;
     const seats = pairStockSeats(stockCandidatesOf(app), {
       env: senv,
-      freeSeats: config.maxActivePools - set.size,
+      freeSeats: config.maxActivePools - seatsHeld(),
       poolsTaken: stockPairsHeld.length,
       quoteOk: () => quoteOk("SOL"),
       denied: (c) => watchlistDenial({ address: c.reference.address, baseSymbol: c.symbol, baseMint: c.mint, name: c.name }, watch),
@@ -838,7 +848,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // The stock book: tokenized stocks first, by fee/TVL, then the rest of the picker.
   if (bookEnv() === "stocks") {
     for (const p of stockBookPools(app.screen?.pools ?? [], usdcOk)) {
-      if (set.size >= ordinaryCap) break;
+      if (seatsHeld() >= ordinaryCap) break;
       if (quoteOk(p.quoteSymbol) && watchlistRefusal(p, watch) === null) take(p.address, p.baseMint);
     }
   }
@@ -848,7 +858,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const rEnvPick = seatRankingEnv();
   const satOutNow = (address: string) => sittingOut(rotState.rotatedOutAt?.[address], rEnvPick, Date.now());
   // THE CANDIDATE A ROTATION FREED A SEAT FOR goes first, before any lane, while it still passes every gate the board loop applies
-  if (app.seatFor && set.size < ordinaryCap && !set.has(app.seatFor.address) && !takenTokens.has(app.seatFor.baseMint)) {
+  if (app.seatFor && seatsHeld() < ordinaryCap && !set.has(app.seatFor.address) && !takenTokens.has(app.seatFor.baseMint)) {
     const p = (app.screen?.pools ?? []).find((x) => x.address === app.seatFor!.address);
     const ok = !!p && tradableVenue(p) && quoteOk(p.quoteSymbol) && watchlistRefusal(p, watch) === null && (p.volume24hUsd ?? 0) >= minVolume && p.score > Math.max(0, policyEnv().minScore) && !p.flags.includes("thin") && !p.flags.includes("no-24h-data") && !(p.stock && !verifiedStock(p.stock)) && !satOutNow(p.address) && memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct }, p.address);
     if (ok) {
@@ -858,7 +868,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   }
   app.seatFor = null;
   for (const r of hotRows(app)) {
-    if (set.size >= ordinaryCap) break;
+    if (seatsHeld() >= ordinaryCap) break;
     const row = { address: r.address, baseSymbol: r.baseSymbol, baseMint: r.baseMint, name: r.name };
     if (r.stock && !verifiedStock(r.stock)) continue;
     if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume && !takenTokens.has(r.baseMint) && !satOutNow(r.address) && memeOk({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours, stock: r.stock }, r.address)) take(r.address, r.baseMint);
@@ -900,7 +910,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     .slice(0, 8)
     .map((p) => ({ address: p.address, label: p.name.replace(/\s*\/\s*/, "/"), baseMint: p.baseMint, measuredPct: measuredFeeOnDepth(p) }));
   for (const p of byYield) {
-    if (set.size >= ordinaryCap) break;
+    if (seatsHeld() >= ordinaryCap) break;
     if (takenTokens.has(p.baseMint) || set.has(p.address)) continue;
     if (p.stock && !verifiedStock(p.stock)) continue;
     if (satOutNow(p.address)) continue;
@@ -912,12 +922,12 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // admitted by rule rather than by name, so the watchlist's ALLOW mode cannot block it (nobody can
   // list a token that did not exist yesterday) but an explicit DENY still wins.
   const lenv = launchEnv();
-  if (lenv.on && set.size < ordinaryCap) {
+  if (lenv.on && seatsHeld() < ordinaryCap) {
     const held = laneBands;
     const heldPools = new Set(Object.values(held).map((b) => b.pool).filter((p) => !isPairAddress(p)));
     const launchOpts = {
       env: lenv,
-      freeSeats: ordinaryCap - set.size,
+      freeSeats: ordinaryCap - seatsHeld(),
       seatsTaken: heldPools.size,
       tradable: (v: string) => isTradableVenue(v),
       quoteOk,
@@ -948,14 +958,14 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // The pair lane, LAST of all: a pump.fun token that clears the lane on its PumpSwap reference pool
   // gets a pool of OUR OWN (key pair-<mint>), one at a time, after every other lane has had its chance.
   // Other pools never refuse it; they only feed the routing model as competing depth.
-  if (penv.on && set.size < config.maxActivePools) {
+  if (penv.on && seatsHeld() < config.maxActivePools) {
     const hot = loadHotFileCached();
     const rows = hot?.rows ?? [];
     const screenRows = (app.screen?.pools ?? []).map((p) => ({ address: p.address, venue: p.venue, baseMint: p.baseMint, quoteSymbol: p.quoteSymbol, liquidityUsd: p.tvlUsd }));
     let pairRows = pairCandidatesOf(rows, penv.houseMints).filter((r) => !penv.houseMints.includes(r.baseMint));
     const pairOpts: PairSeatOptions = {
       env: penv,
-      freeSeats: config.maxActivePools - set.size,
+      freeSeats: config.maxActivePools - seatsHeld(),
       poolsTaken: pairsHeld.size,
       quoteOk,
       denied: (row) => watchlistDenial({ address: row.address, baseSymbol: row.baseSymbol, baseMint: row.baseMint, name: row.name }, watch),
@@ -1247,7 +1257,7 @@ function paperFeeSource(app: App, address: string): { fees24hUsd: number | null;
  * state.launchBands, which is what the EXPIRE directive reads for the maximum hold and the
  * volume-fade exit, and what the picker counts against LAUNCH_MAX_SEATS.
  */
-function updateState(state: RiskState, exec: ExecutionResult, positions: PositionSnapshot[], snapshot: PoolSnapshot, launch?: { env: LaunchEnv; vol1hUsd: number | null } | null): void {
+function updateState(state: RiskState, exec: ExecutionResult, positions: PositionSnapshot[], snapshot: PoolSnapshot, launch?: { env: LaunchEnv; vol1hUsd: number | null } | null, ask?: { band: AskBand; stopPct: number } | null): void {
   state.lastPrice = snapshot.activePrice;
   for (const p of positions) {
     if (!(p.address in state.entryValueSol)) state.entryValueSol[p.address] = p.entryValueSol ?? p.valueInSol;
@@ -1260,16 +1270,23 @@ function updateState(state: RiskState, exec: ExecutionResult, positions: Positio
     // failing open is not re-sent every cycle until the daily cap (fees are paid either way)
     if (exec.opened || exec.closed || exec.txs.some((t) => !t.ok)) (state.lastMoveByPool ??= {})[snapshot.address] = Date.now();
   }
+  // the band closed was an ask band (read before forgetBand drops it): its final close puts the pool on the bench for a while
+  const closedAsk = exec.closed ? state.askBands?.[exec.closed] : undefined;
   if (exec.ok && exec.opened) {
     state.entryValueSol[exec.opened.address] = exec.opened.entryValueSol;
-    (state.stops ??= {})[exec.opened.address] = rollStop(riskLimits, Math.random, launch ? launch.env.stopPct : null);
-    if (launch) (state.launchBands ??= {})[exec.opened.address] = { pool: snapshot.address, openedAt: Date.now(), vol1hUsd: launch.vol1hUsd };
+    // an ask band's stop is the chain's (EXIT_ASK_STOP_PCT, measured against the chain's basis by stopEntryOf), a launch band's the lane's
+    (state.stops ??= {})[exec.opened.address] = rollStop(riskLimits, Math.random, ask ? ask.stopPct : launch ? launch.env.stopPct : null);
+    if (launch && !ask) (state.launchBands ??= {})[exec.opened.address] = { pool: snapshot.address, openedAt: Date.now(), vol1hUsd: launch.vol1hUsd };
+    if (ask) (state.askBands ??= {})[exec.opened.address] = ask.band;
   }
   // the close landed whether or not the sale after it did: the band is gone, its records go with it
   if (exec.closed) forgetBand(state, exec.closed);
-  // the seat's tenure in this pool: starts at the first open, survives a re-lay (a close and an open), ends at a plain close
-  if (exec.ok && exec.opened && !state.seatSince?.[snapshot.address]) (state.seatSince ??= {})[snapshot.address] = Date.now();
-  if (exec.closed && !exec.opened && state.seatSince) delete state.seatSince[snapshot.address];
+  // the seat's tenure in this pool: starts at the first open, survives a re-lay (a close and an open), ends at a plain close.
+  // An ask band is not a seat: laying one ends the tenure, and the pool sits out a while after the chain's end (the token
+  // just ran through us; the lanes may seat it again after METEORA_STOCK_REENTRY_MIN).
+  if (exec.ok && exec.opened && !ask && !state.seatSince?.[snapshot.address]) (state.seatSince ??= {})[snapshot.address] = Date.now();
+  if (((exec.closed && !exec.opened) || (exec.ok && exec.opened && ask)) && state.seatSince) delete state.seatSince[snapshot.address];
+  if (closedAsk && !(exec.ok && exec.opened && ask)) (state.rotatedOutAt ??= {})[snapshot.address] = Date.now();
   // a claim restarts the "pending above the floor" clock: the next claim by that rule is two hours away, not next cycle
   if (exec.ok && exec.claimed) clearFeesPending(state, exec.claimed);
   // what an exit could not sell under the caps waits in the wallet; the residue pass comes back for it every cycle
@@ -1377,7 +1394,8 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   const movedSol = [...app.exposureDelta].filter(([a]) => a !== o.address).reduce((t, [, d]) => t + d, 0);
   const portfolio = {
     activePools: all.map((x) => x.snapshot.label),
-    poolsWithBands: others.filter((x) => x.positions.length > 0).length,
+    // an ask band (src/engine/askExit.ts) is inventory being worked off, not a seat: a pool holding only ask bands leaves its seat free
+    poolsWithBands: others.filter((x) => x.positions.some((p) => !state.askBands?.[p.address])).length,
     maxActivePools: config.maxActivePools,
     otherExposureSol: Math.max(0, others.reduce((s, x) => s + x.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + movedSol),
   };
@@ -1510,7 +1528,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
 
   // The engine decides first. When it has a directive the LLM is not asked this cycle.
   const rotateHere = app.rotateOut?.pool === o.address ? { reason: app.rotateOut.reason } : null;
-  const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined, pairStock: pairStockWatch, rotate: rotateHere });
+  const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined, pairStock: pairStockWatch, rotate: rotateHere, askExit: { maxHoldMin: askExitEnv(process.env).maxHoldMin } });
   // Then an approved outside proposal, oldest first: "agents propose, the operator decides, the desk
   // executes through its own guards". Otherwise Mr Bands proposes.
   const proposal = directive ? null : (approvedProposals(o.address)[0] ?? null);
@@ -1520,11 +1538,24 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     ? engineDecideResult(directiveDecision!, `${directive.kind}: ${directive.reason}`)
     : proposal
       ? proposalDecideResult(proposalDecision(proposal), `proposal ${proposal.id} by ${proposal.proposerName} (${proposal.proposerId})`)
-      : await decide(observation, { hot: hotRows(app, 8, true), openCostSol: openCostDefault, grow: { allowed: !app.movedThisCycle } });
+      : await decide(observation, { hot: hotRows(app, 8, true), openCostSol: openCostDefault, grow: { allowed: !app.movedThisCycle }, askExit: { bands: state.askBands ?? {}, env: askExitEnv(process.env) } });
   // Every close sells the token back to the quote, whoever proposed it (the model, a proposal, the
   // guards, a directive): the book is quote-denominated, and a token left in the wallet is capital
   // nothing can size a band from. This is the mechanism the 7f5b49b fix belonged in.
   if (llm.decision.action === "CLOSE_POSITION" && llm.decision.liquidate !== true) llm = { ...llm, decision: { ...llm.decision, liquidate: true } };
+  // THE ASK EXIT (src/engine/askExit.ts): on the memecoin book, with EXIT_ASK=true, a close that would sell the token
+  // lays it as an ask band instead (the REBALANCE is marked exitAsk; the guards treat it as the exit it is). Not under
+  // the kill switch or a stand-down (the operator wants out), not for a launch band (the lane's EXPIRE sells), not for
+  // an ask band's own close (the chain's end), and not for a token not worth a position.
+  const askEnvNow = askExitEnv(process.env);
+  const askBook = askEnvNow.on && quoteIsSol && !screen?.stock && !basisRow && !isPair && !screen?.launch?.ok && !killSwitch && directive?.kind !== "FLATTEN" && directive?.kind !== "EXPIRE";
+  if (askBook && llm.decision.action === "CLOSE_POSITION") {
+    const asked = askExitOf(llm.decision, { snapshot, positions, walletToken: token.ui, askBands: state.askBands, env: askEnvNow, maxBinWidth: riskLimits.maxBinWidth });
+    if (asked) {
+      llm = { ...llm, decision: asked, note: `${llm.note ?? ""} The token is laid as an ask band, not sold (EXIT_ASK).`.trim() };
+      console.log(`${tag} ask exit: the close of ${asked.positionAddress!.slice(0, 6)} lays ${asked.open!.amountToken} ${snapshot.baseToken.symbol} as an ask band ${Math.max(asked.open!.binsAboveActive, asked.open!.binsBelowActive)} bins ${q.side === "Y" ? "over" : "under"} bin ${snapshot.activeBinId} instead of selling it`);
+    }
+  }
   console.log(`${tag} ${directive ? `engine directive ${directive.kind}` : proposal ? `proposal ${proposal.id}` : `${config.agentName} proposes`} ${llm.decision.action} (${llm.source}): "${llm.decision.headline}"`);
 
   const engineCtx: EngineGuardContext = {
@@ -1539,6 +1570,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     stops: stateStops,
     outOfRangeSec: moveSec,
     idleRelaySec: policyEnv(process.env).idleRelaySec,
+    askRelaySec: askExitEnv(process.env).relaySec,
     basisReason: basisObs?.reason ?? null,
   };
   // Cost the proposed plan for the guards. A plan the venue cannot even cost (a NaN amount, a
@@ -1624,6 +1656,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
       coverPct: coveragePct(snapshot.binStep, Math.max(op.binsBelowActive, op.binsAboveActive)),
       travelBins60m: screen?.flow?.range60mBins ?? null,
       predictedYieldPct: null,
+      ...(isAskExit(verdict.decision) ? { ask: true } : {}),
     };
   }
   if (execution.ok && (execution.opened || execution.closed)) {
@@ -1635,7 +1668,12 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   if (execution.ledger?.some((r) => r.mech === "swap")) app.swappedThisCycle.add(snapshot.baseToken.mint);
   // the rotate-out is spent once the band is gone (closed now, or already gone); a rotation the guards held back is asked for again next cycle
   if (rotateHere && (execution.closed || positions.length === 0)) app.rotateOut = null;
-  updateState(state, execution, positions, snapshot, (screen?.launch?.ok || screen?.pair?.ok) && !noLaneExits ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null);
+  // an ask band laid this execution: the first of a chain takes this mark as its basis and now as its clock; a re-lay carries the chain's
+  const askLaid = execution.ok && execution.opened && execution.closed && isAskExit(verdict.decision)
+    ? { band: askBandRecord(state.askBands?.[execution.closed], { pool: o.address, from: execution.closed, tokens: verdict.decision.open!.amountToken, markSol: execution.opened.entryValueSol, now }), stopPct: askExitEnv(process.env).stopPct }
+    : null;
+  if (askLaid) console.log(`${tag} ask band ${execution.opened!.address.slice(0, 6)}: ${askLaid.band.relays > 0 ? `re-lay ${askLaid.band.relays} of the chain from ${askLaid.band.from.slice(0, 6)}` : `the chain starts here`}, basis ${askLaid.band.basisSol.toFixed(4)} SOL, stop ${askLaid.stopPct}% under it${askExitEnv(process.env).maxHoldMin > 0 ? `, ${Math.max(0, Math.round(askExitEnv(process.env).maxHoldMin - (now - askLaid.band.since) / 60_000))} min left` : ""}`);
+  updateState(state, execution, positions, snapshot, (screen?.launch?.ok || screen?.pair?.ok) && !noLaneExits ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null, askLaid);
 
   // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
   let hedgeJournal: JournalHedge | undefined;
@@ -2002,8 +2040,10 @@ async function runIteration(app: App): Promise<void> {
     const fadeCycles = Math.max(1, Math.floor(Number(process.env.SEAT_FADE_CYCLES ?? "3") || 3));
     app.predictedYield.clear();
     const heldMeme: HeldSeat[] = [];
+    // pools holding only ask bands (src/engine/askExit.ts) are not seats: not judged, never rotated into a sale
+    const askOnly = askOnlyPools(state.askBands, new Map(observed.map((o) => [o.address, o.positions] as const)));
     for (const o of observed) {
-      if (!o.positions.length) continue;
+      if (!o.positions.length || askOnly.has(o.address)) continue;
       const flow = app.flow.get(o.address);
       if (!flow || flow.coveredMin === null || flow.feesPerDayQuote240m === null) continue;
       // quiet or unreadable? A scout that stopped decoding this pool reads zero, and zero must not rotate a
@@ -2048,7 +2088,7 @@ async function runIteration(app: App): Promise<void> {
     // seat is: the scout's four-hour fee pace over the share a band our size would take of its bins.
     // Only when the book is FULL: with a seat free the picker simply takes the best candidate, and a pool picked this cycle
     // is not a challenger to the seats beside it.
-    const bookFull = observed.filter((o) => o.positions.length).length >= config.maxActivePools;
+    const bookFull = observed.filter((o) => o.positions.length && !askOnly.has(o.address)).length >= config.maxActivePools;
     if (!app.rotateOut && bookFull && heldMeme.length > 0 && app.boardOrder.length > 0) {
       try {
         const busy = new Set(observed.map((o) => o.address));
@@ -2141,11 +2181,13 @@ async function runIteration(app: App): Promise<void> {
         .filter((p) => !closedNow.has(p.address))
         .map((p) => {
           // no entry on record: the band's market value stands in, so it reads as no drawdown rather than as its fee share
-          const entry = st.entryValueSol[p.address] ?? p.entryValueSol ?? Math.max(0, p.valueInSol - unclaimedFeesSol(p, o.snapshot));
+          // (an ask band's stop reads the chain's basis, stopEntryOf)
+          const entry = stopEntryOf(st, p) ?? Math.max(0, p.valueInSol - unclaimedFeesSol(p, o.snapshot));
           return {
             pool: o.address, label: o.snapshot.label, position: p.address, lowerBinId: p.lowerBinId, upperBinId: p.upperBinId, quoteSide: side, binStep: o.snapshot.binStep, inRange: p.inRange,
             stopPct: st.stops?.[p.address] ?? riskLimits.stopLossPct, drawdownPct: marketDrawdownPct(p, o.snapshot, entry) ?? 0,
             outSince: p.inRange ? null : (st.outOfRangeSince?.[p.address] ?? null), idleWaitSec: policyEnv(process.env).idleRelaySec, observedAt: now,
+            ...(st.askBands?.[p.address] ? { ask: true, markBinId: o.snapshot.activeBinId } : {}),
           };
         });
     });

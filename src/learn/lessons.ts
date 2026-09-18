@@ -36,6 +36,8 @@ export interface BandMeta {
   travelBins60m: number | null;
   /** the last seat check's yield on this seat, percent a day; null until one ran */
   predictedYieldPct: number | null;
+  /** an ASK band (src/engine/askExit.ts): a closed bid band's token being worked off over the price, not a seat the desk chose */
+  ask?: boolean;
 }
 
 export interface RangeStats {
@@ -43,7 +45,7 @@ export interface RangeStats {
   inRange: number;
 }
 
-export type EndReason = "through-band" | "idle" | "stop" | "faded" | "rotated" | "exit-list" | "consolidated" | "flatten" | "expire" | "close";
+export type EndReason = "through-band" | "idle" | "stop" | "faded" | "rotated" | "exit-list" | "consolidated" | "flatten" | "expire" | "sold" | "close";
 
 export interface Lesson {
   at: number;
@@ -78,6 +80,8 @@ export interface Lesson {
   /** fees over the seat, per day, percent */
   realizedYieldPctPerDay: number;
   headline: string;
+  /** an ask band's lesson (src/engine/askExit.ts): the tuner reads the seats, not the exits */
+  ask?: boolean;
 }
 
 /** PURE. Why a seat ended, from the directive that closed it or the policy's headline. */
@@ -96,6 +100,7 @@ export function endReasonOf(directiveKind: string | null, rotateReason: string |
   }
   if (h.includes("through the band")) return "through-band";
   if (h.includes("ran off the top") || h.includes("idle")) return "idle";
+  if (h.includes("sold out through the ask")) return "sold";
   return "close";
 }
 
@@ -175,6 +180,7 @@ export function lessonOf(i: { meta: BandMeta; position: string; stats: RangeStat
     netSol: Math.round(netSol * 1e6) / 1e6,
     tokensLeftSol: Math.round(tokensLeftSol * 1e6) / 1e6,
     predictedYieldPct: meta.predictedYieldPct,
+    ...(meta.ask ? { ask: true } : {}),
     realizedYieldPctPerDay: Math.round(realizedYieldPctPerDay * 100) / 100,
     headline: i.headline,
   };
@@ -182,7 +188,7 @@ export function lessonOf(i: { meta: BandMeta; position: string; stats: RangeStat
 
 /** One line for the log and the journal. */
 export const lessonLine = (l: Lesson): string =>
-  `[lesson] ${l.label}: ${l.minutes} min, ${l.bins} bins (${l.coverPct.toFixed(1)}% of price${l.travelBins60m !== null ? ` against ${l.travelBins60m} bins of travel the hour before` : ""}), in range ${l.inRangePct === null ? "n/a" : `${l.inRangePct}%`} of the time, ended ${l.endReason}; fees ${l.feesSol.toFixed(4)} SOL (${l.realizedYieldPctPerDay.toFixed(1)}%/day realized${l.predictedYieldPct !== null ? ` vs ${l.predictedYieldPct.toFixed(1)}% predicted` : ""}), net ${l.netSol >= 0 ? "+" : ""}${l.netSol.toFixed(4)} SOL`;
+  `[lesson] ${l.ask ? "ask band " : ""}${l.label}: ${l.minutes} min, ${l.bins} bins (${l.coverPct.toFixed(1)}% of price${l.travelBins60m !== null ? ` against ${l.travelBins60m} bins of travel the hour before` : ""}), in range ${l.inRangePct === null ? "n/a" : `${l.inRangePct}%`} of the time, ended ${l.endReason}; fees ${l.feesSol.toFixed(4)} SOL (${l.realizedYieldPctPerDay.toFixed(1)}%/day realized${l.predictedYieldPct !== null ? ` vs ${l.predictedYieldPct.toFixed(1)}% predicted` : ""}), net ${l.netSol >= 0 ? "+" : ""}${l.netSol.toFixed(4)} SOL`;
 
 /* ---------- tuning ---------- */
 
@@ -245,7 +251,7 @@ export function tuneFromLessons(lessons: readonly Lesson[], current: { volMultip
   if (last && now - last.at < env.minGapMs) return null;
   // only what was learned SINCE the last change counts: the same five lessons must not buy a second
   // step after the gap, and the step just taken has to show in new seats before another follows
-  const recent = lessons.filter((l) => l.kind === "memecoin" && (l.mode ?? "live") === mode && (!last || l.at > last.at)).slice(-env.window);
+  const recent = lessons.filter((l) => l.kind === "memecoin" && !l.ask && (l.mode ?? "live") === mode && (!last || l.at > last.at)).slice(-env.window);
   if (recent.length < env.window) return null;
   // priced out: through the band, or stopped (a band narrower than the stop goes through it first), within minutes of laying
   const isPricedOut = (l: Lesson) => (l.endReason === "through-band" || l.endReason === "stop") && l.minutes <= env.pricedOutMin;

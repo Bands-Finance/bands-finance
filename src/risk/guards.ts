@@ -13,7 +13,8 @@
  * is never judged here: an exit is an exit. The LLM proposes, the guards decide: every limit lives here.
  */
 import { Decision, holdDecision } from "../agent/schema";
-import { antiChurn, bandStopPct, marketDrawdownPct } from "../engine/exit";
+import { isAskExit } from "../engine/askExit";
+import { antiChurn, bandStopPct, marketDrawdownPct, stopEntryOf } from "../engine/exit";
 import { OPEN_COST_ESTIMATE_SOL, PoolSnapshot, PositionSnapshot, quoteOf } from "../tools/dlmm";
 import { jupiterEnv } from "../tools/jupiter";
 import { isTradableVenue, tradableVenues } from "../venues/env";
@@ -41,6 +42,8 @@ export interface EngineGuardContext {
   outOfRangeSec: number;
   /** the shorter wait an all-quote band may be re-laid after (POLICY_IDLE_RELAY_SEC); 0 = the ordinary minimum */
   idleRelaySec?: number;
+  /** the wait an ask band sits under the price before it follows it down (EXIT_ASK_RELAY_SEC, src/engine/askExit.ts) */
+  askRelaySec?: number;
   /** stock pools: why the basis/session rules refuse opens right now (src/basis), or null */
   basisReason?: string | null;
 }
@@ -108,24 +111,29 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
   let decision: Decision = proposal;
   const source = ctx.source ?? "llm";
   const engine = ctx.engine ?? NO_ENGINE;
-  // An engine exit (STOP / FLATTEN) is an emergency: it skips every rate limit.
-  let emergency = source === "engine" && proposal.action === "CLOSE_POSITION";
+  // The ask exit (src/engine/askExit.ts): a REBALANCE that closes a band into an ask band instead of a sale.
+  // It IS the close, so it is judged as one: never held by the price check, the cooldown, the daily cap or
+  // the open gates (no new exposure is taken; the token was already ours), and a band at its stop may leave this way.
+  const exitAsk = isAskExit(proposal);
+  // An engine exit (STOP / FLATTEN, or an engine close laid as an ask) is an emergency: it skips every rate limit.
+  let emergency = source === "engine" && (proposal.action === "CLOSE_POSITION" || exitAsk);
 
   // 1. Stop-loss override, defense in depth under the engine's STOP directive. Uses the per-band
-  //    stop rolled at open when present, else the configured limit.
+  //    stop rolled at open when present, else the configured limit. An ask band is measured against
+  //    the mark its chain was laid at (stopEntryOf).
   const atStop = ctx.positions.filter((p) => {
-    const dd = marketDrawdownPct(p, ctx.snapshot, ctx.state.entryValueSol[p.address]);
+    const dd = marketDrawdownPct(p, ctx.snapshot, stopEntryOf(ctx.state, p));
     return dd !== null && dd >= bandStopPct(engine.stops, p.address, limits);
   });
-  const closingAtStop = decision.action === "CLOSE_POSITION" ? atStop.find((p) => p.address === decision.positionAddress) : undefined;
+  const closingAtStop = decision.action === "CLOSE_POSITION" || exitAsk ? atStop.find((p) => p.address === decision.positionAddress) : undefined;
   if (closingAtStop) {
     // The proposal already closes a band at its stop (an engine STOP, or the LLM agreeing): let it through as the emergency it is.
-    const dd = marketDrawdownPct(closingAtStop, ctx.snapshot, ctx.state.entryValueSol[closingAtStop.address])!;
-    passed.push(`stop-loss (closing ${closingAtStop.address.slice(0, 6)} at -${dd.toFixed(1)}%)`);
+    const dd = marketDrawdownPct(closingAtStop, ctx.snapshot, stopEntryOf(ctx.state, closingAtStop))!;
+    passed.push(`stop-loss (closing ${closingAtStop.address.slice(0, 6)} at -${dd.toFixed(1)}%${exitAsk ? ", into an ask" : ""})`);
     emergency = true;
   }
   for (const p of closingAtStop ? [] : atStop) {
-    const entry = ctx.state.entryValueSol[p.address];
+    const entry = stopEntryOf(ctx.state, p)!;
     const dd = marketDrawdownPct(p, ctx.snapshot, entry);
     if (dd === null) continue;
     const stop = bandStopPct(engine.stops, p.address, limits);
@@ -157,7 +165,8 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
   }
 
   // 3. Price sanity: a huge move since last cycle means bad data or a crash. Don't add exposure into it.
-  if (ctx.state.lastPrice && ctx.snapshot.activePrice > 0 && isOpening(decision)) {
+  //    (the ask exit adds none: the token it lays was already on the book)
+  if (ctx.state.lastPrice && ctx.snapshot.activePrice > 0 && isOpening(decision) && !exitAsk) {
     const movePct = Math.abs(ctx.snapshot.activePrice / ctx.state.lastPrice - 1) * 100;
     if (movePct > limits.maxPriceMovePctPerCycle) {
       violations.push(`price moved ${movePct.toFixed(1)}% since last cycle (limit ${limits.maxPriceMovePctPerCycle}%)`);
@@ -169,7 +178,7 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
   // 4. Rate limits for anything that costs a transaction. Closes and emergencies are exempt: exits are never blocked.
   //    The daily cap counts every transaction. The cooldown is PER POOL and applies to band moves (opens and
   //    rebalances) only: a fee claim never resets it, and a move in one pool never blocks another pool.
-  if (decision.action !== "HOLD" && decision.action !== "CLOSE_POSITION" && !emergency) {
+  if (decision.action !== "HOLD" && decision.action !== "CLOSE_POSITION" && !emergency && !exitAsk) {
     if (ctx.state.actionsToday >= limits.maxTxPerDay) {
       violations.push(`daily action cap reached (${ctx.state.actionsToday}/${limits.maxTxPerDay})`);
     } else {
@@ -209,13 +218,15 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
   // 6. Anti-churn: an LLM move of a band that has not sat out of range for the minimum is blocked
   //    (unless the band is already down half its stop). Never applied to engine directives or overrides.
   if (source === "llm" && !emergency && closing) {
-    const churn = antiChurn(decision, ctx.positions, { ...ctx.state, stops: engine.stops, outOfRangeSince: engine.outOfRangeSince }, limits, engine.outOfRangeSec, ctx.now, ctx.snapshot, engine.idleRelaySec ? { sec: engine.idleRelaySec, quoteSide: quoteOf(ctx.snapshot).side } : undefined);
+    const churn = antiChurn(decision, ctx.positions, { ...ctx.state, stops: engine.stops, outOfRangeSince: engine.outOfRangeSince }, limits, engine.outOfRangeSec, ctx.now, ctx.snapshot, engine.idleRelaySec ? { sec: engine.idleRelaySec, quoteSide: quoteOf(ctx.snapshot).side } : undefined, { relaySec: engine.askRelaySec ?? 0, quoteSide: quoteOf(ctx.snapshot).side });
     if (churn) violations.push(churn);
     else passed.push("anti-churn");
   }
 
-  // 7. Engine gates on opens: halt, stand-down, bench, regime, knife.
-  if (isOpening(decision)) {
+  // 7. Engine gates on opens: halt, stand-down, bench, regime, knife. Not on the ask exit: a knife is exactly
+  //    when a bid band gets run through, and the ask is the cheaper way out of it (the stand-down's FLATTEN
+  //    and the kill switch never lay one: src/index.ts keeps those closes as sales).
+  if (isOpening(decision) && !exitAsk) {
     if (engine.haltedUntil !== null && ctx.now < engine.haltedUntil) {
       violations.push(`circuit breaker: opens halted until ${iso(engine.haltedUntil)}`);
     }
@@ -281,9 +292,10 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
       if (!(acquireRaw >= 0) || !Number.isFinite(acquireRaw)) violations.push("acquireToken must be a non-negative number");
       if (acquire > 0 && o.side !== "BOTH") violations.push("acquireToken is only for a BOTH band (the stock straddle)");
       if (acquire > o.amountToken) violations.push(`acquireToken ${acquire} exceeds the token leg ${o.amountToken}: nothing to buy beyond the deposit`);
-      if (sizeSol > limits.maxPositionSol) {
+      // (the ask exit re-lays what a band already held: the size limits were applied when that band was laid)
+      if (sizeSol > limits.maxPositionSol && !exitAsk) {
         violations.push(`band size ${sizeLabel} > max ${limits.maxPositionSol}`);
-      } else if (mult > 0 && mult < 1 && sizeSol > effectiveMax) {
+      } else if (mult > 0 && mult < 1 && sizeSol > effectiveMax && !exitAsk) {
         violations.push(`band size ${sizeLabel} > max ${effectiveMax.toFixed(4)} (${mult} x limit after bench/regime)`);
       }
       if (exposureAfter > limits.maxTotalExposureSol) violations.push(`total exposure would be ${exposureAfter.toFixed(4)} SOL > max ${limits.maxTotalExposureSol}`);

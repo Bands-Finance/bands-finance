@@ -20,6 +20,8 @@ export interface Decision {
   headline: string;
   /** CLOSE_POSITION on a stock band: the token that comes back is sold into the quote; absent = false */
   liquidate?: boolean;
+  /** REBALANCE only: the closing band's token is laid as an ask band instead of sold (the ask exit) */
+  exitAsk?: boolean;
 }
 
 export interface BinRow {

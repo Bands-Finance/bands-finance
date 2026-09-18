@@ -181,8 +181,9 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
       const value = valueBand(band, s);
       const why = closeReason(verdict);
       const rentRefund = bandRentRefund(band);
-      // a close whose token leg goes straight into a swap (liquidate) or back into a straddle pays the swap fee instead of the close slippage
-      const feedsSwap = (d.action === "CLOSE_POSITION" && d.liquidate === true) || (d.action === "REBALANCE" && d.open?.side === "BOTH");
+      // a close whose token leg goes straight into a swap (liquidate), back into a straddle, or into an ask band (the ask
+      // exit, src/engine/askExit.ts: a deposit, no sale) pays the swap fee (or nothing) instead of the close slippage
+      const feedsSwap = (d.action === "CLOSE_POSITION" && d.liquidate === true) || (d.action === "REBALANCE" && (d.open?.side === "BOTH" || d.open?.side === "TOKEN_ONLY"));
       const closeSlip = feedsSwap ? 0 : slippagePct;
       const closed = closeBand(book, { address: band.address, value, slippagePct: closeSlip, now, reason: why.reason, emergency: why.emergency });
       tokensBack = (closed.tokenBack + closed.feeToken) * (1 - closeSlip / 100);
@@ -204,7 +205,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         basis: "marked",
         feeSol: closed.feeSol,
         entryValueSol: closed.entryValueSol,
-        note: `paper: close band; ${q.symbol} side from the paper mark; ${feedsSwap ? "token leg goes to a swap: no close slippage" : `${slippagePct}% slippage on the token leg`}`,
+        note: `paper: close band; ${q.symbol} side from the paper mark; ${feedsSwap ? (d.open?.side === "TOKEN_ONLY" ? "token leg goes into an ask band: no close slippage" : "token leg goes to a swap: no close slippage") : `${slippagePct}% slippage on the token leg`}`,
       });
       if (d.action === "CLOSE_POSITION") {
         // liquidate: the token that came back is sold into the quote, the book returns to USDC

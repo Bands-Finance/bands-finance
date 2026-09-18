@@ -34,7 +34,7 @@ const out = lines.map((line) => {
     console.log(`${l.label.padEnd(12)} ${new Date(l.closedAt).toISOString().slice(11, 16)}Z  no ledger rows: left as it was`);
     return line;
   }
-  const meta: BandMeta = { pool: l.pool, label: l.label, kind: l.kind, openedAt: l.openedAt, seatSol: l.seatSol, bins: l.bins, binStep: l.binStep, coverPct: l.coverPct, travelBins60m: l.travelBins60m, predictedYieldPct: l.predictedYieldPct };
+  const meta: BandMeta = { pool: l.pool, label: l.label, kind: l.kind, openedAt: l.openedAt, seatSol: l.seatSol, bins: l.bins, binStep: l.binStep, coverPct: l.coverPct, travelBins60m: l.travelBins60m, predictedYieldPct: l.predictedYieldPct, ...(l.ask ? { ask: true } : {}) };
   const again = lessonOf({ meta, position: l.position, stats: null, rows, closedAt: l.closedAt, endReason: l.endReason, headline: l.headline, mode: l.mode });
   const diff = Math.abs(again.netSol - l.netSol) > 5e-7 || (again.tokensLeftSol ?? 0) !== (l.tokensLeftSol ?? 0);
   console.log(`${l.label.padEnd(12)} closed ${new Date(l.closedAt).toISOString().slice(11, 16)}Z  ${l.endReason.padEnd(12)} net ${l.netSol >= 0 ? "+" : ""}${l.netSol.toFixed(4)} -> ${again.netSol >= 0 ? "+" : ""}${again.netSol.toFixed(4)} SOL${(again.tokensLeftSol ?? 0) > 0 ? ` (of it ${again.tokensLeftSol!.toFixed(4)} in tokens left unsold)` : ""}${diff ? "" : "  unchanged"}`);

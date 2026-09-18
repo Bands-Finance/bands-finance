@@ -28,6 +28,14 @@ export interface WatchedBand {
   idleWaitSec?: number;
   /** epoch ms of the cycle that last observed it: a wake-up is owed only for a wait that ran out since */
   observedAt?: number;
+  /**
+   * an ASK band (src/engine/askExit.ts): all token when the price is under it, so its loss since the last
+   * mark is the price's own move from `markBinId` (the active bin at that mark), on top of `drawdownPct`;
+   * sold out when the price is over it, which is worth a cycle at once
+   */
+  ask?: boolean;
+  /** the active bin at the cycle that last observed it (an ask band's loss is measured from here) */
+  markBinId?: number;
 }
 
 export interface FastReading {
@@ -69,7 +77,7 @@ export function fastEnv(env: NodeJS.ProcessEnv = process.env): FastEnv {
 export interface FastTrigger {
   pool: string;
   label: string;
-  kind: "left-band" | "stop-near" | "idle-due";
+  kind: "left-band" | "stop-near" | "idle-due" | "ask-sold";
   detail: string;
 }
 
@@ -79,7 +87,9 @@ export interface FastTrigger {
  *    clock, the idle re-lay and the through-band rule all start from the cycle that first sees it).
  *  - stop-near: the price is through the band on the token side and the loss since the band's middle
  *    (where a one-sided band's fills average) plus what was already on the book is within FAST_STOP_NEAR
- *    of the stop.
+ *    of the stop. An ASK band is all token under the price: its loss is the price's move from the bin it
+ *    was last marked at, compounded on the drawdown that mark already showed against the chain's basis.
+ *  - ask-sold: the price is over an ask band: it sold out, and the SOL is booked at the next cycle, now.
  */
 export function fastTrigger(b: WatchedBand, reading: FastReading | null, now: number, env: FastEnv): FastTrigger | null {
   if (!reading || reading.bin === null || now - reading.asOf > env.staleSec * 1000) return null;
@@ -87,6 +97,26 @@ export function fastTrigger(b: WatchedBand, reading: FastReading | null, now: nu
   const outside = bin < b.lowerBinId || bin > b.upperBinId;
   // the token side of a quote-only band: below it when the quote is Y, above it when the quote is X
   const throughTokenSide = b.quoteSide === "Y" ? bin < b.lowerBinId : bin > b.upperBinId;
+  if (b.ask) {
+    // under the ask: all token; what the price did since the last mark, on top of what that mark already showed
+    if (throughTokenSide) {
+      const from = b.markBinId ?? (b.quoteSide === "Y" ? b.lowerBinId : b.upperBinId);
+      const binsDown = b.quoteSide === "Y" ? from - bin : bin - from;
+      const moveFactor = binsDown > 0 ? Math.pow(1 + b.binStep / 10_000, -binsDown) : 1;
+      const total = (1 - (1 - Math.max(0, b.drawdownPct) / 100) * moveFactor) * 100;
+      if (total >= b.stopPct * env.stopNear) {
+        return { pool: b.pool, label: b.label, kind: "stop-near", detail: `the last swap is at bin ${bin}, ${Math.max(0, Math.round(binsDown))} bins under the ask's last mark at bin ${from}: about ${total.toFixed(1)}% down against the chain's ${b.stopPct.toFixed(1)}% stop` };
+      }
+      return null;
+    }
+    // over the ask: sold out, and a sold-out ask left alone is a bid nobody chose. Owed once: a cycle that already
+    // saw it sold (the mark's bin over the band) has decided on it, and is not woken again for the same reading.
+    const seenSold = b.markBinId !== undefined && (b.quoteSide === "Y" ? b.markBinId > b.upperBinId : b.markBinId < b.lowerBinId);
+    if (outside && !seenSold) {
+      return { pool: b.pool, label: b.label, kind: "ask-sold", detail: `the last swap is at bin ${bin}, ${b.quoteSide === "Y" ? "over" : "under"} ask band [${b.lowerBinId}, ${b.upperBinId}]: it sold out; booking the ${b.quoteSide === "Y" ? "SOL" : "quote"} now` };
+    }
+    return null;
+  }
   if (throughTokenSide) {
     const mid = (b.lowerBinId + b.upperBinId) / 2;
     const binsPast = b.quoteSide === "Y" ? mid - bin : bin - mid;

@@ -438,6 +438,43 @@ async function main(): Promise<void> {
     assert.match(r.notes[0], /not found in the paper book/);
   });
 
+  console.log("the ask exit in paper");
+  await test("a bid band run through is closed into a TOKEN_ONLY ask band in one execution: no sale, no close slippage, the token laid from the active bin up; marked up it sells out and the close books SOL", async () => {
+    const { askExitOf, askExitEnv } = await import("../engine/askExit.js");
+    const b4 = paper.emptyBook(100, 0, T0);
+    const c4 = (snapshot: PoolSnapshot, positions: PositionSnapshot[], now: number) =>
+      ({ venue: {} as never, pool: {} as never, wallet: {} as never, rawPositions: [], snapshot, positions, paper: { book: b4, slippagePct: 0.3, now }, walletToken: paper.paperTokenBalance(b4, ANSEM) }) as Parameters<typeof execute>[1];
+    // 10 SOL under bin 260; the price falls to 245: all ANSEM
+    await execute(verdictOf(openDecision(10, 9)), c4(s260, [], T0));
+    const run = snapAt(245);
+    const [bid] = paper.markPool(b4, run, { now: T0 + 600e3, fees: null, solPriceUsd: 100 });
+    assert.ok(bid.amountX > 0 && bid.amountY === 0, "the bid band holds token");
+    const close = closeDecision(bid.address, "Through the band.", "9 bins through the band and 700s out. Off the table.");
+    const asked = askExitOf({ ...close, liquidate: true }, { snapshot: run, positions: [bid], walletToken: 0, askBands: {}, env: askExitEnv({ EXIT_ASK: "true" }), maxBinWidth: 69 })!;
+    assert.equal(asked.action, "REBALANCE");
+    assert.equal(asked.open!.side, "TOKEN_ONLY");
+    assert.equal(asked.open!.binsAboveActive, 15);
+    near(asked.open!.amountToken, Math.floor((bid.amountX + bid.feeX) * 1e6) / 1e6, 1e-9, "the band's token incl. base fees");
+    const r = await execute(verdictOf(asked), c4(run, [bid], T0 + 600e3));
+    assert.equal(r.ok, true, r.notes.join("; "));
+    assert.deepEqual(r.txs.map((t) => t.label.split(" ")[0]), ["close", "open"], "no swap leg");
+    assert.deepEqual(r.ledger!.map((x) => x.mech), ["close", "open"]);
+    assert.match(r.ledger![0].note, /into an ask band: no close slippage/);
+    assert.equal(b4.closed[b4.closed.length - 1].slippageSol, 0);
+    const ask = b4.bands[0];
+    assert.equal(ask.side, "TOKEN_ONLY");
+    assert.deepEqual([ask.lowerBinId, ask.upperBinId], [245, 260]);
+    assert.ok(paper.paperTokenBalance(b4, ANSEM) < 1e-3, "the wallet's ANSEM went into the ask");
+    near(r.opened!.entryValueSol, asked.open!.amountToken * p(245), 1e-6, "the ask's own entry is the mark it was laid at");
+    // the price bounces over the ask: every bin sold, the band holds SOL above the bid's cost
+    const [sold] = paper.markPool(b4, snapAt(262), { now: T0 + 1200e3, fees: null, solPriceUsd: 100 });
+    assert.ok(sold.amountX === 0 && sold.amountY > 0, `sold out: ${sold.amountX} ANSEM, ${sold.amountY} SOL`);
+    assert.ok(sold.amountY > r.opened!.entryValueSol, "sold on the way up, over the mark it was laid at");
+    const done = await execute(verdictOf({ ...closeDecision(ask.address), liquidate: true }), c4(snapAt(262), [sold], T0 + 1200e3));
+    assert.equal(done.ok, true);
+    assert.equal(done.txs.length, 1, "a sold-out ask closes without a swap: nothing to sell");
+    assert.ok(b4.wallet.sol > 100 - 0.5, `the SOL is back: ${b4.wallet.sol}`);
+  });
   console.log("guards on paper positions");
   await test("the guards read a marked paper band like a chain one: close-target passes, the stop fires from the book's entry", () => {
     const b3 = paper.emptyBook(100, 0, T0);
@@ -731,6 +768,85 @@ async function main(): Promise<void> {
     assert.equal(second.branch, "close");
     assert.match(second.decision.reasoning, /still hot but already had its extra cycle/);
   });
+  await test("policy: an ask band holds while working, closes at once when sold out, waits under the price then follows it down, and is pulled under the kill switch", async () => {
+    const { askExitEnv, askBandRecord } = await import("../engine/askExit.js");
+    const aenv = askExitEnv({ EXIT_ASK: "true", EXIT_ASK_RELAY_SEC: "180" });
+    const b5 = paper.emptyBook(100, 0, T0);
+    paper.openBand(b5, { pool: POOL, label: "ANSEM/SOL", quoteSymbol: "SOL", quoteSide: "Y", quoteMint: SOL_MINT, tokenMint: ANSEM, tokenSymbol: "ANSEM", xDecimals: 6, yDecimals: 9, binStep: 20, activeBinId: 245, activePrice: p(245), tokenPriceInQuote: p(245), quotePriceInSol: 1, lowerBinId: 245, upperBinId: 260, lowerPrice: p(245), upperPrice: p(260), side: "TOKEN_ONLY", strategy: "Spot", amountQuote: 0, amountToken: 0, slippagePct: 0.3, now: T0 - 600e3 });
+    const at = (active: number) => {
+      const snap = snapAt(active);
+      const [pos] = paper.markPool(b5, snap, { now: T0, fees: null, solPriceUsd: 100 });
+      return { pos, snap };
+    };
+    const working = at(252);
+    const record = askBandRecord(undefined, { pool: POOL, from: "paper-bid", tokens: working.pos.amountX + working.pos.amountY / p(252), markSol: 12, now: T0 - 600e3 });
+    const ax = { ...x, askExit: { bands: { [working.pos.address]: record }, env: aenv } };
+    const e = obs().engine!;
+    const inRange = policy.policyDecide(obs({ positions: [working.pos] }, working.snap), ax);
+    assert.equal(inRange.branch, "ask-working");
+    assert.equal(inRange.decision.action, "HOLD");
+    assert.match(inRange.decision.reasoning, /being bought out bin by bin/);
+    const soldOut = at(263);
+    const sold = policy.policyDecide(obs({ positions: [soldOut.pos], engine: { ...e, outOfRangeSec: { [soldOut.pos.address]: 5 } } }, soldOut.snap), ax);
+    assert.equal(sold.branch, "ask-sold");
+    assert.equal(sold.decision.action, "CLOSE_POSITION");
+    assert.equal(sold.decision.positionAddress, soldOut.pos.address);
+    assert.match(sold.decision.headline, /^Sold out through the ask\./);
+    const under = at(240);
+    const wait = policy.policyDecide(obs({ positions: [under.pos], engine: { ...e, outOfRangeSec: { [under.pos.address]: 100 } } }, under.snap), ax);
+    assert.equal(wait.branch, "ask-wait");
+    assert.equal(wait.decision.action, "HOLD");
+    assert.match(wait.decision.reasoning, /follows the price after 180s/);
+    const relay = policy.policyDecide(obs({ positions: [under.pos], wallet: { ...obs().wallet, token: 3 }, engine: { ...e, outOfRangeSec: { [under.pos.address]: 200 } } }, under.snap), ax);
+    assert.equal(relay.branch, "ask-relay");
+    assert.equal(relay.decision.action, "REBALANCE");
+    assert.equal(relay.decision.exitAsk, true);
+    assert.equal(relay.decision.open!.side, "TOKEN_ONLY");
+    assert.deepEqual([relay.decision.open!.binsBelowActive, relay.decision.open!.binsAboveActive], [0, 15]);
+    near(relay.decision.open!.amountToken, Math.floor((under.pos.amountX + under.pos.feeX + 3) * 1e6) / 1e6, 1e-9, "the band's token, its base fees and the wallet's");
+    assert.match(relay.decision.headline, /Following it down\.$/);
+    const killed = policy.policyDecide(obs({ positions: [under.pos], state: { ...obs().state, killSwitch: true }, engine: { ...e, outOfRangeSec: { [under.pos.address]: 200 } } }, under.snap), ax);
+    assert.equal(killed.branch, "ask-pulled");
+    assert.equal(killed.decision.action, "CLOSE_POSITION");
+    assert.equal(killed.decision.liquidate, true);
+    // without a record the same band is judged as any other
+    assert.equal(policy.policyDecide(obs({ positions: [working.pos] }, working.snap), x).branch, "in-range");
+    for (const d of [inRange, sold, wait, relay, killed]) voice(d.decision);
+  });
+  await test("policy: with the ask exit on, a band the price fell through waits the ask's re-lay wait (not the paid-move minimum) and skips the hot-pool grace cycle before its close", async () => {
+    const { askExitEnv } = await import("../engine/askExit.js");
+    const ax = { ...x, askExit: { bands: {}, env: askExitEnv({ EXIT_ASK: "true", EXIT_ASK_RELAY_SEC: "180" }) } };
+    const { pos, snap } = paperPos(230);
+    const e = obs().engine!;
+    const wait = policy.policyDecide(obs({ positions: [pos], engine: { ...e, minOutOfRangeSec: 2400, outOfRangeSec: { [pos.address]: 100 } } }, snap), ax);
+    assert.equal(wait.branch, "churn-wait");
+    assert.match(wait.reason, /100s < 180s minimum/);
+    assert.match(wait.decision.reasoning, /the 180s the ask exit waits before laying the token at the price/);
+    const close = policy.policyDecide(obs({ positions: [pos], engine: { ...e, minOutOfRangeSec: 2400, outOfRangeSec: { [pos.address]: 200 } }, screen: { ...obs().screen!, hot: [hotRow()] } }, snap), ax);
+    assert.equal(close.branch, "close", "no hot-hold cycle: the ask at the price catches the bounce");
+    assert.equal(close.decision.action, "CLOSE_POSITION");
+    assert.match(close.decision.reasoning, /past the 180s minimum.*The token comes off this band\./);
+    // off: the paid-move minimum and the hot-pool grace stand
+    const off = policy.policyDecide(obs({ positions: [pos], engine: { ...e, minOutOfRangeSec: 2400, outOfRangeSec: { [pos.address]: 200 } } }, snap), x);
+    assert.equal(off.branch, "churn-wait");
+    voice(wait.decision);
+    voice(close.decision);
+  });
+  await test("adviseWithPolicy: the model may not end an ask chain with a sale while the policy has it working; a model close of a sold-out ask stands", async () => {
+    const { adviseWithPolicy } = await import("../agent/decide.js");
+    const modelClose: Decision = { action: "CLOSE_POSITION", open: null, positionAddress: "ask1", liquidate: true, reasoning: "Get out.", confidence: 0.6, headline: "Out." };
+    const relay: Decision = { action: "REBALANCE", open: { side: "TOKEN_ONLY", amountSol: 0, amountToken: 10, binsBelowActive: 0, binsAboveActive: 15, strategy: "Spot" }, positionAddress: "ask1", exitAsk: true, reasoning: "Following it down.", confidence: 0.7, headline: "Following it down." };
+    const kept = adviseWithPolicy(modelClose, { decision: relay, reason: "ask band re-laid", branch: "ask-relay" });
+    assert.equal(kept.decision.action, "REBALANCE");
+    assert.equal(kept.decision.exitAsk, true);
+    assert.match(kept.note!, /model CLOSE of an ask band replaced/);
+    const sold = adviseWithPolicy(modelClose, { decision: { ...modelClose, headline: "Sold out through the ask." }, reason: "sold", branch: "ask-sold" });
+    assert.equal(sold.decision.headline, "Out.", "the model's own close stands when the policy closes too");
+    // a model REBALANCE takes the policy's ask re-lay, exitAsk included
+    const modelIn: Decision = { ...relay, exitAsk: undefined, reasoning: "Re-lay it." };
+    assert.equal(adviseWithPolicy(modelIn, { decision: relay, reason: "ask band re-laid", branch: "ask-relay" }).decision.exitAsk, true);
+  });
+
   await test("the scout's travel sets the width: the larger of the hour and half the four hours; the tuner's multiple applies to pools that are not stocks; entry waits for an hour of coverage", () => {
     const flow = { asOf: Date.now(), quoteSymbol: "SOL", swaps15m: 5, volume15mQuote: 1, fees15mQuote: 0.01, ours15mQuote: 0, swaps60m: 10, volume60mQuote: 4, fees60mQuote: 0.04, ours60mQuote: 0, swaps240m: 40, fees240mQuote: 0.2, coveredMin: 240, feesPerDayQuote240m: 1.2, range60mBins: 6, range240mBins: 13, feesPerDayQuote60m: 0.96, feesPerDayQuote15m: 0.96, lastPrice: null, lastSwapAt: null, largest15m: null };
     const wide = { ...policy.policyEnv({}), maxCoverPct: 25 };

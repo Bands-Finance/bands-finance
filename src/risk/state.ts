@@ -70,6 +70,12 @@ export interface RiskState {
   launchBands?: Record<string, LaunchBand>;
   /** what exits could not sell under the impact caps, by mint: sold on later cycles (executor sellResidue) */
   residues?: Record<string, import("../executor").Residue>;
+  /**
+   * position address -> the ask band working a closed bid band's token off (src/engine/askExit.ts). Its
+   * PRESENCE is what makes a band an ask band: not a seat, its own stop basis and clock, closed at once
+   * when sold out. Cleared with the rest of the band's bookkeeping in forgetBand().
+   */
+  askBands?: Record<string, import("../engine/askExit").AskBand>;
   /** pool -> epoch ms the desk first took its seat there in the current tenure (a re-lay keeps it; a plain close ends it) */
   seatSince?: Record<string, number>;
   /**
@@ -102,6 +108,7 @@ export function emptyState(day = todayUtc()): RiskState {
     bandMeta: {},
     rangeStats: {},
     launchBands: {},
+    askBands: {},
     pairPools: {},
   };
 }
@@ -123,6 +130,7 @@ export function loadState(): RiskState {
       bandMeta: parsed.bandMeta ?? {},
       rangeStats: parsed.rangeStats ?? {},
       launchBands: parsed.launchBands ?? {},
+      askBands: parsed.askBands ?? {},
       pairPools: parsed.pairPools ?? {},
     };
     if (s.day !== todayUtc()) {

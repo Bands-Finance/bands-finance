@@ -33,6 +33,10 @@ export const DecisionSchema = z.object({
     .boolean()
     .optional()
     .describe("CLOSE_POSITION only: sell the base token that comes back into the quote (a Jupiter swap), for stock bands so the book returns to USDC. Default false. Ignored on other actions; a REBALANCE of a BOTH band balances its own legs."),
+  exitAsk: z
+    .boolean()
+    .optional()
+    .describe("REBALANCE only: the closing band's base token is laid as a TOKEN_ONLY ask band instead of sold (the ask exit, src/engine/askExit.ts). The guards treat it as an exit. Set by the desk, never by the model."),
 });
 export type Decision = z.infer<typeof DecisionSchema>;
 

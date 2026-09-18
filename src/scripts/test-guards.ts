@@ -612,4 +612,70 @@ test("liquidate: a close that sells the token back is an exit like any other, ne
   assert.equal(engineClose.decision.liquidate, true);
 });
 
-console.log(`${n} guard tests passed (with portfolio, engine, USDC-quote, basis and straddle checks)`);
+// ---- the ask exit (src/engine/askExit.ts): a REBALANCE that closes a band into an ask band is judged as the exit it is
+const throughBand: PositionSnapshot = { ...position, inRange: false, binsFromRange: -3, amountX: 130, amountY: 0, feeX: 2, feeY: 0.0004, valueInSol: 0.222, solInPosition: 0.0004 };
+const askExit = (over: Partial<Decision> = {}): Decision => ({
+  ...open({ side: "TOKEN_ONLY", amountSol: 0, amountToken: 132, binsBelowActive: 0, binsAboveActive: 15 }),
+  action: "REBALANCE",
+  positionAddress: "pos1",
+  exitAsk: true,
+  ...over,
+});
+
+test("ask exit: passes on the closing band's token (incl. its base fees), skips the cooldown, the daily cap, the price check, the size limits and the open gates", () => {
+  const state = { ...freshState(), actionsToday: 24, lastActionAt: NOW - 10_000, lastMoveByPool: { pool: NOW - 10_000 }, lastPrice: 0.004, entryValueSol: { pos1: 0.3 } };
+  const e = engine({ haltedUntil: NOW + 3600_000, benched: true, knife: "knife: -30% in 30 min (limit 20%)", sizeMultiplier: 0.25, outOfRangeSince: { pos1: NOW - 900_000 }, outOfRangeSec: 600 });
+  const notAtStop = { ...throughBand, valueInSol: 0.29 };
+  const v = evaluate(askExit(), ctx({ now: NOW, positions: [notAtStop], state, engine: e, walletSol: 1 }), { ...limits, maxPositionSol: 0.1 });
+  assert.equal(v.allowed, true, v.violations.join("; "));
+  assert.equal(v.decision.action, "REBALANCE");
+  assert.equal(v.decision.exitAsk, true);
+  assert.equal(v.emergency, false, "a policy ask exit is not an emergency, just never held");
+  // more token than the band and the wallet hold: refused like any deposit
+  const tooMuch = evaluate(askExit({ open: { ...askExit().open!, amountToken: 140 } }), ctx({ now: NOW, positions: [throughBand], state, engine: e }), limits);
+  assert.ok(tooMuch.violations.some((x) => x.startsWith("not enough ANSEM")), tooMuch.violations.join("; "));
+  // the geometry is still the TOKEN_ONLY geometry
+  const wrongSide = evaluate(askExit({ open: { ...askExit().open!, binsBelowActive: 2, binsAboveActive: 0 } }), ctx({ now: NOW, positions: [throughBand], state, engine: e }), limits);
+  assert.ok(wrongSide.violations.some((x) => x.includes("TOKEN_ONLY band must sit at/above")), wrongSide.violations.join("; "));
+  // an ordinary REBALANCE in the same spot is held by the cooldown and the gates as before
+  const plain = evaluate({ ...askExit(), exitAsk: undefined }, ctx({ now: NOW, positions: [notAtStop], state, engine: e }), limits);
+  assert.equal(plain.allowed, false);
+  assert.ok(plain.violations.some((x) => x.startsWith("cooldown")) && plain.violations.some((x) => x.startsWith("knife")), plain.violations.join("; "));
+});
+
+test("ask exit: a band at its stop may leave into an ask (no override to a sale); an engine ask exit is an emergency; the kill switch still blocks the open", () => {
+  // 0.3 in, 0.222 now, fees aside: 27% down, past the stop
+  const state = { ...freshState(), entryValueSol: { pos1: 0.3 } };
+  const v = evaluate(askExit(), ctx({ now: NOW, positions: [throughBand], state }), limits);
+  assert.equal(v.allowed, true, v.violations.join("; "));
+  assert.equal(v.decision.action, "REBALANCE", "not overridden to a CLOSE");
+  assert.equal(v.overrides.length, 0);
+  assert.equal(v.emergency, true);
+  assert.ok(v.passed.some((x) => x.includes("into an ask")), v.passed.join("; "));
+  const fromEngine = evaluate(askExit(), ctx({ now: NOW, positions: [{ ...throughBand, valueInSol: 0.29 }], state: { ...freshState(), entryValueSol: { pos1: 0.3 }, actionsToday: 24 }, source: "engine" }), limits);
+  assert.equal(fromEngine.allowed, true, fromEngine.violations.join("; "));
+  assert.equal(fromEngine.emergency, true);
+  // an ordinary REBALANCE of a band at its stop is still overridden into the sale
+  const plain = evaluate({ ...askExit(), exitAsk: undefined }, ctx({ now: NOW, positions: [throughBand], state }), limits);
+  assert.equal(plain.decision.action, "CLOSE_POSITION");
+  assert.equal(plain.decision.liquidate, true);
+  // the kill switch: no ask laid (the loop never proposes one under it; the guards agree), the stop then forces the sale
+  const killed = evaluate(askExit(), ctx({ now: NOW, positions: [throughBand], state, killSwitch: true }), limits);
+  assert.equal(killed.allowed, false);
+  assert.ok(killed.violations.some((x) => x.startsWith("kill switch")), killed.violations.join("; "));
+});
+
+test("ask exit: the stop reads an ask band against its chain's basis", () => {
+  const ask = { pool: "pool", since: NOW - 60_000, basisSol: 0.3, from: "bid", tokens: 130, relays: 1 };
+  // re-laid at 0.25, worth 0.26 now: up on its own entry, 13% under the chain's basis; its stop is 10%
+  const state = { ...freshState(), entryValueSol: { ask1: 0.25 }, askBands: { ask1: ask } };
+  const p: PositionSnapshot = { ...throughBand, address: "ask1", valueInSol: 0.26, feeX: 0, feeY: 0 };
+  const v = evaluate({ ...open(), action: "HOLD", open: null }, ctx({ now: NOW, positions: [p], state, engine: engine({ stops: { ask1: 10 } }) }), limits);
+  assert.equal(v.decision.action, "CLOSE_POSITION");
+  assert.ok(v.overrides[0].includes("ask1 is 13.3% below entry"), v.overrides[0]);
+  // the same band, no ask record: judged on its own entry, no stop
+  const own = evaluate({ ...open(), action: "HOLD", open: null }, ctx({ now: NOW, positions: [p], state: { ...state, askBands: {} }, engine: engine({ stops: { ask1: 10 } }) }), limits);
+  assert.equal(own.decision.action, "HOLD");
+});
+
+console.log(`${n} guard tests passed (with portfolio, engine, USDC-quote, basis, straddle and ask-exit checks)`);

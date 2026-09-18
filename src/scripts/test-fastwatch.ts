@@ -60,6 +60,28 @@ async function main() {
     assert.equal(fastTrigger(xq, { bin: 90, asOf: NOW - 5_000 }, NOW, env), null);
   });
 
+  await test("fastTrigger on an ask band: under it the loss compounds the last mark's drawdown with the price's move from that mark; over it the cycle is woken once to book the sale", () => {
+    // an ask laid at bin -337 over the price, the chain's basis already 4% down at the last mark taken at bin -340
+    const ask: WatchedBand = { ...baton, inRange: false, lowerBinId: -337, upperBinId: -323, ask: true, markBinId: -340, drawdownPct: 4, stopPct: 10 };
+    assert.equal(fastTrigger(ask, { bin: -343, asOf: NOW - 5_000 }, NOW, env), null, "3 bins under the mark: 4% then 3%, about 6.9%: not near a 10% stop");
+    const near = fastTrigger(ask, { bin: -345, asOf: NOW - 5_000 }, NOW, env)!;
+    assert.equal(near.kind, "stop-near");
+    assert.match(near.detail, /5 bins under the ask's last mark at bin -340: about 8\.7% down against the chain's 10\.0% stop/);
+    assert.equal(fastTrigger(ask, { bin: -338, asOf: NOW - 5_000 }, NOW, env), null, "under the ask but over the last mark: nothing to fear, nothing to book");
+    assert.equal(fastTrigger(ask, { bin: -330, asOf: NOW - 5_000 }, NOW, env), null, "inside the ask: selling bin by bin");
+    const sold = fastTrigger(ask, { bin: -320, asOf: NOW - 5_000 }, NOW, env)!;
+    assert.equal(sold.kind, "ask-sold");
+    assert.match(sold.detail, /over ask band \[-337, -323\]: it sold out; booking the SOL now/);
+    assert.equal(fastTrigger({ ...ask, markBinId: -321 }, { bin: -320, asOf: NOW - 5_000 }, NOW, env), null, "the last cycle already saw it sold: it has decided on it");
+    assert.equal(fastTrigger({ ...ask, inRange: true, markBinId: -330 }, { bin: -320, asOf: NOW - 5_000 }, NOW, env)!.kind, "ask-sold", "from inside the ask to over it: the sale is booked, not just the out-of-range clock");
+    // the mark's bin stands in for the laid bin when absent; without a drawdown on the book the move alone counts
+    assert.equal(fastTrigger({ ...ask, markBinId: undefined, drawdownPct: 0 }, { bin: -346, asOf: NOW - 5_000 }, NOW, env)!.kind, "stop-near", "9 bins under the laid bin at 1% is 8.6%: near");
+    // quote on X: the ask sits under the price, sold out when the price falls through it
+    const xAsk: WatchedBand = { ...ask, quoteSide: "X", lowerBinId: 100, upperBinId: 114, markBinId: 118 };
+    assert.equal(fastTrigger(xAsk, { bin: 90, asOf: NOW - 5_000 }, NOW, env)!.kind, "ask-sold");
+    assert.equal(fastTrigger(xAsk, { bin: 124, asOf: NOW - 5_000 }, NOW, env)!.kind, "stop-near");
+  });
+
   await test("earlyCycleAllowed: 90 seconds apart, twelve an hour, never when the watch is off", () => {
     assert.equal(earlyCycleAllowed([], NOW, env), true);
     assert.equal(earlyCycleAllowed([NOW - 60_000], NOW, env), false);

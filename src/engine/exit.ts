@@ -53,6 +53,16 @@ export function drawdownPct(p: Pick<PositionSnapshot, "valueInSol">, entryValueS
   return (1 - Math.max(0, p.valueInSol - Math.max(0, feesSol)) / entryValueSol) * 100;
 }
 
+/**
+ * The entry a band's STOP is measured against: for an ask band (src/engine/askExit.ts) the mark the
+ * first ask of its chain was laid at, so the chain's stop bounds the whole chain and not each re-lay;
+ * for every other band its entry value. (The ledger keeps entryValueSol as each position's own entry:
+ * the stop's basis and the P&L basis are different numbers on a re-laid ask.)
+ */
+export function stopEntryOf(state: Pick<RiskState, "entryValueSol" | "askBands">, p: Pick<PositionSnapshot, "address" | "entryValueSol">): number | undefined {
+  return state.askBands?.[p.address]?.basisSol ?? state.entryValueSol[p.address] ?? p.entryValueSol;
+}
+
 /** drawdownPct with the band's unclaimed fees read off the snapshot. */
 export function marketDrawdownPct(p: Pick<PositionSnapshot, "valueInSol" | "feeX" | "feeY">, snapshot: CollectSnapshot, entryValueSol: number | undefined): number | null {
   return drawdownPct(p, entryValueSol, unclaimedFeesSol(p, snapshot));
@@ -97,25 +107,40 @@ export function moveAfterSec(moveCostUsd: number, feesPerDayUsd: number | null, 
 export function antiChurn(
   decision: Decision,
   positions: readonly PositionSnapshot[],
-  state: Pick<RiskState, "outOfRangeSince" | "stops" | "entryValueSol">,
+  state: Pick<RiskState, "outOfRangeSince" | "stops" | "entryValueSol" | "askBands">,
   limits: Pick<RiskLimits, "stopLossPct">,
   minSec: number,
   now: number,
   snapshot?: CollectSnapshot,
   /** the shorter wait an all-quote band may be re-laid after (POLICY_IDLE_RELAY_SEC): following the price costs no swap */
   idle?: { sec: number; quoteSide: "X" | "Y" },
+  /** the wait an ask band (src/engine/askExit.ts) sits under the price before it follows it down (EXIT_ASK_RELAY_SEC) */
+  ask?: { relaySec: number; quoteSide: "X" | "Y" },
 ): string | null {
   if (decision.action !== "REBALANCE" && decision.action !== "CLOSE_POSITION") return null;
   const p = positions.find((x) => x.address === decision.positionAddress);
   if (!p) return null; // the close-target check reports this
   if (p.inRange) return null;
   const sec = outOfRangeSec(state.outOfRangeSince, p.address, now);
+  const quoteSide = ask?.quoteSide ?? idle?.quoteSide ?? "Y";
+  const onQuoteSide = quoteSide === "Y" ? p.binsFromRange > 0 : p.binsFromRange < 0;
+  // an ask band the price ran up through holds only quote: it sold out, and closing it is the exit's completion, never churn;
+  // one the price fell under still holds the token, and follows the price down after its own wait (a close and an open, no sale)
+  if (state.askBands?.[p.address]) {
+    if (onQuoteSide) return null;
+    const relay = Math.max(0, ask?.relaySec ?? 0);
+    if (decision.action === "REBALANCE" && sec >= relay) return null;
+    if (decision.action === "CLOSE_POSITION") return null; // the chain's end (stop, expiry, kill switch): an exit
+    return `anti-churn: ask band ${p.address.slice(0, 6)} is under the price for ${Math.round(sec)}s, it follows the price after ${relay}s`;
+  }
   // a band the price ran off on the quote side still holds only quote: re-laying it is a close and an open, no sale, so
-  // the idle wait governs it, not the paid-move minimum (18 Sep: the 600 s fallback held TACZ's free re-lays nineteen times)
-  const idleSide = idle && idle.sec > 0 && (idle.quoteSide === "Y" ? p.binsFromRange > 0 : p.binsFromRange < 0);
-  const minHere = idleSide && decision.action === "REBALANCE" ? Math.min(minSec, idle.sec) : minSec;
+  // the idle wait governs it, not the paid-move minimum (18 Sep: the 600 s fallback held TACZ's free re-lays nineteen times).
+  // The ask exit of a band the price fell through is the same kind of move (its token goes into an ask, no sale): the ask's wait.
+  const idleSide = idle && idle.sec > 0 && onQuoteSide;
+  const askMove = decision.action === "REBALANCE" && decision.exitAsk === true && ask && ask.relaySec > 0;
+  const minHere = idleSide && decision.action === "REBALANCE" ? Math.min(minSec, idle.sec) : askMove ? Math.min(minSec, ask.relaySec) : minSec;
   if (sec >= minHere) return null;
-  const dd = snapshot ? marketDrawdownPct(p, snapshot, state.entryValueSol[p.address]) : drawdownPct(p, state.entryValueSol[p.address]);
+  const dd = snapshot ? marketDrawdownPct(p, snapshot, stopEntryOf(state, p)) : drawdownPct(p, stopEntryOf(state, p));
   const stop = bandStopPct(state.stops, p.address, limits);
   if (dd !== null && dd >= stop / 2) return null;
   return `anti-churn: ${p.address.slice(0, 6)} is out of range for ${Math.round(sec)}s, minimum ${minHere}s`;
@@ -180,4 +205,5 @@ export function forgetBand(state: RiskState, position: string): void {
   if (state.outOfRangeSince) delete state.outOfRangeSince[position];
   if (state.feesPendingSince) delete state.feesPendingSince[position];
   if (state.launchBands) delete state.launchBands[position];
+  if (state.askBands) delete state.askBands[position];
 }
