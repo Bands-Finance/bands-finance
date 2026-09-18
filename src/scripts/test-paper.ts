@@ -509,13 +509,14 @@ async function main(): Promise<void> {
     stockGrowMinAgeMin: 15,
     stockGrowMinPct: 50,
     maxSwapImpactPct: 1.5,
+    maxTravelPct: 0,
     requireFlow: false,
     minFlowCoverMin: 60,
     idleRelaySec: 0,
     maxSideSharePct: 50,
     sizeRefTravelPct: 0,
     sizeMinMultiple: 0.33, minSeatPct: 5, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 20, book: "all", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200 });
-    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 10, book: "stocks", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200, stockGrowMinPct: 50, stockGrowMinAgeMin: 15, maxSwapImpactPct: 1.5, requireFlow: false, minFlowCoverMin: 60, idleRelaySec: 0, maxSideSharePct: 50, sizeRefTravelPct: 0, sizeMinMultiple: 0.33 });
+    assert.deepEqual(policy.policyEnv({ POLICY_COVER_PCT: "8", STOCK_COVER_PCT: "2", POLICY_MIN_SEAT_PCT: "2", POLICY_MIN_SCORE: "10", BOOK: "stocks" }), { coverPct: 8, stockCoverPct: 2, minSeatPct: 2, minSeatYieldPct: 0.4, minVolume24hUsd: 250000, maxPaybackHours: 24, minScore: 10, book: "stocks", volMultiple: 1, minCoverPct: 0.15, maxCoverPct: 4, stockMinCoverPct: 1, stockRecentreMaxPaybackHours: 4, stockRecentreMaxWaitSec: 7200, stockGrowMinPct: 50, stockGrowMinAgeMin: 15, maxSwapImpactPct: 1.5, maxTravelPct: 0, requireFlow: false, minFlowCoverMin: 60, idleRelaySec: 0, maxSideSharePct: 50, sizeRefTravelPct: 0, sizeMinMultiple: 0.33 });
     const tuned = policy.policyEnv({ STOCK_MIN_COVER_PCT: "0.5", STOCK_RECENTRE_MAX_PAYBACK_HOURS: "0", STOCK_RECENTRE_MAX_WAIT_MIN: "30" });
     assert.deepEqual([tuned.stockMinCoverPct, tuned.stockRecentreMaxPaybackHours, tuned.stockRecentreMaxWaitSec], [0.5, 0, 1800]);
   });
@@ -601,6 +602,13 @@ async function main(): Promise<void> {
     assert.equal(moved.decision.headline, "Moved -22% in an hour. Not chasing it.");
     voice(moved.decision);
     assert.equal(policy.policyDecide(obs({ screen: { ...obs().screen!, hot: [hotRow({ priceChange1hPct: 14.9 })] } }), x).branch, "open");
+    // IDLE VOLUME (Zach, 18 Sep): a token in flight is not seated whatever it pays this hour; the desk waits for it to settle
+    const flight = policy.policyDecide(obs({ screen: { ...obs().screen!, hot: [hotRow({ priceChange1hPct: 14.9 })] } }), { ...x, env: { maxTravelPct: 10 } });
+    assert.equal(flight.branch, "lively");
+    assert.match(flight.decision.reasoning, /travelled 14\.9% in the last hour, over the 10% the desk sits out/);
+    assert.equal(flight.decision.headline, "In flight: 15% an hour. Waiting for idle volume.");
+    voice(flight.decision);
+    assert.equal(policy.policyDecide(obs({ screen: { ...obs().screen!, hot: [hotRow({ priceChange1hPct: 9 })] } }), { ...x, env: { maxTravelPct: 10 } }).branch, "open", "under the line: seated");
   });
   await test("sizing: the wallet, the depth (share <= 50%), the exposure room and the gas reserve each bound the size", () => {
     const shallow = policy.policyDecide(obs({}, snapAt(260, { liquidityBelowY: 4 })), x); // 0.4 SOL/bin x 25 bins = 10 SOL of depth

@@ -111,6 +111,8 @@ export interface PolicyEnv {
   stockGrowMinAgeMin: number;
   /** POLICY_MAX_SWAP_IMPACT_PCT: a straddle's seat is capped so its token half is bought inside this much price impact in the pool's own bins (0 = no cap) */
   maxSwapImpactPct: number;
+  /** POLICY_MAX_TRAVEL_PCT: a memecoin band is not laid, or re-laid, while the price travelled more than this in the last hour (0 = off): fees are earned in idle volume, not on a token in flight */
+  maxTravelPct: number;
   /** POLICY_REQUIRE_FLOW: a board pool is not opened until the flow scout has read it (the venue's day figure is not an entry) */
   requireFlow: boolean;
   /** POLICY_MIN_FLOW_COVER_MIN: and the reading must cover at least this many minutes (ALLINU/SOL was opened on 18 minutes labelled an hour, 2026-09-17) */
@@ -164,6 +166,7 @@ function policyEnvBase(env: NodeJS.ProcessEnv): PolicyEnv {
     stockGrowMinPct: Math.max(0, num(env.STOCK_GROW_MIN_PCT, 50)),
     stockGrowMinAgeMin: Math.max(0, num(env.STOCK_GROW_MIN_AGE_MIN, 15)),
     maxSwapImpactPct: Math.max(0, num(env.POLICY_MAX_SWAP_IMPACT_PCT, 1.5)),
+    maxTravelPct: Math.max(0, num(env.POLICY_MAX_TRAVEL_PCT, 0)),
     requireFlow: (env.POLICY_REQUIRE_FLOW ?? "").trim().toLowerCase() === "true",
     minFlowCoverMin: Math.max(0, num(env.POLICY_MIN_FLOW_COVER_MIN, 60)),
     idleRelaySec: Math.max(0, num(env.POLICY_IDLE_RELAY_SEC, 0)),
@@ -216,7 +219,7 @@ export interface PolicyExtras {
   grow?: { allowed: boolean };
 }
 
-export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "recentre-wait" | "flow-wait" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
+export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "recentre-wait" | "flow-wait" | "lively" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size";
 
 export interface PolicyResult {
   decision: Decision;
@@ -342,6 +345,19 @@ interface HotView {
 }
 
 /** This pool on the hot list: the observation's own list first, then the extras. */
+/**
+ * IDLE VOLUME. Zach (18 Sep): "we just need to make sure we are in idle volume". Fees are earned while the price chops
+ * inside the band; a token in flight runs through any band it is given (TACZ, 47% of travel in the hour, went through
+ * a 24% band). So a memecoin band is neither laid nor re-laid while the last hour's travel is over POLICY_MAX_TRAVEL_PCT:
+ * the desk holds its SOL and waits for the pool to settle. Null when the pool is calm enough, or the rule is off.
+ */
+export function livelyReason(o: Observation, x: PolicyExtras, env: PolicyEnv): string | null {
+  if (env.maxTravelPct <= 0 || isStockPool(o)) return null;
+  const cover = coverPctFor(o, env, env.coverPct, hotView(o, x));
+  if (cover.movePct === null || !Number.isFinite(cover.movePct) || cover.movePct <= env.maxTravelPct) return null;
+  return `the price travelled ${r(cover.movePct, 1)}% in the last hour, over the ${env.maxTravelPct}% the desk sits out (POLICY_MAX_TRAVEL_PCT): not idle volume`;
+}
+
 function hotView(o: Observation, x: PolicyExtras): HotView {
   const mine = o.screen?.hot?.find((h) => h.thisPool);
   if (mine) return { onList: true, priceChange1hPct: mine.priceChange1hPct, flags: mine.flags, heat: mine.heat, surge: mine.surge };
@@ -918,6 +934,15 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
         `band ${addr} idle ${oor}s < ${waitSec}s`,
       );
     }
+    const lively = livelyReason(o, x, env);
+    if (lively) {
+      return hold(
+        `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s; the band ${bandClause(o, band, q)} and earns nothing there, but ${lively}. It stays as it is, all ${q.symbol}, until the pool settles; a band laid into a token in flight is run through.`,
+        clip(`Idle ${oor}s, but the pool is in flight (${r(coverPctFor(o, env, env.coverPct, hotView(o, x)).movePct ?? 0, 0)}% an hour). Waiting for idle volume.`),
+        "lively",
+        `band ${addr} idle ${oor}s; re-lay held: ${lively}`,
+      );
+    }
     const gate = openGate(o, limits, now);
     const sz = gate ? null : sizeBand(o, x, q, env, band, now);
     if (gate || !sz || sz.none) {
@@ -1056,6 +1081,16 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
           "flow-wait",
           "the flow scout has not read the pool yet (POLICY_REQUIRE_FLOW)",
         );
+  }
+  // Idle volume only: a token in flight is not seated, whatever it pays this hour.
+  const livelyNow = pinned || launch || pair ? null : livelyReason(o, x, env);
+  if (livelyNow) {
+    return hold(
+      `No band in ${o.poolLabel} (${priceLine}): ${livelyNow}. The fees are earned while the price chops inside a band, not while it runs; the desk waits for the pool to settle. ${poolClause(o, hot)}.`,
+      clip(`In flight: ${r(coverPctFor(o, env, env.coverPct, hotView(o, x)).movePct ?? 0, 0)}% an hour. Waiting for idle volume.`),
+      "lively",
+      livelyNow,
+    );
   }
   // Is the seat worth taking? What it earns, against what it costs.
   const seatSolPreview = straddleHere ? (szPreview as StraddleSizing).seatSol : (szPreview as Sizing).amountSol;
