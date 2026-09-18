@@ -41,6 +41,15 @@ async function main(): Promise<void> {
     assert.equal(memeRefusal({ symbol: "DJT", marketCapUsd: 165_581, ageHours: 121.6 }, env), "DJT is at $165,581 market cap, under the $1.0M memecoin floor");
     assert.equal(memeRefusal({ symbol: "baton", marketCapUsd: 11_744_325, ageHours: 118.5 }, env), null);
     assert.equal(memeRefusal({ symbol: "ZCAT", marketCapUsd: 121_273_935, ageHours: 214.4 }, env), null);
+    // a market cap far under what the pool itself holds of the token is not a reading (wXMR, 18 Sep): a day of volume at
+    // least the floor stands in, on a token that is not collapsing, never for a ceiling
+    assert.equal(memeRefusal({ symbol: "wXMR", marketCapUsd: 623, ageHours: 231, tokenSideUsd: 13_000, volume24hUsd: 1_046_717, priceChange24hPct: 2.3 }, env), null, "$623 under $13K of wXMR in the pool cannot be right; $1.05M of volume stands in");
+    assert.match(memeRefusal({ symbol: "wXMR", marketCapUsd: 623, ageHours: 231, tokenSideUsd: 13_000, volume24hUsd: 380_980, priceChange24hPct: 2.3 }, env)!, /\$380,980 of daily volume is too little to stand in for the \$1\.0M floor/);
+    assert.match(memeRefusal({ symbol: "RUG", marketCapUsd: 40_000, ageHours: 100, tokenSideUsd: 300_000, volume24hUsd: 1_500_000, priceChange24hPct: -99.8 }, env)!, /a token down 100% on the day cannot stand in/, "a collapse day is a high-volume day: no stand-in");
+    assert.equal(memeRefusal({ symbol: "DJT", marketCapUsd: 165_581, ageHours: 121.6, tokenSideUsd: 30_000, volume24hUsd: 5_000_000, priceChange24hPct: 5 }, env), "DJT is at $165,581 market cap, under the $1.0M memecoin floor", "a cap above the pool's token side is a reading, and volume does not stand in for it");
+    assert.equal(memeRefusal({ symbol: "wXMR", marketCapUsd: 623, ageHours: 231, tokenSideUsd: 2_500, volume24hUsd: 1_046_717, priceChange24hPct: 2.3 }, env), null, "a quote-heavy pool holds little wXMR, and $623 is still under it");
+    assert.equal(memeRefusal({ symbol: "wXMR", marketCapUsd: 623, ageHours: 231, volume24hUsd: 1_046_717 }, env), "wXMR is at $623 market cap, under the $1.0M memecoin floor", "no split of the pool known: no stand-in");
+    assert.match(memeRefusal({ symbol: "wXMR", marketCapUsd: 623, ageHours: 231, tokenSideUsd: 13_000, volume24hUsd: 1_046_717 }, { ...env, maxMarketCapUsd: 50_000_000 })!, /a ceiling cannot be judged without it/);
   });
 
   await test("what cannot be checked is refused while its floor is on; stocks and the house token are never judged; a ceiling when set", () => {

@@ -66,15 +66,15 @@ async function main() {
   console.log("ranking and rotation");
   await test("rankSeats: candidates under the floor drop out; the rest best first", () => {
     const c = (label: string, y: number): RankedSeat => ({ address: label, label, mint: `m-${label}`, yieldPctPerDay: y, sharePct: 5, feesPerDayQuote: 0.1, quoteSymbol: "SOL", feeSource: "24h", capSol: 15 });
-    const ranked = rankSeats([c("MCDx", 0.8), c("MRVL", 60), c("NVDAx", 1.2), c("BROS", 3)], { minYieldPct: 1, rotateFactor: 2, minAgeMin: 60, reentryMin: 60 });
+    const ranked = rankSeats([c("MCDx", 0.8), c("MRVL", 60), c("NVDAx", 1.2), c("BROS", 3)], { minYieldPct: 1, rotateFactor: 2, memeRotateFactor: 1.5, minAgeMin: 60, reentryMin: 60 });
     assert.deepEqual(ranked.map((r) => r.label), ["MRVL", "BROS", "NVDAx"]);
   });
 
   await test("weakSeatRotation: the weakest held seat makes way for a candidate that beats it by the factor, floor or not; pins, young bands and near-misses stay", () => {
     const now = Date.parse("2026-09-17T13:00:00Z");
-    const env = { minYieldPct: 1, rotateFactor: 2, minAgeMin: 60, reentryMin: 60 };
-    const c = (label: string, y: number, feeSource: RankedSeat["feeSource"] = "flow-60m"): RankedSeat => ({ address: label, label, mint: `m-${label}`, yieldPctPerDay: y, sharePct: 9, feesPerDayQuote: 0.5, quoteSymbol: "SOL", feeSource, capSol: 15 });
-    const h = (label: string, y: number, ageMin: number, pinned = false, heldSol: number | null = null, capSol = 15): HeldSeat => ({ address: label, label, yieldPctPerDay: y, openedAt: now - ageMin * 60_000, pinned, capSol, heldSol, feeSource: "flow-4h" });
+    const env = { minYieldPct: 1, rotateFactor: 2, memeRotateFactor: 1.5, minAgeMin: 60, reentryMin: 60 };
+    const c = (label: string, y: number, feeSource: RankedSeat["feeSource"] = "flow-60m"): RankedSeat => ({ stock: true, address: label, label, mint: `m-${label}`, yieldPctPerDay: y, sharePct: 9, feesPerDayQuote: 0.5, quoteSymbol: "SOL", feeSource, capSol: 15 });
+    const h = (label: string, y: number, ageMin: number, pinned = false, heldSol: number | null = null, capSol = 15): HeldSeat => ({ stock: true, address: label, label, yieldPctPerDay: y, openedAt: now - ageMin * 60_000, pinned, capSol, heldSol, feeSource: "flow-4h" });
     const held = [h("MCDx", 0.4, 90), h("NVDAx", 0.9, 90, true), h("MRVL", 20, 90)];
     const ranked = rankSeats([c("BROS", 3), c("MRVL", 20)], env);
     const rot = weakSeatRotation(held, ranked, env, now)!;
@@ -89,6 +89,14 @@ async function main() {
     assert.equal(focus.pool, "NVDAx", "the weakest seat goes first, one per cycle");
     assert.match(focus.reason, /46\.4x as much/);
     assert.equal(weakSeatRotation(held, rankSeats([c("MRVL", 20)], env), env, now), null, "the only candidate is already held");
+    // MEMECOIN seats use their own factor: 18 Sep, HEV at 74%/day held while pill at 130%/day never got in under the stock lane's 3x
+    const meme = (s: HeldSeat | RankedSeat) => ({ ...s, stock: false });
+    const hev = meme(h("HEV", 74, 90)) as HeldSeat;
+    const pill = rankSeats([meme(c("pill", 130)) as RankedSeat], env);
+    assert.equal(weakSeatRotation([hev], pill, env, now)?.pool, "HEV", "130% beats 1.5 x 74%: the memecoin seat makes way");
+    assert.equal(weakSeatRotation([hev], pill, { ...env, memeRotateFactor: 3 }, now), null, "at 3x it never would have");
+    assert.equal(weakSeatRotation([hev], rankSeats([meme(c("pill", 100)) as RankedSeat], env), env, now), null, "100% is not 1.5 x 74%: it stays");
+    assert.equal(weakSeatRotation([h("MCDx", 74, 90)], pill, env, now), null, "a stock seat keeps the stock factor even against a memecoin: 130% is not 2 x 74%");
     assert.equal(weakSeatRotation([h("MCDx", 0.4, 90)], rankSeats([c("DKNG", 51, "24h")], env), env, now), null, "the venue's day figure alone (DKNG read 51% that way, 1.7% by the scout) rotates nothing");
     assert.equal(weakSeatRotation([h("MCDx", 0.4, 90)], rankSeats([c("DKNG", 51, "24h"), c("BROS", 3)], env), env, now)?.label, "MCDx", "the best candidate the scout has read decides");
     assert.match(weakSeatRotation([h("MCDx", 0.4, 90)], rankSeats([c("BROS", 3, "flow-4h")], env), env, now)!.reason, /the last four hours' fees/);

@@ -79,7 +79,7 @@ import { jupiterEnv as swapEnv, meteoraOnlyRoutes } from "./tools/jupiter";
 import { chooseFeeBps, competitionFor, isPairAddress, pairCandidatesOf, pairEnv, pairHouseSeats, pairHouseSeatSol, pairLaunchEnv, pairMintOf, pairModel, pairPoolAddress, pairSeats, pairSeatSol, pairVerdict, type PairSeatOptions } from "./screener/pair";
 import { createPairVenue, hotRowForPool, isPairPool as isPairVenuePool } from "./venues/pair";
 import { pairStockCandidateFor, pairStockCandidatesOf, pairStockEnv, pairStockReserve, pairStockSeats, pairStockSeatSol, chooseStockFeeBps, stockPairModel, type PairStockCandidate } from "./screener/pairStock";
-import { coveragePct, MIN_BAND_SOL, stockBinsPerSide } from "./agent/policy";
+import { binsForCover, coveragePct, MIN_BAND_SOL, stockBinsPerSide, travelSizeMultiple } from "./agent/policy";
 import { earlyCycleAllowed, fastEnv, fastTrigger, type WatchedBand } from "./engine/fastwatch";
 import { buildLiveFeed, liveFeedOn, publishLiveFeed } from "./publish/live";
 import { appendLesson, endReasonOf, LESSONS_FILE, lessonLine, lessonOf, readLessons, readTuning, TUNING_FILE, tuneEnv, tuneFromLessons, writeTuning, type BandMeta } from "./learn/lessons";
@@ -148,6 +148,10 @@ interface App {
   fadeStreak: Map<string, number>;
   /** position address -> the seat check's yield this cycle, written onto the band's meta by runPool (whose copy of state is the one saved) */
   predictedYield: Map<string, number>;
+  /** the picker's board order this cycle: candidates in measured-fee order that pass every entry floor, for the memecoin seat ranking */
+  boardOrder: { address: string; label: string; baseMint: string; measuredPct: number | null }[];
+  /** the candidate a rotation freed a seat for: the picker seats it first next cycle if it still passes every gate */
+  seatFor: { address: string; baseMint: string } | null;
   /** the bands the fast watch looks at between cycles (src/engine/fastwatch.ts), rebuilt at the end of every cycle */
   watched: WatchedBand[];
   /** epoch ms of the early cycles the fast watch started */
@@ -403,6 +407,13 @@ function basisRowFor(address: string, snapshot?: PoolSnapshot | null, pinnedTick
 }
 
 /** The Meteora stock pool at an address, when the RWA category carries it. */
+/** What a screened pool holds of its own token, USD: its TVL less the quote side. Null when the split is unknown. */
+function tokenSideUsdOf(p: { tvlUsd: number | null; quoteShare?: number | null }): number | null {
+  if (!p.tvlUsd || !(p.tvlUsd > 0)) return null;
+  const q = typeof p.quoteShare === "number" && Number.isFinite(p.quoteShare) ? Math.min(1, Math.max(0, p.quoteShare)) : null;
+  return q === null ? null : p.tvlUsd * (1 - q);
+}
+
 function meteoraStockAt(app: App, address: string): MeteoraStockPool | null {
   return app.meteoraStocks?.pools.find((p) => p.address === address) ?? null;
 }
@@ -505,7 +516,7 @@ async function refreshMemeHistory(app: App, funds: Set<"SOL" | "USDC">): Promise
   const wanted = new Map<string, { symbol: string; yieldPct: number }>();
   for (const p of app.screen?.pools ?? []) {
     if (p.stock || !tradableVenue(p) || !quoteOk(p.quoteSymbol) || (p.volume24hUsd ?? 0) < minVolume) continue;
-    if (memeRefusal({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours }, meme)) continue;
+    if (memeRefusal({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct }, meme)) continue;
     wanted.set(p.address, { symbol: p.baseSymbol, yieldPct: p.feeToTvl24hPct ?? 0 });
   }
   for (const r of loadHotFileCached()?.rows ?? []) {
@@ -549,6 +560,8 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
   const watch: FlowPoolMeta[] = [];
   for (const address of addresses) {
     const met = meteoraStockAt(app, address);
+    // the stock lane's rotation factor applies to a tokenized stock; everything else on the board is a memecoin
+    const stockPool = !!(met?.tags?.some((g) => g.toLowerCase() === "stocks") || app.screen?.pools.find((sp) => sp.address === address)?.stock);
     try {
       const { venue, pool } = await getVenuePool(app, address);
       const snapshot = await venue.snapshot(pool, 10, { solPriceUsd });
@@ -579,9 +592,9 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
       const capSol = Math.max(0, Math.min(riskLimits.maxPositionSol, (y.bandDepthQuote / 2) * q.priceInSol, impactCapQuote * q.priceInSol));
       watch.push({ address, label, quoteSide: q.side, quoteSymbol: q.symbol, xDecimals: snapshot.tokenX.decimals, yDecimals: snapshot.tokenY.decimals, band: null });
       if (withPositions.includes(address)) {
-        held.push({ address, label, yieldPctPerDay: y.yieldPctPerDay, openedAt: state.lastMoveByPool?.[address] ?? null, pinned: pinnedTickerOf(app, address, snapshot) !== null, capSol, heldSol: null, feeSource });
+        held.push({ address, label, yieldPctPerDay: y.yieldPctPerDay, openedAt: state.lastMoveByPool?.[address] ?? null, pinned: pinnedTickerOf(app, address, snapshot) !== null, capSol, heldSol: null, feeSource, stock: stockPool });
       }
-      if (met) ranked.push({ address, label, mint: met.mint, yieldPctPerDay: y.yieldPctPerDay, sharePct: y.sharePct, feesPerDayQuote: y.feesPerDayQuote, quoteSymbol: q.symbol, feeSource, capSol });
+      if (met) ranked.push({ address, label, mint: met.mint, yieldPctPerDay: y.yieldPctPerDay, sharePct: y.sharePct, feesPerDayQuote: y.feesPerDayQuote, quoteSymbol: q.symbol, feeSource, capSol, stock: stockPool });
     } catch (err) {
       console.log(`[cycle ${app.cycle}] seat yield: ${met?.symbol ?? address.slice(0, 6)} unreadable (${(err as Error).message.slice(0, 80)})`);
     }
@@ -718,7 +731,9 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // THE STOCKS THE AGENT IS PAIRED WITH (PAIR_STOCK_PINNED_TICKERS), Meteora only: the ticker's existing
   // Meteora DLMM pool the wallet can fund, best by fee/TVL, supplemented with our liquidity. A ticker
   // Meteora has no such pool for falls through to the stock pair lane below, which makes our own.
-  app.rotateOut = app.seatRotation; // a weak seat the yield ranking gives up this cycle, else null
+  // a weak seat the stock lane's ranking gives up this cycle, else whatever the last cycle's seat check asked to give up
+  // (the fade rule, the memecoin seat ranking): those are set after the pool loop and must survive to this cycle's directive
+  app.rotateOut = app.seatRotation ?? (app.rotateOut && withPositions.includes(app.rotateOut.pool) ? app.rotateOut : null);
   // THE OPERATOR'S EXIT LIST (ROTATE_OUT_POOLS, comma-separated pool addresses): a held band on the list
   // comes off through the ROTATE directive (closed and liquidated through the guards), one per cycle.
   // Zach (2026-09-17): "lets just enter memecoin style pools", with two stock seats to move out of.
@@ -828,11 +843,15 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     }
   }
   // Surges first: what the fast watch found in the last hour, already filtered for liquidity, age and dumping.
+  // a pool the desk gave up for a better one sits out METEORA_STOCK_REENTRY_MIN before it can be picked again (ping-pong)
+  const rotState = loadState();
+  const rEnvPick = seatRankingEnv();
+  const satOutNow = (address: string) => sittingOut(rotState.rotatedOutAt?.[address], rEnvPick, Date.now());
   for (const r of hotRows(app)) {
     if (set.size >= ordinaryCap) break;
     const row = { address: r.address, baseSymbol: r.baseSymbol, baseMint: r.baseMint, name: r.name };
     if (r.stock && !verifiedStock(r.stock)) continue;
-    if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume && !takenTokens.has(r.baseMint) && memeOk({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours, stock: r.stock }, r.address)) take(r.address, r.baseMint);
+    if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume && !takenTokens.has(r.baseMint) && !satOutNow(r.address) && memeOk({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours, stock: r.stock }, r.address)) take(r.address, r.baseMint);
   }
   const candidates = (app.screen?.pools ?? []).filter(
     (p) =>
@@ -865,11 +884,23 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   if (byYield.length) {
     console.log(`[cycle ${app.cycle}] board order (measured fee on depth a day; the venue's figure where the scout has under an hour): ${byYield.slice(0, 6).map((p) => { const m = measuredFeeOnDepth(p); return `${p.name.replace(/\s*\/\s*/, "/")} ${m !== null ? `${m.toFixed(1)}% measured` : `${(p.feeToTvl24hPct ?? 0).toFixed(1)}% venue`}`; }).join(" | ")}`);
   }
+  // the board order the memecoin seat ranking reads: the measured-fee order, only pools that would pass the picker's every gate
+  app.boardOrder = byYield
+    .filter((p) => !(p.stock && !verifiedStock(p.stock)) && !satOutNow(p.address) && memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct }, p.address))
+    .slice(0, 8)
+    .map((p) => ({ address: p.address, label: p.name.replace(/\s*\/\s*/, "/"), baseMint: p.baseMint, measuredPct: measuredFeeOnDepth(p) }));
+  // the candidate a rotation freed a seat for goes first, while it still passes every gate
+  if (app.seatFor && set.size < ordinaryCap && !set.has(app.seatFor.address) && !takenTokens.has(app.seatFor.baseMint)) {
+    const p = byYield.find((x) => x.address === app.seatFor!.address);
+    if (p && app.boardOrder.some((b) => b.address === p.address)) take(p.address, p.baseMint);
+  }
+  app.seatFor = null;
   for (const p of byYield) {
     if (set.size >= ordinaryCap) break;
     if (takenTokens.has(p.baseMint) || set.has(p.address)) continue;
     if (p.stock && !verifiedStock(p.stock)) continue;
-    if (!memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock }, p.address)) continue;
+    if (satOutNow(p.address)) continue;
+    if (!memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct }, p.address)) continue;
     take(p.address, p.baseMint);
   }
 
@@ -1232,6 +1263,9 @@ function updateState(state: RiskState, exec: ExecutionResult, positions: Positio
   }
   // the close landed whether or not the sale after it did: the band is gone, its records go with it
   if (exec.closed) forgetBand(state, exec.closed);
+  // the seat's tenure in this pool: starts at the first open, survives a re-lay (a close and an open), ends at a plain close
+  if (exec.ok && exec.opened && !state.seatSince?.[snapshot.address]) (state.seatSince ??= {})[snapshot.address] = Date.now();
+  if (exec.closed && !exec.opened && state.seatSince) delete state.seatSince[snapshot.address];
   // a claim restarts the "pending above the floor" clock: the next claim by that rule is two hours away, not next cycle
   if (exec.ok && exec.claimed) clearFeesPending(state, exec.claimed);
   // what an exit could not sell under the caps waits in the wallet; the residue pass comes back for it every cycle
@@ -1428,7 +1462,9 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // The cost-based threshold needs both the move's cost and the band's earning rate; without either
   // (a pool off the board, no SOL price) it falls back to a fixed wait rather than the bare floor,
   // so a choppy pool cannot churn a paid re-lay every two minutes on missing data.
-  const moveSec = bandFeesPerDayUsd !== null && moveCostUsd > 0 ? Math.round(moveAfterSec(moveCostUsd, bandFeesPerDayUsd, cfg.outOfRangeSec)) : Math.max(cfg.outOfRangeSec, OUT_OF_RANGE_FALLBACK_SEC);
+  // A paid move (a sale) waits for the fees it is missing to cover its cost; an all-quote re-lay is a close and an open with
+  // no sale, and the guard lets it go after the idle wait instead (antiChurn's idle argument, POLICY_IDLE_RELAY_SEC).
+  const moveSec = bandFeesPerDayUsd !== null && px ? Math.round(moveAfterSec(moveCostUsd, bandFeesPerDayUsd, cfg.outOfRangeSec)) : Math.max(cfg.outOfRangeSec, OUT_OF_RANGE_FALLBACK_SEC);
   const engineObs: EngineObservation = {
     halt: view.haltedUntil !== null ? { until: view.haltedUntil, stage: view.haltStage, reason: view.haltReason } : null,
     standDown: view.standDownUntil !== null ? { until: view.standDownUntil, reason: view.standDownReason } : null,
@@ -1469,7 +1505,8 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   );
 
   // The engine decides first. When it has a directive the LLM is not asked this cycle.
-  const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined, pairStock: pairStockWatch, rotate: app.rotateOut?.pool === o.address ? { reason: app.rotateOut.reason } : null });
+  const rotateHere = app.rotateOut?.pool === o.address ? { reason: app.rotateOut.reason } : null;
+  const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined, pairStock: pairStockWatch, rotate: rotateHere });
   // Then an approved outside proposal, oldest first: "agents propose, the operator decides, the desk
   // executes through its own guards". Otherwise Mr Bands proposes.
   const proposal = directive ? null : (approvedProposals(o.address)[0] ?? null);
@@ -1497,6 +1534,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     outOfRangeSince: state.outOfRangeSince ?? {},
     stops: stateStops,
     outOfRangeSec: moveSec,
+    idleRelaySec: policyEnv(process.env).idleRelaySec,
     basisReason: basisObs?.reason ?? null,
   };
   // Cost the proposed plan for the guards. A plan the venue cannot even cost (a NaN amount, a
@@ -1591,6 +1629,8 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     app.exposureDelta.set(o.address, (app.exposureDelta.get(o.address) ?? 0) + (execution.opened?.entryValueSol ?? 0) - closedSol);
   }
   if (execution.ledger?.some((r) => r.mech === "swap")) app.swappedThisCycle.add(snapshot.baseToken.mint);
+  // the rotate-out is spent once the band is gone (closed now, or already gone); a rotation the guards held back is asked for again next cycle
+  if (rotateHere && (execution.closed || positions.length === 0)) app.rotateOut = null;
   updateState(state, execution, positions, snapshot, (screen?.launch?.ok || screen?.pair?.ok) && !noLaneExits ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null);
 
   // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
@@ -1957,6 +1997,7 @@ async function runIteration(app: App): Promise<void> {
     const fadeFactor = Number.isFinite(ff) ? Math.max(0, ff) : 0.5; // 0 switches the fade rule off (the seat check still logs)
     const fadeCycles = Math.max(1, Math.floor(Number(process.env.SEAT_FADE_CYCLES ?? "3") || 3));
     app.predictedYield.clear();
+    const heldMeme: HeldSeat[] = [];
     for (const o of observed) {
       if (!o.positions.length) continue;
       const flow = app.flow.get(o.address);
@@ -1983,6 +2024,7 @@ async function runIteration(app: App): Promise<void> {
         const y = seatYield({ seatQuote: seatSol / q.priceInSol, binsEachSide: Math.max(0, Math.floor((upper - lower) / 2)), activeBinId: o.snapshot.activeBinId, bins: o.snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote: flow.feesPerDayQuote240m, ownPerBinQuote: seatSol / q.priceInSol / widthBins });
         const line = fadeFactor * pEnvNow.minSeatYieldPct;
         for (const p of o.positions) app.predictedYield.set(p.address, Math.round(y.yieldPctPerDay * 100) / 100);
+        heldMeme.push({ address: o.address, label: o.snapshot.label, yieldPctPerDay: y.yieldPctPerDay, openedAt: state.seatSince?.[o.address] ?? state.lastMoveByPool?.[o.address] ?? null, pinned: pinnedTickerOf(app, o.address, o.snapshot) !== null || !!pinnedPoolAt(app.pinned, o.address), capSol: riskLimits.maxPositionSol, heldSol: seatSol, feeSource: "flow-4h", stock: !!app.screen?.pools.find((sp) => sp.address === o.address)?.stock });
         const streak = y.yieldPctPerDay < line ? (app.fadeStreak.get(o.address) ?? 0) + 1 : 0;
         app.fadeStreak.set(o.address, streak);
         const openedAt = state.lastMoveByPool?.[o.address] ?? null;
@@ -1994,6 +2036,50 @@ async function runIteration(app: App): Promise<void> {
         }
       } catch {
         /* unpriced: no judgement */
+      }
+    }
+    // THE MEMECOIN SEAT RANKING: a held seat makes way when the board's best candidate the desk is not in would earn
+    // MEME_ROTATE_FACTOR times as much on the same seat. 18 Sep: pill sat at rank 3 all night with every floor passed
+    // while HEV held a seat at 74%/day, because nothing ever compared them. The candidate is judged the way a held
+    // seat is: the scout's four-hour fee pace over the share a band our size would take of its bins.
+    // Only when the book is FULL: with a seat free the picker simply takes the best candidate, and a pool picked this cycle
+    // is not a challenger to the seats beside it.
+    const bookFull = observed.filter((o) => o.positions.length).length >= config.maxActivePools;
+    if (!app.rotateOut && bookFull && heldMeme.length > 0 && app.boardOrder.length > 0) {
+      try {
+        const busy = new Set(observed.map((o) => o.address));
+        const takenMints = new Set(observed.map((o) => o.snapshot.baseToken.mint));
+        const ranked: RankedSeat[] = [];
+        for (const c of app.boardOrder.filter((b) => !busy.has(b.address) && b.measuredPct !== null && !takenMints.has(b.baseMint)).slice(0, 3)) {
+          const flow = app.flow.get(c.address);
+          if (!flow || flow.feesPerDayQuote240m === null || (flow.coveredMin ?? 0) < 60) continue;
+          const { venue, pool } = await getVenuePool(app, c.address);
+          const snapshot = await venue.snapshot(pool, 10, { solPriceUsd: solPriceOf(app) });
+          const q = quoteOf(snapshot);
+          // judged the way a held seat is: the ONE-SIDED band the policy would lay (POLICY_VOL_MULTIPLE of the pool's travel,
+          // 3% to 25%), read with the same half-width convention the seat check uses, on the seat the sizing rule would give
+          const stepPct = snapshot.binStep / 100;
+          const travelPct = Math.max((flow.range60mBins ?? 0) * stepPct, ((flow.range240mBins ?? 0) * stepPct) / 2);
+          const coverPct = Math.min(pEnvNow.maxCoverPct, Math.max(pEnvNow.minCoverPct, (pEnvNow.tunedVolMultiple ?? pEnvNow.volMultiple) * travelPct));
+          const oneSided = binsForCover(snapshot.binStep, coverPct, riskLimits.maxBinWidth, 1);
+          const seatSol = riskLimits.maxPositionSol * travelSizeMultiple(travelPct > 0 ? travelPct : null, pEnvNow.sizeRefTravelPct, pEnvNow.sizeMinMultiple);
+          const y = seatYield({ seatQuote: seatSol / q.priceInSol, binsEachSide: Math.max(0, Math.floor((oneSided - 1) / 2)), activeBinId: snapshot.activeBinId, bins: snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote: flow.feesPerDayQuote240m });
+          ranked.push({ address: c.address, label: c.label, mint: c.baseMint, yieldPctPerDay: y.yieldPctPerDay, sharePct: y.sharePct, feesPerDayQuote: y.feesPerDayQuote, quoteSymbol: q.symbol, feeSource: "flow-4h", capSol: seatSol, stock: false });
+        }
+        if (ranked.length) {
+          const env = { ...rEnvNow, minYieldPct: pEnvNow.minSeatYieldPct };
+          const worth = rankSeats(ranked, env);
+          console.log(`[cycle ${app.cycle}] memecoin seat ranking: held ${heldMeme.map((h) => `${h.label} ${h.yieldPctPerDay.toFixed(1)}% on ${(h.heldSol ?? 0).toFixed(1)} SOL`).join(", ")} | candidates ${ranked.map((r) => `${r.label} ${r.yieldPctPerDay.toFixed(1)}% on ${r.capSol.toFixed(1)} SOL`).join(", ")} | a seat makes way at ${env.memeRotateFactor}x`);
+          const rot = weakSeatRotation(heldMeme, worth, env, now);
+          if (rot) {
+            app.rotateOut = rot;
+            const best = worth.find((r) => !heldMeme.some((h) => h.address === r.address));
+            app.seatFor = best ? { address: best.address, baseMint: best.mint } : null;
+            console.log(`[cycle ${app.cycle}] seat yield: rotating out ${rot.label} (${rot.pool.slice(0, 6)}): ${rot.reason}`);
+          }
+        }
+      } catch (err) {
+        console.log(`[cycle ${app.cycle}] memecoin seat ranking skipped: ${(err as Error).message.slice(0, 120)}`);
       }
     }
   }
@@ -2170,6 +2256,8 @@ async function main(): Promise<void> {
     flowWatch: new Map(),
     fadeStreak: new Map(),
     predictedYield: new Map(),
+    boardOrder: [],
+    seatFor: null,
     watched: [],
     earlyCycles: [],
     mintAttributed: new Set(),

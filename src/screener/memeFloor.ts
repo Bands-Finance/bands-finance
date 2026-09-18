@@ -51,6 +51,12 @@ export interface MemeCandidate {
   stock?: unknown;
   /** the house token (PAIR_HOUSE_MINTS): always seated, never judged */
   house?: boolean;
+  /** the value of the pool's holdings of the token itself, USD (the quote side excluded): a cap far under it is not a reading */
+  tokenSideUsd?: number | null;
+  /** the pool's day of volume, USD: stands in for an unreadable market cap when it is at least the floor */
+  volume24hUsd?: number | null;
+  /** the token's day, percent: an unreadable cap never stands in for a token in collapse */
+  priceChange24hPct?: number | null;
 }
 
 const usd = (n: number): string => (n >= 1e6 ? `$${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : `$${Math.round(n).toLocaleString("en-US")}`);
@@ -64,6 +70,17 @@ export function memeRefusal(c: MemeCandidate, env: MemeFloorEnv): string | null 
   }
   if (env.minMarketCapUsd > 0 || env.maxMarketCapUsd !== null) {
     if (c.marketCapUsd === null || !Number.isFinite(c.marketCapUsd) || c.marketCapUsd <= 0) return `${c.symbol}: market cap unknown, and the desk does not pick a memecoin it cannot size`;
+    // A cap under what the pool itself holds of the token is not a reading: the supply cannot be smaller than one pool's
+    // reserve of it (wXMR: $623 against thousands of dollars of wXMR in the pool and $1M of daily volume, a wrapped asset
+    // the venue's supply figure cannot size). A day's volume of at least the floor stands in, on a token that is not
+    // collapsing, and never for a ceiling, which no stand-in can judge. The pool's quote side is not counted.
+    const unreadable = typeof c.tokenSideUsd === "number" && c.tokenSideUsd > 0 && c.marketCapUsd < c.tokenSideUsd;
+    if (unreadable) {
+      if (env.maxMarketCapUsd !== null) return `${c.symbol}: market cap reads ${usd(c.marketCapUsd)}, under the ${usd(c.tokenSideUsd!)} of ${c.symbol} the pool holds, so it cannot be right, and a ceiling cannot be judged without it`;
+      const falling = typeof c.priceChange24hPct === "number" && c.priceChange24hPct <= -50;
+      if (typeof c.volume24hUsd === "number" && c.volume24hUsd >= env.minMarketCapUsd && !falling) return null;
+      return `${c.symbol}: market cap reads ${usd(c.marketCapUsd)}, under the ${usd(c.tokenSideUsd!)} of ${c.symbol} the pool holds, so it cannot be right, and ${falling ? `a token down ${Math.abs(c.priceChange24hPct!).toFixed(0)}% on the day` : c.volume24hUsd ? `${usd(c.volume24hUsd)} of daily volume` : "no volume figure"} ${falling ? "cannot" : "is too little to"} stand in for the ${usd(env.minMarketCapUsd)} floor`;
+    }
     if (c.marketCapUsd < env.minMarketCapUsd) return `${c.symbol} is at ${usd(c.marketCapUsd)} market cap, under the ${usd(env.minMarketCapUsd)} memecoin floor`;
     if (env.maxMarketCapUsd !== null && c.marketCapUsd > env.maxMarketCapUsd) return `${c.symbol} is at ${usd(c.marketCapUsd)} market cap, over the ${usd(env.maxMarketCapUsd)} memecoin ceiling`;
   }

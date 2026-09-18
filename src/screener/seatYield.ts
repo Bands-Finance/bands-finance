@@ -110,6 +110,8 @@ export interface RankedSeat {
   feeSource: "flow-4h" | "flow-60m" | "24h";
   /** the seat the desk could hold there, SOL: the max band or half the band's depth, whichever is less */
   capSol: number;
+  /** a tokenized-stock pool (the stock lane's rotation factor applies), else a memecoin */
+  stock?: boolean;
 }
 
 export interface HeldSeat {
@@ -125,13 +127,17 @@ export interface HeldSeat {
   heldSol: number | null;
   /** where the seat's fee figure came from; "24h" means the scout has not read the pool (yet) */
   feeSource: RankedSeat["feeSource"];
+  /** a tokenized-stock pool, else a memecoin */
+  stock?: boolean;
 }
 
 export interface SeatRankingEnv {
   /** a candidate under this yield is not worth a seat (METEORA_STOCK_MIN_SEAT_YIELD_PCT) */
   minYieldPct: number;
-  /** a held seat under the floor makes way when a candidate beats it by this factor (METEORA_STOCK_ROTATE_FACTOR) */
+  /** a held stock seat makes way when a candidate beats it by this factor (METEORA_STOCK_ROTATE_FACTOR) */
   rotateFactor: number;
+  /** the same for a memecoin seat (MEME_ROTATE_FACTOR): memecoin seats earn 50-150% a day, so three times is never reached */
+  memeRotateFactor: number;
   /** a band younger than this is not rotated (PIN_ROTATE_MIN_AGE_MIN) */
   minAgeMin: number;
   /** a pool the ranking gave up sits out this long before it may be seated again (METEORA_STOCK_REENTRY_MIN) */
@@ -149,6 +155,9 @@ export interface SeatRotation {
 }
 
 /** PURE. Candidates worth a seat, best first. */
+/** The factor a seat must be beaten by: the stock lane's when either side is a stock pool, else the memecoin one. */
+export const rotateFactorFor = (env: Pick<SeatRankingEnv, "rotateFactor" | "memeRotateFactor">, stock: boolean | undefined): number => (stock ? env.rotateFactor : env.memeRotateFactor);
+
 export function rankSeats(candidates: readonly RankedSeat[], env: SeatRankingEnv): RankedSeat[] {
   return [...candidates].filter((c) => c.yieldPctPerDay >= env.minYieldPct).sort((a, b) => b.yieldPctPerDay - a.yieldPctPerDay);
 }
@@ -170,7 +179,8 @@ export function weakSeatRotation(held: readonly HeldSeat[], ranked: readonly Ran
   const eligible = held.filter((h) => !h.pinned && (h.openedAt === null || now - h.openedAt >= env.minAgeMin * 60_000));
   if (!eligible.length) return null;
   const weakest = eligible.reduce((w, h) => (h.yieldPctPerDay < w.yieldPctPerDay ? h : w));
-  const bar = Math.max(env.minYieldPct, weakest.yieldPctPerDay) * env.rotateFactor;
+  const factor = rotateFactorFor(env, weakest.stock || best.stock);
+  const bar = Math.max(env.minYieldPct, weakest.yieldPctPerDay) * factor;
   if (best.yieldPctPerDay < bar) return null;
   const under = weakest.yieldPctPerDay < env.minYieldPct;
   return {
@@ -193,7 +203,7 @@ export function consolidation(held: readonly HeldSeat[], env: SeatRankingEnv, no
   if (best.yieldPctPerDay < env.minYieldPct) return null;
   const roomSol = best.capSol - (best.heldSol ?? 0);
   if (roomSol < minGrowSol) return null;
-  const eligible = known.filter((h) => h !== best && !h.pinned && (h.openedAt === null || now - h.openedAt >= env.minAgeMin * 60_000) && h.yieldPctPerDay * env.rotateFactor <= best.yieldPctPerDay);
+  const eligible = known.filter((h) => h !== best && !h.pinned && (h.openedAt === null || now - h.openedAt >= env.minAgeMin * 60_000) && h.yieldPctPerDay * rotateFactorFor(env, h.stock || best.stock) <= best.yieldPctPerDay);
   if (!eligible.length) return null;
   const weakest = eligible.reduce((w, h) => (h.yieldPctPerDay < w.yieldPctPerDay ? h : w));
   return {
@@ -225,6 +235,7 @@ export function seatRankingEnv(env: NodeJS.ProcessEnv = process.env): SeatRankin
   return {
     minYieldPct: Math.max(0, num(env.METEORA_STOCK_MIN_SEAT_YIELD_PCT, 1)),
     rotateFactor: Math.max(1, num(env.METEORA_STOCK_ROTATE_FACTOR, 2)),
+    memeRotateFactor: Math.max(1, num(env.MEME_ROTATE_FACTOR, 1.5)),
     minAgeMin: Math.max(0, num(env.PIN_ROTATE_MIN_AGE_MIN, 60)),
     reentryMin: Math.max(0, num(env.METEORA_STOCK_REENTRY_MIN, 60)),
     rankTop: Math.max(1, Math.floor(num(env.METEORA_STOCK_RANK_TOP, 8))),

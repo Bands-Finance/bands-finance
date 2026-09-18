@@ -102,17 +102,23 @@ export function antiChurn(
   minSec: number,
   now: number,
   snapshot?: CollectSnapshot,
+  /** the shorter wait an all-quote band may be re-laid after (POLICY_IDLE_RELAY_SEC): following the price costs no swap */
+  idle?: { sec: number; quoteSide: "X" | "Y" },
 ): string | null {
   if (decision.action !== "REBALANCE" && decision.action !== "CLOSE_POSITION") return null;
   const p = positions.find((x) => x.address === decision.positionAddress);
   if (!p) return null; // the close-target check reports this
   if (p.inRange) return null;
   const sec = outOfRangeSec(state.outOfRangeSince, p.address, now);
-  if (sec >= minSec) return null;
+  // a band the price ran off on the quote side still holds only quote: re-laying it is a close and an open, no sale, so
+  // the idle wait governs it, not the paid-move minimum (18 Sep: the 600 s fallback held TACZ's free re-lays nineteen times)
+  const idleSide = idle && idle.sec > 0 && (idle.quoteSide === "Y" ? p.binsFromRange > 0 : p.binsFromRange < 0);
+  const minHere = idleSide && decision.action === "REBALANCE" ? Math.min(minSec, idle.sec) : minSec;
+  if (sec >= minHere) return null;
   const dd = snapshot ? marketDrawdownPct(p, snapshot, state.entryValueSol[p.address]) : drawdownPct(p, state.entryValueSol[p.address]);
   const stop = bandStopPct(state.stops, p.address, limits);
   if (dd !== null && dd >= stop / 2) return null;
-  return `anti-churn: ${p.address.slice(0, 6)} is out of range for ${Math.round(sec)}s, minimum ${minSec}s`;
+  return `anti-churn: ${p.address.slice(0, 6)} is out of range for ${Math.round(sec)}s, minimum ${minHere}s`;
 }
 
 /** Append a price sample and trim the pool's history to the trailing window. */

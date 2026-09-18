@@ -39,6 +39,8 @@ export interface EngineGuardContext {
   stops: Record<string, number>;
   /** a band must sit out of range this many seconds before the LLM may move it */
   outOfRangeSec: number;
+  /** the shorter wait an all-quote band may be re-laid after (POLICY_IDLE_RELAY_SEC); 0 = the ordinary minimum */
+  idleRelaySec?: number;
   /** stock pools: why the basis/session rules refuse opens right now (src/basis), or null */
   basisReason?: string | null;
 }
@@ -207,7 +209,7 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
   // 6. Anti-churn: an LLM move of a band that has not sat out of range for the minimum is blocked
   //    (unless the band is already down half its stop). Never applied to engine directives or overrides.
   if (source === "llm" && !emergency && closing) {
-    const churn = antiChurn(decision, ctx.positions, { ...ctx.state, stops: engine.stops, outOfRangeSince: engine.outOfRangeSince }, limits, engine.outOfRangeSec, ctx.now, ctx.snapshot);
+    const churn = antiChurn(decision, ctx.positions, { ...ctx.state, stops: engine.stops, outOfRangeSince: engine.outOfRangeSince }, limits, engine.outOfRangeSec, ctx.now, ctx.snapshot, engine.idleRelaySec ? { sec: engine.idleRelaySec, quoteSide: quoteOf(ctx.snapshot).side } : undefined);
     if (churn) violations.push(churn);
     else passed.push("anti-churn");
   }

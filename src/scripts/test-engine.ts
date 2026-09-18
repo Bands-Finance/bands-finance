@@ -256,6 +256,15 @@ test("anti-churn blocks a young out-of-range move, allows an old one or a drawdo
   const hurt = position({ inRange: false, valueInSol: 0.27 });
   const dd = freshState({ outOfRangeSince: { pos1: T0 - 1000 }, entryValueSol: { pos1: 0.3 } });
   assert.equal(antiChurn(close, [hurt], dd, limits, 600, T0), null, "-10% is past half of a 15% stop");
+  // an all-quote band the price ran off on the quote side may be RE-LAID after the idle wait: no sale, nothing to churn
+  const idleY = position({ inRange: false, binsFromRange: 2 }); // above a Y-quoted band: still all SOL
+  const relay = { ...close, action: "REBALANCE" as const };
+  assert.equal(antiChurn(relay, [idleY], young, limits, 600, T0, undefined, { sec: 90, quoteSide: "Y" }), null, "100 s out, idle wait 90 s: the re-lay goes");
+  assert.match(antiChurn(relay, [idleY], young, limits, 600, T0, undefined, { sec: 120, quoteSide: "Y" })!, /minimum 120s/, "the idle wait is what it waits for");
+  assert.match(antiChurn(close, [idleY], young, limits, 600, T0, undefined, { sec: 90, quoteSide: "Y" })!, /minimum 600s/, "a CLOSE is a sale of nothing here, but it is not a re-lay: the ordinary minimum");
+  const through = position({ inRange: false, binsFromRange: -2 }); // below a Y-quoted band: the band turned into token
+  assert.match(antiChurn(relay, [through], young, limits, 600, T0, undefined, { sec: 90, quoteSide: "Y" })!, /minimum 600s/, "through the band on the token side: a paid move, the ordinary minimum");
+  assert.equal(antiChurn(relay, [position({ inRange: false, binsFromRange: -2 })], young, limits, 600, T0, undefined, { sec: 90, quoteSide: "X" }), null, "an X-quoted band idles on the other side");
   const hold = { ...close, action: "HOLD" as const, positionAddress: null };
   assert.equal(antiChurn(hold, [p], young, limits, 600, T0), null);
 });
