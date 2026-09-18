@@ -247,7 +247,10 @@ export interface BandCard {
   roomUpPct: number;
   putIn: number | null;
   marketMove: number | null;
+  /** fees on the band: what is still unclaimed inside it plus every claim made from it in the journal window, SOL */
   fees: number;
+  /** the part of fees already claimed to the wallet from this band, SOL */
+  feesClaimed: number;
   worthNow: number;
   pacePerDay: number | null;
   openedAt: number | null;
@@ -366,7 +369,11 @@ export function bookOf(newestFirst: JournalEntry[]): Book {
     for (const p of e.positions) {
       const opened = [...newestFirst].reverse().find((x) => x.execution.opened?.address === p.address);
       const openedAt = opened ? new Date(opened.ts).getTime() : p.lastUpdatedAt ? p.lastUpdatedAt * 1000 : null;
-      const fees = feesInSol(p, e);
+      // what a claim banked is what the band held unclaimed at that entry (the same reading the Record counts)
+      const feesClaimed = newestFirst
+        .filter((x) => x.decision.action === "CLAIM_FEES" && x.decision.positionAddress === p.address && (verdictOf(x) === "placed" || verdictOf(x) === "simulated"))
+        .reduce((s, x) => s + x.positions.filter((q) => q.address === p.address).reduce((u, q) => u + feesInSol(q, x), 0), 0);
+      const fees = feesInSol(p, e) + feesClaimed;
       const putIn = p.entryValueSol ?? opened?.execution.opened?.entryValueSol ?? null;
       const days = openedAt ? Math.max((new Date(e.ts).getTime() - openedAt) / 86400e3, 1 / 288) : null;
       const solY = isSolY(e);
@@ -387,8 +394,10 @@ export function bookOf(newestFirst: JournalEntry[]): Book {
         roomDownPct: (1 - p.lowerPrice / e.pool.price) * 100,
         roomUpPct: (p.upperPrice / e.pool.price - 1) * 100,
         putIn,
-        marketMove: putIn !== null ? p.valueInSol - fees - putIn : null,
+        // what price did to it: the band's value less the fees still inside it (claimed fees have already left), less what went in
+        marketMove: putIn !== null ? p.valueInSol - feesInSol(p, e) - putIn : null,
         fees,
+        feesClaimed,
         worthNow: p.valueInSol,
         pacePerDay: days ? fees / days : null,
         openedAt,

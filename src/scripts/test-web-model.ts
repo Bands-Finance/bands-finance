@@ -178,6 +178,17 @@ async function main() {
     assert.ok(book.bands.every((b) => b.address !== "b1"), "BBB's closed band must not linger from its last entry");
   });
 
+  await test("bookOf: a band's fees earned are what is still inside it plus every claim made from it; a claim does not reset them, and the market move ignores claimed fees", () => {
+    const chrono = [...fixture()].reverse();
+    // cycle 5: a1 holds 0.05 SOL unclaimed and the desk claims it; cycle 6: a1 has 0.02 SOL of new fees inside
+    const claim = entry({ cycle: 5, min: 40, pool: "AAA", sol: 5, positions: [band("a1", 20, { feeY: 0.05 })], action: "CLAIM_FEES" });
+    const after = entry({ cycle: 6, min: 50, pool: "AAA", sol: 5.05, positions: [band("a1", 19.97, { feeY: 0.02, entryValueSol: 20 })] });
+    const a1 = bookOf([...chrono, claim, after].reverse()).bands.find((b) => b.address === "a1")!;
+    assert.ok(Math.abs(a1.feesClaimed - 0.05) < 1e-9, "the claim counts");
+    assert.ok(Math.abs(a1.fees - 0.07) < 1e-9, "claimed plus unclaimed");
+    assert.ok(Math.abs(a1.marketMove! - (19.97 - 0.02 - 20)) < 1e-9, "value less the fees still inside, less what went in");
+  });
+
   await test("bookCycle: a pool the desk did not write this cycle keeps its band for one cycle unless its last entry closed it", () => {
     const chrono = [...fixture()].reverse();
     // cycle 5 writes CCC only: AAA's read failed. AAA's cycle-4 entry still holds a1 and did not close: carried.
