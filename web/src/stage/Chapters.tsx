@@ -144,6 +144,7 @@ export function MadeBlock({ record, solPriceUsd, now, chart }: { record: AgentRe
                 <th>Fees earned</th>
                 <th>The book, open to close</th>
                 <th>Moves</th>
+                <th>Claims</th>
                 <th>Holds</th>
               </tr>
             </thead>
@@ -156,6 +157,7 @@ export function MadeBlock({ record, solPriceUsd, now, chart }: { record: AgentRe
                     {num(d.open)} → {num(d.close)} <span className={d.close - d.open >= 0 ? "chap__good" : "chap__bad"}>({signed(d.close - d.open)})</span>
                   </td>
                   <td>{d.moves}</td>
+                  <td>{d.claims}</td>
                   <td>{d.holds}</td>
                 </tr>
               ))}

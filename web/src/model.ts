@@ -434,7 +434,10 @@ export interface DayRow {
   fees: number;
   open: number;
   close: number;
+  /** band moves: opens, closes and re-lays; a fee claim is not a move */
   moves: number;
+  /** fee claims executed */
+  claims: number;
   vetoed: number;
   overrides: number;
   holds: number;
@@ -538,12 +541,15 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
     if (v === "blocked") counts.vetoed += 1;
     if (v === "override") counts.overrides += 1;
     const date = e.ts.slice(0, 10);
-    const row = days.get(date) ?? { date, fees: 0, open: NaN, close: NaN, moves: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 };
+    const row = days.get(date) ?? { date, fees: 0, open: NaN, close: NaN, moves: 0, claims: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 };
     row.decisions += 1;
     if (v === "hold") row.holds += 1;
     if (v === "blocked") row.vetoed += 1;
     if (v === "override") row.overrides += 1;
-    if (v === "placed" || v === "simulated") row.moves += 1;
+    if (v === "placed" || v === "simulated") {
+      if (e.decision.action === "CLAIM_FEES") row.claims += 1;
+      else row.moves += 1;
+    }
     if ((v === "placed" || v === "simulated") && (e.decision.action === "CLAIM_FEES" || e.decision.action === "CLOSE_POSITION" || e.decision.action === "REBALANCE")) {
       const targets = e.decision.positionAddress ? e.positions.filter((p) => p.address === e.decision.positionAddress) : e.positions;
       const amount = targets.reduce((s, p) => s + feesInSol(p, e), 0);
@@ -573,7 +579,7 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
     }
     let prevClaimed = h0.feesClaimedSol;
     for (const [date, pts] of [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      const row = days.get(date) ?? { date, fees: 0, open: NaN, close: NaN, moves: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 };
+      const row = days.get(date) ?? { date, fees: 0, open: NaN, close: NaN, moves: 0, claims: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 };
       row.open = pts[0].equitySol;
       row.close = pts[pts.length - 1].equitySol;
       row.fees = Math.max(0, pts[pts.length - 1].feesClaimedSol - prevClaimed);
