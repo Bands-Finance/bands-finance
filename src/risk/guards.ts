@@ -13,7 +13,7 @@
  * is never judged here: an exit is an exit. The LLM proposes, the guards decide: every limit lives here.
  */
 import { Decision, holdDecision } from "../agent/schema";
-import { antiChurn, bandStopPct, drawdownPct } from "../engine/exit";
+import { antiChurn, bandStopPct, marketDrawdownPct } from "../engine/exit";
 import { OPEN_COST_ESTIMATE_SOL, PoolSnapshot, PositionSnapshot, quoteOf } from "../tools/dlmm";
 import { jupiterEnv } from "../tools/jupiter";
 import { isTradableVenue, tradableVenues } from "../venues/env";
@@ -112,24 +112,24 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
   // 1. Stop-loss override, defense in depth under the engine's STOP directive. Uses the per-band
   //    stop rolled at open when present, else the configured limit.
   const atStop = ctx.positions.filter((p) => {
-    const dd = drawdownPct(p, ctx.state.entryValueSol[p.address]);
+    const dd = marketDrawdownPct(p, ctx.snapshot, ctx.state.entryValueSol[p.address]);
     return dd !== null && dd >= bandStopPct(engine.stops, p.address, limits);
   });
   const closingAtStop = decision.action === "CLOSE_POSITION" ? atStop.find((p) => p.address === decision.positionAddress) : undefined;
   if (closingAtStop) {
     // The proposal already closes a band at its stop (an engine STOP, or the LLM agreeing): let it through as the emergency it is.
-    const dd = drawdownPct(closingAtStop, ctx.state.entryValueSol[closingAtStop.address])!;
+    const dd = marketDrawdownPct(closingAtStop, ctx.snapshot, ctx.state.entryValueSol[closingAtStop.address])!;
     passed.push(`stop-loss (closing ${closingAtStop.address.slice(0, 6)} at -${dd.toFixed(1)}%)`);
     emergency = true;
   }
   for (const p of closingAtStop ? [] : atStop) {
     const entry = ctx.state.entryValueSol[p.address];
-    const dd = drawdownPct(p, entry);
+    const dd = marketDrawdownPct(p, ctx.snapshot, entry);
     if (dd === null) continue;
     const stop = bandStopPct(engine.stops, p.address, limits);
     if (dd >= stop) {
       overrides.push(
-        `stop-loss: ${p.address.slice(0, 6)} is ${dd.toFixed(1)}% below entry (${entry.toFixed(4)} -> ${p.valueInSol.toFixed(4)} SOL), stop ${stop.toFixed(2)}%; forcing CLOSE`,
+        `stop-loss: ${p.address.slice(0, 6)} is ${dd.toFixed(1)}% below entry on its market value, fees aside (${entry.toFixed(4)} -> ${p.valueInSol.toFixed(4)} SOL with fees), stop ${stop.toFixed(2)}%; forcing CLOSE`,
       );
       decision = {
         action: "CLOSE_POSITION",
@@ -207,7 +207,7 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
   // 6. Anti-churn: an LLM move of a band that has not sat out of range for the minimum is blocked
   //    (unless the band is already down half its stop). Never applied to engine directives or overrides.
   if (source === "llm" && !emergency && closing) {
-    const churn = antiChurn(decision, ctx.positions, { ...ctx.state, stops: engine.stops, outOfRangeSince: engine.outOfRangeSince }, limits, engine.outOfRangeSec, ctx.now);
+    const churn = antiChurn(decision, ctx.positions, { ...ctx.state, stops: engine.stops, outOfRangeSince: engine.outOfRangeSince }, limits, engine.outOfRangeSec, ctx.now, ctx.snapshot);
     if (churn) violations.push(churn);
     else passed.push("anti-churn");
   }

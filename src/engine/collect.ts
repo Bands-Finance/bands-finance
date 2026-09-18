@@ -55,6 +55,12 @@ export function trackFeesPending(
   }
 }
 
+/** A claim landed: the "pending above the floor" clock starts again at the next read that finds fees. */
+export function clearFeesPending(state: Pick<RiskState, "feesPendingSince">, claimed: readonly string[]): void {
+  if (!state.feesPendingSince) return;
+  for (const a of claimed) delete state.feesPendingSince[a];
+}
+
 export interface CollectPlan {
   positionAddress: string;
   feesSol: number;

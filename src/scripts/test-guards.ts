@@ -506,6 +506,21 @@ test("USDC pool: a REBALANCE frees the closing band's USDC and its SOL exposure"
   assert.match(evaluate(tooMuch, uctx({ positions: [held], walletQuote: 0, walletSol: 0.5 }), limits).violations.join(), /not enough USDC: want 50, have 0 \+ 45\.9000 back/);
 });
 
+test("stop-loss reads the band's market value: the fees waiting inside it are set aside, so a claim cannot bring a band nearer its stop", () => {
+  const state = { ...freshState(), lastActionAt: Date.now() - 60_000, entryValueSol: { pos1: 0.3 } };
+  // value 0.27 with 0.03 of unclaimed fees inside: market value 0.24, -20% -> the stop fires although the headline value is only -10%
+  const rich = { ...position, valueInSol: 0.27, feeY: 0.03, feeX: 0 };
+  const v = evaluate(open(), ctx({ state, positions: [rich] }), limits);
+  assert.equal(v.decision.action, "CLOSE_POSITION", "the market drawdown is what the stop reads");
+  assert.match(v.overrides.join(), /20\.0% below entry on its market value, fees aside/);
+  // the same band after the claim: value 0.24, no fees inside: the same -20%, the same verdict
+  const claimed = { ...position, valueInSol: 0.24, feeY: 0, feeX: 0 };
+  assert.equal(evaluate(open(), ctx({ state, positions: [claimed] }), limits).decision.action, "CLOSE_POSITION");
+  // a band down 12% on the market with 8% of fees inside is not at a 15% stop, before or after claiming
+  const fine = { ...position, valueInSol: 0.288, feeY: 0.024, feeX: 0 };
+  assert.equal(evaluate(open(), ctx({ state, positions: [fine] }), limits).decision.action, "OPEN_POSITION");
+});
+
 test("USDC pool: the stop-loss reads valueInSol like any other pool", () => {
   const state = { ...freshState(), entryValueSol: { posu: 0.5 } };
   const hurt = { ...position, address: "posu", valueInSol: 0.42, solInPosition: 0.1, quoteInPosition: 10.2 }; // -16%

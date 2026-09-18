@@ -68,6 +68,8 @@ export interface RiskState {
    * Cleared with the rest of the band's bookkeeping in forgetBand().
    */
   launchBands?: Record<string, LaunchBand>;
+  /** what exits could not sell under the impact caps, by mint: sold on later cycles (executor sellResidue) */
+  residues?: Record<string, import("../executor").Residue>;
   /**
    * pair-<mint> alias -> the pool the desk created for that token (src/venues/pair.ts). What a
    * restart reads to know a real Meteora pool is one of ours, and what maps its real address back

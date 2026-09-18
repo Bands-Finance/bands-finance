@@ -39,7 +39,7 @@ import {
   standingDown,
   stopsInWindow,
 } from "../engine/breakers";
-import { collectDirective, skimPlan, trackFeesPending, unclaimedFeesQuote, unclaimedFeesSol } from "../engine/collect";
+import { clearFeesPending, collectDirective, skimPlan, trackFeesPending, unclaimedFeesQuote, unclaimedFeesSol } from "../engine/collect";
 import { engineDirective } from "../engine/directives";
 import { lockBlocks, loopStale, staleWindowMs } from "../engine/watchdog";
 
@@ -283,6 +283,8 @@ test("forgetBand drops every per-band record", () => {
   assert.deepEqual([state.entryValueSol, state.stops, state.outOfRangeSince, state.feesPendingSince], [{}, {}, {}, {}]);
   near(drawdownPct(position({ valueInSol: 0.24 }), 0.3)!, 20);
   assert.equal(drawdownPct(position(), undefined), null);
+  near(drawdownPct(position({ valueInSol: 0.27 }), 0.3, 0.03)!, 20, "the fees inside the band are set aside before the drawdown is read");
+  near(drawdownPct(position({ valueInSol: 0.27 }), 0.3, 0)!, 10);
 });
 
 // ---- breakers ------------------------------------------------------------------------------------
@@ -444,6 +446,15 @@ test("collect: claim at >= min, or after 2h pending above the floor, capped per 
   assert.match(plan.reason, /collect: 0.00600 SOL unclaimed on pos1 >= 0.005 SOL/);
   assert.equal(collectDirective([big], snapshot, state, T0, cfg, 30), null, "daily cap");
   assert.equal(collectDirective([big], snapshot, state, T0, { ...cfg, collectMaxPerDay: 0 }, 30)!.positionAddress, "pos1", "a cap of 0 is no cap: the 31st claim of the day goes through");
+  // the pending clock: a busy band never reads zero fees, so without a reset on the claim it would claim dust every cycle
+  const busy = position({ address: "pos9", feeY: 0.002 });
+  trackFeesPending(state, [busy], snapshot, T0 - 3 * H, cfg.collectFloorSol);
+  assert.match(collectDirective([busy], snapshot, state, T0, cfg, 0)!.reason, /pending 180 min/);
+  clearFeesPending(state, ["pos9"]);
+  assert.equal(state.feesPendingSince!.pos9, undefined, "the claim landed: the clock is gone");
+  trackFeesPending(state, [busy], snapshot, T0 + M, cfg.collectFloorSol);
+  assert.equal(collectDirective([busy], snapshot, state, T0 + 2 * M, cfg, 0), null, "fees again above the floor a minute later: two hours to wait, not one cycle");
+  assert.match(collectDirective([busy], snapshot, state, T0 + M + 2 * H, cfg, 0)!.reason, /pending 120 min/);
   const small = position({ address: "pos2", feeY: 0.002 });
   assert.equal(collectDirective([small], snapshot, state, T0, cfg, 0), null, "below min, no pending clock yet");
   trackFeesPending(state, [small], snapshot, T0 - 3 * H, cfg.collectFloorSol);
@@ -499,12 +510,15 @@ test("directives: none on a quiet book", () => {
 test("directives: STOP at the per-band stop, the worst band first", () => {
   const state = freshState({ entryValueSol: { pos1: 0.3, pos2: 0.3 }, stops: { pos1: 12 } });
   const p1 = position({ valueInSol: 0.26 }); // -13.3% vs stop 12
-  const p2 = position({ address: "pos2", valueInSol: 0.2 }); // -33% vs default 15
+  const p2 = position({ address: "pos2", valueInSol: 0.2, feeX: 0, feeY: 0 }); // -33.3% vs default 15
   const d = engineDirective(dctx({ positions: [p1, p2], state }))!;
   assert.equal(d.kind, "STOP");
   assert.equal(d.decision.action, "CLOSE_POSITION");
   assert.equal(d.decision.positionAddress, "pos2");
-  assert.match(d.reason, /stop: pos2 is 33.3% below entry/);
+  assert.match(d.reason, /stop: pos2 is 33.3% below entry on its market value, fees aside/);
+  // the same band with 0.02 SOL of fees waiting inside it reads the same market drawdown: the fees are set aside first
+  const rich = engineDirective(dctx({ positions: [position({ address: "pos2", valueInSol: 0.22, feeX: 0, feeY: 0.02 })], state }))!;
+  assert.match(rich.reason, /stop: pos2 is 33.3% below entry/);
   const only1 = engineDirective(dctx({ positions: [p1], state }))!;
   assert.equal(only1.decision.positionAddress, "pos1");
   assert.match(only1.reason, /stop 12.00%/);

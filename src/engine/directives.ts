@@ -28,7 +28,7 @@ import { launchExpiry, type LaunchEnv } from "../screener/launch";
 import type { PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
 import { standingDown, type EngineState } from "./breakers";
 import { collectDirective } from "./collect";
-import { bandStopPct, drawdownPct } from "./exit";
+import { bandStopPct, marketDrawdownPct } from "./exit";
 
 export type DirectiveKind = "FLATTEN" | "STOP" | "EXPIRE" | "ROTATE" | "COLLECT";
 
@@ -104,14 +104,14 @@ export function engineDirective(ctx: DirectiveContext): Directive | null {
   // STOP: the per-band stop, rolled at open, or the configured limit when none was rolled.
   let worst: { p: PositionSnapshot; dd: number; stop: number } | null = null;
   for (const p of positions) {
-    const dd = drawdownPct(p, state.entryValueSol[p.address] ?? p.entryValueSol);
+    const dd = marketDrawdownPct(p, ctx.snapshot, state.entryValueSol[p.address] ?? p.entryValueSol);
     if (dd === null) continue;
     const stop = bandStopPct(state.stops, p.address, ctx.limits);
     if (dd >= stop && (!worst || dd > worst.dd)) worst = { p, dd, stop };
   }
   if (worst) {
     const entry = state.entryValueSol[worst.p.address] ?? worst.p.entryValueSol ?? 0;
-    const reason = `stop: ${worst.p.address.slice(0, 6)} is ${worst.dd.toFixed(1)}% below entry (${entry.toFixed(4)} -> ${worst.p.valueInSol.toFixed(4)} SOL), stop ${worst.stop.toFixed(2)}%`;
+    const reason = `stop: ${worst.p.address.slice(0, 6)} is ${worst.dd.toFixed(1)}% below entry on its market value, fees aside (${entry.toFixed(4)} -> ${worst.p.valueInSol.toFixed(4)} SOL with fees), stop ${worst.stop.toFixed(2)}%`;
     return {
       kind: "STOP",
       reason,

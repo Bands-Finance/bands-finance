@@ -14,6 +14,7 @@ import type { Decision } from "../agent/schema";
 import type { RiskLimits } from "../risk/limits";
 import type { PriceSample, RiskState } from "../risk/state";
 import type { PositionSnapshot } from "../tools/dlmm";
+import { unclaimedFeesSol, type CollectSnapshot } from "./collect";
 
 export const PRICE_HISTORY_MS = 6 * 60 * 60 * 1000;
 export const KNIFE_WINDOW_MS = 30 * 60 * 1000;
@@ -40,9 +41,21 @@ export function bandStopPct(stops: Record<string, number> | undefined, position:
 }
 
 /** Percent below entry, positive when the band is under water; null without a usable entry. */
-export function drawdownPct(p: Pick<PositionSnapshot, "valueInSol">, entryValueSol: number | undefined): number | null {
+/**
+ * How far a band's MARKET value has fallen below what went in, percent. The fees waiting inside the
+ * band are set aside first (feesSol): a band's value includes them, so without this a claim would
+ * move a band closer to its stop although nothing was lost, and a fee-rich band would sit further
+ * from it than its token exposure warrants (2026-09-18: claiming 1.2 SOL from GP took its cushion
+ * from 25% to 12%). The stop bounds what price does to the capital; fees are income beside it.
+ */
+export function drawdownPct(p: Pick<PositionSnapshot, "valueInSol">, entryValueSol: number | undefined, feesSol = 0): number | null {
   if (!entryValueSol || entryValueSol <= 0) return null;
-  return (1 - p.valueInSol / entryValueSol) * 100;
+  return (1 - Math.max(0, p.valueInSol - Math.max(0, feesSol)) / entryValueSol) * 100;
+}
+
+/** drawdownPct with the band's unclaimed fees read off the snapshot. */
+export function marketDrawdownPct(p: Pick<PositionSnapshot, "valueInSol" | "feeX" | "feeY">, snapshot: CollectSnapshot, entryValueSol: number | undefined): number | null {
+  return drawdownPct(p, entryValueSol, unclaimedFeesSol(p, snapshot));
 }
 
 /** Keep state.outOfRangeSince honest: set when first seen out of range, cleared when back in range. */
@@ -88,6 +101,7 @@ export function antiChurn(
   limits: Pick<RiskLimits, "stopLossPct">,
   minSec: number,
   now: number,
+  snapshot?: CollectSnapshot,
 ): string | null {
   if (decision.action !== "REBALANCE" && decision.action !== "CLOSE_POSITION") return null;
   const p = positions.find((x) => x.address === decision.positionAddress);
@@ -95,7 +109,7 @@ export function antiChurn(
   if (p.inRange) return null;
   const sec = outOfRangeSec(state.outOfRangeSince, p.address, now);
   if (sec >= minSec) return null;
-  const dd = drawdownPct(p, state.entryValueSol[p.address]);
+  const dd = snapshot ? marketDrawdownPct(p, snapshot, state.entryValueSol[p.address]) : drawdownPct(p, state.entryValueSol[p.address]);
   const stop = bandStopPct(state.stops, p.address, limits);
   if (dd !== null && dd >= stop / 2) return null;
   return `anti-churn: ${p.address.slice(0, 6)} is out of range for ${Math.round(sec)}s, minimum ${minSec}s`;

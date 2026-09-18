@@ -105,7 +105,9 @@ import {
   regimeView,
   saveEngineState,
 } from "./engine/breakers";
-import { skimPlan, trackFeesPending } from "./engine/collect";
+import { clearFeesPending, skimPlan, trackFeesPending, unclaimedFeesSol } from "./engine/collect";
+import { marketDrawdownPct } from "./engine/exit";
+import { sellResidue, swapImpactEnv } from "./executor";
 import { engineDirective } from "./engine/directives";
 import { forgetBand, knifeReason, moveAfterSec, outOfRangeSec, rangeOverWindowPct, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
 import { collectsOnDay, dayOf, readLedgerRows, realizedOnDaySol, rowsOf, workingSol } from "./engine/ledger";
@@ -138,6 +140,8 @@ interface App {
   /** money moved this pass (an open or a close ran): the other pools' exposure was read before it, so no seat grows on it */
   /** exposure each pool added (opened) or freed (closed) so far this pass, SOL: the pools decided after it see the true book, not the cycle-start read */
   exposureDelta: Map<string, number>;
+  /** mints a swap touched this cycle (a sweep, a liquidation): the residue pass does not sell them again in the same cycle */
+  swappedThisCycle: Set<string>;
   /** the pools the scout is asked to watch this cycle (held, picked, ranked), written once after observation */
   flowWatch: Map<string, FlowPoolMeta>;
   /** consecutive cycles a held seat's own measured yield read under the fade line */
@@ -220,7 +224,7 @@ function banner(app: App): void {
         `entry: ${pe.requireFlow ? `the scout's reading first, ${pe.minFlowCoverMin} min of it` : "no flow gate"}, seat yield >= ${pe.minSeatYieldPct}%/day, score > ${pe.minScore}, 24h volume >= $${pe.minVolume24hUsd.toLocaleString("en-US")} | ` +
         `size: side share <= ${pe.maxSideSharePct}%${pe.sizeRefTravelPct > 0 ? `, scaled down past ${pe.sizeRefTravelPct}% of hourly travel (floor ${pe.sizeMinMultiple})` : ""}, swap impact <= ${pe.maxSwapImpactPct}% | ` +
         `idle re-lay ${pe.idleRelaySec > 0 ? `${pe.idleRelaySec}s` : "3x the out-of-range minimum"} | fast watch ${fe.everySec > 0 ? `every ${fe.everySec}s` : "off"} | ` +
-        `fee tokens ${(process.env.SWEEP_FEE_TOKENS ?? "").trim().toLowerCase() === "false" ? "kept" : `sold from ${process.env.SWEEP_MIN_SOL ?? "0.05"} SOL`} | tuner ${(process.env.TUNING_FILE ?? "").trim() || "off"}`,
+        `fee tokens ${(process.env.SWEEP_FEE_TOKENS ?? "").trim().toLowerCase() === "false" ? "kept" : `sold from ${process.env.SWEEP_MIN_SOL ?? "0.05"} SOL`} | sells ${(() => { const c = swapImpactEnv(process.env); return c ? `sized under ${c.sweepPct}% impact for a sweep, ${c.exitPct}% for an exit (the rest at once up to ${c.hardPct}%, else a residue sold over later cycles, SOL books only)` : "one swap, no impact cap"; })()} | stop on market value, fees aside | tuner ${(process.env.TUNING_FILE ?? "").trim() || "off"}`,
     );
   }
   console.log(`venues    tradable ${tradableVenues().join(", ") || "none"} | live ${liveVenues().filter((v) => isTradableVenue(v)).join(", ") || "none"} (a tradable venue off LIVE_VENUES trades in paper and dry-run only) | book ${bookEnv()}${bookEnv() === "stocks" ? ` (tokenized stocks first, liquidity >= $${stockMinLiquidityUsd().toLocaleString("en-US")})` : ""}`);
@@ -1226,7 +1230,18 @@ function updateState(state: RiskState, exec: ExecutionResult, positions: Positio
     (state.stops ??= {})[exec.opened.address] = rollStop(riskLimits, Math.random, launch ? launch.env.stopPct : null);
     if (launch) (state.launchBands ??= {})[exec.opened.address] = { pool: snapshot.address, openedAt: Date.now(), vol1hUsd: launch.vol1hUsd };
   }
-  if (exec.ok && exec.closed) forgetBand(state, exec.closed);
+  // the close landed whether or not the sale after it did: the band is gone, its records go with it
+  if (exec.closed) forgetBand(state, exec.closed);
+  // a claim restarts the "pending above the floor" clock: the next claim by that rule is two hours away, not next cycle
+  if (exec.ok && exec.claimed) clearFeesPending(state, exec.claimed);
+  // what an exit could not sell under the caps waits in the wallet; the residue pass comes back for it every cycle
+  if (exec.residue) {
+    const prev = state.residues?.[exec.residue.mint];
+    // a new leftover starts the ladder over, and it already counts what an older residue left in the wallet (the
+    // liquidation on a sweep book sells the wallet's whole holding): it replaces the old record, never adds to it
+    if (prev) console.log(`[cycle ${exec.residue.cycle}] residue ${exec.residue.symbol}: ${prev.amountUi} on record replaced by this exit's leftover of ${exec.residue.amountUi}`);
+    (state.residues ??= {})[exec.residue.mint] = exec.residue;
+  }
   // a made pair's pool landed on chain: remember it is ours, and which real address the alias stands for
   if (exec.created && snapshot.pair) {
     (state.pairPools ??= {})[exec.created.pool] = {
@@ -1252,6 +1267,31 @@ const journalMode = (app: App): JournalEntry["mode"] => (app.paper ? "paper" : c
 
 /** The out-of-range wait when the cost-based threshold has nothing to work with (src/engine/exit.ts moveAfterSec). */
 const OUT_OF_RANGE_FALLBACK_SEC = 600;
+
+/**
+ * The residue pass: every mint an exit left in the wallet is offered to the market again, sized under the cap
+ * for the attempts it has waited (the exit cap, then the hard cap for as long as it takes), one swap a cycle, until gone.
+ */
+async function sellResidues(app: App): Promise<void> {
+  const state = loadState();
+  const caps = swapImpactEnv(process.env);
+  const entries = Object.entries(state.residues ?? {});
+  if (entries.length === 0) return;
+  const notes: string[] = [];
+  for (const [mint, r] of entries) {
+    // left this very cycle, or sold by a sweep this cycle: the market has moved once already; it waits for the next
+    if (r.cycle === app.cycle || app.swappedThisCycle.has(mint)) continue;
+    try {
+      const out = await sellResidue(app.wallet, r, caps, notes);
+      if (out.left <= 0) delete state.residues![mint];
+      else state.residues![mint] = { ...r, amountUi: out.left, cycles: r.cycles + (out.attempted ? 1 : 0) };
+    } catch (err) {
+      notes.push(`residue ${r.symbol}: ${(err as Error).message}`);
+    }
+  }
+  saveState(state);
+  for (const n of notes) console.log(`[cycle ${app.cycle}] ${n}`);
+}
 
 async function runPool(app: App, o: Observed, all: Observed[], sol: number): Promise<JournalEntry> {
   const ts = new Date().toISOString();
@@ -1494,12 +1534,17 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     ...(!screen?.stock && !basisRow && !isPair && (process.env.SWEEP_FEE_TOKENS ?? "").trim().toLowerCase() !== "false"
       ? { sweepWalletToken: { minQuote: Math.max(0, Number(process.env.SWEEP_MIN_SOL ?? "0.05") || 0.05) / q.priceInSol } }
       : {}),
+    // what a sell may cost in price impact (SWAP_IMPACT_SWEEP_PCT / _EXIT_PCT / _HARD_PCT, SWAP_RESIDUE_CYCLES; 0 on both caps = no cap)
+    cycle: app.cycle,
+    ...(swapImpactEnv(process.env) ? { swapImpact: swapImpactEnv(process.env)! }
+      : {}),
   });
   if (paper) savePaperBook(paper);
   for (const t of execution.txs) {
     console.log(`${tag} ${execution.mode} ${t.label}: ${t.signature ?? t.skipped ?? (t.ok ? "simulated ok" : `FAILED ${t.error}`)}`);
   }
-  if (!execution.ok || execution.txs.length === 0) for (const n of execution.notes) if (n !== "hold" && n !== "blocked by guards") console.log(`${tag} ${execution.mode}: ${n}`);
+  // notes are printed when something did not go to plan, and always when tokens were left behind
+  if (!execution.ok || execution.txs.length === 0 || execution.residue || execution.notes.some((n) => /waits|stays in the wallet|not sent|nothing sold/.test(n))) for (const n of execution.notes) if (n !== "hold" && n !== "blocked by guards") console.log(`${tag} ${execution.mode}: ${n}`);
   for (const row of execution.ledger ?? []) {
     const quoteLeg = quoteIsSol || typeof row.quoteDelta !== "number" ? "" : ` (${row.quoteDelta.toFixed(4)} ${q.symbol})`;
     console.log(`${tag} ledger ${row.mech} ${row.basis}: sol ${row.solDelta.toFixed(6)}${quoteLeg} rent ${row.rentSol.toFixed(6)} fee ${row.txFeeSol.toFixed(6)} token ${row.tokenDelta.toFixed(4)}`);
@@ -1545,6 +1590,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     const closedSol = execution.closed ? (positions.find((p) => p.address === execution.closed)?.valueInSol ?? 0) : 0;
     app.exposureDelta.set(o.address, (app.exposureDelta.get(o.address) ?? 0) + (execution.opened?.entryValueSol ?? 0) - closedSol);
   }
+  if (execution.ledger?.some((r) => r.mech === "swap")) app.swappedThisCycle.add(snapshot.baseToken.mint);
   updateState(state, execution, positions, snapshot, (screen?.launch?.ok || screen?.pair?.ok) && !noLaneExits ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null);
 
   // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
@@ -1697,7 +1743,12 @@ function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAt
   if (cv.tripped) console.error(`[cycle ${app.cycle}] CIRCUIT BREAKER: ${cv.reason}`);
 
   // Portfolio breaker: whole-book equity in SOL (wallet SOL + wallet USDC at the SOL price + bands marked incl. unclaimed fees + wallet base tokens at mark).
-  const tokensSol = entries.reduce((s, e) => s + e.wallet.token * e.pool.tokenPriceInSol, 0);
+  // wallet tokens of the pools worked this cycle at their marks, plus what exits left behind (residues) at the exit's mark,
+  // for residues whose pool is NOT on this cycle's books: a worked pool's wallet read (and, in the exit cycle, the closed
+  // band's own value) already holds those tokens
+  const onBooks = new Set(entries.map((e) => e.pool.address));
+  const residueSol = Object.values(state.residues ?? {}).reduce((s, r) => s + (onBooks.has(r.pool) ? 0 : r.amountUi * r.markTokenInSol), 0);
+  const tokensSol = entries.reduce((s, e) => s + e.wallet.token * e.pool.tokenPriceInSol, 0) + residueSol;
   const equity = solAtStart + usdcAtStartSol + observed.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + tokensSol + hedgeSol;
   if (Number.isFinite(equity) && equity > 0) {
     const pv = portfolioVerdict(app.engine.portfolio, equity, today, now, { floorSol: cfg.portfolioFloorSol });
@@ -1829,6 +1880,7 @@ async function runIteration(app: App): Promise<void> {
   const pools = pickPools(app, withPositions, funds);
   if (pools.length === 0) {
     console.log(`[cycle ${app.cycle}] nothing to work: no pinned pools, no bands held, no screen picks`);
+    await sellResidues(app); // what earlier exits left in the wallet is still offered to the market
     return;
   }
   console.log(`[cycle ${app.cycle}] working ${pools.length} pools (${withPositions.length} with bands)`);
@@ -1836,6 +1888,7 @@ async function runIteration(app: App): Promise<void> {
   app.mintAttributed.clear();
   app.movedThisCycle = false;
   app.exposureDelta.clear();
+  app.swappedThisCycle.clear();
   app.flowWatch.clear();
   await refreshPerpMarks(app, pools);
 
@@ -1965,6 +2018,9 @@ async function runIteration(app: App): Promise<void> {
     }
   }
 
+  // RESIDUES: what exits could not sell under the caps, sold cycle by cycle with a cap that rises as they wait
+  await sellResidues(app);
+
   // Marks need a complete, consistently valued read: every picked pool observed and decided, and
   // the wallet's USDC valued whenever it holds any (an unpriced USDC balance would swing equity).
   const usdcUnpriced = usdcAtStart > 0.01 && solPriceUsd === null;
@@ -1994,8 +2050,9 @@ async function runIteration(app: App): Promise<void> {
       return o.positions
         .filter((p) => !closedNow.has(p.address))
         .map((p) => {
-          const entry = st.entryValueSol[p.address] ?? p.entryValueSol ?? p.valueInSol;
-          return { pool: o.address, label: o.snapshot.label, position: p.address, lowerBinId: p.lowerBinId, upperBinId: p.upperBinId, quoteSide: side, binStep: o.snapshot.binStep, inRange: p.inRange, stopPct: st.stops?.[p.address] ?? riskLimits.stopLossPct, drawdownPct: entry > 0 ? (1 - p.valueInSol / entry) * 100 : 0 };
+          // no entry on record: the band's market value stands in, so it reads as no drawdown rather than as its fee share
+          const entry = st.entryValueSol[p.address] ?? p.entryValueSol ?? Math.max(0, p.valueInSol - unclaimedFeesSol(p, o.snapshot));
+          return { pool: o.address, label: o.snapshot.label, position: p.address, lowerBinId: p.lowerBinId, upperBinId: p.upperBinId, quoteSide: side, binStep: o.snapshot.binStep, inRange: p.inRange, stopPct: st.stops?.[p.address] ?? riskLimits.stopLossPct, drawdownPct: marketDrawdownPct(p, o.snapshot, entry) ?? 0 };
         });
     });
   } catch {
@@ -2104,6 +2161,7 @@ async function main(): Promise<void> {
     perpMarks: new Map(),
     hedgedThisCycle: new Map(),
     movedThisCycle: false,
+    swappedThisCycle: new Set(),
     exposureDelta: new Map(),
     flowWatch: new Map(),
     fadeStreak: new Map(),

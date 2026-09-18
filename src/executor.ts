@@ -73,6 +73,10 @@ export interface ExecutionResult {
   txs: TxReport[];
   opened?: { address: string; entryValueSol: number };
   closed?: string;
+  /** the bands whose fees a CLAIM_FEES landed for */
+  claimed?: string[];
+  /** what an exit could not sell under the caps: the desk comes back for it */
+  residue?: Residue;
   /** a made pair's pool was created (broadcast) this execution: what RiskState.pairPools records */
   created?: { pool: string; lbPair: string; rentSol: number; sig: string | null };
   notes: string[];
@@ -99,6 +103,17 @@ export interface ExecutionContext {
    * and a liquidation sells them with the band's. Never set for a straddle, which re-uses its token.
    */
   sweepWalletToken?: { minQuote: number };
+  /**
+   * Price impact the desk will pay on a sell, percent (SWAP_IMPACT_* in the env). A sale is sized to what the
+   * market takes under the cap in ONE swap, by quoting; the rest waits. A sweep waits for the next claim or
+   * re-lay. An exit (SOL-quoted pools only) sells what fits under exitPct, then the rest at once if a quote
+   * of the whole rest costs no more than hardPct, else the rest becomes a residue the desk sells on later
+   * cycles, one swap a cycle, under exitPct for residueCycles attempts and under hardPct after that
+   * (residueCapPct). Absent, or a cap of 0: one swap, whatever the impact (the old behaviour).
+   */
+  swapImpact?: SwapImpact;
+  /** the desk cycle, stamped on a residue so the residue pass leaves it alone until the next cycle */
+  cycle?: number;
 }
 
 /** PURE. The base-token amount a sweep sells: everything held, once it is worth the minimum in the quote; else 0. */
@@ -419,6 +434,69 @@ interface SwapLegOutcome {
   /** base token units the wallet gained (+) or gave (-), from the quote (the fill may differ inside the slippage) */
   tokenDelta: number;
   quote: JupiterQuote | null;
+  /** the quote came back above the impact allowed: nothing was sent */
+  refused?: boolean;
+}
+
+export interface SwapImpact {
+  sweepPct: number;
+  exitPct: number;
+  hardPct: number;
+  /** attempts a residue waits at exitPct before the cap rises to hardPct, where it stays */
+  residueCycles: number;
+}
+
+/** PURE. The sell caps from the env: null when both caps are 0 (no limit, one swap). An exit cap of 0 means exits are uncapped. */
+export function swapImpactEnv(env: NodeJS.ProcessEnv): SwapImpact | null {
+  const n = (k: string, d: number) => {
+    const raw = (env[k] ?? "").trim();
+    const v = Number(raw);
+    return raw !== "" && Number.isFinite(v) ? Math.max(0, v) : d;
+  };
+  const sweepPct = n("SWAP_IMPACT_SWEEP_PCT", 1.5);
+  const exitPct = n("SWAP_IMPACT_EXIT_PCT", 3);
+  const hardPct = exitPct > 0 ? Math.max(exitPct, n("SWAP_IMPACT_HARD_PCT", 8)) : 0;
+  const residueCycles = Math.max(1, Math.round(n("SWAP_RESIDUE_CYCLES", 4)));
+  if (sweepPct === 0 && exitPct === 0) return null;
+  return { sweepPct, exitPct, hardPct, residueCycles };
+}
+
+/** PURE. The cap a residue is sold under after `cycles` attempts: the exit cap, then the hard cap for as long as it takes (an operator decides anything past that). */
+export function residueCapPct(caps: SwapImpact, cycles: number): number {
+  if (caps.exitPct <= 0) return 0;
+  return cycles < caps.residueCycles ? caps.exitPct : caps.hardPct;
+}
+
+/**
+ * The largest amount of a sale the market takes under capPct, found by quoting: the whole sale first, then
+ * scaled down by the cap's share of the quoted impact (with a margin, since impact grows faster than size on
+ * a bin ladder) at most twice. Jupiter's impact is measured from the pool's CURRENT price, which is why a
+ * sale is never cut into pieces sent back to back: each piece would read a small impact against a price the
+ * piece before it had already moved. An impact of 0 is a route Jupiter could not measure: taken as under the cap.
+ */
+export async function sizeUnderCap(tokenUi: number, capPct: number, dec: number, impactOf: (amountUi: number) => Promise<number>): Promise<{ amount: number; impactPct: number; quotes: number }> {
+  let amount = floorTo(tokenUi, dec);
+  if (amount <= 0) return { amount: 0, impactPct: 0, quotes: 0 };
+  let impact = await impactOf(amount);
+  let quotes = 1;
+  if (!(capPct > 0) || impact <= capPct) return { amount, impactPct: impact, quotes };
+  for (let i = 0; i < 2; i++) {
+    amount = floorTo((amount * capPct * 0.85) / impact, dec);
+    if (amount <= 0) return { amount: 0, impactPct: impact, quotes };
+    impact = await impactOf(amount);
+    quotes++;
+    if (impact <= capPct) return { amount, impactPct: impact, quotes };
+  }
+  return { amount: 0, impactPct: impact, quotes };
+}
+
+interface SwapLegOutcome {
+  ok: boolean;
+  /** base token units the wallet gained (+) or gave (-), from the quote (the fill may differ inside the slippage) */
+  tokenDelta: number;
+  quote: JupiterQuote | null;
+  /** the quote came back above the impact allowed: nothing was sent */
+  refused?: boolean;
 }
 
 /**
@@ -426,7 +504,7 @@ interface SwapLegOutcome {
  * pool price plus the slippage allowance, since ExactOut is not routed for every pair) or SELL
  * `tokenUi` into the quote (liquidate / surplus). Built, then run like a venue transaction.
  */
-async function runSwapLeg(ctx: ExecutionContext, leg: SwapLeg, tokenUi: number, result: ExecutionResult, ledger: (row: LedgerRow) => void): Promise<SwapLegOutcome> {
+async function runSwapLeg(ctx: ExecutionContext, leg: SwapLeg, tokenUi: number, result: ExecutionResult, ledger: (row: LedgerRow) => void, maxImpactPct = 0): Promise<SwapLegOutcome> {
   const s = ctx.snapshot;
   const q = quoteOf(s);
   const client = jupiter();
@@ -445,6 +523,10 @@ async function runSwapLeg(ctx: ExecutionContext, leg: SwapLeg, tokenUi: number, 
     const inUi = fromRawUnits(jq.inAmount, buy ? quoteDec : tokenDec);
     const outUi = fromRawUnits(jq.outAmount, buy ? tokenDec : quoteDec);
     const route = jq.routeLabels.join(" > ") || "?";
+    if (maxImpactPct > 0 && jq.priceImpactPct > maxImpactPct) {
+      result.notes.push(`${leg}: ${fmtUnits(inUi, buy ? quoteDec : tokenDec)} ${buy ? q.symbol : base} would move the price ${jq.priceImpactPct.toFixed(2)}% (route ${route}), over the ${maxImpactPct}% allowed: not sent`);
+      return { ok: false, tokenDelta: 0, quote: jq, refused: true };
+    }
     const built = await client.buildSwap(jq, ctx.wallet.publicKey);
     const label = `swap ${fmtUnits(inUi, buy ? quoteDec : tokenDec)} ${buy ? q.symbol : base} -> ~${fmtUnits(outUi, buy ? tokenDec : quoteDec)} ${buy ? base : q.symbol} (${leg} leg, Jupiter via ${route}, impact ${jq.priceImpactPct}%)`;
     const out = await runTx(ctx.wallet, label, built.tx, [], result.txs, q.token.mint);
@@ -466,6 +548,158 @@ async function runSwapLeg(ctx: ExecutionContext, leg: SwapLeg, tokenUi: number, 
   } catch (err) {
     result.txs.push({ label: `swap (${leg} leg)`, ok: false, error: (err as Error).message });
     return { ok: false, tokenDelta: 0, quote: null };
+  }
+}
+
+export interface SellOutcome {
+  /** base token units sold */
+  sold: number;
+  /** base token units not sold: the market would not take them under the cap, or the transaction failed */
+  left: number;
+  /** a transaction was sent and failed (a refusal for impact is not a failure) */
+  failed: boolean;
+  /** the impact the quote reported for what was sold, percent */
+  impactPct: number;
+}
+
+const impactOfSale = (ctx: ExecutionContext) => async (amountUi: number): Promise<number> => {
+  const s = ctx.snapshot;
+  const q = quoteOf(s);
+  const jq = await jupiter().quote({ inputMint: s.baseToken.mint, outputMint: q.token.mint, amount: toRawUnits(amountUi, s.baseToken.decimals) });
+  return jq.priceImpactPct;
+};
+
+/**
+ * SELL up to `tokenUi` of the base into the quote in ONE swap sized to what the market takes under capPct
+ * (sizeUnderCap). The remainder is left where it is and reported; the caller decides what waits and what
+ * comes back for. A cap of 0 sells everything in one swap, whatever the impact.
+ */
+async function sellUnderCap(ctx: ExecutionContext, leg: SwapLeg, tokenUi: number, capPct: number, result: ExecutionResult, ledger: (row: LedgerRow) => void): Promise<SellOutcome> {
+  const dec = ctx.snapshot.baseToken.decimals;
+  const symbol = ctx.snapshot.baseToken.symbol;
+  const want = floorTo(tokenUi, dec);
+  if (want <= 0) return { sold: 0, left: 0, failed: false, impactPct: 0 };
+  let amount = want;
+  let impactPct = 0;
+  if (capPct > 0) {
+    try {
+      const sized = await sizeUnderCap(want, capPct, dec, impactOfSale(ctx));
+      amount = sized.amount;
+      impactPct = sized.impactPct;
+      if (amount < want) result.notes.push(amount > 0 ? `${leg}: the market takes ${fmtUnits(amount, dec)} of ${fmtUnits(want, dec)} ${symbol} under ${capPct}% impact (${sized.quotes} quotes); the rest waits` : `${leg}: even a small sale of ${symbol} would move the price over ${capPct}% (${impactPct.toFixed(2)}% quoted); nothing sold, ${fmtUnits(want, dec)} waits`);
+    } catch (err) {
+      result.notes.push(`${leg}: could not size the sale (${(err as Error).message}); nothing sold this cycle`);
+      return { sold: 0, left: want, failed: false, impactPct: 0 };
+    }
+  }
+  if (amount <= 0) return { sold: 0, left: want, failed: false, impactPct };
+  // a tolerance on the re-quote inside runSwapLeg: the sizing quote and the sending quote are seconds apart
+  const out = await runSwapLeg(ctx, leg, amount, result, ledger, capPct > 0 ? capPct * 1.25 : 0);
+  if (!out.ok) return { sold: 0, left: want, failed: !out.refused, impactPct: out.quote?.priceImpactPct ?? impactPct };
+  const left = want - amount <= 10 ** -dec ? 0 : floorTo(want - amount, dec);
+  return { sold: amount, left, failed: false, impactPct: out.quote?.priceImpactPct ?? impactPct };
+}
+
+/** What an exit could not sell: the desk comes back for it on later cycles (index.ts residues). */
+export interface Residue {
+  pool: string;
+  /** the band it was left by, for the record */
+  position: string | null;
+  mint: string;
+  symbol: string;
+  decimals: number;
+  quoteMint: string;
+  amountUi: number;
+  /** the pool's price at the exit, SOL a token: what the residue rows are marked against, so their impact shows in the record */
+  markTokenInSol: number;
+  /** epoch ms the residue was first left */
+  since: number;
+  /** the desk cycle that left it: the residue pass leaves it alone until the next one */
+  cycle: number;
+  /** attempts since, counted only when the market was actually asked (a quote came back) */
+  cycles: number;
+}
+
+/**
+ * Sell a residue from an earlier exit: what the wallet holds of the mint, under residueCapPct for the cycles
+ * it has waited. Reads the balance first (a later sweep may have sold some), writes a swap row against the
+ * pool it came from so the record stays whole, and returns what is still left.
+ */
+export async function sellResidue(wallet: Wallet, r: Residue, caps: SwapImpact | null, notes: string[]): Promise<{ left: number; sold: number; failed: boolean; attempted: boolean }> {
+  const idle = { left: r.amountUi, sold: 0, failed: false, attempted: false };
+  if (config.dryRun || wallet.ephemeral || typeof wallet.tokenBalance !== "function") return idle;
+  if (r.quoteMint !== SOL_MINT) {
+    notes.push(`residue ${r.symbol}: quoted in a token other than SOL; the desk does not sell it here (should not happen: exits in such pools are not capped)`);
+    return idle;
+  }
+  let held: number;
+  try {
+    held = (await wallet.tokenBalance(new PublicKey(r.mint))).ui;
+  } catch (err) {
+    notes.push(`residue ${r.symbol}: could not read the wallet (${(err as Error).message})`);
+    return idle;
+  }
+  const want = floorTo(Math.min(held, r.amountUi), r.decimals);
+  if (want <= SWAP_DUST_TOKEN || want * r.markTokenInSol < 0.002) {
+    if (want > 0) notes.push(`residue ${r.symbol}: ${fmtUnits(want, r.decimals)} left is dust (under 0.002 SOL); written off`);
+    return { left: 0, sold: 0, failed: false, attempted: true };
+  }
+  const capPct = caps ? residueCapPct(caps, r.cycles) : 0;
+  const client = jupiter();
+  const impactOf = async (amountUi: number) => (await client.quote({ inputMint: r.mint, outputMint: SOL_MINT, amount: toRawUnits(amountUi, r.decimals) })).priceImpactPct;
+  let amount = want;
+  try {
+    if (capPct > 0) {
+      const sized = await sizeUnderCap(want, capPct, r.decimals, impactOf);
+      amount = sized.amount;
+      if (amount <= 0) {
+        notes.push(`residue ${r.symbol}: ${fmtUnits(want, r.decimals)} would move the price over ${capPct}% (${sized.impactPct.toFixed(2)}% quoted); waits (attempt ${r.cycles + 1})`);
+        return { left: want, sold: 0, failed: false, attempted: true };
+      }
+    }
+    const jq = await client.quote({ inputMint: r.mint, outputMint: SOL_MINT, amount: toRawUnits(amount, r.decimals) });
+    if (capPct > 0 && jq.priceImpactPct > capPct * 1.25) {
+      notes.push(`residue ${r.symbol}: the sending quote came back at ${jq.priceImpactPct.toFixed(2)}%, over ${capPct}%; waits (attempt ${r.cycles + 1})`);
+      return { left: want, sold: 0, failed: false, attempted: true };
+    }
+    const inUi = fromRawUnits(jq.inAmount, r.decimals);
+    const outUi = fromRawUnits(jq.outAmount, 9);
+    const route = jq.routeLabels.join(" > ") || "?";
+    const built = await client.buildSwap(jq, wallet.publicKey);
+    const txs: TxReport[] = [];
+    const out = await runTx(wallet, `swap ${fmtUnits(inUi, r.decimals)} ${r.symbol} -> ~${fmtUnits(outUi, 9)} SOL (residue leg, Jupiter via ${route}, impact ${jq.priceImpactPct}%, cap ${capPct || "none"}%)`, built.tx, [], txs, SOL_MINT);
+    if (!out.ok) {
+      notes.push(`residue ${r.symbol}: the swap failed (${txs[0]?.error ?? "?"}); ${fmtUnits(want, r.decimals)} stays`);
+      return { left: want, sold: 0, failed: true, attempted: true };
+    }
+    const measured = !!out.cash;
+    const solDelta = measured ? out.cash!.walletDeltaSol - out.cash!.txFeeSol : outUi;
+    recordLedger({
+      ts: Date.now(),
+      mode: config.dryRun ? "dry-run" : "live",
+      sig: out.signature,
+      pool: r.pool,
+      position: r.position,
+      mech: "swap",
+      tokenMint: r.mint,
+      // marked at the exit's pool price, as the exit's own swap was, so what the wait and the impact cost shows in the record
+      markTokenInSol: r.markTokenInSol,
+      quoteMint: SOL_MINT,
+      markQuoteInSol: 1,
+      quoteDelta: solDelta,
+      solDelta,
+      tokenDelta: -inUi,
+      rentSol: 0,
+      txFeeSol: measured ? out.cash!.txFeeSol : -MARKED_TX_FEE_SOL,
+      basis: measured ? "exact" : "marked",
+      note: `residue leg: Jupiter ${r.symbol} -> SOL via ${route}, impact ${jq.priceImpactPct}%, slippage ${jq.slippageBps} bps, cap ${capPct || "none"}%; left by the exit at ${new Date(r.since).toISOString()}`,
+    });
+    const left = want - amount <= 10 ** -r.decimals ? 0 : floorTo(want - amount, r.decimals);
+    notes.push(`residue ${r.symbol}: sold ${fmtUnits(amount, r.decimals)} for ~${fmtUnits(outUi, 9)} SOL at ${jq.priceImpactPct.toFixed(2)}% impact${left > 0 ? `; ${fmtUnits(left, r.decimals)} still waits` : "; done"}`);
+    return { left, sold: amount, failed: false, attempted: true };
+  } catch (err) {
+    notes.push(`residue ${r.symbol}: ${(err as Error).message}`);
+    return { left: want, sold: 0, failed: false, attempted: false };
   }
 }
 
@@ -586,7 +820,10 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
           break;
         }
       }
-      if (result.ok && built.length > 0) ledger(collectRow(ctx, snaps, outcomes));
+      if (result.ok && built.length > 0) {
+        ledger(collectRow(ctx, snaps, outcomes));
+        result.claimed = snaps.map((p) => p.address);
+      }
       // the claim paid part of the fees in the base token: on a quote-only book that is exposure nothing
       // manages, so it is sold once it is worth a transaction (with whatever earlier claims left)
       if (result.ok && built.length > 0 && ctx.sweepWalletToken) {
@@ -595,8 +832,8 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
         const held = (await readWalletToken(ctx)) ?? (ctx.walletToken ?? 0) + claimed;
         const sell = sweepAmount(held, quoteOf(ctx.snapshot).tokenPriceInQuote, ctx.sweepWalletToken.minQuote);
         if (sell > 0) {
-          const leg = await runSwapLeg(ctx, "sweep", floorTo(sell, dec), result, ledger);
-          if (!leg.ok) result.notes.push(`sweep: the swap failed; ${fmtUnits(sell, dec)} ${ctx.snapshot.baseToken.symbol} of claimed fees stays in the wallet for the next claim`);
+          const out = await sellUnderCap(ctx, "sweep", floorTo(sell, dec), ctx.swapImpact?.sweepPct ?? 0, result, ledger);
+          if (out.left > 0) result.notes.push(`sweep: ${out.failed ? "the swap failed" : "the market would not take it under the impact allowed"}; ${fmtUnits(out.left, dec)} ${ctx.snapshot.baseToken.symbol} of claimed fees stays in the wallet for the next claim`);
         }
       }
       return result;
@@ -632,9 +869,27 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
           // on a quote-only book the wallet's own base tokens (claimed fees) go with the band's
           if (ctx.sweepWalletToken) tokensBack += Math.max(0, ctx.walletToken ?? 0);
           if (tokensBack > SWAP_DUST_TOKEN) {
-            const leg = await runSwapLeg(ctx, "liquidate", floorTo(tokensBack, tokenDec), result, ledger);
-            result.ok = result.ok && leg.ok;
-            if (!leg.ok) result.notes.push(`liquidate: the swap failed; ${fmtUnits(tokensBack, tokenDec)} ${ctx.snapshot.baseToken.symbol} stays in the wallet`);
+            // What fits under the exit cap now, in one swap. Then the rest is quoted as a whole: sold at once if that costs
+            // no more than the hard cap, else left as a residue the desk comes back for on later cycles. Only a SOL-quoted
+            // pool is capped: a residue is sold into SOL, and every book but the memecoin book is USDC-quoted or a straddle.
+            const q = quoteOf(ctx.snapshot);
+            const caps = ctx.swapImpact && q.token.mint === SOL_MINT && ctx.swapImpact.exitPct > 0 ? ctx.swapImpact : null;
+            const first = await sellUnderCap(ctx, "liquidate", floorTo(tokensBack, tokenDec), caps?.exitPct ?? 0, result, ledger);
+            let left = first.left;
+            let failed = first.failed;
+            if (left > SWAP_DUST_TOKEN && !failed && caps) {
+              const rest = await runSwapLeg(ctx, "liquidate", left, result, ledger, caps.hardPct);
+              if (rest.ok) left = 0;
+              else if (!rest.refused) failed = true;
+            }
+            result.ok = result.ok && !failed;
+            if (left > SWAP_DUST_TOKEN && !caps) {
+              // a pool this desk does not cap (not SOL-quoted, or exits uncapped): the old behaviour, a note and nothing more
+              result.notes.push(`liquidate: the swap failed; ${fmtUnits(left, tokenDec)} ${ctx.snapshot.baseToken.symbol} stays in the wallet`);
+            } else if (left > SWAP_DUST_TOKEN) {
+              result.residue = { pool: ctx.snapshot.address, position: d.positionAddress ?? null, mint: ctx.snapshot.baseToken.mint, symbol: ctx.snapshot.baseToken.symbol, decimals: tokenDec, quoteMint: q.token.mint, amountUi: left, markTokenInSol: ctx.snapshot.tokenPriceInSol, since: Date.now(), cycle: ctx.cycle ?? 0, cycles: 0 };
+              result.notes.push(`liquidate: ${failed ? "the swap failed" : "the rest would move the price over the hard cap"}; ${fmtUnits(left, tokenDec)} ${ctx.snapshot.baseToken.symbol} stays in the wallet as a residue the desk sells on later cycles (${caps ? `${caps.exitPct}% for ${caps.residueCycles} attempts, then ${caps.hardPct}%` : "any price"})`);
+            }
           } else {
             result.notes.push("liquidate: no token came back, nothing to sell");
           }
@@ -654,8 +909,8 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
         const held = (await readWalletToken(ctx)) ?? (ctx.walletToken ?? 0) + tokensBack;
         const sell = sweepAmount(held, quoteOf(ctx.snapshot).tokenPriceInQuote, ctx.sweepWalletToken.minQuote);
         if (sell > 0) {
-          const leg = await runSwapLeg(ctx, "sweep", floorTo(sell, tokenDec), result, ledger);
-          if (!leg.ok) result.notes.push(`sweep: the swap failed; ${fmtUnits(sell, tokenDec)} ${ctx.snapshot.baseToken.symbol} stays in the wallet for the next move`);
+          const out = await sellUnderCap(ctx, "sweep", floorTo(sell, tokenDec), ctx.swapImpact?.sweepPct ?? 0, result, ledger);
+          if (out.left > 0) result.notes.push(`sweep: ${out.failed ? "the swap failed" : "the market would not take it under the impact allowed"}; ${fmtUnits(out.left, tokenDec)} ${ctx.snapshot.baseToken.symbol} stays in the wallet for the next move`);
         }
       }
       // A made pair whose pool is not on chain yet: create it first (src/venues/pair.ts). Anything short

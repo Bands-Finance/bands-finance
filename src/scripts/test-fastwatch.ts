@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { earlyCycleAllowed, fastEnv, fastTrigger, type WatchedBand } from "../engine/fastwatch";
-import { sweepAmount } from "../executor";
+import { residueCapPct, sizeUnderCap, swapImpactEnv, sweepAmount } from "../executor";
 import { adviseWithPolicy, modelAdvises } from "../agent/decide";
 import type { Decision } from "../agent/schema";
 import type { PolicyResult } from "../agent/policy";
@@ -67,6 +67,28 @@ async function main() {
     assert.equal(earlyCycleAllowed(Array.from({ length: 12 }, (_, i) => NOW - (i + 2) * 120_000), NOW, env), false, "twelve in the hour");
     assert.equal(earlyCycleAllowed(Array.from({ length: 12 }, (_, i) => NOW - 3_700_000 - i * 1000), NOW, env), true, "older than an hour do not count");
     assert.equal(earlyCycleAllowed([], NOW, fastEnv({ FAST_WATCH_SEC: "0" })), false);
+  });
+
+  await test("sizeUnderCap: the sale is sized to what the market takes under the cap by quoting, never cut into pieces; the caps from the env; a residue's cap rises as it waits", async () => {
+    // a bin ladder where impact grows a little faster than size: 13,064 GP quotes 5.78% whole (the sweep of 18 Sep)
+    const ladder = (amount: number) => Promise.resolve(5.78 * Math.pow(amount / 13064, 1.15));
+    const s = await sizeUnderCap(13064, 1.5, 6, ladder);
+    assert.ok(s.amount > 2500 && s.amount < 3500, `about a quarter of the sale fits under 1.5%: ${s.amount}`);
+    assert.ok(s.impactPct <= 1.5 && s.quotes <= 3, `${s.impactPct}% in ${s.quotes} quotes`);
+    assert.deepEqual(await sizeUnderCap(13064, 1.5, 6, () => Promise.resolve(1.2)), { amount: 13064, impactPct: 1.2, quotes: 1 }, "under the cap: the whole sale, one quote");
+    assert.deepEqual(await sizeUnderCap(13064, 0, 6, () => Promise.resolve(40)), { amount: 13064, impactPct: 40, quotes: 1 }, "no cap: the whole sale");
+    assert.deepEqual(await sizeUnderCap(13064, 1.5, 6, () => Promise.resolve(0)), { amount: 13064, impactPct: 0, quotes: 1 }, "an unmeasured route counts as under the cap");
+    const wall = await sizeUnderCap(100, 1.5, 6, () => Promise.resolve(30));
+    assert.equal(wall.amount, 0, "when even the third, smaller quote is over the cap nothing is sold");
+    assert.equal(wall.quotes, 3);
+    assert.deepEqual(await sizeUnderCap(0, 1.5, 6, () => Promise.reject(new Error("never asked"))), { amount: 0, impactPct: 0, quotes: 0 });
+    assert.deepEqual(swapImpactEnv({}), { sweepPct: 1.5, exitPct: 3, hardPct: 8, residueCycles: 4 }, "the defaults");
+    assert.deepEqual(swapImpactEnv({ SWAP_IMPACT_SWEEP_PCT: "1", SWAP_IMPACT_EXIT_PCT: "2", SWAP_IMPACT_HARD_PCT: "1", SWAP_RESIDUE_CYCLES: "2" }), { sweepPct: 1, exitPct: 2, hardPct: 2, residueCycles: 2 }, "the hard cap is never under the exit cap");
+    assert.deepEqual(swapImpactEnv({ SWAP_IMPACT_EXIT_PCT: "0" }), { sweepPct: 1.5, exitPct: 0, hardPct: 0, residueCycles: 4 }, "an exit cap of 0 means exits are uncapped, hard cap and all");
+    assert.equal(swapImpactEnv({ SWAP_IMPACT_SWEEP_PCT: "0", SWAP_IMPACT_EXIT_PCT: "0" }), null, "both caps 0: the old single swap");
+    const caps = swapImpactEnv({})!;
+    assert.deepEqual([0, 3, 4, 7, 8, 20].map((c) => residueCapPct(caps, c)), [3, 3, 8, 8, 8, 8], "exit cap for four attempts, then the hard cap for as long as it takes; never any price");
+    assert.equal(residueCapPct({ ...caps, exitPct: 0, hardPct: 0 }, 0), 0);
   });
 
   await test("sweepAmount: everything held once it is worth the minimum in the quote; dust and the unpriced are left", () => {

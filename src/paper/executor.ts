@@ -169,6 +169,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         note: `paper: claim fees on ${claimed} band(s); ${q.symbol} side from the paper mark`,
       });
       chargeTxFee(book);
+      result.claimed = targets.map((b) => b.address);
       return result;
     }
 
