@@ -10,6 +10,7 @@
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { Proposal, ProposalStatus } from "../platform/proposals.js";
 
@@ -703,6 +704,32 @@ async function main(): Promise<void> {
     assert.equal(out.credits, 200);
     assert.ok(out.balance >= 200);
     assert.equal(out.stub, true);
+  });
+
+  await test("journal: readRecent reads from the END of the file and returns exactly what a whole-file read did", async () => {
+    const { tailLines, rolledTail } = await import("../journal/index.js");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "journal-"));
+    const file = path.join(dir, "decisions.jsonl");
+    // entries fat enough that the tail window has to grow more than once (the real ones are ~6 KB)
+    const lines = Array.from({ length: 500 }, (_, i) => JSON.stringify({ i, pad: "x".repeat(2000) }));
+    fs.writeFileSync(file, lines.join("\n") + "\n");
+    for (const n of [1, 5, 40, 100, 300, 499, 500, 5000]) {
+      assert.deepEqual(tailLines(file, n), lines.slice(-n), `tail of ${n} differs from the whole-file read`);
+    }
+    // a file that does not end in a newline, and an empty one
+    fs.writeFileSync(file, lines.slice(0, 3).join("\n"));
+    assert.deepEqual(tailLines(file, 10), lines.slice(0, 3));
+    fs.writeFileSync(file, "");
+    assert.deepEqual(tailLines(file, 10), []);
+    assert.deepEqual(tailLines(path.join(dir, "nope.jsonl"), 10), [], "a missing file is an empty window, not a throw");
+    // rolledTail keeps the tail on a line boundary, and leaves a small file alone
+    assert.equal(rolledTail("a\nb\n", 1024), null);
+    const big = lines.join("\n") + "\n";
+    const rolled = rolledTail(big, 20_000)!;
+    assert.ok(big.endsWith(rolled), "the tail is kept, not the head");
+    assert.ok(Buffer.byteLength(rolled) <= 10_000, `kept ${Buffer.byteLength(rolled)} bytes, over half the cap`);
+    for (const l of rolled.split("\n").filter(Boolean)) JSON.parse(l); // every surviving line is whole
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

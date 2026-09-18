@@ -33,6 +33,7 @@ import {
   PUMPSWAP_URL,
   quoteSymbolOf,
   readHistoryTail,
+  rolledTape,
   runHotTick,
   solPriceFromSamples,
   splitName,
@@ -712,6 +713,37 @@ async function main(): Promise<void> {
   });
 
   fs.rmSync(dir, { recursive: true, force: true });
+  await test("the hot tape is rolled once it outgrows its cap, on a line boundary, and the surge window still reads back", async () => {
+    const { appendHistory, HISTORY_FILE } = await import("../hot/store.js");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tape-"));
+    const row = (ts: number, address: string): HotHistoryRow => ({ ts, address, venue: "meteora-dlmm", vol5mUsd: 1, vol1hUsd: 1, liquidityUsd: 2, feeToTvl1hPct: 0.1, sellShare1h: 0.5, priceChange1hPct: 1, priceUsd: 3, heat: 4 }) as unknown as HotHistoryRow;
+    // rolledTape is pure: under the cap it leaves the text alone, over it keeps the last half from a line boundary
+    assert.equal(rolledTape("a\nb\nc\n", 1024), null);
+    const many = Array.from({ length: 200 }, (_, i) => `line${i}`).join("\n") + "\n";
+    const rolled = rolledTape(many, 400)!;
+    assert.ok(rolled.length > 0 && rolled.length <= 200, `kept ${rolled.length} bytes of ${many.length}`);
+    assert.ok(!rolled.startsWith("line") || /^line\d+\n/.test(rolled), "starts on a whole line");
+    for (const l of rolled.split("\n").filter(Boolean)) assert.match(l, /^line\d+$/, `partial line survived: ${l}`);
+    assert.ok(many.endsWith(rolled), "the tail is kept, not the head");
+    // and end to end: append past a small cap, the file is capped and the newest rows are still readable
+    const prev = process.env.HOT_TAPE_MAX_BYTES;
+    process.env.HOT_TAPE_MAX_BYTES = "4096";
+    try {
+      const now = Date.now();
+      for (let i = 0; i < 400; i++) appendHistory(dir, [row(now + i, `pool${i}`)]);
+      const size = fs.statSync(HISTORY_FILE(dir)).size;
+      assert.ok(size <= 4096, `tape is ${size} bytes, over the 4096 cap`);
+      const back = readHistoryTail(dir, now);
+      assert.ok(back.length > 0, "the tape still reads back after rolling");
+      assert.equal(back[back.length - 1].address, "pool399", "the newest row survived the roll");
+      for (const r of back) assert.equal(typeof r.ts, "number", "no torn row came back");
+    } finally {
+      if (prev === undefined) delete process.env.HOT_TAPE_MAX_BYTES;
+      else process.env.HOT_TAPE_MAX_BYTES = prev;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   console.log(`\n${passed} passed`);
 }
 

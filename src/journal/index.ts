@@ -244,22 +244,89 @@ export function readEquity(limit = 20_000): EquityPoint[] {
   }
 }
 
-/** Newest first. */
-export function readRecent(limit = 100): JournalEntry[] {
+/**
+ * The journal is a WINDOW, not the run: equity.jsonl carries the whole history for the site, and every
+ * reader here asks for a tail (readRecent(40) to readRecent(5000)). Left unbounded it grew 4 MB a day,
+ * and because every read parsed the whole file, each cycle re-read all of it several times over.
+ * Past JOURNAL_MAX_BYTES it is rolled down to its last half on a line boundary, which at ~6 KB an
+ * entry still holds thousands of them: far more than the largest reader asks for.
+ */
+export const JOURNAL_MAX_BYTES = (): number => {
+  const raw = Number(process.env.JOURNAL_MAX_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? raw : 64 * 1024 * 1024;
+};
+
+/**
+ * PURE. The tail to keep of a file past its cap: the last half, from the first line boundary inside it
+ * so no half-entry survives. Null when it is short enough to leave alone.
+ */
+export function rolledTail(text: string, maxBytes: number): string | null {
+  if (Buffer.byteLength(text) <= maxBytes) return null;
+  const buf = Buffer.from(text);
+  const tail = buf.subarray(Math.max(0, buf.length - Math.max(1, Math.floor(maxBytes / 2)))).toString("utf8");
+  const nl = tail.indexOf("\n");
+  return nl >= 0 ? tail.slice(nl + 1) : "";
+}
+
+/**
+ * The last `limit` lines of a JSONL file, read from the END rather than by parsing the whole thing:
+ * a window of `limit` x `bytesPerLine` is read, doubled until it holds enough lines or the file runs
+ * out. A partial first line is dropped, exactly as the hot tape's tail read does.
+ */
+export function tailLines(file: string, limit: number, bytesPerLine = 8 * 1024): string[] {
+  let fd: number | null = null;
   try {
-    const lines = fs.readFileSync(JSONL(), "utf8").trim().split("\n").filter(Boolean);
-    return lines
-      .slice(-limit)
-      .map((l) => JSON.parse(l) as JournalEntry)
-      .reverse();
+    fd = fs.openSync(file, "r");
+    const size = fs.fstatSync(fd).size;
+    let want = Math.max(64 * 1024, limit * bytesPerLine);
+    for (;;) {
+      const start = Math.max(0, size - want);
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      let text = buf.toString("utf8");
+      // a window that does not start at byte 0 begins mid-line: drop that fragment
+      if (start > 0) text = text.slice(text.indexOf("\n") + 1);
+      const lines = text.split("\n").filter(Boolean);
+      if (lines.length >= limit || start === 0) return lines.slice(-limit);
+      want *= 2;
+    }
   } catch {
     return [];
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
   }
+}
+
+/** Newest first. */
+export function readRecent(limit = 100): JournalEntry[] {
+  const out: JournalEntry[] = [];
+  for (const line of tailLines(JSONL(), limit)) {
+    try {
+      out.push(JSON.parse(line) as JournalEntry);
+    } catch {
+      // a torn write or a fragment: skip it rather than lose the whole window
+    }
+  }
+  return out.reverse();
 }
 
 export function appendJournal(entry: JournalEntry, { renderDerived = true } = {}): void {
   fs.mkdirSync(dataDir(), { recursive: true });
   fs.appendFileSync(JSONL(), JSON.stringify(entry) + "\n");
+  // roll the window when it outgrows the cap; a failure here must never cost the entry its append
+  try {
+    const max = JOURNAL_MAX_BYTES();
+    if (fs.statSync(JSONL()).size > max) {
+      const rolled = rolledTail(fs.readFileSync(JSONL(), "utf8"), max);
+      if (rolled !== null) {
+        const tmp = `${JSONL()}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, rolled);
+        fs.renameSync(tmp, JSONL());
+      }
+    }
+  } catch {
+    /* the journal keeps growing rather than the cycle failing: the housekeeping job is the backstop */
+  }
   if (renderDerived) renderDerivedFiles();
 }
 

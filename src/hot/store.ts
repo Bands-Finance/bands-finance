@@ -1,9 +1,10 @@
 /**
  * Files of the hot watch, under the data directory:
  *   hot.json           the latest tick (HotFile), rewritten whole every tick
- *   hot-history.jsonl  one compact row per pool per tick, append-only, never trimmed
- * Only the tail of the tape is ever read back (the trailing surge window), so the file may grow
- * for months without slowing a tick. Also: which pools the journal says we hold.
+ *   hot-history.jsonl  one compact row per pool per tick, rolled down to its last half past
+ *                      HOT_TAPE_MAX_BYTES (32 MB) so a six-hour window cannot cost gigabytes a year
+ * Only the tail of the tape is ever read back (the trailing surge window), so the roll can never take
+ * anything a reader asks for. Also: which pools the journal says we hold.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -54,10 +55,47 @@ export function saveHotFile(dir: string, file: HotFile): void {
   fs.renameSync(tmp, target);
 }
 
+/**
+ * The tape is telemetry, and only its tail is ever read (readHistoryTail's trailing bytes, over the
+ * surge window). Left alone it grew 10 MB a day (2026-09-18: 13 MB in a day and a half, on its way to
+ * 3.7 GB a year) for the sake of a six-hour window. Past HOT_TAPE_MAX_BYTES it is rolled down to its
+ * last half, on a line boundary, so what any reader can ask for is always still there.
+ */
+export const TAPE_MAX_BYTES = (): number => {
+  const raw = Number(process.env.HOT_TAPE_MAX_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? raw : 32 * 1024 * 1024;
+};
+
+/**
+ * PURE. The tail to keep of a tape that has grown past the cap: the last `keep` bytes from the first
+ * line boundary inside them, so no half-row survives. Null when it is short enough to leave alone.
+ */
+export function rolledTape(text: string, maxBytes: number): string | null {
+  if (Buffer.byteLength(text) <= maxBytes) return null;
+  const keep = Math.max(1, Math.floor(maxBytes / 2));
+  const buf = Buffer.from(text);
+  const tail = buf.subarray(Math.max(0, buf.length - keep)).toString("utf8");
+  const nl = tail.indexOf("\n");
+  return nl >= 0 ? tail.slice(nl + 1) : "";
+}
+
 export function appendHistory(dir: string, rows: HotHistoryRow[]): void {
   if (!rows.length) return;
-  fs.mkdirSync(path.dirname(HISTORY_FILE(dir)), { recursive: true });
-  fs.appendFileSync(HISTORY_FILE(dir), rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  const file = HISTORY_FILE(dir);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  // roll the tape when it outgrows the cap; a failure here must never cost the tick its append
+  try {
+    const max = TAPE_MAX_BYTES();
+    if (fs.statSync(file).size <= max) return;
+    const rolled = rolledTape(fs.readFileSync(file, "utf8"), max);
+    if (rolled === null) return;
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, rolled);
+    fs.renameSync(tmp, file);
+  } catch {
+    /* the tape keeps growing rather than the tick failing: the housekeeping job is the backstop */
+  }
 }
 
 /** Parse tape text (possibly starting mid-line) into rows at or after sinceMs. Bad lines are skipped. */

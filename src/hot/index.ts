@@ -66,7 +66,7 @@ export {
   type SourceOpts,
   type SourceResult,
 } from "./sources";
-export { appendHistory, heldPools, HISTORY_FILE, HOT_FILE, loadHotFile, parseHistory, readHistoryTail, saveHotFile } from "./store";
+export { appendHistory, heldPools, HISTORY_FILE, HOT_FILE, loadHotFile, parseHistory, readHistoryTail, rolledTape, saveHotFile, TAPE_MAX_BYTES } from "./store";
 export { detectSurges, latestByAddress, SURGE_MIN_ACCELERATION, SURGE_STICKY_MS, SURGE_TOP_N, SURGE_WINDOW_MS, topTenSeen, type SurgeCandidate, type SurgeVerdict } from "./surge";
 export { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv, type LaunchVerdict } from "../screener/launch";
 export type { HotFeeSource, HotFile, HotHistoryRow, HotRow, HotSources, PoolSample } from "./types";
