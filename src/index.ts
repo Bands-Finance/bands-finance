@@ -847,6 +847,16 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   const rotState = loadState();
   const rEnvPick = seatRankingEnv();
   const satOutNow = (address: string) => sittingOut(rotState.rotatedOutAt?.[address], rEnvPick, Date.now());
+  // THE CANDIDATE A ROTATION FREED A SEAT FOR goes first, before any lane, while it still passes every gate the board loop applies
+  if (app.seatFor && set.size < ordinaryCap && !set.has(app.seatFor.address) && !takenTokens.has(app.seatFor.baseMint)) {
+    const p = (app.screen?.pools ?? []).find((x) => x.address === app.seatFor!.address);
+    const ok = !!p && tradableVenue(p) && quoteOk(p.quoteSymbol) && watchlistRefusal(p, watch) === null && (p.volume24hUsd ?? 0) >= minVolume && p.score > Math.max(0, policyEnv().minScore) && !p.flags.includes("thin") && !p.flags.includes("no-24h-data") && !(p.stock && !verifiedStock(p.stock)) && !satOutNow(p.address) && memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct }, p.address);
+    if (ok) {
+      take(p.address, p.baseMint);
+      console.log(`[cycle ${app.cycle}] the seat a rotation freed goes to ${p.name.replace(/\s*\/\s*/, "/")}, as ranked`);
+    } else console.log(`[cycle ${app.cycle}] the seat a rotation freed was for ${app.seatFor.address.slice(0, 6)}, which no longer passes the gates; the lanes decide`);
+  }
+  app.seatFor = null;
   for (const r of hotRows(app)) {
     if (set.size >= ordinaryCap) break;
     const row = { address: r.address, baseSymbol: r.baseSymbol, baseMint: r.baseMint, name: r.name };
@@ -889,12 +899,6 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     .filter((p) => !(p.stock && !verifiedStock(p.stock)) && !satOutNow(p.address) && memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct }, p.address))
     .slice(0, 8)
     .map((p) => ({ address: p.address, label: p.name.replace(/\s*\/\s*/, "/"), baseMint: p.baseMint, measuredPct: measuredFeeOnDepth(p) }));
-  // the candidate a rotation freed a seat for goes first, while it still passes every gate
-  if (app.seatFor && set.size < ordinaryCap && !set.has(app.seatFor.address) && !takenTokens.has(app.seatFor.baseMint)) {
-    const p = byYield.find((x) => x.address === app.seatFor!.address);
-    if (p && app.boardOrder.some((b) => b.address === p.address)) take(p.address, p.baseMint);
-  }
-  app.seatFor = null;
   for (const p of byYield) {
     if (set.size >= ordinaryCap) break;
     if (takenTokens.has(p.baseMint) || set.has(p.address)) continue;
