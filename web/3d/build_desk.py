@@ -94,7 +94,7 @@ def box(name, size, loc, mat, bevel=0.03, rot=(0, 0, 0), parent=None, outline=Tr
     o.rotation_euler = rot
     return finish(o, mat, bevel, segments, outline=outline)
 
-def cyl(name, r, h, loc, mat, bevel=0.03, rot=(0, 0, 0), parent=None, r2=None, verts=48, outline=True, segments=2, cap=True):
+def cyl(name, r, h, loc, mat, bevel=0.03, rot=(0, 0, 0), parent=None, r2=None, verts=32, outline=True, segments=2, cap=True):
     bm = bmesh.new()
     bmesh.ops.create_cone(bm, cap_ends=cap, cap_tris=False, segments=verts, radius1=r, radius2=r if r2 is None else r2, depth=h)
     o = mesh_obj(name, bm, parent)
@@ -104,13 +104,13 @@ def cyl(name, r, h, loc, mat, bevel=0.03, rot=(0, 0, 0), parent=None, r2=None, v
 
 def sphere(name, r, loc, mat, parent=None, scale=(1, 1, 1), outline=True):
     bm = bmesh.new()
-    bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=r)
+    bmesh.ops.create_uvsphere(bm, u_segments=24, v_segments=12, radius=r)
     o = mesh_obj(name, bm, parent)
     o.location = loc
     o.scale = scale
     return finish(o, mat, 0, outline=outline)
 
-def torus(name, R, r, loc, mat, parent=None, rot=(0, 0, 0), scale=(1, 1, 1), seg=48, ring=12, outline=True):
+def torus(name, R, r, loc, mat, parent=None, rot=(0, 0, 0), scale=(1, 1, 1), seg=36, ring=8, outline=True):
     bm = bmesh.new()
     for i in range(seg):
         a = 2 * math.pi * i / seg
@@ -163,7 +163,7 @@ def text(name, body, size, loc, mat, parent=None, rot=(0, 0, 0), extrude=0.012, 
     cu = bpy.data.curves.new(name, "FONT")
     cu.body = body; cu.size = size; cu.extrude = extrude; cu.align_x = align; cu.align_y = "CENTER"; cu.space_character = spacing
     if font: cu.font = font
-    cu.resolution_u = 3
+    cu.resolution_u = 1
     o = link(bpy.data.objects.new(name, cu), parent)
     o.location = loc; o.rotation_euler = rot
     o.data.materials.append(MATS[mat])
@@ -254,7 +254,7 @@ for x in (-0.6, 0.6):
     cyl(f"Ticker.Post.{x}", 0.06, 1.5, (x, 0, 1.39), "Brass", 0.01, parent=tick, verts=16)
 # the dome: an open cylinder and a hemisphere, one skin
 bm = bmesh.new()
-R, H, SEG = 1.5, 1.9, 48
+R, H, SEG = 1.5, 1.9, 36
 ringsv = []
 for k in range(0, 9):
     a = (math.pi / 2) * k / 8
@@ -352,11 +352,12 @@ box("Cursor.Pointer", (0.035, 0.035, 0.85), (0, -TRAY_D / 2 + 0.3, 0.95), "Strap
 cyl("Cursor.Knob", 0.13, 0.16, (0, -TRAY_D / 2 - 0.02, 1.53), "Brass", 0.03, parent=cur, verts=24)
 
 # Stack: a unit-wide bundle (x is scaled to the bin's pitch), origin at its foot
-stack = box("Proto.Stack", (1.0, 1.72, 0.56), (0, 0.18, 0.28), "Bill", 0.03, parent=protos)
-strap = box("Proto.Strap", (1.012, 0.4, 0.572), (0, 0.18, 0.28), "Strap", 0.012, parent=protos)
+stack = box("Proto.Stack", (1.0, 1.72, 0.56), (0, 0.18, 0.28), "Bill", 0.03, parent=protos, segments=1)
+strap = box("Proto.Strap", (1.012, 0.4, 0.572), (0, 0.18, 0.28), "Strap", 0.012, parent=protos, segments=1)
 # Chip: what a bin holds once the price has crossed it, the token he bought. A dark slab, no strap.
-chip = box("Proto.Chip", (1.0, 1.72, 0.3), (0, 0.18, 0.15), "Ink", 0.03, parent=protos)
-coin = cyl("Proto.Coin", 0.3, 0.06, (0, 0, 0.03), "Brass", 0.014, parent=protos, verts=32)
+chip = box("Proto.Chip", (1.0, 1.72, 0.3), (0, 0.18, 0.15), "Ink", 0.03, parent=protos, segments=1)
+# the coin is drawn hundreds of times (the dish, the abacus): sixteen sides and one bevel step are plenty at any distance it is seen from
+coin = cyl("Proto.Coin", 0.3, 0.06, (0, 0, 0.03), "Brass", 0.014, parent=protos, verts=16, segments=1)
 for o in (stack, strap, chip, coin):
     # the transforms are baked so an instance matrix is the only transform the web stage applies
     bpy.context.view_layer.objects.active = o
@@ -407,6 +408,69 @@ if OUT_BLEND:
     scene.camera = cam
     sun_d = bpy.data.lights.new("Key", "SUN"); sun_d.energy = 3.0
     sun = link(bpy.data.objects.new("Preview.Key", sun_d)); sun.rotation_euler = (math.radians(48), 0, math.radians(-32))
+    # saved BEFORE the merge below, so every prop is still its own object for editing by hand
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(OUT_BLEND))
+    print("saved", OUT_BLEND)
+
+# ---------------------------------------------------------------- one mesh per material for the web
+# The .blend above keeps every prop as its own object, for editing. The site draws each mesh twice (the plate and its ink
+# contour), so for the export the static desk is joined into one object per material (contoured and uncontoured apart), and
+# each prototype's parts likewise. Modifiers are applied first so the bevels and their hardened normals survive the join.
+def apply_and_join(objs, name, parent=None, outline=True):
+    objs = [o for o in objs if o.type == "MESH"]
+    if not objs:
+        return None
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in objs:
+        o.select_set(True)
+        bpy.context.view_layer.objects.active = o
+        bpy.ops.object.convert(target="MESH")   # applies the bevel and weighted-normal modifiers, keeps the normals
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in objs:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = objs[0]
+    if len(objs) > 1:
+        bpy.ops.object.join()
+    joined = bpy.context.view_layer.objects.active
+    joined.name = name
+    if parent is not None:
+        mw = joined.matrix_world.copy()
+        joined.parent = parent
+        joined.matrix_world = mw
+    if not outline:
+        joined["outline"] = 0
+    elif "outline" in joined:
+        del joined["outline"]
+    return joined
+
+def merge_by_material(objs, prefix, parent=None):
+    groups = {}
+    for o in objs:
+        if o.type != "MESH" or not o.data.materials:
+            continue
+        # a note and a page are drawn in their own space (the border, the rules): they stay their own objects
+        if o.data.materials[0].name in ("Bill", "Page"):
+            continue
+        key = (o.data.materials[0].name, o.get("outline", 1) != 0)
+        groups.setdefault(key, []).append(o)
+    out = []
+    for (mat, outlined), members in groups.items():
+        out.append(apply_and_join(members, f"{prefix}.{mat}{'' if outlined else '.Plain'}", parent, outlined))
+    return out
+
+def descendants(root):
+    out = []
+    for c in root.children:
+        out.append(c)
+        out.extend(descendants(c))
+    return out
+
+static = [o for o in descendants(desk) if o.type == "MESH"]
+merge_by_material(static, "Desk", parent=desk)
+for proto_name in ("Proto.Tray", "Proto.Cursor"):
+    pe = bpy.data.objects[proto_name]
+    merge_by_material([o for o in descendants(pe) if o.type == "MESH"], proto_name, parent=pe)
+# empties that lost their children are still needed (Dish.Coins, Chart.Seats, Smoke.Origin, the props' groups): they stay
 
 os.makedirs(os.path.dirname(os.path.abspath(OUT_GLB)), exist_ok=True)
 bpy.ops.object.select_all(action="DESELECT")
@@ -417,11 +481,6 @@ bpy.ops.export_scene.gltf(filepath=OUT_GLB, export_format="GLB", use_selection=T
                           export_extras=True, export_cameras=False, export_lights=False, export_materials="EXPORT",
                           export_texcoords=True, export_normals=True, export_animations=False)
 print("exported", OUT_GLB, os.path.getsize(OUT_GLB), "bytes")
-
-if OUT_BLEND:
-    # for a human: bring the prototypes up beside the desk so they can be seen and edited
-    bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(OUT_BLEND))
-    print("saved", OUT_BLEND)
 
 if OUT_PNG:
     protos.location = (-2.0, -1.9, 0)   # show one tray in place for the preview only
