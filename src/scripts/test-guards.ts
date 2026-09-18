@@ -666,7 +666,7 @@ test("ask exit: a band at its stop may leave into an ask (no override to a sale)
 });
 
 test("ask exit: the stop reads an ask band against its chain's basis", () => {
-  const ask = { pool: "pool", since: NOW - 60_000, basisSol: 0.3, from: "bid", tokens: 130, relays: 1 };
+  const ask = { pool: "pool", since: NOW - 60_000, basisSol: 0.3, from: "bid", tokens: 130, relays: 1, bankedSol: 0 };
   // re-laid at 0.25, worth 0.26 now: up on its own entry, 13% under the chain's basis; its stop is 10%
   const state = { ...freshState(), entryValueSol: { ask1: 0.25 }, askBands: { ask1: ask } };
   const p: PositionSnapshot = { ...throughBand, address: "ask1", valueInSol: 0.26, feeX: 0, feeY: 0 };
@@ -676,6 +676,9 @@ test("ask exit: the stop reads an ask band against its chain's basis", () => {
   // the same band, no ask record: judged on its own entry, no stop
   const own = evaluate({ ...open(), action: "HOLD", open: null }, ctx({ now: NOW, positions: [p], state: { ...state, askBands: {} }, engine: engine({ stops: { ask1: 10 } }) }), limits);
   assert.equal(own.decision.action, "HOLD");
+  // what the chain has already banked in SOL comes off the basis: the same band is not down at all
+  const banked = evaluate({ ...open(), action: "HOLD", open: null }, ctx({ now: NOW, positions: [p], state: { ...state, askBands: { ask1: { ...ask, bankedSol: 0.04 } } }, engine: engine({ stops: { ask1: 10 } }) }), limits);
+  assert.equal(banked.decision.action, "HOLD", "0.26 against a basis of 0.30 less 0.04 banked: whole");
 });
 
 console.log(`${n} guard tests passed (with portfolio, engine, USDC-quote, basis, straddle and ask-exit checks)`);

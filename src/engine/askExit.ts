@@ -44,6 +44,12 @@ export interface AskExitEnv {
   maxHoldMin: number;
   /** EXIT_ASK_RELAY_SEC: how long an ask sits under the price before it follows it down */
   relaySec: number;
+  /**
+   * EXIT_ASK_ON_STOP=true: a STOP directive's close, or a close inside a knife (ENGINE_KNIFE_PCT in 30 min), is laid as
+   * an ask too. Off by default: a band at its stop or in a knife is a confirmed fall, where the chain's own stop plus
+   * the sale it ends in cost more than the sale it would have replaced unless the bounce comes first.
+   */
+  onStop: boolean;
 }
 
 const num = (v: string | undefined, d: number): number => {
@@ -61,6 +67,7 @@ export function askExitEnv(env: NodeJS.ProcessEnv = process.env): AskExitEnv {
     stopPct: Math.max(1, num(env.EXIT_ASK_STOP_PCT, 10)),
     maxHoldMin: Math.max(0, num(env.EXIT_ASK_MAX_MIN, 240)),
     relaySec: Math.max(0, num(env.EXIT_ASK_RELAY_SEC, 180)),
+    onStop: (env.EXIT_ASK_ON_STOP ?? "").trim().toLowerCase() === "true",
   };
 }
 
@@ -81,6 +88,12 @@ export interface AskBand {
   tokens: number;
   /** re-lays so far in the chain (0 on the first ask) */
   relays: number;
+  /**
+   * quote the chain has already banked, SOL: what the closing links handed back (their quote fees, and whatever the asks
+   * had sold and not bought back). The chain's stop measures the band that is left against the basis LESS this, so fees
+   * the chain earned and sales it banked do not read as drawdown (stopEntryOf).
+   */
+  bankedSol: number;
 }
 
 /** PURE. Bins that reach coverPct of price above (or below) the active bin at this bin step, at least one, inside the width limit. */
@@ -115,7 +128,8 @@ export function askOpenParams(tokens: number, s: PoolSnapshot, env: Pick<AskExit
   return {
     side: "TOKEN_ONLY",
     amountSol: 0,
-    amountToken: floorTo(tokens, Math.min(s.baseToken.decimals, 6)),
+    // floored to the token's decimals (six at most), and never over what is held: the guards compare it to the same sum
+    amountToken: Math.min(tokens, floorTo(tokens, Math.min(s.baseToken.decimals, 6))),
     binsBelowActive: quoteBelow ? 0 : bins,
     binsAboveActive: quoteBelow ? bins : 0,
     strategy: "Spot",
@@ -165,11 +179,25 @@ export function askExpiry(positions: readonly Pick<PositionSnapshot, "address">[
   return null;
 }
 
-/** PURE. The ask-band record for a link just laid: the first of a chain, or a re-lay carrying the chain's basis and clock forward. */
-export function askBandRecord(prev: AskBand | undefined, i: { pool: string; from: string; tokens: number; markSol: number; now: number }): AskBand {
+/**
+ * PURE. The ask-band record for a link just laid: the first of a chain, or a re-lay carrying the chain's basis, clock and
+ * banked quote forward. `bankedSol` is what the link being replaced handed back in quote (its quote fees, and anything it
+ * had sold): the chain's stop measures what is still on the book against the basis less that.
+ */
+export function askBandRecord(prev: AskBand | undefined, i: { pool: string; from: string; tokens: number; markSol: number; now: number; bankedSol?: number }): AskBand {
+  const banked = Math.max(0, i.bankedSol ?? 0);
   return prev
-    ? { ...prev, tokens: i.tokens, relays: prev.relays + 1 }
-    : { pool: i.pool, since: i.now, basisSol: i.markSol, from: i.from, tokens: i.tokens, relays: 0 };
+    ? { ...prev, tokens: i.tokens, relays: prev.relays + 1, bankedSol: prev.bankedSol + banked }
+    : { pool: i.pool, since: i.now, basisSol: i.markSol, from: i.from, tokens: i.tokens, relays: 0, bankedSol: 0 };
+}
+
+/**
+ * PURE. What an ask band's stop is measured against: the chain's basis less what it has already banked in quote. Undefined
+ * once the chain has taken its whole basis back in SOL: there is nothing left for a stop to protect.
+ */
+export function askStopBasis(a: AskBand): number | undefined {
+  const left = a.basisSol - Math.max(0, a.bankedSol ?? 0);
+  return left > 0 ? left : undefined;
 }
 
 /** PURE. Whether a decision is the ask exit (a REBALANCE that closes a band into an ask), which the guards treat as an exit. */

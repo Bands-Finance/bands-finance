@@ -200,9 +200,11 @@ export function engineDirective(ctx: DirectiveContext): Directive | null {
   }
 
   // COLLECT: only when the daily cap would let it through, so the cycle is not wasted (claims are not cooled down).
+  // (an ask band's fees come with its close, which is at most a cycle away once it sold out; a claim on it would spend the
+  // cycle the fast watch woke for the close, and its sweep would sell the chain's token fees through the pool)
   const rateOk = state.actionsToday < ctx.limits.maxTxPerDay;
   if (rateOk) {
-    const plan = collectDirective(positions, ctx.snapshot, state, now, ctx.cfg, ctx.collectsToday);
+    const plan = collectDirective(positions.filter((p) => !state.askBands?.[p.address]), ctx.snapshot, state, now, ctx.cfg, ctx.collectsToday);
     if (plan) {
       return {
         kind: "COLLECT",

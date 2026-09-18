@@ -171,11 +171,16 @@ export async function decide(observation: Observation, opts: DecideOptions = {})
     if (response.stop_reason === "max_tokens") {
       return policyAfterModel(observation, "Model output was truncated.", opts, usage, response.model);
     }
-    const parsed = response.parsed_output;
-    if (!parsed) {
+    const raw = response.parsed_output;
+    if (!raw) {
       return policyAfterModel(observation, "Model output did not match the decision schema.", opts, usage, response.model);
     }
-    if (modelAdvises() && (parsed.action === "OPEN_POSITION" || parsed.action === "REBALANCE")) {
+    // the ask exit is the desk's to mark, never the model's: a model REBALANCE marked exitAsk would skip the cooldown, the
+    // size limits and every open gate (src/risk/guards.ts); the flag is dropped, and the desk sets it where it belongs
+    const parsed: Decision = raw.exitAsk ? { ...raw, exitAsk: undefined } : raw;
+    // the policy is asked when the model wants money to work, and when it wants to close an ASK band (worked off by the desk's rules)
+    const closesAsk = parsed.action === "CLOSE_POSITION" && !!parsed.positionAddress && !!opts.askExit?.bands[parsed.positionAddress];
+    if (modelAdvises() && (parsed.action === "OPEN_POSITION" || parsed.action === "REBALANCE" || closesAsk)) {
       const advised = adviseWithPolicy(parsed, policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow, askExit: opts.askExit }));
       return { decision: advised.decision, source: "llm", model: response.model, usage, note: advised.note ?? undefined };
     }

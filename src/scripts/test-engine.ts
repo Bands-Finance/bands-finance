@@ -22,7 +22,7 @@ import {
   workingSol,
 } from "../engine/ledger";
 import { antiChurn, bandStopPct, drawdownPct, dropOverWindowPct, forgetBand, knifeReason, recordPrice, rollStop, stopEntryOf, trackOutOfRange, moveAfterSec, rangeOverWindowPct } from "../engine/exit";
-import { askBandRecord, askBinsFor, askExitEnv, askExitOf, askExpiry, askOnlyPools, askOpenParams, askPoolsOf, isAskExit } from "../engine/askExit";
+import { askBandRecord, askBinsFor, askExitEnv, askExitOf, askExpiry, askOnlyPools, askOpenParams, askPoolsOf, askStopBasis, isAskExit } from "../engine/askExit";
 import type { Decision } from "../agent/schema";
 import {
   benchMultiplier,
@@ -714,9 +714,9 @@ test("moveAfterSec: a band moves once the fees it is missing cover the move", ()
 test("askExitEnv: off unless EXIT_ASK=true; the knobs default and floor", () => {
   assert.equal(askExitEnv({}).on, false);
   assert.equal(askExitEnv({ EXIT_ASK: "TRUE " }).on, true);
-  assert.deepEqual(askExitEnv({}), { on: false, coverPct: 3, minSol: 0.2, stopPct: 10, maxHoldMin: 240, relaySec: 180 });
-  const e = askExitEnv({ EXIT_ASK: "true", EXIT_ASK_COVER_PCT: "5", EXIT_ASK_MIN_SOL: "0.5", EXIT_ASK_STOP_PCT: "8", EXIT_ASK_MAX_MIN: "0", EXIT_ASK_RELAY_SEC: "-5" });
-  assert.deepEqual(e, { on: true, coverPct: 5, minSol: 0.5, stopPct: 8, maxHoldMin: 0, relaySec: 0 });
+  assert.deepEqual(askExitEnv({}), { on: false, coverPct: 3, minSol: 0.2, stopPct: 10, maxHoldMin: 240, relaySec: 180, onStop: false });
+  const e = askExitEnv({ EXIT_ASK: "true", EXIT_ASK_COVER_PCT: "5", EXIT_ASK_MIN_SOL: "0.5", EXIT_ASK_STOP_PCT: "8", EXIT_ASK_MAX_MIN: "0", EXIT_ASK_RELAY_SEC: "-5", EXIT_ASK_ON_STOP: "true" });
+  assert.deepEqual(e, { on: true, coverPct: 5, minSol: 0.5, stopPct: 8, maxHoldMin: 0, relaySec: 0, onStop: true });
   assert.equal(askExitEnv({ EXIT_ASK_COVER_PCT: "abc" }).coverPct, 3);
 });
 
@@ -771,11 +771,33 @@ test("askOpenParams: the ask sits on the token side of the active bin (up when t
   assert.equal(down.amountToken, 1.234567, "floored to six decimals");
 });
 
-test("askBandRecord: the first ask starts the chain at this mark and clock; a re-lay carries them and counts", () => {
+test("askBandRecord: the first ask starts the chain at this mark and clock; a re-lay carries them, counts, and banks what the closing link handed back", () => {
   const first = askBandRecord(undefined, { pool: "pool", from: "bid", tokens: 130, markSol: 0.26, now: T0 });
-  assert.deepEqual(first, { pool: "pool", since: T0, basisSol: 0.26, from: "bid", tokens: 130, relays: 0 });
-  const again = askBandRecord(first, { pool: "pool", from: "ask1", tokens: 131, markSol: 0.22, now: T0 + 10 * M });
-  assert.deepEqual(again, { pool: "pool", since: T0, basisSol: 0.26, from: "bid", tokens: 131, relays: 1 });
+  assert.deepEqual(first, { pool: "pool", since: T0, basisSol: 0.26, from: "bid", tokens: 130, relays: 0, bankedSol: 0 });
+  const again = askBandRecord(first, { pool: "pool", from: "ask1", tokens: 131, markSol: 0.22, now: T0 + 10 * M, bankedSol: 0.01 });
+  assert.deepEqual(again, { pool: "pool", since: T0, basisSol: 0.26, from: "bid", tokens: 131, relays: 1, bankedSol: 0.01 });
+  const third = askBandRecord(again, { pool: "pool", from: "ask2", tokens: 131, markSol: 0.2, now: T0 + 20 * M, bankedSol: 0.015 });
+  assert.equal(third.bankedSol, 0.025);
+  assert.equal(third.relays, 2);
+});
+
+test("askStopBasis / stopEntryOf: the chain's stop measures what is left against the basis less what it banked; nothing to protect once it is whole", () => {
+  const a = askBandRecord(undefined, { pool: "pool", from: "bid", tokens: 1000, markSol: 10, now: T0 });
+  assert.equal(askStopBasis(a), 10);
+  // the chain sold 4 SOL of the token on the way up and handed it back at the re-lay: the 6 SOL still on the book is the whole of what is left
+  const relaid = askBandRecord(a, { pool: "pool", from: "ask1", tokens: 600, markSol: 6, now: T0 + 5 * M, bankedSol: 4 });
+  assert.equal(askStopBasis(relaid), 6);
+  const state = freshState({ entryValueSol: { ask2: 6 }, stops: { ask2: 10 }, askBands: { ask2: relaid } });
+  const p = position({ address: "ask2", inRange: false, binsFromRange: -3, amountX: 600, amountY: 0, feeX: 0, feeY: 0, valueInSol: 5.94, solInPosition: 0 });
+  assert.equal(engineDirective(dctx({ positions: [p], state })), null, "1% under what is left: no stop");
+  // without the banked SOL the same band would read 41% down and be sold: the bug this field exists for
+  const naive = freshState({ entryValueSol: { ask2: 6 }, stops: { ask2: 10 }, askBands: { ask2: { ...relaid, bankedSol: 0 } } });
+  assert.equal(engineDirective(dctx({ positions: [p], state: naive }))!.kind, "STOP");
+  // banked the whole basis back: the chain is whole whatever the rest is worth
+  const whole = askBandRecord(a, { pool: "pool", from: "ask1", tokens: 100, markSol: 1, now: T0 + 9 * M, bankedSol: 10 });
+  assert.equal(askStopBasis(whole), undefined);
+  assert.equal(stopEntryOf(freshState({ entryValueSol: { ask3: 1 }, askBands: { ask3: whole } }), position({ address: "ask3" })), undefined);
+  assert.equal(engineDirective(dctx({ positions: [position({ address: "ask3", inRange: false, binsFromRange: -9, amountX: 100, amountY: 0, feeX: 0, feeY: 0, valueInSol: 0.5, solInPosition: 0 })], state: freshState({ entryValueSol: { ask3: 1 }, stops: { ask3: 10 }, askBands: { ask3: whole } }) })), null);
 });
 
 test("stopEntryOf: an ask band's stop reads the chain's basis, every other band its entry", () => {
@@ -797,6 +819,24 @@ test("directives: STOP measures an ask band against the chain's basis, not the r
   // the same band on its own entry alone would be up: no stop
   const own = freshState({ entryValueSol: { ask1: 0.25 }, stops: { ask1: 10 } });
   assert.equal(engineDirective(dctx({ positions: [p], state: own })), null);
+});
+
+test("directives: COLLECT never claims on an ask band (its close claims; a claim would take the cycle its sold-out close needs)", () => {
+  const ask = askBandRecord(undefined, { pool: "pool", from: "bid", tokens: 130, markSol: 0.26, now: T0 });
+  // an ask band sold out, fat with quote fees
+  const p = position({ address: "ask1", inRange: false, binsFromRange: 3, amountX: 0, amountY: 0.27, feeX: 0, feeY: 0.02, valueInSol: 0.29, solInPosition: 0.29 });
+  const withRecord = freshState({ entryValueSol: { ask1: 0.26 }, askBands: { ask1: ask } });
+  assert.equal(engineDirective(dctx({ positions: [p], state: withRecord })), null);
+  const plain = engineDirective(dctx({ positions: [p], state: freshState({ entryValueSol: { ask1: 0.26 } }) }))!;
+  assert.equal(plain.kind, "COLLECT", "the same band without the record is claimed on");
+});
+
+test("askOpenParams never lays more than is held: the floor cannot round over the sum the guards check", () => {
+  for (const tokens of [0.1 + 0.2, 132.5, 1 / 3, 1e-7 + 5, 999999.9999995]) {
+    const o = askOpenParams(tokens, snapshot, { coverPct: 3 }, 69);
+    assert.ok(o.amountToken <= tokens, `${o.amountToken} > ${tokens}`);
+    assert.ok(o.amountToken >= tokens - 1e-6 - 1e-12, `${o.amountToken} too far under ${tokens}`);
+  }
 });
 
 test("directives: EXPIRE ends an ask chain past EXIT_ASK_MAX_MIN, liquidating; not before, not without a limit", () => {

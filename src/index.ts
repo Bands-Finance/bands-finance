@@ -1270,12 +1270,14 @@ function updateState(state: RiskState, exec: ExecutionResult, positions: Positio
     // failing open is not re-sent every cycle until the daily cap (fees are paid either way)
     if (exec.opened || exec.closed || exec.txs.some((t) => !t.ok)) (state.lastMoveByPool ??= {})[snapshot.address] = Date.now();
   }
-  // the band closed was an ask band (read before forgetBand drops it): its final close puts the pool on the bench for a while
+  // the band closed was an ask band (read before forgetBand drops it): its final close puts the pool on the bench for a while,
+  // and a re-lay keeps the chain's rolled stop rather than rolling a new one (a fresh roll could land under the chain's drawdown)
   const closedAsk = exec.closed ? state.askBands?.[exec.closed] : undefined;
+  const carriedStop = exec.closed && closedAsk ? state.stops?.[exec.closed] : undefined;
   if (exec.ok && exec.opened) {
     state.entryValueSol[exec.opened.address] = exec.opened.entryValueSol;
     // an ask band's stop is the chain's (EXIT_ASK_STOP_PCT, measured against the chain's basis by stopEntryOf), a launch band's the lane's
-    (state.stops ??= {})[exec.opened.address] = rollStop(riskLimits, Math.random, ask ? ask.stopPct : launch ? launch.env.stopPct : null);
+    (state.stops ??= {})[exec.opened.address] = ask && carriedStop ? carriedStop : rollStop(riskLimits, Math.random, ask ? ask.stopPct : launch ? launch.env.stopPct : null);
     if (launch && !ask) (state.launchBands ??= {})[exec.opened.address] = { pool: snapshot.address, openedAt: Date.now(), vol1hUsd: launch.vol1hUsd };
     if (ask) (state.askBands ??= {})[exec.opened.address] = ask.band;
   }
@@ -1548,12 +1550,34 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // the kill switch or a stand-down (the operator wants out), not for a launch band (the lane's EXPIRE sells), not for
   // an ask band's own close (the chain's end), and not for a token not worth a position.
   const askEnvNow = askExitEnv(process.env);
-  const askBook = askEnvNow.on && quoteIsSol && !screen?.stock && !basisRow && !isPair && !screen?.launch?.ok && !killSwitch && directive?.kind !== "FLATTEN" && directive?.kind !== "EXPIRE";
-  if (askBook && llm.decision.action === "CLOSE_POSITION") {
+  // a stop or a knife is a confirmed fall (the sale, unless EXIT_ASK_ON_STOP); the operator's exit list wants the book out of the pool
+  const fallingHard = directive?.kind === "STOP" || !!knife;
+  const exitListed = directive?.kind === "ROTATE" && !!rotateHere && rotateHere.reason.toLowerCase().includes("operator's exit list");
+  const askBook = askEnvNow.on && quoteIsSol && !screen?.stock && !basisRow && !isPair && !screen?.launch?.ok && !killSwitch && directive?.kind !== "FLATTEN" && directive?.kind !== "EXPIRE" && !exitListed && (askEnvNow.onStop || !fallingHard);
+  if (askEnvNow.on && !askBook && llm.decision.action === "CLOSE_POSITION" && quoteIsSol && !state.askBands?.[llm.decision.positionAddress ?? ""] && (fallingHard || exitListed)) console.log(`${tag} ask exit: not for this close (${directive?.kind === "STOP" ? "a stop" : knife ? knife : "the operator's exit list"}): the token is sold`);
+  // the close as proposed, kept beside the ask: if the guards refuse the ask, the sale it replaced goes through instead
+  // (an exit is never held cycle after cycle for a deposit the guards would not take)
+  let saleInstead: Decision | null = null;
+  if (askBook && llm.decision.action === "CLOSE_POSITION" && !state.launchBands?.[llm.decision.positionAddress ?? ""]) {
     const asked = askExitOf(llm.decision, { snapshot, positions, walletToken: token.ui, askBands: state.askBands, env: askEnvNow, maxBinWidth: riskLimits.maxBinWidth });
+    // rent that never comes back (fresh bin arrays over the price) against the fee the ask saves: a small ask into empty arrays is not worth laying
+    let sunkSol = 0;
+    let savedSol = 0;
     if (asked) {
+      try {
+        const c = o.venue.openCostSol(snapshot, toOpenPlan(asked.open!, snapshot));
+        sunkSol = Math.max(0, c.total - c.refundable);
+      } catch {
+        sunkSol = 0;
+      }
+      savedSol = asked.open!.amountToken * snapshot.tokenPriceInSol * ((snapshot.baseFeePct + snapshot.dynamicFeePct) / 100);
+    }
+    if (asked && sunkSol > savedSol) {
+      console.log(`${tag} ask exit: laying the ask would sink ${sunkSol.toFixed(4)} SOL of rent (fresh bin arrays over the price) against about ${savedSol.toFixed(4)} SOL of fee saved: the token is sold instead`);
+    } else if (asked) {
+      saleInstead = llm.decision;
       llm = { ...llm, decision: asked, note: `${llm.note ?? ""} The token is laid as an ask band, not sold (EXIT_ASK).`.trim() };
-      console.log(`${tag} ask exit: the close of ${asked.positionAddress!.slice(0, 6)} lays ${asked.open!.amountToken} ${snapshot.baseToken.symbol} as an ask band ${Math.max(asked.open!.binsAboveActive, asked.open!.binsBelowActive)} bins ${q.side === "Y" ? "over" : "under"} bin ${snapshot.activeBinId} instead of selling it`);
+      console.log(`${tag} ask exit: the close of ${asked.positionAddress!.slice(0, 6)} lays ${asked.open!.amountToken} ${snapshot.baseToken.symbol} as an ask band ${Math.max(asked.open!.binsAboveActive, asked.open!.binsBelowActive)} bins ${q.side === "Y" ? "over" : "under"} bin ${snapshot.activeBinId} instead of selling it${sunkSol > 0 ? ` (rent sunk ${sunkSol.toFixed(4)} SOL against about ${savedSol.toFixed(4)} SOL of fee saved)` : ""}`);
     }
   }
   console.log(`${tag} ${directive ? `engine directive ${directive.kind}` : proposal ? `proposal ${proposal.id}` : `${config.agentName} proposes`} ${llm.decision.action} (${llm.source}): "${llm.decision.headline}"`);
@@ -1586,11 +1610,20 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
       console.log(`${tag} ${planFault}`);
     }
   }
-  const verdict = evaluate(
+  let verdict = evaluate(
     llm.decision,
     { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol },
     riskLimits,
   );
+  if (saleInstead && !verdict.allowed) {
+    console.log(`${tag} ask exit refused by the guards (${verdict.violations.join("; ")}): the token is sold instead`);
+    llm = { ...llm, decision: saleInstead, note: `${llm.note ?? ""} The ask was refused by the guards; sold instead.`.trim() };
+    verdict = evaluate(
+      saleInstead,
+      { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol: openCostDefault },
+      riskLimits,
+    );
+  }
   if (verdict.overrides.length) console.log(`${tag} guard override: ${verdict.overrides.join("; ")}`);
   if (verdict.violations.length) console.log(`${tag} guards BLOCKED: ${verdict.violations.join("; ")}`);
 
@@ -1670,9 +1703,9 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   if (rotateHere && (execution.closed || positions.length === 0)) app.rotateOut = null;
   // an ask band laid this execution: the first of a chain takes this mark as its basis and now as its clock; a re-lay carries the chain's
   const askLaid = execution.ok && execution.opened && execution.closed && isAskExit(verdict.decision)
-    ? { band: askBandRecord(state.askBands?.[execution.closed], { pool: o.address, from: execution.closed, tokens: verdict.decision.open!.amountToken, markSol: execution.opened.entryValueSol, now }), stopPct: askExitEnv(process.env).stopPct }
+    ? { band: askBandRecord(state.askBands?.[execution.closed], { pool: o.address, from: execution.closed, tokens: verdict.decision.open!.amountToken, markSol: execution.opened.entryValueSol, now, bankedSol: positions.find((p) => p.address === execution.closed)?.solInPosition ?? 0 }), stopPct: askExitEnv(process.env).stopPct }
     : null;
-  if (askLaid) console.log(`${tag} ask band ${execution.opened!.address.slice(0, 6)}: ${askLaid.band.relays > 0 ? `re-lay ${askLaid.band.relays} of the chain from ${askLaid.band.from.slice(0, 6)}` : `the chain starts here`}, basis ${askLaid.band.basisSol.toFixed(4)} SOL, stop ${askLaid.stopPct}% under it${askExitEnv(process.env).maxHoldMin > 0 ? `, ${Math.max(0, Math.round(askExitEnv(process.env).maxHoldMin - (now - askLaid.band.since) / 60_000))} min left` : ""}`);
+  if (askLaid) console.log(`${tag} ask band ${execution.opened!.address.slice(0, 6)}: ${askLaid.band.relays > 0 ? `re-lay ${askLaid.band.relays} of the chain from ${askLaid.band.from.slice(0, 6)}` : `the chain starts here`}, basis ${askLaid.band.basisSol.toFixed(4)} SOL${askLaid.band.bankedSol > 0 ? ` less ${askLaid.band.bankedSol.toFixed(4)} banked` : ""}, stop ${askLaid.stopPct}% under it${askExitEnv(process.env).maxHoldMin > 0 ? `, ${Math.max(0, Math.round(askExitEnv(process.env).maxHoldMin - (now - askLaid.band.since) / 60_000))} min left` : ""}`);
   updateState(state, execution, positions, snapshot, (screen?.launch?.ok || screen?.pair?.ok) && !noLaneExits ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null, askLaid);
 
   // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
@@ -2001,6 +2034,15 @@ async function runIteration(app: App): Promise<void> {
   const now = Date.now();
   const state = loadState();
   for (const o of observed) recordPrice(state, o.address, o.snapshot.activePrice, now);
+  // an ask record (src/engine/askExit.ts) whose position is gone from its pool (closed by hand, a close whose confirmation was
+  // lost) would keep the pool off the seat count for ever: reconciled with what the chain shows every cycle
+  for (const [addr, a] of Object.entries(state.askBands ?? {})) {
+    const o = observed.find((x) => x.address === a.pool);
+    if (o && !o.positions.some((p) => p.address === addr)) {
+      console.log(`[cycle ${app.cycle} ${o.snapshot.label}] ask band ${addr.slice(0, 6)} is no longer on the chain: its record is dropped`);
+      forgetBand(state, addr);
+    }
+  }
   saveState(state);
   // The board regime reads the broad tradable board (top 20 by score) plus the pools being worked,
   // not just the picks: the picks are the surges, and two dumping surges must not switch the whole book off.
@@ -2170,7 +2212,28 @@ async function runIteration(app: App): Promise<void> {
   try {
     const st = loadState();
     const closedNow = new Set(entries.map((e) => e.execution?.closed).filter((a): a is string => !!a));
-    app.watched = observed.flatMap((o) => {
+    // an ask band laid this cycle (a close and an open in one execution) is not among the positions observed at the cycle's
+    // start; it is exactly the band whose first minutes matter, so it is watched from the open's own geometry until the next cycle reads it
+    const laidNow: WatchedBand[] = entries.flatMap((e) => {
+      const d = e.decision;
+      if (!e.execution?.ok || !e.execution.opened || !isAskExit(d) || !d.open) return [];
+      const a = st.askBands?.[e.execution.opened.address];
+      const o = observed.find((x) => x.address === e.pool.address);
+      if (!a || !o) return [];
+      let side: "X" | "Y";
+      try {
+        side = quoteOf(o.snapshot).side;
+      } catch {
+        return [];
+      }
+      const active = o.snapshot.activeBinId;
+      return [{
+        pool: o.address, label: o.snapshot.label, position: e.execution.opened.address, lowerBinId: active - d.open.binsBelowActive, upperBinId: active + d.open.binsAboveActive, quoteSide: side, binStep: o.snapshot.binStep, inRange: true,
+        stopPct: st.stops?.[e.execution.opened.address] ?? riskLimits.stopLossPct, drawdownPct: a.basisSol > 0 ? (1 - e.execution.opened.entryValueSol / a.basisSol) * 100 : 0,
+        outSince: null, idleWaitSec: policyEnv(process.env).idleRelaySec, observedAt: now, ask: true, markBinId: active,
+      }];
+    });
+    app.watched = observed.flatMap((o): WatchedBand[] => {
       let side: "X" | "Y";
       try {
         side = quoteOf(o.snapshot).side;
@@ -2179,7 +2242,7 @@ async function runIteration(app: App): Promise<void> {
       }
       return o.positions
         .filter((p) => !closedNow.has(p.address))
-        .map((p) => {
+        .map((p): WatchedBand => {
           // no entry on record: the band's market value stands in, so it reads as no drawdown rather than as its fee share
           // (an ask band's stop reads the chain's basis, stopEntryOf)
           const entry = stopEntryOf(st, p) ?? Math.max(0, p.valueInSol - unclaimedFeesSol(p, o.snapshot));
@@ -2190,7 +2253,7 @@ async function runIteration(app: App): Promise<void> {
             ...(st.askBands?.[p.address] ? { ask: true, markBinId: o.snapshot.activeBinId } : {}),
           };
         });
-    });
+    }).concat(laidNow);
   } catch {
     app.watched = [];
   }

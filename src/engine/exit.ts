@@ -14,6 +14,7 @@ import type { Decision } from "../agent/schema";
 import type { RiskLimits } from "../risk/limits";
 import type { PriceSample, RiskState } from "../risk/state";
 import type { PositionSnapshot } from "../tools/dlmm";
+import { askStopBasis } from "./askExit";
 import { unclaimedFeesSol, type CollectSnapshot } from "./collect";
 
 export const PRICE_HISTORY_MS = 6 * 60 * 60 * 1000;
@@ -60,7 +61,9 @@ export function drawdownPct(p: Pick<PositionSnapshot, "valueInSol">, entryValueS
  * the stop's basis and the P&L basis are different numbers on a re-laid ask.)
  */
 export function stopEntryOf(state: Pick<RiskState, "entryValueSol" | "askBands">, p: Pick<PositionSnapshot, "address" | "entryValueSol">): number | undefined {
-  return state.askBands?.[p.address]?.basisSol ?? state.entryValueSol[p.address] ?? p.entryValueSol;
+  const ask = state.askBands?.[p.address];
+  if (ask) return askStopBasis(ask);
+  return state.entryValueSol[p.address] ?? p.entryValueSol;
 }
 
 /** drawdownPct with the band's unclaimed fees read off the snapshot. */

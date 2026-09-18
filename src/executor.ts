@@ -970,9 +970,15 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
         if (read !== null) {
           const held = await settleWalletToken(() => readWalletToken(ctx), o.amountToken * 0.995);
           if (held !== null && held + 1e-9 < o.amountToken) {
-            const clamped = floorTo(held, Math.min(tokenDec, 8));
-            result.notes.push(`ask exit: token leg clamped to the wallet's ${fmtUnits(held, tokenDec)} ${ctx.snapshot.baseToken.symbol} (planned ${o.amountToken})`);
-            o = { ...o, amountToken: clamped };
+            if (held >= o.amountToken * 0.5) {
+              const clamped = floorTo(held, Math.min(tokenDec, 8));
+              result.notes.push(`ask exit: token leg clamped to the wallet's ${fmtUnits(held, tokenDec)} ${ctx.snapshot.baseToken.symbol} (planned ${o.amountToken})`);
+              o = { ...o, amountToken: clamped };
+            } else {
+              // a read that shows under half of what the close just handed back has not caught up with the fill: the planned
+              // amount is laid; if the wallet truly lacks it the open fails and the sale below takes over (a residue waits for the balance)
+              result.notes.push(`ask exit: the wallet read shows ${fmtUnits(held, tokenDec)} ${ctx.snapshot.baseToken.symbol}, under half the ${o.amountToken} the close handed back: the read has not caught up; laying the planned amount`);
+            }
           }
         }
         if (!(o.amountToken > SWAP_DUST_TOKEN)) {
