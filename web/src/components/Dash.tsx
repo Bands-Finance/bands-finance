@@ -42,7 +42,7 @@ export function DashNav({ status, agentName }: DashNavProps) {
     <header className="dash-nav dash-nav--float" role="banner">
       <div className="dash-nav__bar">
       <a className="dash-nav__brand" href="#top" aria-label={`${agentName}, top of page`}>
-        <Logo size={26} />
+        <Logo size={30} />
         <span className="dash-nav__name engrave">{agentName}</span>
       </a>
       <nav className="dash-nav__links engrave" aria-label="Sections">

@@ -17,6 +17,7 @@ function dashboardHead(): Plugin {
         .replace(/<title>[^<]*<\/title>/, `<title>${DASH_TITLE}</title>`)
         .replace(/<meta name="description"[^>]*>/, `<meta name="description" content="${DASH_DESC}" />`)
         .replace(/<meta name="theme-color"[^>]*>/, `<meta name="theme-color" content="#f3ecdd" />`)
+        .replace(/<link rel="icon"[^>]*>/, `<link rel="icon" type="image/png" href="/favicon-mrbands.png" />\n    <link rel="apple-touch-icon" href="/apple-touch-mrbands.png" />`)
         .replace(
           "</head>",
           [
