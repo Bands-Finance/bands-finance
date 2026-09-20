@@ -115,7 +115,8 @@
 
 /* ---------- the floating nav ---------- */
 .dash > .dash-nav--float { position: fixed; z-index: 40; top: 12px; left: 0; right: 0; padding: 0 var(--gut); max-width: none; pointer-events: none; }
-.dash-nav--float .dash-nav__bar { pointer-events: auto; max-width: var(--dash-max); margin: 0 auto; display: flex; align-items: center; gap: 20px; padding: 10px 16px; background: rgba(243, 236, 221, 0.86); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border: 1px solid var(--rule-strong); box-shadow: 0 10px 30px -22px rgba(22, 18, 15, 0.6); }
+/* the bar is as wide as its row (the row cannot wrap), never narrower than the page column and never wider than the window: the border always encloses the badge */
+.dash-nav--float .dash-nav__bar { pointer-events: auto; box-sizing: border-box; width: fit-content; min-width: min(100%, var(--dash-max)); max-width: 100%; margin: 0 auto; display: flex; align-items: center; gap: 20px; padding: 10px 16px; background: rgba(243, 236, 221, 0.86); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border: 1px solid var(--rule-strong); box-shadow: 0 10px 30px -22px rgba(22, 18, 15, 0.6); }
 
 /* a narrower desktop: the outbound link goes (it is in the footer too), so the section links still fit in the bar */
 @media (max-width: 1120px) {
