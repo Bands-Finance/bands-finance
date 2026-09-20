@@ -31,6 +31,10 @@
 .beat--right .beat__words { width: min(100%, 470px); }
 .beat--wide .beat__words, .beat--right.beat--wide .beat__words { width: min(100%, 620px); }
 .beat--hero .beat__words { width: min(100%, 640px); }
+/* a chapter with travel: its words stay put in the window while the tall block scrolls, and the camera walks round the subject */
+.beat--travel { align-items: flex-start; padding-top: 0; padding-bottom: 0; }
+.beat--travel .beat__pin { position: sticky; top: 0; min-height: 100vh; min-height: 100svh; display: flex; flex-direction: column; justify-content: center; }
+.beat--travel .beat__pin > * { flex: 0 0 auto; }
 /* the ticker tape runs along the foot of the first window */
 .beat__foot { position: absolute; left: 50%; width: 100vw; transform: translateX(-50%); top: calc(100vh - 44px); top: calc(100svh - 44px); }
 .beat__foot .tape { background: rgba(243, 236, 221, 0.82); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); border-bottom: 0; }

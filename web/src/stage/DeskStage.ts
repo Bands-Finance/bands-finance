@@ -54,6 +54,8 @@ export class DeskStage {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(30, 1.6, 0.5, 400);
   private key = new THREE.DirectionalLight(0xffffff, Math.PI * 0.72);
+  /** a soft fill from the front, low and shadowless: what the key's shadow hides (his face under the brim, a hand) still shows its form */
+  private fill = new THREE.DirectionalLight(0xffffff, Math.PI * 0.16);
   private camCurve: THREE.CatmullRomCurve3 | null = null;
   private lookCurve: THREE.CatmullRomCurve3 | null = null;
   private fovs: number[] = [];
@@ -61,7 +63,11 @@ export class DeskStage {
   private lookPts: THREE.Vector3[] = [];
   private follows: string[] = [];
   private drifts: THREE.Vector3[] = [];
-  private library = new Map<string, { cam: THREE.Vector3; look: THREE.Vector3; fov: number; follow: string; drift: THREE.Vector3 }>();
+  private library = new Map<string, { cam: THREE.Vector3; look: THREE.Vector3; fov: number; follow: string; drift: THREE.Vector3; orbit: number; zoom: number; rise: number }>();
+  /** per station: a turn round the subject (degrees), a zoom (distance factor at the end), and a rise of the look point, all driven by the chapter's scroll */
+  private orbits: number[] = [];
+  private zooms: number[] = [];
+  private rises: number[] = [];
   private routeNames: string[] = [];
   private hold = 0.5;
   private holdNow = 0.5;
@@ -82,6 +88,10 @@ export class DeskStage {
   private rowLen = 16;
   private mats = new Map<string, THREE.Material>();
   private outline = outlineMaterial(1.35);
+  /** the figure's contour: thinner, so his small parts (the shades, the moustache, the fingers) are not swallowed by their own outline */
+  private figOutline = outlineMaterial(0.95);
+  /** the figure's copies of the desk's materials are cut this much finer than the plate */
+  private static readonly FIG_PITCH = 0.85;
   private data: StageData = { bands: [], feesSol: 0 };
   private pTarget = 0;
   private pNow = 0;
@@ -95,7 +105,10 @@ export class DeskStage {
   private fadeTarget = 1;
   private disposed = false;
   private visible = true;
-  private dprCap = 2;
+  private dprCap = 3;
+  private dpr = 1;
+  /** 1 at rest; below 1 while a turning station closes on its subject, so the lines tighten as he fills the window */
+  private pitchK = 1;
   private slow = 0;
   private skip = false;
   stations = 0;
@@ -108,7 +121,8 @@ export class DeskStage {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
-    this.scene.add(new THREE.AmbientLight(0xffffff, Math.PI * 0.5));
+    // the ambient is a shade lower than it was so that with the fill the lit desk lands where it did
+    this.scene.add(new THREE.AmbientLight(0xffffff, Math.PI * 0.47));
     this.key.position.set(-16, 26, 13);
     this.key.target.position.set(0, 0, 0);
     this.key.castShadow = true;
@@ -119,6 +133,12 @@ export class DeskStage {
     this.key.shadow.normalBias = 0.04;
     this.key.shadow.radius = 3;
     this.scene.add(this.key, this.key.target);
+    // the fill stands in front of the desk (three's +z is the hero camera's side), a little to the right and barely
+    // above the blotter, so it reaches up under a hat brim; it casts no shadow, so the key's shadows stay the only ones
+    this.fill.position.set(8, 6, 40);
+    this.fill.target.position.set(0, 0, 0);
+    this.fill.castShadow = false;
+    this.scene.add(this.fill, this.fill.target);
     shared.uLightDir.value.copy(this.key.position).normalize();
     shared.uFade.value = 1;
   }
@@ -152,6 +172,9 @@ export class DeskStage {
         follow: typeof o.userData.follow === "string" ? o.userData.follow : "",
         // Blender's (x, y, z) is three's (x, z, -y)
         drift: new THREE.Vector3(num(o.userData.drift_x, 0), num(o.userData.drift_z, 0), -num(o.userData.drift_y, 0)),
+        orbit: num(o.userData.orbit_deg, 0),
+        zoom: num(o.userData.zoom_to, 1),
+        rise: num(o.userData.rise, 0),
       });
     });
 
@@ -162,6 +185,8 @@ export class DeskStage {
       protoRoot.removeFromParent();
     }
 
+    // the export joins him into the desk's meshes: cut him back out first, so he gets his own treatment
+    this.splitFigure(root);
     // the desk: every mesh becomes an engraving with a contour
     this.dress(root);
     this.scene.add(root);
@@ -205,14 +230,15 @@ export class DeskStage {
   }
 
   // ------------------------------------------------------------------ materials
-  private material(name: string, half?: THREE.Vector3, hasUv = false): THREE.Material {
-    const key = `${name}:${half ? half.toArray().map((n) => n.toFixed(3)).join(",") : ""}:${hasUv}`;
+  private material(name: string, half?: THREE.Vector3, hasUv = false, fig = false): THREE.Material {
+    const key = `${name}:${half ? half.toArray().map((n) => n.toFixed(3)).join(",") : ""}:${hasUv}:${fig ? "fig" : ""}`;
     let m = this.mats.get(key);
     if (!m) {
       if (name === "Glass") m = glassMaterial();
       else {
-        const spec = SPECS[name] ?? SPECS.Paper;
-        m = engraveMaterial({ ...spec, kind: spec.kind as EngraveKind | undefined, half, hasUv, doubleSide: name === "Tape" });
+        // only the figure's Ink is swapped (for the matter FigInk); his other materials, Shoe among them, keep their own spec
+        const spec = (fig && name === "Ink" ? SPECS.FigInk : SPECS[name]) ?? SPECS.Paper;
+        m = engraveMaterial({ ...spec, kind: spec.kind as EngraveKind | undefined, half, hasUv, doubleSide: name === "Tape", pitchScale: fig ? DeskStage.FIG_PITCH : 1 });
       }
       this.mats.set(key, m);
     }
@@ -226,23 +252,86 @@ export class DeskStage {
       if (!mesh.isMesh) return;
       const name = (mesh.material as THREE.Material).name || "Paper";
       const glass = name === "Glass";
+      const fig = isFigure(mesh);
       let half: THREE.Vector3 | undefined;
       if (SPECS[name]?.kind === "bill" || SPECS[name]?.kind === "page") {
         mesh.geometry.computeBoundingBox();
         half = mesh.geometry.boundingBox!.getSize(new THREE.Vector3()).multiplyScalar(0.5);
       }
-      mesh.material = this.material(name, half, name === "Tape");
+      mesh.material = this.material(name, half, name === "Tape" || name === "Stripe", fig);   // the tape and the trousers draw from their UVs
       mesh.castShadow = !glass && name !== "Tape";
       mesh.receiveShadow = !glass;
       if (glass) mesh.renderOrder = 5;
       const wantsOutline = !glass && name !== "Tape" && mesh.userData.outline !== 0 && mesh.parent?.userData.outline !== 0;
       if (wantsOutline) {
-        const hull = new THREE.Mesh(mesh.geometry, this.outline);
+        const hull = new THREE.Mesh(mesh.geometry, fig ? this.figOutline : this.outline);
         hull.name = `${mesh.name}.contour`;
         adds.push([mesh, hull]);
       }
     });
     for (const [mesh, hull] of adds) mesh.add(hull);
+  }
+
+  /**
+   * The export (build_desk.py) joins the static desk into one mesh per material, and Mr Bands with it (he stands under
+   * Desk in the Blender file), so nothing arrives named Fig.*: his coat shares Desk.Ink with the pen, his head Desk.Ivory
+   * with the scale, and isFigure() would never fire. This cuts him back out by WHERE he stands: the materials only he
+   * wears (Shoe, Stripe, Cloth) give his footprint on the blotter, and every triangle of a joined mesh whose centre lies
+   * over that footprint, clear of the blotter's own surface, moves into a child mesh flagged as his. dress() then gives
+   * that child the figure's treatment (FigInk for the coat and hat, the finer pitch, the thinner contour) and the rest
+   * of the mesh the desk's. The split shares the vertex buffers and only writes two index buffers, so it costs nothing
+   * to draw. A glb that keeps his Fig.* meshes separate is left as it is.
+   */
+  private splitFigure(root: THREE.Object3D) {
+    const FIG_ONLY = new Set(["Shoe", "Stripe", "Cloth"]);
+    const MARGIN = 1.5;  // from the trousers' box to the planted cane and the raised cigar: nothing of the desk stands this close to him
+    const FLOOR = 0.02;  // the blotter's own big triangles have their centres at y = 0 and stay the desk's (so do the soles' undersides, unseen)
+    const matName = (m: THREE.Mesh) => ((m.material as THREE.Material).name || "Paper");
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh && !isFigure(m)) meshes.push(m);
+    });
+    const box = new THREE.Box3();
+    const mb = new THREE.Box3();
+    for (const m of meshes) {
+      if (!FIG_ONLY.has(matName(m))) continue;
+      m.geometry.computeBoundingBox();
+      box.union(mb.copy(m.geometry.boundingBox!).applyMatrix4(m.matrixWorld));
+    }
+    if (box.isEmpty()) return;
+    box.min.x -= MARGIN; box.max.x += MARGIN; box.min.z -= MARGIN; box.max.z += MARGIN;
+    box.min.y = FLOOR; box.max.y = Infinity;
+    const c = new THREE.Vector3(), a = new THREE.Vector3(), b = new THREE.Vector3();
+    for (const mesh of meshes) {
+      const g = mesh.geometry;
+      // a joined glTF mesh is indexed and has one material group; anything else is not one and stays whole
+      if (!g.index || g.groups.length) continue;
+      g.computeBoundingBox();
+      if (!box.intersectsBox(mb.copy(g.boundingBox!).applyMatrix4(mesh.matrixWorld))) continue;
+      const pos = g.getAttribute("position");
+      const idx = g.index;
+      const his: number[] = [];
+      const rest: number[] = [];
+      for (let i = 0; i < idx.count; i += 3) {
+        const i0 = idx.getX(i), i1 = idx.getX(i + 1), i2 = idx.getX(i + 2);
+        c.fromBufferAttribute(pos, i0).add(a.fromBufferAttribute(pos, i1)).add(b.fromBufferAttribute(pos, i2)).multiplyScalar(1 / 3).applyMatrix4(mesh.matrixWorld);
+        (box.containsPoint(c) ? his : rest).push(i0, i1, i2);
+      }
+      if (!his.length) continue;
+      if (!rest.length) {
+        mesh.userData.figure = true;
+        continue;
+      }
+      const fg = new THREE.BufferGeometry();
+      for (const k of Object.keys(g.attributes)) fg.setAttribute(k, g.getAttribute(k));
+      fg.setIndex(his);
+      g.setIndex(rest);
+      const fig = new THREE.Mesh(fg, mesh.material);
+      fig.name = `${mesh.name}.Fig`;
+      fig.userData.figure = true;
+      mesh.add(fig); // same place: the child carries no transform of its own, and a .Plain parent's outline = 0 reaches it through dress()
+    }
   }
 
   private mesh(proto: string): THREE.Mesh | null {
@@ -291,6 +380,9 @@ export class DeskStage {
     this.fovs = known.map((s) => s.fov);
     this.follows = known.map((s) => s.follow);
     this.drifts = known.map((s) => s.drift);
+    this.orbits = known.map((s) => s.orbit);
+    this.zooms = known.map((s) => s.zoom);
+    this.rises = known.map((s) => s.rise);
     this.stations = known.length;
     this.route();
   }
@@ -485,15 +577,24 @@ export class DeskStage {
   resize() {
     const w = this.canvas.clientWidth || 1;
     const h = this.canvas.clientHeight || 1;
-    const dpr = Math.min(window.devicePixelRatio || 1, w < 700 ? 1.75 : 2, this.dprCap);
+    // the plate is cut at the device's pixels, capped: a phone at 1.75, a laptop at 2, a wide window on a dense display at 2.5
+    // (a slow machine steps dprCap down below, so a 2.5 that stutters settles where it runs)
+    const dpr = Math.min(window.devicePixelRatio || 1, w < 700 ? 1.75 : w >= 1200 ? 2.5 : 2, this.dprCap);
+    this.dpr = dpr;
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(w, h, false);
     outlineRes.value.set(w, h);
-    shared.uPitch.value = 5.4 * dpr;
+    this.setPitch();
     (this.outline.uniforms.uWidth as { value: number }).value = 1.3;
+    (this.figOutline.uniforms.uWidth as { value: number }).value = 0.95;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.dirty = true;
+  }
+
+  /** the plate's line pitch in device pixels: 5.4 CSS pixels at rest, closing to 4.6 as a turning station fills the window with its subject */
+  private setPitch() {
+    shared.uPitch.value = 5.4 * this.dpr * this.pitchK;
   }
 
   private start() {
@@ -546,8 +647,9 @@ export class DeskStage {
       this.onFrame?.();
       // a slow machine gets a coarser plate, not a stuttering one: step the pixel ratio down while frames run long
       if (moving && dt > 0.034) {
-        if (++this.slow > 24 && this.dprCap > 1) {
-          this.dprCap = Math.max(1, this.dprCap - 0.25);
+        if (++this.slow > 24 && this.dpr > 1) {
+          // step from the ratio in use, not the cap, so relief is one step away whatever the display
+          this.dprCap = Math.max(1, this.dpr - 0.25);
           this.slow = 0;
           this.resize();
         }
@@ -583,11 +685,31 @@ export class DeskStage {
     const k = Math.round(this.pNow);
     const near = Math.max(0, 1 - Math.abs(this.pNow - k) * 2.5);
     const drift = this.drifts[k];
+    const turning = near > 0 && (this.orbits[k] !== 0 || this.zooms[k] !== 1 || this.rises[k] !== 0);
     if (drift && near > 0 && drift.lengthSq() > 0) {
       this.holdNow += (this.hold - this.holdNow) * 0.12;
       const w = (this.holdNow - 0.5) * near;
       pos.addScaledVector(drift, w);
       look.addScaledVector(drift, w);
+    } else if (turning) this.holdNow += (this.hold - this.holdNow) * 0.12;
+    // a station that turns: as the chapter scrolls the camera walks round its subject, closes in and lifts its eyes (not under reduced motion)
+    let close = 0;
+    if (turning && this.motion) {
+      const t = Math.max(0, Math.min(1, this.holdNow));
+      const e = t * t * (3 - 2 * t);
+      const arm = pos.clone().sub(look);
+      arm.applyAxisAngle(this.camera.up, THREE.MathUtils.degToRad(this.orbits[k] * t * near));
+      arm.multiplyScalar(1 + (this.zooms[k] - 1) * e * near);
+      look.y += this.rises[k] * e * near;
+      pos.copy(look).add(arm);
+      // how far the station has closed on its subject, 0..1 (only a zoom IN counts)
+      close = this.zooms[k] < 1 ? e * near : 0;
+    }
+    // as the subject fills the window the lines tighten (to 0.85 of the plate's pitch at the closest), so the face carries more of them
+    const pitchK = 1 - 0.15 * close;
+    if (Math.abs(pitchK - this.pitchK) > 1e-4) {
+      this.pitchK = pitchK;
+      this.setPitch();
     }
     // a tall window sees a narrow slice: stand further back so the same things stay in frame
     const aspect = this.camera.aspect;
@@ -621,8 +743,20 @@ export class DeskStage {
     });
     for (const m of this.mats.values()) m.dispose();
     this.outline.dispose();
+    this.figOutline.dispose();
     this.renderer.dispose();
   }
+}
+
+/**
+ * Is this mesh part of Mr Bands? Either it is named Fig.* under the Figure empty (the loader strips the dots: FigHead,
+ * FigCoat...), or splitFigure() cut it out of a joined desk mesh and flagged it.
+ */
+function isFigure(o: THREE.Object3D): boolean {
+  for (let p: THREE.Object3D | null = o; p; p = p.parent) {
+    if (p.userData.figure === true || p.name === "Figure" || /^Fig\.?[A-Z]/.test(p.name)) return true;
+  }
+  return false;
 }
 
 function num(v: unknown, fallback: number): number {

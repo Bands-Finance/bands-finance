@@ -147,7 +147,7 @@ export default function DashboardApp() {
         content: <Actions actions={actions} status={status} now={now} agentName={agentName} />,
       },
       {
-        id: "house", station: "hat", side: "right", eyebrow: "The house", line1: "Liquidity", line2: "in between.",
+        id: "house", station: "him", side: "right", travel: 3.2, eyebrow: "The house", line1: "Liquidity", line2: "in between.",
         content: <ClosingBlock agentName={agentName} />,
       },
     ];

@@ -1,6 +1,7 @@
 // Dev only (web/stage-dev.html): the stage alone, a station picked by ?p=, fake bands by ?bands=, for looking at the engraving.
 import { Vector3 } from "three";
 import { DeskStage } from "./DeskStage";
+import { shared } from "./engrave";
 import deskUrl from "../../3d/desk.glb?url";
 const q = new URLSearchParams(location.search);
 const canvas = document.getElementById("c") as HTMLCanvasElement;
@@ -23,7 +24,20 @@ stage
     const cam = v("cam"), look = v("look");
     if (cam && look) stage.debugPose = { pos: new Vector3(cam[0], cam[2], -cam[1]), look: new Vector3(look[0], look[2], -look[1]), fov: +(q.get("fov") ?? 30) };
     if (q.get("fx") || q.get("fy")) stage.debugFrame = { x: +(q.get("fx") ?? 0), y: +(q.get("fy") ?? 0) };
-    stage.setProgress(+(q.get("p") ?? 0));
+    // ?hold=0..1 stands a turning station part way through its chapter (the turn, the zoom, the rise); the turn only
+    // runs with motion on, so it is switched on here and the glide skipped
+    stage.setProgress(+(q.get("p") ?? 0), +(q.get("hold") ?? 0.5));
+    if (q.has("hold")) {
+      stage.setMotion(true);
+      const st = stage as unknown as { holdNow: number; pNow: number; pTarget: number };
+      st.holdNow = +(q.get("hold") ?? 0.5);
+      st.pNow = st.pTarget;
+    }
+    // ?fade=0 skips the boot fade, so a screenshot taken at once shows the plate in full ink
+    if (q.get("fade") === "0") {
+      (stage as unknown as { fade: number }).fade = 0;
+      shared.uFade.value = 0;
+    }
     (window as unknown as { __stage: DeskStage }).__stage = stage;
     document.getElementById("hud")!.textContent = `p=${q.get("p") ?? 0} stations=${stage.stations}`;
     document.title = "ready";

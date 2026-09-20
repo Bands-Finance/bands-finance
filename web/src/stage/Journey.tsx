@@ -39,6 +39,8 @@ export interface Beat {
   links?: { href: string; label: string; external?: boolean }[];
   /** what the chapter proves itself with: figures, a table, the ledger */
   content?: ReactNode;
+  /** scroll room, in window heights: the words pin to the window while a block this tall scrolls past, and the camera uses the time (a turn round the desk's subject) */
+  travel?: number;
   /** small tags pinned to things on the desk while this beat is in view: "row0.cursor", "row0.low", "row0.high" */
   labels?: { anchor: string; text: string; strong?: boolean }[];
 }
@@ -268,8 +270,9 @@ export function Journey({ beats, data, heroFoot }: JourneyProps) {
         <div className="stage__veil" />
       </div>
       {beats.map((b, i) => (
-        <section key={b.id} id={b.id} data-beat={i} className={`beat beat--${b.side}${b.wide ? " beat--wide" : ""}${i === 0 ? " beat--hero" : ""}${seen.has(i) ? " is-seen" : ""}`} aria-labelledby={`${b.id}-h`}>
-          <div className="beat__words">
+        <section key={b.id} id={b.id} data-beat={i} className={`beat beat--${b.side}${b.wide ? " beat--wide" : ""}${i === 0 ? " beat--hero" : ""}${b.travel ? " beat--travel" : ""}${seen.has(i) ? " is-seen" : ""}`} aria-labelledby={`${b.id}-h`}>
+          <div className="beat__words" style={b.travel ? { minHeight: `${Math.round(b.travel * 100)}vh` } : undefined}>
+           <div className="beat__pin">
             <p className="beat__eyebrow engrave">{b.eyebrow}</p>
             <Head i={i} className="beat__head" id={`${b.id}-h`}>
               <span className="beat__line">
@@ -296,6 +299,7 @@ export function Journey({ beats, data, heroFoot }: JourneyProps) {
                 ))}
               </p>
             )}
+           </div>
           </div>
           {i === 0 && heroFoot && <div className="beat__foot">{heroFoot}</div>}
         </section>

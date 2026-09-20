@@ -3,7 +3,6 @@ import type { AgentRecord, BandCard, FeePoint, PoolFlow } from "../model";
 import { ago, duration, fmtPrice } from "../format";
 import { num } from "../narrative";
 import { PLATFORM_URL } from "../site";
-import { Rosette, VignetteRing } from "../brand/Engrave";
 import { motionSystemReduced, setMotionPaused, useMotion } from "../motion";
 
 /**
@@ -191,12 +190,8 @@ export function ClosingBlock({ agentName }: { agentName: string }) {
   const system = motionSystemReduced();
   return (
     <>
+      {/* the close stands at the man himself on the desk (station "him"), so no printed portrait beside the words */}
       <div className="close__row">
-        <div className="vignette close__portrait" aria-hidden="true">
-          <Rosette className="vignette__rosette" size={220} lobes={16} rings={8} />
-          <img className="vignette__img" src="/art/brand/portrait-cigar.webp" alt="" width="900" height="900" loading="lazy" />
-          <VignetteRing />
-        </div>
         <p className="chap__p close__legal">
           {agentName} is experimental software and trades a wallet of his own. Nothing here is advice, and nothing on this page can touch
           your money. Every move above is published as it happened, including the ones that lost.
