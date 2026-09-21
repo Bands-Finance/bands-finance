@@ -8,6 +8,27 @@ channels, all kept in Postgres and run by one gateway process. The Meridian flee
 (`mrdn-fleet-*`) already live there with the Meridian MCP server registered by URL; their engine stayed
 its own process. Mr Bands follows the same split.
 
+## Which gateway
+
+The gateway is canonical OpenHermit (HCF-STUDIOS/openhermit), not the old fork. Cut over 2026-09-21:
+`com.openhermit.gateway` now runs from `/Users/zach/OpenHermit-next`, branch `ops/canonical-live`
+(canonical `9b71c02` plus the one fork behaviour worth keeping, the UTC datetime line in the system
+prompt). CLI 0.11.0, up from 0.5.2. The 13 forward migrations were rehearsed on a full copy first and
+applied to the live database with no row lost: 48 agents, 11 schedules, 173 instruction rows, 26
+agent_skills all intact, 23 migrations -> 36.
+
+Two things to know before touching it:
+
+- `/Users/zach/OpenHermit` (the fork) must stay on disk. It is the git object store the canonical
+  worktree hangs off, and the home of 11 vendored skill directories.
+- Canonical's first boot rewrote every `skills.path` into a `blob:` pointer (tarballs under
+  `~/.openhermit/attachments/skills/*`), which is one way. Going BACK to the fork therefore needs the
+  two Meridian skills' paths restored by hand, or 24 of the 26 `agent_skills` rows stop resolving:
+  `~/OpenHermit-backups/oh-skill-paths-2026-09-21.csv` holds the originals. Backups from the cutover:
+  `openhermit-precutover-20260921-0936.dump` and `com.openhermit.gateway.plist.fork-2026-09-21`.
+- Health is `GET /health`, and the fleet is `GET /api/admin/agents/fleet`. `/api/health` and
+  `/api/admin/agents` do NOT exist on canonical.
+
 ## What runs where
 
 ```
