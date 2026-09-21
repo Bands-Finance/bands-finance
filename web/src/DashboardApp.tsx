@@ -10,6 +10,7 @@ import { Actions } from "./components/Actions";
 import { Journey, type Beat } from "./stage/Journey";
 import type { StageData } from "./stage/DeskStage";
 import { BandBlock, ClosingBlock, MadeBlock, StatementList, bandLabels, bandStatus, feeChartOf, pairWords } from "./stage/Chapters";
+import { liveRunBeat, useLiveRun } from "./stage/LiveRun";
 import { useMotion } from "./motion";
 import { PLATFORM_URL, TOKEN_URL, X_URL } from "./site";
 import "lenis/dist/lenis.css";
@@ -30,6 +31,8 @@ const byInRangeThenWorth = (a: { inRange: boolean; worthNow: number }, b: { inRa
  */
 export default function DashboardApp() {
   const { entries, equity, error, now, embedded, stamp, solPriceUsd } = useJournalFeed();
+  // the live desk's finished run on Solana, frozen in web/public/live-run.json: a chapter of its own after the record
+  const liveRun = useLiveRun();
 
   const agents = useMemo(() => (entries ? groupAgents(entries) : []), [entries]);
   const selected = agents[0] ?? null;
@@ -164,10 +167,12 @@ export default function DashboardApp() {
         content: <StatementList rows={statementRows({ record, summary: selected, solPriceUsd, status, now, stamp })} />,
         links: live && walletAddress ? [{ href: `https://solscan.io/account/${walletAddress}`, label: "His wallet on Solscan", external: true }] : undefined,
       },
+      // what the live desk did on Solana, when there is a frozen run to show
+      ...(liveRun ? [liveRunBeat(liveRun, now)] : []),
       // a ledger with nothing in it is not a chapter: with no executed move the page goes from the record to the close
       ...(actions.length
         ? [{
-            id: "did", station: "tape", side: "left", wide: true, eyebrow: "What he did", line1: "Each move,", line2: "newest first.",
+            id: "did", station: "tape", side: "left", wide: true, eyebrow: status.mode === "paper" ? "What he did on paper" : "What he did", line1: "Each move,", line2: "newest first.",
             body: <><p>One sentence a move, with the money it realised and its transaction. Holds are not moves.</p></>,
             content: <Actions actions={actions} status={status} now={now} agentName={agentName} />,
           } satisfies Beat]
@@ -187,7 +192,7 @@ export default function DashboardApp() {
         ],
       },
       {
-        id: "house", station: "him", side: "right", travel: 3.2, eyebrow: "The house", line1: "Liquidity", line2: "in between.",
+        id: "house", station: "him", side: "right", travel: 3.2, frameTall: { x: 0, y: -0.14 }, eyebrow: "The house", line1: "Liquidity", line2: "in between.",
         content: <ClosingBlock agentName={agentName} walletAddress={walletAddress} />,
       },
     ];
@@ -195,7 +200,7 @@ export default function DashboardApp() {
     // so the count never skips. A chapter added later (the live run, after "The record") is numbered by its place.
     let k = 0;
     return chapters.map((b) => (b.id === "hero" || b.id === "house" ? b : { ...b, eyebrow: `${roman(k++)} · ${b.eyebrow}` }));
-  }, [narrative, bands, book, record, actions, flows, flowTotals, feesAll, chart, walletAddress, solPriceUsd, selected, status, stamp, agentName, now]);
+  }, [narrative, bands, book, record, actions, flows, flowTotals, feesAll, chart, walletAddress, solPriceUsd, selected, status, stamp, agentName, now, liveRun]);
 
   // SMOOTH SCROLL: only smoothing, never steering; off with reduced motion or the footer's switch, and never on touch
   const motion = useMotion();

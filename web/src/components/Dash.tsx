@@ -36,6 +36,7 @@ const SECTIONS: { id: string; label: string }[] = [
   { id: "lays", label: "How he works" },
   { id: "holds", label: "What he holds" },
   { id: "made", label: "What he made" },
+  { id: "lived", label: "On Solana" },
   { id: "did", label: "What he did" },
 ];
 

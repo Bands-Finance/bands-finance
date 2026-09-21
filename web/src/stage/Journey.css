@@ -106,7 +106,7 @@
 .beat .acts { background: none; border: 0; box-shadow: none; padding: 0; border-top: 1px solid var(--ink); }
 .beat .acts__list::before { left: 70px; }
 .beat .acts__day { padding-left: 90px; }
-.beat .acts__row { grid-template-columns: 56px minmax(0, 1fr) 84px 34px; gap: 0 14px; font-size: 15.5px; }
+.beat .acts__row { grid-template-columns: 56px minmax(0, 1fr) 84px 44px; gap: 0 14px; font-size: 15.5px; }   /* 44px keeps "tx ↗" on one line */
 
 .close__row { display: flex; align-items: center; gap: 26px; }
 .close__portrait { flex: 0 0 auto; width: 140px; max-width: 140px; }
