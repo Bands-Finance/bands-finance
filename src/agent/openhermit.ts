@@ -28,11 +28,15 @@ export interface OpenHermitSettings {
   agentId: string;
   /** the bearer the desk posts with (OPENHERMIT_TOKEN, the gateway's admin token); empty = the backend is unavailable */
   token: string;
-  /** the deadline for one ask, open and post together (OPENHERMIT_TIMEOUT_MS, default 120000) */
+  /** the deadline for one ask, open and post together (OPENHERMIT_TIMEOUT_MS, default 60000) */
   timeoutMs: number;
 }
 
-export const OPENHERMIT_DEFAULTS = { gatewayUrl: "http://127.0.0.1:4000", agentId: "mr-bands", timeoutMs: 120_000 } as const;
+// The deadline is per POOL, and the desk decides its pools one after another: six pools at 120s is a
+// twelve-minute cycle on a desk that means to look every few minutes. 60s is what one answer is worth;
+// past that the policy is the better trade. decide() also breaks the circuit for the rest of a cycle
+// once the gateway has missed one deadline, so a dead gateway costs one pool's wait, not every pool's.
+export const OPENHERMIT_DEFAULTS = { gatewayUrl: "http://127.0.0.1:4000", agentId: "mr-bands", timeoutMs: 60_000 } as const;
 
 const str = (v: string | undefined): string => (v ?? "").trim();
 
@@ -84,6 +88,32 @@ export function decisionSessionId(poolAddress: string, mode: Observation["mode"]
 }
 
 /**
+ * Sessions the gateway still owes an answer on, and the round we are now on with them.
+ *
+ * The gateway's wait mode subscribes to the SESSION and resolves on the first turn that ends in it
+ * (apps/gateway/src/app.ts), while a message posted during a running turn queues behind it
+ * (agent-runner: `session.queue = session.queue.then(run, run)`). So once one ask has outrun its
+ * deadline, the next ask in that session can be handed the LATE ANSWER TO THE LAST OBSERVATION -
+ * a decision priced on numbers that have moved, possibly naming a position that has since closed.
+ * The cycle stamp below catches such an answer; this leaves the wedged session behind entirely, so
+ * the desk is not reading one turn late for the rest of the run. The pool's history is the price.
+ */
+const abandonedSessions = new Map<string, number>();
+
+/** The session to ask in now: the pool's own, or a fresh round of it if the last one was left behind. */
+export function deskSessionId(observation: Observation): string {
+  const base = decisionSessionId(observation.snapshot.address, observation.mode);
+  const round = abandonedSessions.get(base) ?? 0;
+  return round === 0 ? base : `${base}-r${round}`;
+}
+
+/** Walk away from this pool's session: the gateway owes it an answer we will never line up again. */
+export function abandonDecisionSession(observation: Observation): void {
+  const base = decisionSessionId(observation.snapshot.address, observation.mode);
+  abandonedSessions.set(base, (abandonedSessions.get(base) ?? 0) + 1);
+}
+
+/**
  * The message: the observation exactly as the Anthropic backend sees it, then the two lines that turn
  * a chat agent into a structured one. The schema is spelled out in words because the gateway offers
  * no structured-output mode; DecisionSchema still has the last word on what comes back.
@@ -97,8 +127,10 @@ export function decisionPrompt(observation: Observation): string {
     "confidence (0 to 1), headline (one line in your voice, at most 90 characters), and optionally liquidate (CLOSE_POSITION only, a boolean)";
   return (
     `${formatObservation(observation)}\n\n` +
-    `Answer with ONLY one JSON object and nothing else, no prose and no code fence, with the fields ${fields}.\n` +
-    `The pool's label is ${observation.poolLabel}.`
+    `Answer with ONLY one JSON object and nothing else, no prose and no code fence, with the fields ${fields}, ` +
+    `and cycle, which must be exactly ${observation.cycle}.\n` +
+    `The pool's label is ${observation.poolLabel}. This is cycle ${observation.cycle}: copy that number into the cycle ` +
+    `field so an answer that arrives late can be told from an answer to this observation. A reply without it is thrown away.`
   );
 }
 
@@ -106,8 +138,16 @@ export function decisionPrompt(observation: Observation): string {
  * The first balanced {...} in the text that parses as a Decision. Fences are stripped first; strings
  * inside the object are walked so a brace in the reasoning cannot end it early. Returns the zod error
  * (or "no JSON object") when nothing usable is there.
+ *
+ * With `expect.cycle`, the object must also carry that cycle: the desk asked for it in the prompt, and
+ * a reply carrying a different one is the late answer to an earlier observation (see abandonedSessions).
+ * `stale` is set on that case alone, so the caller can leave the session behind; DecisionSchema drops
+ * the field itself, being neither strict nor passthrough.
  */
-export function extractDecision(text: string): { decision: Decision; error?: undefined } | { decision?: undefined; error: string } {
+export function extractDecision(
+  text: string,
+  expect: { cycle?: number } = {},
+): { decision: Decision; error?: undefined; stale?: undefined } | { decision?: undefined; error: string; stale?: true } {
   const body = text.replace(/```[a-zA-Z]*\n?/g, "").replace(/```/g, "");
   let firstError: string | null = null;
   let sawObject = false;
@@ -123,8 +163,20 @@ export function extractDecision(text: string): { decision: Decision; error?: und
       continue;
     }
     const parsed = DecisionSchema.safeParse(raw);
-    if (parsed.success) return { decision: parsed.data };
-    firstError ??= parsed.error.issues.map((i) => `${i.path.join(".") || "root"}: ${i.message}`).join("; ");
+    if (!parsed.success) {
+      firstError ??= parsed.error.issues.map((i) => `${i.path.join(".") || "root"}: ${i.message}`).join("; ");
+      continue;
+    }
+    if (typeof expect.cycle === "number") {
+      const stamp = (raw as { cycle?: unknown }).cycle;
+      const n = typeof stamp === "number" ? stamp : typeof stamp === "string" ? Number(stamp) : NaN;
+      if (!Number.isFinite(n)) {
+        firstError ??= `no cycle in the reply (cycle ${expect.cycle} was asked for)`;
+        continue;
+      }
+      if (n !== expect.cycle) return { error: `answers cycle ${n}, not ${expect.cycle}: a late turn`, stale: true };
+    }
+    return { decision: parsed.data };
   }
   return { error: firstError ?? (sawObject ? "no decision in the reply" : "no JSON object in the reply") };
 }
@@ -167,9 +219,10 @@ export interface SessionMessage {
 /** Sessions this process has opened on the gateway, keyed "<gatewayUrl>|<agentId>|<sessionId>". */
 const openedSessions = new Set<string>();
 
-/** Forget every opened session (tests; a gateway restart is handled by the 404 path without this). */
+/** Forget every opened session and every abandoned round (tests; a gateway restart needs no help, the 404 path handles it). */
 export function forgetSessions(): void {
   openedSessions.clear();
+  abandonedSessions.clear();
 }
 
 /**
@@ -256,19 +309,30 @@ export async function askSession(msg: SessionMessage, opts: AskOptions = {}): Pr
   const toolCalls = Array.isArray(json.toolCalls)
     ? (json.toolCalls as Record<string, unknown>[]).map((t) => ({ tool: String(t.tool ?? ""), isError: t.isError === true, ...(typeof t.text === "string" ? { text: t.text } : {}) }))
     : [];
-  return { text: json.text, toolCalls, ...(typeof json.model === "string" ? { model: json.model } : {}), ms: Date.now() - started, sessionId };
+  // json.model reaches the journal and the public page. The gateway does not send it today, and when it
+  // does the string is the host's, not ours: take a short slug or nothing.
+  const named = typeof json.model === "string" ? json.model.trim() : "";
+  const model = /^[A-Za-z0-9/_.:-]{1,80}$/.test(named) ? named : undefined;
+  return { text: json.text, toolCalls, ...(model ? { model } : {}), ms: Date.now() - started, sessionId };
 }
 
 /** Ask the agent for a decision on one observation, in the pool's session for this desk mode. Throws an OpenHermitError. */
-export function askForDecision(observation: Observation, opts: AskOptions = {}): Promise<OpenHermitReply> {
+export async function askForDecision(observation: Observation, opts: AskOptions = {}): Promise<OpenHermitReply> {
   const pool = observation.snapshot.address;
-  return askSession(
-    {
-      sessionId: decisionSessionId(pool, observation.mode),
-      text: decisionPrompt(observation),
-      sessionMetadata: { pool, label: observation.poolLabel, mode: observation.mode },
-      metadata: { cycle: observation.cycle, pool },
-    },
-    opts,
-  );
+  try {
+    return await askSession(
+      {
+        sessionId: deskSessionId(observation),
+        text: decisionPrompt(observation),
+        sessionMetadata: { pool, label: observation.poolLabel, mode: observation.mode },
+        metadata: { cycle: observation.cycle, pool },
+      },
+      opts,
+    );
+  } catch (err) {
+    // we stopped waiting, the gateway did not: whatever that turn says will arrive in the session after
+    // this observation is history, so the next ask starts a round the desk is alone in
+    if (err instanceof OpenHermitError && err.kind === "timeout") abandonDecisionSession(observation);
+    throw err;
+  }
 }

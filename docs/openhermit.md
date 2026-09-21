@@ -35,6 +35,11 @@ its own process. Mr Bands follows the same split.
   charged at his own paywall and is served the operator tool list. The rails (`POST /mcp` and the
   engine, proposals, revenue and credits routes in `src/platform/railsRoutes.ts`) are mounted by
   `src/server.ts` since 2026-09-21; a desk process started before that serves no `/mcp` at all.
+  Mounting them turns on MORE than `/mcp`: the same call adds `/api/engine/*`, `/api/proposals`,
+  `/api/revenue` and `/api/credits` to a desk that served none of them before. They are the platform's
+  own rails and carry their own auth, the desk listens on `127.0.0.1` only, and an outside proposal
+  still reaches the book only through the guards; but it is a real widening of what the process answers,
+  and it is worth knowing when reading a restarted desk's access log.
 
 ## Environment
 
@@ -47,7 +52,7 @@ the tokens go in `.env` (git-ignored); the rest may sit in `ops/live.env` or a p
 | `OPENHERMIT_GATEWAY_URL` | `http://127.0.0.1:4000` | The gateway. |
 | `OPENHERMIT_AGENT_ID` | `mr-bands` | The agent's id on the gateway. |
 | `OPENHERMIT_TOKEN` | (none, required) | The gateway's admin bearer: `GATEWAY_ADMIN_TOKEN` from `~/.openhermit/gateway/.env`. The operator copies it into `.env`; no code here reads the gateway's file. |
-| `OPENHERMIT_TIMEOUT_MS` | `120000` | One deadline for the whole ask: opening the session and waiting for the answer (`?wait=true&timeout=`). Past it the desk policy proposes. |
+| `OPENHERMIT_TIMEOUT_MS` | `60000` | One deadline for the whole ask: opening the session and waiting for the answer (`?wait=true&timeout=`). Past it the desk policy proposes. It is per POOL and the pools are decided one after another, so this is the slowest a pool can make a cycle; raising it raises the whole cycle. Once one pool has missed the deadline (or the gateway was unreachable), the rest of that cycle goes straight to the policy without asking again, so a dead gateway costs one wait, not six. |
 | `OPENHERMIT_PROVIDER` | `openrouter` | Who serves the model (`provision` only; `--provider` overrides). `openrouter`: the gateway's shared `OPENROUTER_API_KEY`. `anthropic`: Anthropic directly on an `ANTHROPIC_API_KEY` the owner has given the agent (`hermit config secrets set ANTHROPIC_API_KEY <key> --agent mr-bands`); `provision` checks the secret is there by name and refuses otherwise. It never writes a key. |
 | `OPENHERMIT_MODEL` | (none) | A model id to pin (`provision` only). Unset: on OpenRouter the newest Anthropic Claude of the desk's `MODEL` family that OpenRouter offers; at Anthropic the desk's `MODEL` itself. |
 | `PLATFORM_OPERATOR_TOKEN` | (none, required by `provision`) | The desk's operator bearer (`src/platform`). `provision` writes it into the gateway's MCP server rows as the `Authorization` header. |
@@ -144,7 +149,7 @@ one on:
    <key>DECIDER</key><string>openhermit</string>
    <key>OPENHERMIT_GATEWAY_URL</key><string>http://127.0.0.1:4000</string>
    <key>OPENHERMIT_AGENT_ID</key><string>mr-bands</string>
-   <key>OPENHERMIT_TIMEOUT_MS</key><string>120000</string>
+   <key>OPENHERMIT_TIMEOUT_MS</key><string>60000</string>
    ```
 5. Restart the service:
    ```bash
@@ -158,6 +163,29 @@ one on:
 
 The live desk keeps `POLICY_LIVE=true` in `ops/live.env`: without it a live book whose model does not
 answer holds instead of trading on the policy (`policyMayTradeLive`). That rule is unchanged.
+
+### The stamp, and why an answer can be thrown away
+
+The gateway's wait mode subscribes to the SESSION and returns the first turn that ends in it, whoever
+asked for it, while a message posted during a running turn queues behind that turn
+(`apps/gateway/src/app.ts`, `apps/agent/src/agent-runner.ts`). So if the desk stops waiting at
+`OPENHERMIT_TIMEOUT_MS` and the agent answers a moment later, the NEXT ask in that pool's session can be
+handed the previous observation's answer: a decision priced on numbers that have moved, possibly naming
+a position that has since closed.
+
+So every prompt says which cycle it is and asks for that number back in a `cycle` field, and
+`extractDecision` throws away anything else:
+
+- a reply stamped with another cycle is a late turn. The desk takes the policy for that pool and walks
+  away from the session: the next ask opens `desk:<mode>:<pool>-r1` (then `-r2`...), so it is never
+  queued behind the turn that is running late. The pool's history on the gateway is the price of that.
+- a reply with no stamp at all is a model that did not follow its rules. The policy proposes, with a
+  note that says so. If this shows up every cycle in the journal, the model is too weak for the job
+  (the `cycle` rule is in his `rules` row, written by `provision`) - pick another with
+  `OPENHERMIT_MODEL` rather than turning the check off.
+
+Both read the same way in the journal: `source: "policy"` with a note beginning `OpenHermit reply was
+not a decision`.
 
 ## Switching back
 
@@ -178,7 +206,9 @@ the gateway needs to change. `hermit agents disable mr-bands` parks him if wante
 - **The paywall.** The desk's MCP server charges `bands_pool_snapshot`, `bands_screen` and
   `bands_pool_score` over x402. The gateway sends the operator bearer with every call; the desk's `/mcp`
   route lets the operator bearer past the paywall so the operator's agent does not pay the operator.
-  Anyone else's agent on the same gateway pays as before.
+  Anyone else's agent on the same gateway pays as before - once `X402_TREASURY` (and `X402_VERIFY`) are
+  set. Without them the gate is a stub that charges nobody, so on the paper desk today the bearer buys
+  nothing that was not already free. It matters on the live desk, where the treasury is set.
 
 ## Next
 

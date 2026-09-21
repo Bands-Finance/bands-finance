@@ -18,7 +18,7 @@ import { buildSystemPrompt } from "./persona";
 import { policyDecide, type PolicyExtras, type PolicyResult } from "./policy";
 import { Decision, DecisionSchema, holdDecision } from "./schema";
 import { formatObservation, Observation } from "./observation";
-import { askForDecision, extractDecision, openHermitAvailable, OpenHermitError, openHermitSettings } from "./openhermit";
+import { abandonDecisionSession, askForDecision, extractDecision, openHermitAvailable, OpenHermitError, openHermitSettings } from "./openhermit";
 
 export interface LlmUsage {
   inputTokens: number;
@@ -82,7 +82,7 @@ export function deciderOf(env: NodeJS.ProcessEnv = process.env): Decider {
   return hasAnthropicCredentials(env) ? "anthropic" : "policy";
 }
 
-/** Whether a model will be asked at all: the chosen backend has what it needs. The desk's boot log and the talk layer read this. */
+/** Whether a model will be asked at all: the chosen backend has what it needs. The desk's boot banner reads this (src/index.ts); the talk layer asks hasAnthropicCredentials, being Anthropic's alone. */
 export function hasLlmCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
   const decider = deciderOf(env);
   if (decider === "openhermit") return openHermitAvailable(env);
@@ -191,17 +191,33 @@ const NO_USAGE: LlmUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0
  * his reply. Every failure is named in the note and the desk policy proposes; the client's own deadline
  * (OPENHERMIT_TIMEOUT_MS) bounds the wait, so a cycle never hangs on the gateway. Never throws.
  */
+/**
+ * The cycle a dead gateway has already cost us a wait in. The desk decides its pools one after another,
+ * so without this a gateway that is down but accepting (or simply slow) charges OPENHERMIT_TIMEOUT_MS
+ * per pool - six pools, six minutes, every pass. One missed deadline is enough to know; the rest of that
+ * cycle goes to the policy, and the next cycle tries the gateway again.
+ */
+let gatewayDownInCycle: number | null = null;
+
 async function decideWithOpenHermit(observation: Observation, opts: DecideOptions): Promise<DecideResult> {
   const settings = openHermitSettings();
   const model = `openhermit:${settings.agentId}`;
   if (!settings.token) return policyDecideResult(observation, "DECIDER=openhermit but OPENHERMIT_TOKEN is not set.", opts);
+  if (gatewayDownInCycle === observation.cycle) {
+    return policyAfterModel(observation, "OpenHermit did not answer an earlier pool this cycle; not asked again.", opts, NO_USAGE, model);
+  }
   try {
     const reply = await askForDecision(observation, { settings });
-    const found = extractDecision(reply.text);
-    if (!found.decision) return policyAfterModel(observation, `OpenHermit reply was not a decision (${found.error}).`, opts, NO_USAGE, model);
+    const found = extractDecision(reply.text, { cycle: observation.cycle });
+    if (!found.decision) {
+      // a late answer to an older observation: the session is one turn behind, so the client starts a new one
+      if (found.stale) abandonDecisionSession(observation);
+      return policyAfterModel(observation, `OpenHermit reply was not a decision (${found.error}).`, opts, NO_USAGE, model);
+    }
     return acceptModelDecision(found.decision, observation, opts, reply.model ?? model, NO_USAGE);
   } catch (err) {
     if (err instanceof OpenHermitError) {
+      if (err.kind === "timeout" || err.kind === "unreachable") gatewayDownInCycle = observation.cycle;
       const why = err.message.replace(/\.$/, "");
       const note =
         err.kind === "unreachable" ? `OpenHermit unreachable (${why}).`

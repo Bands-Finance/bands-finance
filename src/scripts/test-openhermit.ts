@@ -91,14 +91,20 @@ function routes(gw: FakeGateway, answer: (req: Seen) => { status: number; body?:
       gw.sessions.add(String(req.body.sessionId));
       return { status: 200, body: { sessionId: req.body.sessionId, source: req.body.source } };
     }
-    if (req.path.startsWith(MESSAGES)) {
-      if (!gw.sessions.has(`desk:dry-run:${POOL}`)) return { status: 404, body: { error: { code: "not_found", message: `Session not found: desk:dry-run:${POOL}` } } };
+    const posted = req.path.match(/^\/api\/agents\/mr-bands-test\/sessions\/([^/]+)\/messages/);
+    if (posted) {
+      const sessionId = decodeURIComponent(posted[1]);
+      if (!gw.sessions.has(sessionId)) return { status: 404, body: { error: { code: "not_found", message: `Session not found: ${sessionId}` } } };
       return answer(req);
     }
     return { status: 404, body: { error: { code: "not_found", message: "no such route" } } };
   };
 }
 const said = (text: string) => ({ status: 200, body: { sessionId: `desk:dry-run:${POOL}`, messageId: "msg-1", text, toolCalls: [] } });
+/** The cycle the desk asked about, read back out of the posted prompt. */
+const askedCycle = (req: Seen): number => Number((String(req.body.text ?? "").match(/This is cycle (\d+)/) ?? [])[1]);
+/** A decision answering the question actually asked: the desk throws away any other cycle's. */
+const answered = (req: Seen, decision: Record<string, unknown>) => said(JSON.stringify({ ...decision, cycle: askedCycle(req) }));
 
 async function main(): Promise<void> {
   const { binPriceUi } = await import("../tools/dlmm.js");
@@ -158,10 +164,10 @@ async function main(): Promise<void> {
   console.log("settings and the decider switch");
   await test("openHermitSettings: defaults, trimming, a bad timeout falls back; the backend is available only with a token", () => {
     const s = oh.openHermitSettings({});
-    assert.deepEqual(s, { gatewayUrl: "http://127.0.0.1:4000", agentId: "mr-bands", token: "", timeoutMs: 120_000 });
+    assert.deepEqual(s, { gatewayUrl: "http://127.0.0.1:4000", agentId: "mr-bands", token: "", timeoutMs: 60_000 });
     assert.equal(oh.openHermitSettings({ OPENHERMIT_GATEWAY_URL: "http://gw:4000/ ", OPENHERMIT_TIMEOUT_MS: "junk" }).gatewayUrl, "http://gw:4000");
-    assert.equal(oh.openHermitSettings({ OPENHERMIT_TIMEOUT_MS: "junk" }).timeoutMs, 120_000);
-    assert.equal(oh.openHermitSettings({ OPENHERMIT_TIMEOUT_MS: "0" }).timeoutMs, 120_000);
+    assert.equal(oh.openHermitSettings({ OPENHERMIT_TIMEOUT_MS: "junk" }).timeoutMs, 60_000);
+    assert.equal(oh.openHermitSettings({ OPENHERMIT_TIMEOUT_MS: "0" }).timeoutMs, 60_000);
     assert.equal(oh.openHermitAvailable({}), false);
     assert.equal(oh.openHermitAvailable({ OPENHERMIT_TOKEN: " t " }), true);
     assert.equal(oh.decisionSessionId(POOL, "dry-run"), `desk:dry-run:${POOL}`);
@@ -189,7 +195,8 @@ async function main(): Promise<void> {
     assert.match(lines[lines.length - 2], /^Answer with ONLY one JSON object/);
     assert.match(lines[lines.length - 2], /action \(one of HOLD, OPEN_POSITION, CLOSE_POSITION, CLAIM_FEES, REBALANCE\)/);
     assert.match(lines[lines.length - 2], /headline/);
-    assert.equal(lines[lines.length - 1], "The pool's label is ANSEM/SOL.");
+    assert.match(lines[lines.length - 2], /cycle, which must be exactly 7/);
+    assert.match(lines[lines.length - 1], /^The pool's label is ANSEM\/SOL\. This is cycle 7:/);
   });
   await test("extractDecision: bare JSON, fenced JSON in prose, braces inside strings, garbage, and JSON that is not a decision", () => {
     assert.equal(oh.extractDecision(JSON.stringify(hold)).decision?.action, "HOLD");
@@ -203,9 +210,29 @@ async function main(): Promise<void> {
     // a bad object first, a good one after: the good one is taken
     assert.equal(oh.extractDecision(`{"note": 1} then ${JSON.stringify(hold)}`).decision?.action, "HOLD");
   });
+  await test("extractDecision with a cycle expected: the stamp must match; a late turn is named stale, a missing stamp is not", () => {
+    const stamped = (cycle: unknown) => JSON.stringify({ ...hold, cycle });
+    assert.equal(oh.extractDecision(stamped(7), { cycle: 7 }).decision?.action, "HOLD");
+    assert.equal(oh.extractDecision(stamped("7"), { cycle: 7 }).decision?.action, "HOLD", "a string stamp still counts");
+    assert.equal((oh.extractDecision(stamped(7), { cycle: 7 }).decision as Record<string, unknown>).cycle, undefined, "the stamp is not part of the decision");
+    const late = oh.extractDecision(stamped(6), { cycle: 7 });
+    assert.equal(late.decision, undefined);
+    assert.equal(late.stale, true);
+    assert.match(late.error ?? "", /answers cycle 6, not 7: a late turn/);
+    const bare = oh.extractDecision(JSON.stringify(hold), { cycle: 7 });
+    assert.equal(bare.decision, undefined);
+    assert.equal(bare.stale, undefined, "an unstamped reply is a model that did not comply, not a late turn");
+    assert.match(bare.error ?? "", /no cycle in the reply/);
+    // with no cycle expected (the CLI's ask), the stamp is nobody's business
+    assert.equal(oh.extractDecision(JSON.stringify(hold)).decision?.action, "HOLD");
+  });
 
   const gw = await startGateway();
   process.env.OPENHERMIT_GATEWAY_URL = gw.url;
+  // Cycles advance, as the desk's do: decide() breaks the circuit for the REST of a cycle once the gateway
+  // has missed a deadline, so a test that reused one number would be answering for the test before it.
+  let cycle = observation.cycle;
+  const next = (over: Partial<Observation> = {}): Observation => ({ ...observation, cycle: ++cycle, ...over });
   const reset = (answer: Parameters<typeof routes>[1]) => {
     gw.seen.length = 0;
     gw.sessions.clear();
@@ -215,8 +242,9 @@ async function main(): Promise<void> {
 
   console.log("decide() through the fake gateway");
   await test("a clean JSON reply: source llm, the parsed decision, model openhermit:<agent id>, usage zeros; the session was opened first, then posted with wait=true", async () => {
-    reset(() => said(JSON.stringify(hold)));
-    const r = await decide(observation);
+    reset((req) => answered(req, hold));
+    const asked = next();
+    const r = await decide(asked);
     assert.equal(r.source, "llm");
     assert.equal(r.model, "openhermit:mr-bands-test");
     assert.deepEqual(r.decision, hold);
@@ -227,29 +255,29 @@ async function main(): Promise<void> {
     assert.equal(open.source.type, "direct");
     assert.equal(open.source.interactive, false);
     const post = gw.seen[1].body as { text: string; mentioned: boolean };
-    assert.ok(post.text.startsWith(oh.decisionPrompt(observation).slice(0, 40)));
+    assert.ok(post.text.startsWith(oh.decisionPrompt(asked).slice(0, 40)));
     assert.match(post.text, /Answer with ONLY one JSON object/);
     assert.equal(post.mentioned, true);
     const timeout = Number((gw.seen[1].path.match(/timeout=(\d+)/) ?? [])[1]);
     assert.ok(timeout > 0 && timeout <= 2000, `the gateway is asked to wait no longer than what is left of the deadline: ${timeout}`);
   });
   await test("a second ask on the same pool skips the open (the session is remembered)", async () => {
-    routes(gw, () => said(JSON.stringify(hold)));
+    routes(gw, (req) => answered(req, hold));
     gw.seen.length = 0;
-    const r = await decide(observation);
+    const r = await decide(next());
     assert.equal(r.source, "llm");
     assert.deepEqual(gw.seen.map((s) => s.method + " " + s.path.split("?")[0]), [`POST ${MESSAGES}`]);
   });
   await test("prose around fenced JSON: parsed", async () => {
-    reset(() => said(`Right then.\n\n\`\`\`json\n${JSON.stringify({ ...hold, headline: "Pocket." })}\n\`\`\`\nThat is my call.`));
-    const r = await decide(observation);
+    reset((req) => said(`Right then.\n\n\`\`\`json\n${JSON.stringify({ ...hold, headline: "Pocket.", cycle: askedCycle(req) })}\n\`\`\`\nThat is my call.`));
+    const r = await decide(next());
     assert.equal(r.source, "llm");
     assert.equal(r.decision.headline, "Pocket.");
   });
   await test("the model wants in: the desk policy advises (no hot row, no score -> a HOLD that says so), source stays llm", async () => {
     const open = { ...hold, action: "OPEN_POSITION", open: { side: "SOL_ONLY", amountSol: 5, amountToken: 0, binsBelowActive: 8, binsAboveActive: 0, strategy: "Spot" }, exitAsk: true };
-    reset(() => said(JSON.stringify(open)));
-    const r = await decide(observation);
+    reset((req) => answered(req, open));
+    const r = await decide(next());
     assert.equal(r.source, "llm");
     assert.equal(r.decision.action, "HOLD", "the entry rules said no");
     assert.match(r.note ?? "", /refused by the desk policy's entry rules/);
@@ -257,7 +285,7 @@ async function main(): Promise<void> {
   });
   await test("garbage: the desk policy proposes, the note names it, and the agent id is recorded as asked", async () => {
     reset(() => said("I would rather not say. The pool looks quiet."));
-    const r = await decide(observation);
+    const r = await decide(next());
     assert.equal(r.source, "policy");
     assert.equal(r.model, "desk-policy");
     assert.match(r.note ?? "", /OpenHermit reply was not a decision/);
@@ -265,15 +293,15 @@ async function main(): Promise<void> {
   });
   await test("a turn that ended without text: not a decision", async () => {
     reset(() => ({ status: 200, body: { sessionId: `desk:dry-run:${POOL}`, text: null, toolCalls: [], error: "model failed" } }));
-    const r = await decide(observation);
+    const r = await decide(next());
     assert.equal(r.source, "policy");
     assert.match(r.note ?? "", /OpenHermit reply was not a decision \(the turn ended with an error: model failed\)/);
   });
   await test("401: the desk policy proposes and the note says to check the token", async () => {
-    reset(() => said(JSON.stringify(hold)));
+    reset((req) => answered(req, hold));
     process.env.OPENHERMIT_TOKEN = "wrong";
     try {
-      const r = await decide(observation);
+      const r = await decide(next());
       assert.equal(r.source, "policy");
       assert.match(r.note ?? "", /OpenHermit refused the token \(401\): check OPENHERMIT_TOKEN/);
     } finally {
@@ -281,11 +309,11 @@ async function main(): Promise<void> {
     }
   });
   await test("a reply after the timeout: the desk policy proposes within the timeout, and the note says OpenHermit timed out", async () => {
-    reset(() => ({ ...said(JSON.stringify(hold)), delayMs: 1500 }));
+    reset((req) => ({ ...answered(req, hold), delayMs: 1500 }));
     process.env.OPENHERMIT_TIMEOUT_MS = "300";
     const t = Date.now();
     try {
-      const r = await decide(observation);
+      const r = await decide(next());
       const ms = Date.now() - t;
       assert.equal(r.source, "policy");
       assert.match(r.note ?? "", /OpenHermit timed out/);
@@ -294,33 +322,84 @@ async function main(): Promise<void> {
       process.env.OPENHERMIT_TIMEOUT_MS = "2000";
     }
   });
+  await test("after a timeout the pool's session is left behind: the next ask opens a NEW one, so the late turn cannot answer it", async () => {
+    // the gateway still owes an answer on desk:dry-run:<pool>; the desk must not queue behind it
+    gw.seen.length = 0;
+    gw.sessions.clear();
+    routes(gw, (req) => answered(req, hold));
+    const r = await decide(next());
+    assert.equal(r.source, "llm");
+    const opened = gw.seen.filter((x) => x.path === SESSIONS).map((x) => String(x.body.sessionId));
+    assert.deepEqual(opened, [`desk:dry-run:${POOL}-r1`], "a fresh round of the pool's session");
+  });
   await test("the gateway's own 504 (it gave up waiting for the agent) reads as a timeout too", async () => {
     reset(() => ({ status: 504, body: { sessionId: `desk:dry-run:${POOL}`, text: null, toolCalls: [], error: "Timeout waiting for agent response." } }));
-    const r = await decide(observation);
+    const r = await decide(next());
     assert.equal(r.source, "policy");
     assert.match(r.note ?? "", /OpenHermit timed out \(Timeout waiting for agent response\)/);
   });
   await test("session 404 (the gateway restarted and forgot it): open, then post again, then success", async () => {
-    reset(() => said(JSON.stringify(hold)));
-    assert.equal((await decide(observation)).source, "llm");
+    reset((req) => answered(req, hold));
+    assert.equal((await decide(next())).source, "llm");
     gw.sessions.clear(); // the restart: the desk still remembers the session, the gateway does not
     gw.seen.length = 0;
-    const r = await decide(observation);
+    const r = await decide(next());
     assert.equal(r.source, "llm");
     // the fake answers by the state at the time it was asked: the first post was refused (404), the open let the second through
     assert.deepEqual(gw.seen.map((s) => s.path.split("?")[0]), [MESSAGES, SESSIONS, MESSAGES], "post (404), open, post (200)");
   });
+  await test("a late turn: the reply answers the cycle before, so the policy proposes and the session is left behind", async () => {
+    // the gateway's wait mode resolves on the first turn that ends in the SESSION, whoever asked for it
+    // (apps/gateway/src/app.ts), so a reply can be the answer to the last observation. The stamp catches it.
+    reset((req) => said(JSON.stringify({ ...hold, headline: "Yesterday's call.", cycle: askedCycle(req) - 1 })));
+    const stale = next();
+    const r = await decide(stale);
+    assert.equal(r.source, "policy", "a decision priced on numbers that have moved is not acted on");
+    assert.match(r.note ?? "", /a late turn/);
+    assert.match(r.note ?? "", new RegExp(`answers cycle ${stale.cycle - 1}, not ${stale.cycle}`));
+    // and the next ask is in a round of its own, not queued behind the session that is running late
+    gw.seen.length = 0;
+    gw.sessions.clear();
+    routes(gw, (req) => answered(req, hold));
+    assert.equal((await decide(next())).source, "llm");
+    assert.deepEqual(gw.seen.filter((x) => x.path === SESSIONS).map((x) => String(x.body.sessionId)), [`desk:dry-run:${POOL}-r1`]);
+  });
+  await test("a reply with no stamp at all: not acted on, and the note says so", async () => {
+    reset(() => said(JSON.stringify(hold)));
+    const r = await decide(next());
+    assert.equal(r.source, "policy");
+    assert.match(r.note ?? "", /no cycle in the reply/);
+  });
+  await test("the gateway names a model: a slug is kept, junk is dropped for the agent id (it reaches the journal and the page)", async () => {
+    reset((req) => ({ status: 200, body: { sessionId: "s", text: JSON.stringify({ ...hold, cycle: askedCycle(req) }), toolCalls: [], model: "anthropic/claude-opus-5" } }));
+    assert.equal((await decide(next())).model, "anthropic/claude-opus-5");
+    reset((req) => ({ status: 200, body: { sessionId: "s", text: JSON.stringify({ ...hold, cycle: askedCycle(req) }), toolCalls: [], model: "<script>alert(1)</script>" } }));
+    assert.equal((await decide(next())).model, "openhermit:mr-bands-test");
+  });
   await test("unreachable: nothing listens on the port; the desk policy proposes with the note", async () => {
     await gw.close();
     oh.forgetSessions();
-    const r = await decide(observation);
+    const r = await decide(next());
     assert.equal(r.source, "policy");
     assert.match(r.note ?? "", /OpenHermit unreachable/);
+  });
+  await test("the breaker: once the gateway has missed one pool this cycle, the other pools are not asked at all", async () => {
+    // the pools of a cycle are decided one after another; without this a dead gateway costs the deadline SIX times
+    const down = next();
+    const first = await decide(down);
+    assert.match(first.note ?? "", /OpenHermit unreachable/);
+    const t = Date.now();
+    const second = await decide({ ...down, poolLabel: "OTHER/SOL" }); // same cycle, the next pool
+    assert.equal(second.source, "policy");
+    assert.match(second.note ?? "", /did not answer an earlier pool this cycle; not asked again/);
+    assert.ok(Date.now() - t < 200, "it did not wait on the gateway again");
+    // the next cycle tries the gateway again, and says so
+    assert.match((await decide(next())).note ?? "", /OpenHermit unreachable/);
   });
   await test("no token: the policy proposes and the note names the missing var; nothing is called", async () => {
     process.env.OPENHERMIT_TOKEN = "";
     try {
-      const r = await decide(observation);
+      const r = await decide(next());
       assert.equal(r.source, "policy");
       assert.match(r.note ?? "", /DECIDER=openhermit but OPENHERMIT_TOKEN is not set/);
     } finally {

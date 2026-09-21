@@ -22,11 +22,11 @@ function test(name: string, fn: () => void): void {
 }
 
 console.log("settings");
-test("the defaults: the local gateway, mr-bands, a two minute wait; the env overrides each", () => {
+test("the defaults: the local gateway, mr-bands, a one minute wait; the env overrides each", () => {
   const d = settingsFromEnv({});
   assert.equal(d.gatewayUrl, "http://127.0.0.1:4000");
   assert.equal(d.agentId, "mr-bands");
-  assert.equal(d.timeoutMs, 120_000);
+  assert.equal(d.timeoutMs, 60_000);
   assert.equal(d.token, "");
   assert.equal(d.model, null);
   assert.equal(d.provider, "openrouter");
@@ -39,7 +39,7 @@ test("the defaults: the local gateway, mr-bands, a two minute wait; the env over
   assert.equal(e.timeoutMs, 5000);
   assert.equal(e.token, "t");
   assert.equal(e.model, "anthropic/claude-sonnet-5");
-  assert.equal(settingsFromEnv({ OPENHERMIT_TIMEOUT_MS: "nope" }).timeoutMs, 120_000, "a bad timeout is the default");
+  assert.equal(settingsFromEnv({ OPENHERMIT_TIMEOUT_MS: "nope" }).timeoutMs, 60_000, "a bad timeout is the default");
 });
 test("the flags: --mcp paper|live, --mcp-url, --provider, --model, --agent, in either spelling", () => {
   const a = parseArgs(["provision", "--mcp", "live", "--model=anthropic/claude-opus-5", "--agent", "x", "--mcp-url", "http://h:3101/mcp"]);
@@ -112,6 +112,12 @@ test("identity is who he is and how his world works; soul is the voice; rules ar
   assert.match(rows.rules, /Max per band: 1 SOL-equivalent/);
   assert.match(rows.rules, /## Output/);
   assert.ok(rows.rules.includes(OBSERVATION_RULE), "the one added rule, verbatim");
+  // the gateway's own block: the stamp that tells a fresh answer from a late one, and the hard rules
+  // that only bite here, where people the desk never met can reach him (docs/mr-bands-agent.md section 6)
+  assert.match(rows.rules, /Copy the observation's cycle number into the JSON's cycle field, every time/);
+  assert.match(rows.rules, /never impersonate a real person, brand or other agent/);
+  assert.match(rows.rules, /never engage with scams, drainers or suspicious links/);
+  assert.match(rows.rules, /No harassment, no slurs, no politics/);
   assert.ok(!rows.identity.includes("## Your voice") && !rows.identity.includes("## Rules that never bend"), "no section twice");
   for (const r of Object.values(rows)) assert.ok(!/[—–]/.test(r), "no em dashes in the rows");
 });

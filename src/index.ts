@@ -51,7 +51,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { config, riskLimits } from "./config";
-import { decide, engineDecideResult, proposalDecideResult } from "./agent/decide";
+import { decide, deciderOf, engineDecideResult, hasLlmCredentials, proposalDecideResult } from "./agent/decide";
+import { openHermitSettings } from "./agent/openhermit";
 import type { Decision } from "./agent/schema";
 import { policyEnv } from "./agent/policy";
 import { POSITION_RENT_SOL } from "./tools/dlmm";
@@ -246,7 +247,16 @@ function banner(app: App): void {
     const pe = pairEnv();
     console.log(`pairs     ${pe.on ? `pair lane ON: make our own Meteora pool for a pump.fun token that clears it (ref liquidity >= $${pe.minRefLiquidityUsd.toLocaleString("en-US")}, 24h >= $${pe.minVolume24hUsd.toLocaleString("en-US")}, 1h >= $${pe.minVolume1hUsd.toLocaleString("en-US")}, turnover >= ${pe.minTurnover}x); ${pe.quote} quote, ${pe.binStep / 100}%/bin, fee ${pe.feeBpsFixed ? `${pe.feeBps / 100}%` : `chosen per pool from ${pe.feeMenuBps.map((f) => `${f / 100}%`).join("/")}`}, seat ${pe.seatPct}% of the book, ${pe.binsEachSide} bins each side, max ${pe.maxPools} pool(s); creation ${app.paper ? "PAPER (virtual pool)" : config.dryRun ? "built + simulated, not sent" : pe.live ? "LIVE" : "built + simulated (PAIR_LIVE is not true)"}` : "pair lane off"}`);
   }
-  console.log(`model     ${config.model}`);
+  {
+    // who actually answers this desk: DECIDER picks the backend, and on the gateway the model is his, not ours
+    const decider = deciderOf();
+    const oh = openHermitSettings();
+    console.log(
+      `model     ${decider === "openhermit" ? `openhermit ${oh.agentId} @ ${oh.gatewayUrl}${oh.token ? "" : " (NO OPENHERMIT_TOKEN: the policy proposes)"}, ${oh.timeoutMs / 1000}s a pool`
+        : decider === "policy" ? "none: DECIDER=policy, the desk policy proposes"
+        : `${config.model}${hasLlmCredentials() ? "" : " (NO KEY: the desk policy proposes)"}`}`,
+    );
+  }
   console.log(`interval  ${config.cycleIntervalSec}s cycles, screen every ${config.screen.intervalSec}s`);
   console.log("limits");
   console.log(describeLimits(riskLimits).split("\n").map((l) => "  " + l).join("\n"));
