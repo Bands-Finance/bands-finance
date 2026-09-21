@@ -6,10 +6,10 @@
  *
  * The paywall is NOT here. src/platform/railsRoutes.ts peeks at every tools/call before the
  * request reaches the transport and answers 402 for a priced tool without a valid
- * X-PAYMENT; a tool priced 0 is free, and the operator bearer passes the paywall (the
- * house's own agent does not pay itself). The audience split is a payload reduction, not a
- * gate: an operator-only tool is refused by the bearer check in railsRoutes whatever list
- * the caller was served.
+ * X-PAYMENT; a tool priced 0 is free, and the operator and house bearers pass the paywall
+ * (the house's own agent does not pay itself). The audience split is a payload reduction,
+ * not a gate: an operator-only tool is refused by the bearer check in railsRoutes whatever
+ * list the caller was served.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { timingSafeEqual } from "node:crypto";
@@ -45,9 +45,11 @@ export function toolPriceUsd(tool: string): number {
 /** Tools only the operator bearer may call. Enforced in railsRoutes, listed here so both agree. */
 export const OPERATOR_ONLY_TOOLS: ReadonlySet<string> = new Set(["bands_decide_proposal"]);
 
-/** Constant-time bearer match against PLATFORM_OPERATOR_TOKEN. Unset token = nobody is the operator. */
-export function operatorAuthorized(authorization: string | undefined | null): boolean {
-  const token = process.env.PLATFORM_OPERATOR_TOKEN ?? "";
+/** The read tools, and all a house session is served: no proposing, no deciding. */
+export const HOUSE_TOOLS: readonly string[] = ["bands_list_pools", "bands_limits", "bands_agent_thoughts", "bands_pool_snapshot", "bands_screen", "bands_pool_score"];
+
+/** Constant-time match of an `Authorization: Bearer <x>` header against a token. An empty token matches nobody. */
+function bearerMatches(authorization: string | undefined | null, token: string): boolean {
   if (!token || !authorization) return false;
   const m = /^Bearer\s+(.+)$/i.exec(authorization.trim());
   if (!m) return false;
@@ -56,15 +58,47 @@ export function operatorAuthorized(authorization: string | undefined | null): bo
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/** Constant-time bearer match against PLATFORM_OPERATOR_TOKEN. Unset token = nobody is the operator. */
+export function operatorAuthorized(authorization: string | undefined | null): boolean {
+  return bearerMatches(authorization, process.env.PLATFORM_OPERATOR_TOKEN ?? "");
+}
+
+let sameTokenLogged = false;
+
+/**
+ * The house token as the desk will honour it: PLATFORM_HOUSE_TOKEN, or "" when it is unset or
+ * is the operator token. The split only means something if the two differ: a house token that
+ * is also the operator token would hand whoever holds it the power to decide proposals, so it is
+ * not treated as house at all (said once in the log, not on every call).
+ */
+export function houseToken(): string {
+  const house = process.env.PLATFORM_HOUSE_TOKEN?.trim() ?? "";
+  if (!house) return "";
+  if (house === (process.env.PLATFORM_OPERATOR_TOKEN?.trim() ?? "")) {
+    if (!sameTokenLogged) {
+      sameTokenLogged = true;
+      console.error("[bands-mcp] PLATFORM_HOUSE_TOKEN is the operator token, so it is not treated as the house bearer. Generate its own: openssl rand -hex 32");
+    }
+    return "";
+  }
+  return house;
+}
+
+/** Constant-time bearer match against the house token. Unset, or the same as the operator's = nobody is the house. */
+export function houseAuthorized(authorization: string | undefined | null): boolean {
+  return bearerMatches(authorization, houseToken());
+}
+
 /**
  * Who the tool list is rendered for. "public" omits the tools a credential-free caller can
- * never call; "operator" is the complete surface: every data tool (bands_list_pools,
- * bands_limits, bands_agent_thoughts, bands_pool_snapshot, bands_screen, bands_pool_score),
- * the proposals door and the decision tool, which is what the house's own agent needs to
- * reason about a pool. Sessions hold whichever server they were built with, and session ids
- * are random UUIDs, so an audience cannot be swapped mid-session.
+ * never call. "house" is Mr Bands himself on the gateway: the read tools (HOUSE_TOOLS), free
+ * of the paywall, and nothing else; he reasons about a pool with them, and approval is the
+ * desk's own code, never a model's. "operator" is the complete surface: every read tool, the
+ * proposals door and the decision tool, for Zach with the operator token. Sessions hold
+ * whichever server they were built with, and session ids are random UUIDs, so an audience
+ * cannot be swapped mid-session.
  */
-export type McpAudience = "public" | "operator";
+export type McpAudience = "public" | "house" | "operator";
 
 export interface BuildServerOptions {
   audience?: McpAudience;
@@ -80,7 +114,8 @@ function json(data: unknown) {
 
 export function buildServer(opts: BuildServerOptions): McpServer {
   const server = new McpServer({ name: "bands-finance", version: "0.1.0" });
-  const privileged = (opts.audience ?? "public") === "operator";
+  const audience = opts.audience ?? "public";
+  const privileged = audience === "operator";
 
   server.registerTool(
     "bands_list_pools",
@@ -208,16 +243,20 @@ export function buildServer(opts: BuildServerOptions): McpServer {
     },
   );
 
+  // The house is served the read tools and stops here: no proposing, no deciding.
+  if (audience === "house") return server;
+
   // The proposals door: any agent may argue for one bounded action on Mr Bands' book. Free
   // and unprivileged by design, because the tool grants no authority: the proposal sits on
   // the public board until the operator approves or rejects it, and execution runs the
-  // desk's own guards. Identity is CLAIMED; spoofing a name buys nothing a judged argument doesn't.
+  // desk's own policy and guards. Without a bearer the identity is only a CLAIMED name ("mcp:n:"), which the
+  // desk's own approval rules never accept (src/platform/autoDecide.ts): those wait for the operator.
   server.registerTool(
     "bands_propose_band_action",
     {
       title: "Propose a band action to the operator",
       description:
-        "Argue for one bounded action on Mr Bands' live book: OPEN_BAND (pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy) or CLOSE_BAND (pool, position). Your rationale is published verbatim; the human operator approves or rejects, and approval executes through the desk's own risk guards. Nothing you submit here moves funds on its own. Pass dryRun: true to validate without publishing. Full guide: GET /integrate.md on this host.",
+        "Argue for one bounded action on Mr Bands' live book: OPEN_BAND (pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy) or CLOSE_BAND (pool, position). Your rationale is published verbatim; the human operator approves or rejects (a small SOL-only open from a signed-in wallet, or from a bearer caller the operator has allowlisted, may be approved by the desk's fixed rules instead), and approval executes through the desk's own policy and risk guards. Nothing you submit here moves funds on its own. Pass dryRun: true to validate without publishing. Full guide: GET /integrate.md on this host.",
       inputSchema: {
         kind: z.enum(["OPEN_BAND", "CLOSE_BAND"]),
         pool: z.string().min(32).max(44),
@@ -234,7 +273,7 @@ export function buildServer(opts: BuildServerOptions): McpServer {
       },
     },
     async ({ kind, pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy, position, rationale, agentName, dryRun }) => {
-      const proposerId = opts.proposerId ?? mcpProposerId(`name:${agentName.toLowerCase()}`);
+      const proposerId = opts.proposerId ?? mcpProposerId("name", agentName.toLowerCase());
       const input = { proposerId, proposerName: agentName, kind, pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy, position, rationale };
       if (dryRun === true) return json({ dryRun: true, ...previewProposal(input) });
       const result = submitProposal(input);

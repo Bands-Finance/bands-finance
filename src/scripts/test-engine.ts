@@ -43,6 +43,7 @@ import {
 } from "../engine/breakers";
 import { clearFeesPending, collectDirective, skimPlan, trackFeesPending, unclaimedFeesQuote, unclaimedFeesSol } from "../engine/collect";
 import { engineDirective } from "../engine/directives";
+import { CARRY_HAIRCUT_PCT, carriedBands, carriedUsdToSol, foldMarksHealth, marksHealth, marksStale, MARKS_STALE_CYCLES, noteMarks, readOfBook, recordMarks, resetMarksHealth } from "../engine/marks";
 import { lockBlocks, loopStale, staleWindowMs } from "../engine/watchdog";
 
 const limits: RiskLimits = {
@@ -888,4 +889,180 @@ test("forgetBand clears the ask record; askPoolsOf / askOnlyPools read the book"
   assert.equal(askOnlyPools(undefined, new Map()).size, 0);
 });
 
-console.log(`${n} engine tests passed (with USDC-quote and ask-exit checks)`);
+// ---- the marks when a pool cannot be observed (src/engine/marks.ts) ----------------------------------
+
+const blindInput = (over: Partial<Parameters<typeof carriedBands>[0]> = {}): Parameters<typeof carriedBands>[0] => ({
+  blindPools: ["blind"],
+  held: ["b1"],
+  marks: { b1: { pool: "blind", valueSol: 0.4, at: T0 - 5 * M } },
+  entryValueSol: { b1: 0.5 },
+  metaPool: {},
+  stops: {},
+  stopLossPct: 15,
+  ...over,
+});
+
+test("marks: a band in a blind pool is carried at its last mark less the haircut, and raises the measured drawdown", () => {
+  const seen = [{ valueInSol: 0.3, entryValueSol: 0.3 }];
+  const carried = carriedBands(blindInput());
+  assert.equal(carried.length, 1);
+  assert.equal(carried[0].basis, "last mark");
+  near(carried[0].valueInSol, 0.4 * (1 - CARRY_HAIRCUT_PCT / 100));
+  const without = markedDrawdownSol(seen);
+  const withCarry = markedDrawdownSol([...seen, ...carried]);
+  near(without, 0);
+  near(withCarry, 0.38 - 0.5, "0.12 below its entry, counted");
+  assert.ok(circuitLossSol(0, withCarry) > circuitLossSol(0, without));
+  // a pool that is not blind carries nothing: its bands are read this cycle
+  assert.deepEqual(carriedBands(blindInput({ blindPools: ["other"] })), []);
+  // a pool with no bands contributes nothing
+  assert.deepEqual(carriedBands(blindInput({ held: [] })), []);
+  // a band closed during the cycle (its entry forgotten) is not carried
+  assert.deepEqual(carriedBands(blindInput({ entryValueSol: {} })), []);
+});
+
+test("marks: a band with no mark is carried at its entry less its full stop; with neither it is left out", () => {
+  const c = carriedBands(blindInput({ marks: {}, metaPool: { b1: "blind" }, stops: { b1: 12 } }));
+  assert.equal(c[0].basis, "entry less stop");
+  near(c[0].valueInSol, 0.5 * 0.88);
+  near(carriedBands(blindInput({ marks: {}, metaPool: { b1: "blind" } }))[0].valueInSol, 0.5 * 0.85, "no rolled stop: the configured one");
+  assert.deepEqual(carriedBands(blindInput({ marks: {}, metaPool: {} })), [], "no pool on record: nothing says it is in the blind pool");
+  assert.deepEqual(carriedBands(blindInput({ marks: {}, metaPool: { b1: "blind" }, entryValueSol: { b1: 0 } })), [], "no value on record");
+});
+
+test("marks: a carried mark never raises the equity", () => {
+  for (const valueSol of [0, 0.01, 0.4, 0.5, 0.9, 5]) {
+    for (const haircutPct of [0, 5, 50, 100]) {
+      const c = carriedBands(blindInput({ marks: { b1: { pool: "blind", valueSol, at: T0 } }, haircutPct }));
+      assert.ok(c[0].valueInSol <= valueSol, `${valueSol} carried at ${c[0].valueInSol}`);
+    }
+  }
+  // the whole-book sum: the carried band adds no more than its last mark did when its pool was read
+  const wallet = 1;
+  const read = wallet + 0.4;
+  const blind = wallet + carriedBands(blindInput())[0].valueInSol;
+  assert.ok(blind < read);
+  // unpriced USDC: a holding buys less SOL, a debt costs more, and no price at all is nothing
+  assert.ok(carriedUsdToSol(150, 150) < 1);
+  assert.ok(carriedUsdToSol(-150, 150) < -1);
+  assert.equal(carriedUsdToSol(150, null), 0);
+  assert.equal(carriedUsdToSol(0, 150), 0);
+});
+
+test("marks: a blind pool with a losing band trips the circuit breaker on its carried marks", () => {
+  // a 1 SOL band last marked at 0.85 in a pool that has gone dark; the limit is 15% of 1 SOL working, 0.15
+  const input = blindInput({ marks: { b1: { pool: "blind", valueSol: 0.85, at: T0 } }, entryValueSol: { b1: 1 } });
+  let c = emptyEngineState().circuit;
+  for (let i = 0; i < 2; i += 1) {
+    const loss = circuitLossSol(0, markedDrawdownSol(carriedBands(input)));
+    near(loss, 1 - 0.85 * 0.95, "on the limit at its last mark, past it once carried");
+    const v = circuitVerdict(c, loss, 1, DAY, T0 + i * 5 * M, { floorSol: 0.05 });
+    c = v.next;
+    if (i === 1) {
+      assert.equal(v.tripped, true, "two carried marks past the limit trip it");
+      assert.equal(v.stage, 1);
+    }
+  }
+});
+
+test("marks: recordMarks keeps a blind pool's marks, refreshes the decided, seeds the opened, drops the closed", () => {
+  const prev = { b1: { pool: "blind", valueSol: 0.4, at: T0 - M }, b2: { pool: "read", valueSol: 0.3, at: T0 - M }, gone: { pool: "read", valueSol: 0.2, at: T0 - M } };
+  const next = recordMarks(prev, [{ pool: "read", address: "b2", valueInSol: 0.28 }], [{ pool: "read", address: "b3", entryValueSol: 0.25 }], { b1: 0.5, b2: 0.3, b3: 0.25 }, T0);
+  assert.deepEqual(next, {
+    b1: { pool: "blind", valueSol: 0.4, at: T0 - M },
+    b2: { pool: "read", valueSol: 0.28, at: T0 },
+    b3: { pool: "read", valueSol: 0.25, at: T0 },
+  });
+});
+
+test("marks: the stale count climbs on incomplete cycles, is stale at 3, and resets on the first complete one", () => {
+  let h = { skippedMarks: 0, lastCompleteMarkAt: null as number | null, cycle: null as number | null };
+  h = foldMarksHealth(h, true, T0, 1);
+  assert.equal(h.lastCompleteMarkAt, T0);
+  for (let i = 2; i <= 4; i += 1) h = foldMarksHealth(h, false, T0 + i * M, i);
+  assert.equal(h.skippedMarks, 3);
+  assert.equal(marksStale(h), true);
+  assert.equal(h.lastCompleteMarkAt, T0, "an incomplete cycle keeps the last complete time");
+  h = foldMarksHealth(h, true, T0 + 5 * M, 5);
+  assert.deepEqual(h, { skippedMarks: 0, lastCompleteMarkAt: T0 + 5 * M, cycle: 5 });
+  assert.equal(marksStale(h), false);
+  // the read /api/status shows
+  resetMarksHealth();
+  noteMarks(false, T0, 1);
+  noteMarks(false, T0 + M, 2);
+  assert.deepEqual(marksHealth(), { skippedMarks: 2, lastCompleteMarkAt: null, stale: false });
+  noteMarks(false, T0 + 2 * M, 3);
+  assert.equal(marksHealth().stale, true);
+  noteMarks(true, T0 + 3 * M, 4);
+  assert.deepEqual(marksHealth(), { skippedMarks: 0, lastCompleteMarkAt: T0 + 3 * M, stale: false });
+  resetMarksHealth();
+});
+
+test("marks: a pick that holds no band and cannot be read never makes the read incomplete", () => {
+  // the paper pair pool that could not be priced for 590 cycles, held nothing on this run: the book is read whole
+  let streaks: Record<string, number> = {};
+  let h = { skippedMarks: 0, lastCompleteMarkAt: null as number | null, cycle: null as number | null };
+  for (let c = 1; c <= 10; c += 1) {
+    const r = readOfBook({ picks: ["spcx", "pair", "sol"], decided: ["spcx", "sol"], held: ["spcx"], usdcUnpriced: false, streaks });
+    streaks = r.streaks;
+    assert.deepEqual(r.blind, ["pair"]);
+    assert.deepEqual(r.heldBlind, []);
+    assert.equal(r.complete, true);
+    h = foldMarksHealth(h, r.counts, T0 + c * M, c);
+  }
+  assert.equal(h.skippedMarks, 0);
+  assert.equal(marksStale(h), false, "opens are not blocked over a pick with nothing in it");
+  // unpriced USDC still makes a cycle incomplete
+  assert.equal(readOfBook({ picks: ["a"], decided: ["a"], held: ["a"], usdcUnpriced: true, streaks: {} }).counts, false);
+});
+
+test("marks: one held pool blind for good is set aside at MARKS_STALE_CYCLES and written down; the rest of the book opens again", () => {
+  // the paper pair pool held a band and could not be priced from cycle 1: SPCX, also held, read fine every cycle
+  let streaks: Record<string, number> = {};
+  let h = { skippedMarks: 0, lastCompleteMarkAt: null as number | null, cycle: null as number | null };
+  const stale: boolean[] = [];
+  let last = readOfBook({ picks: [], decided: [], held: [], usdcUnpriced: false, streaks });
+  for (let c = 1; c <= 20; c += 1) {
+    last = readOfBook({ picks: ["spcx", "pair"], decided: ["spcx"], held: ["spcx", "pair"], usdcUnpriced: false, streaks });
+    streaks = last.streaks;
+    h = foldMarksHealth(h, last.counts, T0 + c * M, c);
+    stale.push(marksStale(h));
+    if (c < MARKS_STALE_CYCLES) assert.deepEqual(last.setAside, [], `cycle ${c}: carried, not yet set aside`);
+  }
+  assert.deepEqual(last.setAside, ["pair"]);
+  assert.equal(last.complete, false, "the equity history still takes whole reads only");
+  assert.equal(last.counts, true);
+  assert.equal(stale.some(Boolean), false, "it never blocks the book for good");
+  assert.equal(streaks.pair, 20);
+  // its band is written down to its entry less the full stop, below its carried mark
+  const c = carriedBands(blindInput({ blindPools: ["pair"], marks: { b1: { pool: "pair", valueSol: 0.48, at: T0 } }, entryValueSol: { b1: 0.5 }, writtenDown: last.setAside }));
+  assert.equal(c[0].basis, "written down");
+  near(c[0].valueInSol, 0.5 * 0.85);
+  // a carried mark already under the floor stays at the mark: the write-down never raises a value
+  const lower = carriedBands(blindInput({ blindPools: ["pair"], marks: { b1: { pool: "pair", valueSol: 0.3, at: T0 } }, writtenDown: ["pair"] }));
+  near(lower[0].valueInSol, 0.3 * (1 - CARRY_HAIRCUT_PCT / 100));
+  // the pool reads again: its streak is gone and it is no longer set aside
+  const back = readOfBook({ picks: ["spcx", "pair"], decided: ["spcx", "pair"], held: ["spcx", "pair"], usdcUnpriced: false, streaks });
+  assert.deepEqual(back.streaks, {});
+  assert.deepEqual(back.setAside, []);
+  assert.equal(back.complete, true);
+});
+
+test("marks: when nothing at all is decided, nothing is set aside and the block stands", () => {
+  // the RPC, not one pool: every held pool blind, however long
+  let streaks: Record<string, number> = { a: 9, b: 9 };
+  let h = { skippedMarks: 0, lastCompleteMarkAt: null as number | null, cycle: null as number | null };
+  for (let c = 1; c <= MARKS_STALE_CYCLES; c += 1) {
+    const r = readOfBook({ picks: ["a", "b", "c"], decided: [], held: ["a", "b"], usdcUnpriced: false, streaks });
+    streaks = r.streaks;
+    assert.deepEqual(r.setAside, []);
+    h = foldMarksHealth(h, r.counts, T0 + c * M, c);
+  }
+  assert.equal(marksStale(h), true);
+  // two held pools blind while a third is read: each is set aside only on its own streak
+  const r = readOfBook({ picks: ["a", "b", "c"], decided: ["c"], held: ["a", "b", "c"], usdcUnpriced: false, streaks: { a: MARKS_STALE_CYCLES } });
+  assert.deepEqual(r.setAside, ["a"]);
+  assert.equal(r.counts, false, "b has been blind one cycle: that cycle still counts as incomplete");
+});
+
+console.log(`${n} engine tests passed (with USDC-quote, ask-exit and carried-mark checks)`);

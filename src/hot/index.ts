@@ -41,6 +41,7 @@ import { fetchDexScreener, fetchPumpSwap, fetchTokenPools, fetchTrending, origin
 import { appendHistory, heldPools, loadHotFile, readHistoryTail, saveHotFile } from "./store";
 import { detectSurges, SURGE_STICKY_MS, SURGE_WINDOW_MS } from "./surge";
 import type { HotFile, HotHistoryRow, HotRow, PoolSample } from "./types";
+import { rpcConnection } from "../lib/timedFetch";
 
 export { hotEnv, type HotEnv } from "./env";
 export { FADING_MIN_VOL1H, FADING_SHARE, heatOf, hotMetrics, NOMINAL_FEE_PCT, type Heat, type HeatOpts, type HotInputs, type HotMetrics } from "./score";
@@ -85,7 +86,7 @@ const defaultFeeCache = new Map<string, FeeCacheEntry>();
 let connection: Connection | null = null;
 /** The fee traders pay in a DLMM pool right now: the dynamic fee when the pool has one, else the base. Throws when the pool cannot be read or valued. */
 export async function readMeteoraFee(address: string, solPriceUsd: number | null): Promise<number | null> {
-  connection ??= new Connection(config.rpcUrl, "confirmed");
+  connection ??= rpcConnection(config.rpcUrl);
   const dlmm = await loadPool(connection, address);
   const s = await getPoolSnapshot(dlmm, 0, { solPriceUsd });
   return s.dynamicFeePct > 0 ? s.dynamicFeePct : s.baseFeePct;

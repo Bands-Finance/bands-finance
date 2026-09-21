@@ -2,7 +2,9 @@
  * Go-live preflight. Reads the environment, the chain and the data files and prints a checklist:
  * PASS / WARN / FAIL per item, and a verdict. Exit code 1 on any FAIL so `npm run live` can refuse.
  *   npm run preflight
- * Nothing here moves money. The Anthropic check sends one tiny request (a few tokens).
+ * Nothing here moves money. The model row is decider-aware (DECIDER, src/agent/decide.ts): for Anthropic
+ * on a live desk it sends one tiny request (a few tokens), never on a dry-run desk; for OpenHermit it asks
+ * the gateway's GET /health, which is free. The levels are src/lib/preflightLevels.ts.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -11,15 +13,16 @@ import Anthropic from "@anthropic-ai/sdk";
 import { config, riskLimits } from "../config";
 import { LOCK_FILE, lockBlocks, pidAlive, readLock, staleWindowMs } from "../engine/watchdog";
 import { loadKeypair } from "../tools/wallet";
-import { policyMayTradeLive } from "../agent/decide";
+import { deciderOf, hasAnthropicCredentials, policyMayTradeLive } from "../agent/decide";
+import { openHermitSettings } from "../agent/openhermit";
 import { loadScreen } from "../screener";
 import { loadHot } from "../hot";
 import { loadEngineState, circuitHalted, standingDown } from "../engine/breakers";
-import { killSwitchActive } from "../risk/state";
+import { describeHalt, killSwitchSources } from "../risk/state";
+import { expectedWalletLevel, haltLevel, modelRow, type Level, type ModelInput } from "../lib/preflightLevels";
 import { OPEN_COST_ESTIMATE_SOL, USDC_MINT } from "../tools/dlmm";
 import { paperEnabled, paperEnv } from "../paper/env";
 
-type Level = "PASS" | "WARN" | "FAIL";
 interface Check { name: string; level: Level; detail: string }
 const checks: Check[] = [];
 const add = (name: string, level: Level, detail: string) => checks.push({ name, level, detail });
@@ -36,13 +39,11 @@ async function main(): Promise<void> {
   if (paperOn) add("paper book", "PASS", `virtual wallet ${paper.sol} SOL + ${paper.usdc} USDC: real pools and prices, pretend money (PAPER_SOL / PAPER_USDC)`);
   else if (paper.usdc > 0 && paper.sol <= 0) add("paper book", "FAIL", `PAPER_USDC=${paper.usdc} without PAPER_SOL: the loop keys paper mode off PAPER_SOL alone, so this would ${config.dryRun ? "dry-run" : "trade LIVE"} with no paper book`);
   else if (paper.sol > 0 && !config.dryRun) add("paper book", "FAIL", `PAPER_SOL=${paper.sol} with DRY_RUN=false: the loop refuses to start (paper runs only under DRY_RUN)`);
-  // The kill switch stops new bands; it does not stop the desk WATCHING. On a live desk it is still a
-  // refusal to boot - you meant to halt, and a restart must not quietly undo that. On a paper or dry-run
-  // desk it is a warning: the loop honours the switch by itself ("Engine says no opens here"), and a
-  // gate here would mean the desk stops observing and journalling the moment launchd restarts it.
-  const halted = killSwitchActive();
-  const haltLevel: Level = !halted ? "PASS" : config.dryRun ? "WARN" : "FAIL";
-  add("kill switch", haltLevel, halted ? `STOP file or KILL_SWITCH=true is set: no new bands${config.dryRun ? " (the desk still watches and journals)" : ""}` : "clear");
+  // The kill switch stops new bands; it does not stop the desk WATCHING. FAIL live, WARN on a dry-run desk
+  // (src/lib/preflightLevels.ts haltLevel). The row names which halt is in force, so an unattended desk's
+  // log says whether it was the root STOP (every desk), this desk's own, or KILL_SWITCH.
+  const halts = killSwitchSources();
+  add("kill switch", haltLevel(halts.length > 0, config.dryRun), halts.length ? `${describeHalt(halts)}: no new bands${config.dryRun ? " (the desk still watches and journals)" : ""}` : "clear");
   const lockFile = path.join(dataDir, LOCK_FILE);
   const lockCheck = (wallet: string | null): void => {
     if (!fs.existsSync(lockFile)) {
@@ -73,7 +74,8 @@ async function main(): Promise<void> {
   lockCheck(pubkey?.toBase58() ?? null);
   if (config.engine.expectedWallet) {
     const ok = pubkey?.toBase58() === config.engine.expectedWallet;
-    add("EXPECTED_WALLET", ok ? "PASS" : "FAIL", ok ? "matches the loaded key" : `does not match the loaded key (${pubkey?.toBase58() ?? "none"})`);
+    // a paper desk signs nothing: a mismatch there is a WARN, or the desk would sit in a restart loop over a key it never uses
+    add("EXPECTED_WALLET", expectedWalletLevel(ok ? "match" : "mismatch", config.dryRun), ok ? "matches the loaded key" : `does not match the loaded key (${pubkey?.toBase58() ?? "none"})${config.dryRun ? "; nothing is signed on a dry-run desk" : ""}`);
   } else add("EXPECTED_WALLET", "WARN", "not set: pin the address so a wrong key cannot trade");
 
   // 3. RPC
@@ -112,27 +114,38 @@ async function main(): Promise<void> {
   add("limits", riskLimits.maxPositionSol * config.maxActivePools <= riskLimits.maxTotalExposureSol + 1e-9 ? "PASS" : "WARN",
     `per band ${riskLimits.maxPositionSol} SOL x ${config.maxActivePools} pools vs total ${riskLimits.maxTotalExposureSol} SOL; stop ${riskLimits.stopLossPct}%; ${riskLimits.maxTxPerDay} actions/day, ${riskLimits.minSecondsBetweenActions}s apart`);
 
-  // 5. The model
-  if (!config.anthropicApiKey && !process.env.ANTHROPIC_AUTH_TOKEN) {
-    // Without a key the deterministic desk policy (src/agent/policy.ts) proposes instead of the model.
-    // That is a working desk, so it is only a failure when real money is at stake.
-    // Live, the desk policy only opens and re-centres with POLICY_LIVE=true (src/agent/decide.ts); without it every open holds.
-    const policyLive = policyMayTradeLive();
-    add(
-      "anthropic",
-      config.dryRun || policyLive ? "WARN" : "FAIL",
-      `ANTHROPIC_API_KEY is empty: the desk policy proposes instead of ${config.agentName}${config.dryRun ? " (fine for paper and dry runs)" : policyLive ? " (POLICY_LIVE=true: it trades real money)" : "; set a key, or POLICY_LIVE=true to let the policy trade, or every open holds"}`,
-    );
-  } else {
+  // 5. The model: whoever DECIDER names (src/agent/decide.ts deciderOf). The policy asks no model; the guards decide last either way.
+  const decider = deciderOf();
+  const modelIn: ModelInput = { decider, dryRun: config.dryRun, policyLive: policyMayTradeLive(), agentName: config.agentName, model: config.model };
+  if (decider === "openhermit") {
+    const oh = openHermitSettings();
+    let healthy = false;
+    let healthNote = "";
     try {
-      const client = new Anthropic(config.anthropicApiKey ? { apiKey: config.anthropicApiKey } : {});
-      const r = await client.messages.create({ model: config.model, max_tokens: 5, messages: [{ role: "user", content: "Reply with the single word: ready" }] });
-      const text = r.content.map((c) => ("text" in c ? c.text : "")).join("").trim();
-      add("anthropic", "PASS", `${config.model} answered "${text.slice(0, 20)}"`);
+      const res = await fetch(`${oh.gatewayUrl}/health`, { signal: AbortSignal.timeout(3000) });
+      healthy = res.status === 200;
+      healthNote = `answered ${res.status}`;
     } catch (err) {
-      add("anthropic", "FAIL", `${config.model}: ${(err as Error).message.slice(0, 100)}`);
+      healthNote = `did not answer (${(err as Error).message.slice(0, 60)})`;
+    }
+    // whether the token is there, never what it is
+    modelIn.openhermit = { tokenPresent: oh.token !== "", gatewayUrl: oh.gatewayUrl, agentId: oh.agentId, healthy, healthNote };
+  } else if (decider === "anthropic") {
+    const hasKey = hasAnthropicCredentials();
+    modelIn.anthropic = { hasKey };
+    // the ping is a paid request: only a live desk sends it
+    if (hasKey && !config.dryRun) {
+      try {
+        const client = new Anthropic(config.anthropicApiKey ? { apiKey: config.anthropicApiKey } : {});
+        const r = await client.messages.create({ model: config.model, max_tokens: 5, messages: [{ role: "user", content: "Reply with the single word: ready" }] });
+        modelIn.anthropic.ping = { ok: true, text: r.content.map((c) => ("text" in c ? c.text : "")).join("").trim() };
+      } catch (err) {
+        modelIn.anthropic.ping = { ok: false, error: (err as Error).message };
+      }
     }
   }
+  const model = modelRow(modelIn);
+  add(model.name, model.level, model.detail);
 
   // 6. Data feeds
   const screen = loadScreen();

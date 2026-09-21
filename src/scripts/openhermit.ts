@@ -13,9 +13,10 @@
  * set by the operator from ~/.openhermit/gateway/.env; this script never reads that file),
  * OPENHERMIT_AGENT_ID (mr-bands), OPENHERMIT_PROVIDER (openrouter on the gateway's shared key, or anthropic
  * on a key the owner has given the agent with `hermit config secrets set`; this script writes no key),
- * OPENHERMIT_MODEL, OPENHERMIT_TIMEOUT_MS, PLATFORM_OPERATOR_TOKEN
- * (the desk's operator bearer, sent by the gateway on every MCP call so the agent never pays his
- * own paywall), DATA_DIR (ask; data-live by default).
+ * OPENHERMIT_MODEL, OPENHERMIT_TIMEOUT_MS, PLATFORM_HOUSE_TOKEN
+ * (the desk's house bearer, sent by the gateway on every MCP call so the agent never pays his own
+ * paywall and is served the read tools only; the operator token never leaves .env), DATA_DIR (ask;
+ * data-live by default).
  *
  * Run `provision` from the environment of the desk that will use the agent (`set -a; . ops/live.env;
  * set +a` for the live desk): the hard limits written into his rules are the ones this process runs.
@@ -129,6 +130,12 @@ interface AgentMcpRow {
   name?: string;
   url?: string;
   headerKeys?: string[];
+  metadata?: Record<string, unknown>;
+}
+interface AdminMcpRow {
+  id: string;
+  headers?: Record<string, string>;
+  metadata?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -428,17 +435,58 @@ async function ensureInstructions(gw: Gateway, agentId: string, rows: AgentInstr
   return changed;
 }
 
-async function ensureMcp(gw: Gateway, agentId: string, operatorToken: string, target: McpTarget, urlOverride: string | null): Promise<string[]> {
+/**
+ * The bearer the gateway carries for him: PLATFORM_HOUSE_TOKEN, which the desk serves the read tools
+ * free of the paywall and nothing more. Never the operator token: a row holding that would let any
+ * session on the agent approve proposals, and approval is the desk's code or Zach, never a model. So
+ * provisioning refuses when the house token is unset, and when it is the operator token (the desk
+ * would not treat it as the house anyway). PURE.
+ */
+export function houseTokenFrom(env: NodeJS.ProcessEnv): string {
+  const house = env.PLATFORM_HOUSE_TOKEN?.trim() ?? "";
+  if (!house) throw new Error("PLATFORM_HOUSE_TOKEN is not set: generate one into .env (PLATFORM_HOUSE_TOKEN=$(openssl rand -hex 32)), restart the desk so it knows it, and run again.");
+  if (house === (env.PLATFORM_OPERATOR_TOKEN?.trim() ?? "")) throw new Error("PLATFORM_HOUSE_TOKEN is the operator token: the gateway must never hold the operator's. Generate its own (openssl rand -hex 32) into .env and run again.");
+  return house;
+}
+
+/** The gateway's row for one desk's MCP server, carrying the house bearer. PURE. */
+export function mcpServerRow(key: McpTarget, houseToken: string, url: string) {
+  const def = MCP_SERVERS[key];
+  return { id: def.id, name: def.name, description: def.description, url, headers: { Authorization: `Bearer ${houseToken}` }, metadata: { owner: "mr-bands", desk: key, audience: "house" } };
+}
+
+/**
+ * Which audience a row's bearer buys at the desk, for `status`. The header is compared against this
+ * process's tokens and never printed. Without a token here to compare against, the row's own
+ * metadata says what provisioning meant it to carry, and the answer says it is unchecked. PURE.
+ */
+export function rowAudience(row: { headers?: Record<string, string>; metadata?: Record<string, unknown> }, env: NodeJS.ProcessEnv): string {
+  const auth = Object.entries(row.headers ?? {}).find(([k]) => k.toLowerCase() === "authorization");
+  if (!auth) return "public (no auth header)";
+  // an empty value is a header whose value this process was not shown
+  const bearer = /^Bearer\s+(.+)$/i.exec((auth[1] ?? "").trim())?.[1] ?? "";
+  const operator = env.PLATFORM_OPERATOR_TOKEN?.trim() ?? "";
+  const house = env.PLATFORM_HOUSE_TOKEN?.trim() ?? "";
+  if (bearer && operator && bearer === operator) return "OPERATOR (the gateway holds the operator token: run provision again)";
+  if (bearer && house && bearer === house) return "house";
+  const meant = typeof row.metadata?.audience === "string" ? row.metadata.audience : "unknown";
+  if (!bearer) return `${meant} per the row's metadata (the header's value was not readable here)`;
+  if (!operator && !house) return `${meant} per the row's metadata (no token in this environment to check it against)`;
+  return "a bearer this environment does not know (a rotated token? run provision again)";
+}
+
+async function ensureMcp(gw: Gateway, agentId: string, houseToken: string, target: McpTarget, urlOverride: string | null): Promise<string[]> {
   const notes: string[] = [];
   for (const key of ["paper", "live"] as const) {
     const def = MCP_SERVERS[key];
     const url = key === target && urlOverride ? urlOverride : def.url;
-    // upsert: the row is rewritten every run so a rotated operator token lands
-    await gw.post("/api/admin/mcp-servers", { id: def.id, name: def.name, description: def.description, url, headers: { Authorization: `Bearer ${operatorToken}` }, metadata: { owner: "mr-bands", desk: key } });
+    // upsert: the row is rewritten every run so a rotated house token lands, and a row that once held
+    // the operator token is overwritten
+    await gw.post("/api/admin/mcp-servers", mcpServerRow(key, houseToken, url));
     const verb = key === target ? "enable" : "disable";
     // the admin route also reloads a running agent's MCP connections
     await gw.post(`/api/admin/mcp-servers/${encodeURIComponent(def.id)}/${verb}`, { agentId });
-    notes.push(`${def.id} ${url} ${verb}d`);
+    notes.push(`${def.id} ${url} ${verb}d, audience house`);
   }
   return notes;
 }
@@ -449,10 +497,8 @@ async function runnerState(gw: Gateway, agentId: string): Promise<"running" | "s
 }
 
 async function provision(settings: OpenHermitSettings, opts: ProvisionOptions): Promise<void> {
-  const operatorToken = process.env.PLATFORM_OPERATOR_TOKEN?.trim() ?? "";
-  if (!operatorToken) {
-    throw new Error("PLATFORM_OPERATOR_TOKEN is not set: the gateway sends it as the agent's bearer on every MCP call, and without it his priced tools would ask him to pay and his operator tools would refuse him. Set it (the desk's .env) and run again.");
-  }
+  // checked before the gateway is touched, so a refusal leaves every row as it was
+  const houseToken = houseTokenFrom(process.env);
   const gw = new Gateway(settings.gatewayUrl, settings.token);
   console.log(`provisioning ${settings.agentId} on ${settings.gatewayUrl}`);
 
@@ -470,7 +516,7 @@ async function provision(settings: OpenHermitSettings, opts: ProvisionOptions): 
   const changed = await ensureInstructions(gw, settings.agentId, rows);
   console.log(`  instructions: identity ${rows.identity.length} chars, soul ${rows.soul.length}, rules ${rows.rules.length}; ${changed.length ? `${changed.join(", ")} written` : "unchanged"} (limits: ${riskLimits.maxPositionSol} SOL a band, ${riskLimits.maxTotalExposureSol} SOL exposure)`);
 
-  for (const n of await ensureMcp(gw, settings.agentId, operatorToken, opts.mcp, opts.mcpUrl)) console.log(`  mcp: ${n}`);
+  for (const n of await ensureMcp(gw, settings.agentId, houseToken, opts.mcp, opts.mcpUrl)) console.log(`  mcp: ${n}`);
 
   // a runner already in memory is restarted so new instructions and config are read; otherwise he is hydrated now
   const before = await runnerState(gw, settings.agentId);
@@ -516,7 +562,17 @@ async function status(settings: OpenHermitSettings): Promise<void> {
 
   const enabled = await gw.get<AgentMcpRow[]>(`/api/agents/${a}/mcp-servers`);
   const assignments = (await gw.get<McpAssignment[]>("/api/admin/mcp-servers/assignments")).filter((x) => x.agentId === settings.agentId || x.agentId === "*");
-  for (const s of enabled) console.log(`  mcp enabled: ${s.id} ${s.url ?? ""} auth ${s.headerKeys?.length ? s.headerKeys.join(",") : "NONE"}`);
+  for (const s of enabled) {
+    // the agent route strips header values; the admin route has them, and they are compared here, never printed
+    let full: AdminMcpRow | null = null;
+    try {
+      full = await gw.get<AdminMcpRow>(`/api/admin/mcp-servers/${encodeURIComponent(s.id)}`);
+    } catch {
+      full = null;
+    }
+    const audience = rowAudience(full ?? { headers: Object.fromEntries((s.headerKeys ?? []).map((k) => [k, ""])), metadata: s.metadata }, process.env);
+    console.log(`  mcp enabled: ${s.id} ${s.url ?? ""} auth ${s.headerKeys?.length ? s.headerKeys.join(",") : "NONE"}, audience ${audience}`);
+  }
   for (const x of assignments.filter((x) => !enabled.some((s) => s.id === x.mcpServerId))) console.log(`  mcp assignment: ${x.mcpServerId} ${x.enabled ? "enabled" : "disabled"}${x.agentId === "*" ? " (global)" : ""}`);
   if (enabled.length === 0) console.log("  mcp: none enabled");
   // the gateway keeps MCP connection state inside the runner (an agent tool, mcp_status) and serves none of it over HTTP

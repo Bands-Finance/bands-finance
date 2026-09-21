@@ -1,6 +1,7 @@
 /**
  * bands.finance API + static site.
- *   GET /api/health
+ *   GET /api/health                             up, mode, and the last completed iteration
+ *   GET /api/status                             his state at a glance: mode, kill switch, breakers, decider, the hour's decisions
  *   GET /api/journal?limit=500&agent=mr-bands   entries, newest first
  *   GET /api/limits                             the hard risk limits in force
  *   GET /api/ledger?mode=live|dry-run           cash-boundary attribution rows + summary
@@ -30,7 +31,56 @@ import { basisRoutes } from "./basis";
 import { hotRoutes } from "./hot";
 import { paperRoutes } from "./paper";
 import { platformRoutes } from "./platform/routes";
+import { deciderOf } from "./agent/decide";
+import { openHermitAvailable } from "./agent/openhermit";
+import { loadEngineState } from "./engine/breakers";
+import { readLock } from "./engine/watchdog";
+import { describeHalt, killSwitchSources } from "./risk/state";
+import { decisionSources, snapshot } from "./status";
 import { railsRoutes } from "./platform/railsRoutes";
+
+const modeOf = (): "paper" | "dry-run" | "live" => (paperEnabled(process.env, config.dryRun) ? "paper" : config.dryRun ? "dry-run" : "live");
+
+/** The last completed iteration: the desk's own registry when it serves in-process, else the engine lock. */
+function lastIterationAt(): number | null {
+  return snapshot().lastIterationAt ?? readLock()?.lastIterationAt ?? null;
+}
+
+/**
+ * GET /api/status. Read-only, and on the loopback with the rest of the desk (SERVE_HOST). It names
+ * whether an OpenHermit token is set and never what it is: no secret leaves through here.
+ */
+export function statusReport(now = Date.now()): Record<string, unknown> {
+  const engine = loadEngineState();
+  // the same sources killSwitchActive() halts on: the root STOP, this desk's DATA_DIR/STOP, KILL_SWITCH=true
+  const halts = killSwitchSources();
+  const hour = decisionSources(path.join(dataDir(), "decisions.jsonl"), now - 3_600_000);
+  const snap = snapshot();
+  return {
+    now,
+    mode: modeOf(),
+    killSwitch: halts.length > 0,
+    killSwitchSources: halts,
+    killSwitchSource: halts.length ? describeHalt(halts) : null,
+    circuit: {
+      haltUntil: engine.circuit.haltUntil > 0 ? engine.circuit.haltUntil : null,
+      halted: engine.circuit.haltUntil > now,
+      stage: engine.circuit.stage,
+      reason: engine.circuit.reason,
+    },
+    portfolio: {
+      standDownUntil: engine.portfolio.standDownUntil > 0 ? engine.portfolio.standDownUntil : null,
+      standingDown: engine.portfolio.standDownUntil > now,
+      reason: engine.portfolio.standDownReason,
+    },
+    decider: deciderOf(),
+    openhermitTokenPresent: openHermitAvailable(),
+    decisionsLastHour: hour,
+    ...snap,
+    // the registry is empty in a server started alone: then the lock answers
+    lastIterationAt: lastIterationAt(),
+  };
+}
 
 export function buildApp(): Hono {
   const app = new Hono();
@@ -56,7 +106,9 @@ export function buildApp(): Hono {
   // after the platform so its middleware covers them and no page fallback below can shadow /mcp.
   railsRoutes(app);
 
-  app.get("/api/health", (c) => c.json({ ok: true, now: new Date().toISOString(), mode: paperEnabled(process.env, config.dryRun) ? "paper" : config.dryRun ? "dry-run" : "live" }));
+  app.get("/api/health", (c) => c.json({ ok: true, now: new Date().toISOString(), mode: modeOf(), lastIterationAt: lastIterationAt() }));
+
+  app.get("/api/status", (c) => c.json(statusReport()));
 
   app.get("/api/journal", (c) => {
     const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 500), 1), 5000);

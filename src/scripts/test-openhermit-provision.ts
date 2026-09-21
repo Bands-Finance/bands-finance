@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { buildSystemPrompt } from "../agent/persona";
 import type { JournalEntry } from "../journal";
-import { agentInstructions, instructionsForDesk, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, pickNewest, providerOf, settingsFromEnv } from "./openhermit";
+import { agentInstructions, houseTokenFrom, instructionsForDesk, MCP_SERVERS, mcpServerRow, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, pickNewest, providerOf, rowAudience, settingsFromEnv } from "./openhermit";
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -49,6 +49,36 @@ test("the flags: --mcp paper|live, --mcp-url, --provider, --model, --agent, in e
   assert.throws(() => parseArgs(["provision", "--provider", "openai"]), /openrouter or anthropic/);
   assert.throws(() => parseArgs(["provision", "--mcp", "prod"]), /paper or live/);
   assert.throws(() => parseArgs(["provision", "--bogus"]), /unknown flag/);
+});
+
+console.log("the house token on the gateway");
+test("provision refuses without a house token, and refuses the operator token as one", () => {
+  assert.throws(() => houseTokenFrom({}), /PLATFORM_HOUSE_TOKEN is not set: generate one into \.env \(PLATFORM_HOUSE_TOKEN=\$\(openssl rand -hex 32\)\)/);
+  assert.throws(() => houseTokenFrom({ PLATFORM_HOUSE_TOKEN: "   ", PLATFORM_OPERATOR_TOKEN: "op" }), /not set/);
+  assert.throws(() => houseTokenFrom({ PLATFORM_HOUSE_TOKEN: "same", PLATFORM_OPERATOR_TOKEN: " same " }), /is the operator token/);
+  assert.equal(houseTokenFrom({ PLATFORM_HOUSE_TOKEN: " h " }), "h", "no operator token set is fine: the house is still its own");
+  assert.equal(houseTokenFrom({ PLATFORM_HOUSE_TOKEN: "h", PLATFORM_OPERATOR_TOKEN: "op" }), "h");
+});
+test("both desk rows carry the house bearer, never the operator's", () => {
+  for (const key of ["paper", "live"] as const) {
+    const row = mcpServerRow(key, "h", MCP_SERVERS[key].url);
+    assert.equal(row.id, MCP_SERVERS[key].id);
+    assert.deepEqual(row.headers, { Authorization: "Bearer h" });
+    assert.deepEqual(row.metadata, { owner: "mr-bands", desk: key, audience: "house" });
+  }
+  assert.equal(mcpServerRow("paper", "h", "http://h:1/mcp").url, "http://h:1/mcp", "the --mcp-url override is the row's url");
+});
+test("status names the audience a row's bearer buys, without printing it", () => {
+  const env = { PLATFORM_HOUSE_TOKEN: "h", PLATFORM_OPERATOR_TOKEN: "op" };
+  assert.equal(rowAudience({ headers: { Authorization: "Bearer h" } }, env), "house");
+  assert.match(rowAudience({ headers: { authorization: "Bearer op" } }, env), /^OPERATOR .*run provision again/);
+  assert.equal(rowAudience({}, env), "public (no auth header)");
+  assert.match(rowAudience({ headers: { Authorization: "Bearer old" } }, env), /does not know/);
+  assert.match(rowAudience({ headers: { Authorization: "" }, metadata: { audience: "house" } }, env), /^house per the row's metadata \(the header's value was not readable/);
+  assert.match(rowAudience({ headers: { Authorization: "Bearer h" }, metadata: { audience: "house" } }, {}), /^house per the row's metadata \(no token/);
+  assert.match(rowAudience({ headers: { Authorization: "Bearer x" } }, {}), /^unknown per the row's metadata/);
+  const secrets = { PLATFORM_HOUSE_TOKEN: "zq-house-9", PLATFORM_OPERATOR_TOKEN: "zq-op-7" };
+  for (const bearer of ["zq-house-9", "zq-op-7", "zq-stale-3"]) assert.ok(!rowAudience({ headers: { Authorization: `Bearer ${bearer}` } }, secrets).includes("zq-"), "the token is never in the output");
 });
 
 console.log("the model");

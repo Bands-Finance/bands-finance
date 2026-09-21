@@ -51,12 +51,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { config, riskLimits } from "./config";
-import { decide, deciderOf, engineDecideResult, hasLlmCredentials, proposalDecideResult } from "./agent/decide";
+import { adviseProposal, decide, deciderOf, engineDecideResult, hasLlmCredentials, policyMayTradeLive, proposalDecideResult } from "./agent/decide";
 import { openHermitSettings } from "./agent/openhermit";
 import type { Decision } from "./agent/schema";
-import { policyEnv } from "./agent/policy";
+import { policyDecide, policyEnv } from "./agent/policy";
 import { POSITION_RENT_SOL } from "./tools/dlmm";
-import { approvedProposals, markExecuted, Proposal } from "./platform/proposals";
+import { allProposals, approvedProposals, decideProposal, markExecuted, markRefused, pendingProposals, proposalDecision, proposalNote, proposalOutcome, Proposal } from "./platform/proposals";
+import { autoBudget, autoDecide, autoEnv, deskHalt, nextApprovedProposal, noteDeskApprovals } from "./platform/autoDecide";
 import type { EngineObservation, Observation, ScreenContext } from "./agent/observation";
 import { evaluate, EngineGuardContext } from "./risk/guards";
 import { describeLimits } from "./risk/limits";
@@ -91,6 +92,9 @@ import { bookEnv, isTradableVenue, liveVenues, loadVenuePool, poolsWithPositions
 import { fetchPoolAnalytics } from "./tools/lpagent";
 import { Wallet } from "./tools/wallet";
 import { startServer } from "./server";
+import { noteDeploy, noteIteration, noteScreen } from "./status";
+import { createDeployer } from "./publish/deploy";
+import { rpcConnection } from "./lib/timedFetch";
 import { basisForPool, basisForTicker, basisVerdict, refreshBasis, sessionClock, sessionWidthMultiplier, type BasisRow } from "./basis";
 import { hotPicks, HotRow, launchRowOf, loadHot, runHotTick, startHotWatch } from "./hot";
 import {
@@ -107,6 +111,7 @@ import {
   saveEngineState,
 } from "./engine/breakers";
 import { clearFeesPending, skimPlan, trackFeesPending, unclaimedFeesSol } from "./engine/collect";
+import { CARRY_HAIRCUT_PCT, carriedBands, carriedUsdToSol, marksHealth, marksNotedCycle, marksStale, MARKS_STALE_CYCLES, noteMarks, persistMarksHealth, readOfBook, recordMarks, restoreMarksHealth } from "./engine/marks";
 import { marketDrawdownPct, stopEntryOf } from "./engine/exit";
 import { askBandRecord, askExitEnv, askExitOf, askOnlyPools, askPoolsOf, isAskExit, type AskBand } from "./engine/askExit";
 import { sellResidue, swapImpactEnv } from "./executor";
@@ -192,30 +197,6 @@ interface Observed {
 
 const cfg = config.engine;
 
-/** An approved proposal as the decision Mr Bands would otherwise make. Rationale is published verbatim. */
-function proposalDecision(p: Proposal): Decision {
-  if (p.kind === "OPEN_BAND") {
-    const { pool: _pool, ...open } = p.params as Extract<Proposal["params"], { side: string }>;
-    return {
-      action: "OPEN_POSITION",
-      open,
-      positionAddress: null,
-      reasoning: p.rationale,
-      confidence: 0.5,
-      headline: `Proposal from ${p.proposerName}: open a ${open.side.replace("_", " ").toLowerCase()} band.`,
-    };
-  }
-  const params = p.params as Extract<Proposal["params"], { position: string }>;
-  return {
-    action: "CLOSE_POSITION",
-    open: null,
-    positionAddress: params.position,
-    reasoning: p.rationale,
-    confidence: 0.5,
-    headline: `Proposal from ${p.proposerName}: close band ${params.position.slice(0, 6)}.`,
-  };
-}
-
 function banner(app: App): void {
   const mode = app.paper ? `PAPER: virtual ${app.paper.startSol} SOL wallet${app.paper.startUsdc > 0 ? ` + ${app.paper.startUsdc} USDC` : ""}, live prices, nothing broadcast` : config.dryRun ? "DRY RUN (nothing is broadcast)" : "LIVE (real transactions)";
   console.log("=".repeat(72));
@@ -257,6 +238,17 @@ function banner(app: App): void {
         : `${config.model}${hasLlmCredentials() ? "" : " (NO KEY: the desk policy proposes)"}`}`,
     );
   }
+  {
+    // outside proposals: who approves them on this desk (src/platform/autoDecide.ts)
+    const ae = autoEnv();
+    noteDeskApprovals(); // /api/status shows today's count from the first cycle, not from the first approval
+    const liveBlocked = !config.dryRun && (!ae.live || ae.proposers.length === 0);
+    console.log(
+      `proposals ${!ae.on ? "the operator approves (AUTO_APPROVE_PROPOSALS is not true)"
+        : liveBlocked ? "the operator approves (a live book needs AUTO_APPROVE_LIVE=true and AUTO_APPROVE_PROPOSERS)"
+        : `the desk's rules approve a SOL_ONLY open <= ${ae.maxSol} SOL from ${ae.proposers.length ? `${ae.proposers.length} allowlisted proposer(s)` : "any signed-in wallet (a bearer only from the list)"}, <= ${ae.maxAgeMin} min old, ${ae.maxPerDay}/day, one at a time, <= ${ae.maxExposurePct}% of total exposure; closes wait for the operator`}; then the desk policy, then the guards`,
+    );
+  }
   console.log(`interval  ${config.cycleIntervalSec}s cycles, screen every ${config.screen.intervalSec}s`);
   console.log("limits");
   console.log(describeLimits(riskLimits).split("\n").map((l) => "  " + l).join("\n"));
@@ -269,23 +261,14 @@ function banner(app: App): void {
   console.log("=".repeat(72));
 }
 
-let lastDeployAt = 0;
 const DEPLOY_MIN_MINUTES = Number(process.env.AUTO_DEPLOY_MIN_MINUTES ?? 30);
 
+// One push at a time, each step with a hard timeout (src/publish/deploy.ts); never awaited by the cycle.
+const deployer = createDeployer({ exec, cwd: process.cwd(), minMinutes: DEPLOY_MIN_MINUTES, onDone: (ok, at) => noteDeploy(ok, at) });
+
 function deploySnapshot(): void {
-  const sinceMin = (Date.now() - lastDeployAt) / 60000;
-  if (lastDeployAt > 0 && sinceMin < DEPLOY_MIN_MINUTES) {
-    console.log(`[deploy] skipped: ${sinceMin.toFixed(0)} min since the last push, minimum ${DEPLOY_MIN_MINUTES}`);
-    return;
-  }
-  lastDeployAt = Date.now();
   // the platform, then the dashboard site when its Vercel link exists (dash/README.md)
-  const dash = fs.existsSync(path.join(process.cwd(), "dash", ".vercel", "project.json"));
-  console.log(`[deploy] pushing snapshot to Vercel${dash ? " (platform + dashboard)" : ""}`);
-  exec(dash ? "npm run web:deploy && npm run dash:deploy" : "npm run web:deploy", { cwd: process.cwd() }, (err, stdout, stderr) => {
-    if (err) console.error(`[deploy] failed: ${err.message}\n${stderr.slice(-400)}`);
-    else console.log(`[deploy] ${stdout.trim().split("\n").slice(-2).join(" | ")}`);
-  });
+  deployer.deploy(fs.existsSync(path.join(process.cwd(), "dash", ".vercel", "project.json")));
 }
 
 /** Symbols come from the screener.s enrichment; the on-chain snapshot only knows mints. */
@@ -305,6 +288,7 @@ async function ensureScreen(app: App): Promise<void> {
   try {
     app.screen = await runScreen(app.connection, (s) => console.log(s));
     app.screenAt = Date.now();
+    noteScreen(true, app.screenAt);
     registerTokens(app.screen);
     // Stock pools: refresh the basis to Backpack's perps in the background; the loop reads the file.
     refreshBasis()
@@ -313,6 +297,7 @@ async function ensureScreen(app: App): Promise<void> {
     setSolPriceUsd(solPriceOf(app));
   } catch (err) {
     console.error(`[screen] failed: ${(err as Error).message}`);
+    noteScreen(false);
     if (!app.screen) {
       app.screen = loadScreen();
       if (app.screen) console.log(`[screen] using saved screen from ${app.screen.generatedAt}`);
@@ -1284,12 +1269,15 @@ function updateState(state: RiskState, exec: ExecutionResult, positions: Positio
   // and a re-lay keeps the chain's rolled stop rather than rolling a new one (a fresh roll could land under the chain's drawdown)
   const closedAsk = exec.closed ? state.askBands?.[exec.closed] : undefined;
   const carriedStop = exec.closed && closedAsk ? state.stops?.[exec.closed] : undefined;
+  // a proposal band re-laid stays a proposal band: the auto-approval budget follows the capital, not the address
+  const carriedProposal = exec.closed ? state.proposalBands?.[exec.closed] : undefined;
   if (exec.ok && exec.opened) {
     state.entryValueSol[exec.opened.address] = exec.opened.entryValueSol;
     // an ask band's stop is the chain's (EXIT_ASK_STOP_PCT, measured against the chain's basis by stopEntryOf), a launch band's the lane's
     (state.stops ??= {})[exec.opened.address] = ask && carriedStop ? carriedStop : rollStop(riskLimits, Math.random, ask ? ask.stopPct : launch ? launch.env.stopPct : null);
     if (launch && !ask) (state.launchBands ??= {})[exec.opened.address] = { pool: snapshot.address, openedAt: Date.now(), vol1hUsd: launch.vol1hUsd };
     if (ask) (state.askBands ??= {})[exec.opened.address] = ask.band;
+    if (carriedProposal && exec.closed !== exec.opened.address) (state.proposalBands ??= {})[exec.opened.address] = carriedProposal;
   }
   // the close landed whether or not the sale after it did: the band is gone, its records go with it
   if (exec.closed) forgetBand(state, exec.closed);
@@ -1358,6 +1346,38 @@ async function sellResidues(app: App): Promise<void> {
   }
   saveState(state);
   for (const n of notes) console.log(`[cycle ${app.cycle}] ${n}`);
+}
+
+/**
+ * The desk's own rules on this pool's pending proposals (src/platform/autoDecide.ts), at the moment the pool is
+ * worked: the first that passes every rule and that the desk policy would take (`policy`, asked before anything is
+ * written) is approved as "desk-auto:<rule>" and returned for this cycle to consume; it still meets the guards.
+ * Null when none qualifies or the rules are off.
+ */
+function autoApproveHere(app: App, o: Observed, all: Observed[], state: RiskState, lane: string | null, halt: string | null, now: number, policy: (p: Proposal) => string | null): Proposal | null {
+  const env = autoEnv();
+  if (!env.on) return null;
+  const pending = pendingProposals(o.address, now);
+  if (pending.length === 0) return null;
+  const verdict = autoDecide(pending, {
+    now,
+    dryRun: config.dryRun,
+    env,
+    picks: all.map((x) => x.address),
+    lane,
+    halt,
+    budget: autoBudget(allProposals(now), state, now),
+    maxTotalExposureSol: riskLimits.maxTotalExposureSol,
+  }, policy);
+  const tag = `[cycle ${app.cycle} ${o.snapshot.label}]`;
+  for (const l of verdict.left) console.log(`${tag} proposal ${l.id} left for the operator: ${l.reason}`);
+  if (!verdict.approve) return null;
+  const approved = decideProposal(verdict.approve.proposal.id, "approve", `approved by the desk's rules (${verdict.approve.rule}); the desk policy and the guards still decide`, `desk-auto:${verdict.approve.rule}`, now);
+  if (approved) {
+    console.log(`${tag} proposal ${approved.id} approved by desk rule ${verdict.approve.rule}`);
+    noteDeskApprovals(now);
+  }
+  return approved;
 }
 
 async function runPool(app: App, o: Observed, all: Observed[], sol: number): Promise<JournalEntry> {
@@ -1541,15 +1561,58 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // The engine decides first. When it has a directive the LLM is not asked this cycle.
   const rotateHere = app.rotateOut?.pool === o.address ? { reason: app.rotateOut.reason } : null;
   const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined, pairStock: pairStockWatch, rotate: rotateHere, askExit: { maxHoldMin: askExitEnv(process.env).maxHoldMin } });
-  // Then an approved outside proposal, oldest first: "agents propose, the operator decides, the desk
-  // executes through its own guards". Otherwise Mr Bands proposes.
-  const proposal = directive ? null : (approvedProposals(o.address)[0] ?? null);
+  // Then an outside proposal (src/platform/proposals.ts): an approved one, oldest first, or one the desk's own rules
+  // approve here and now (src/platform/autoDecide.ts). Under the kill switch, a circuit halt, a stand-down or stale
+  // marks an approved OPEN waits rather than being spent on a certain refusal. Otherwise Mr Bands proposes.
+  const marks = marksHealth();
+  const halt = deskHalt({ killSwitch, haltedUntil: view.haltedUntil, standDownUntil: view.standDownUntil, skippedMarks: marks.skippedMarks, marksStale: marks.stale });
+  // why this pool is not an ordinary seat for the desk's rules: these lanes keep their seat caps in the policy, not the guards
+  const lane = screen?.stock || screen?.pinned?.ok ? "a stock pool"
+    : basisRow ? "a basis pool"
+    : isPair ? "a pair pool"
+    : screen?.launch?.ok ? "a launch pool"
+    : Object.values(state.askBands ?? {}).some((a) => a.pool === o.address) ? "an ask band is working here"
+    : rotateHere ? "the pool is rotating out"
+    : positions.length > 0 ? "a band is already seated here"
+    : null;
+  // THE PROPOSAL MEETS THE ENTRY RULES (adviseProposal): the desk policy is asked with the same extras a model's
+  // move gets; a HOLD or a substitute is a refusal, journaled as a HOLD in the desk's words. Asked once per proposal
+  // per pool per cycle: the desk's own rules ask it before approving, and the consumption below reads the same answer.
+  const advisedById = new Map<string, ReturnType<typeof adviseProposal>>();
+  const adviseOf = (p: Proposal): ReturnType<typeof adviseProposal> => {
+    const known = advisedById.get(p.id);
+    if (known) return known;
+    const asked = proposalDecision(p);
+    let advised: ReturnType<typeof adviseProposal>;
+    try {
+      const policy = policyDecide(observation, { limits: riskLimits, hot: hotRows(app, 8, true), openCostSol: openCostDefault, grow: { allowed: !app.movedThisCycle }, askExit: { bands: state.askBands ?? {}, env: askExitEnv(process.env) } });
+      advised = adviseProposal(asked, policy, { id: p.id, live: !config.dryRun, policyLive: policyMayTradeLive() });
+    } catch (err) {
+      advised = adviseProposal(asked, { decision: { ...asked, action: "HOLD", open: null, positionAddress: null }, reason: `the desk policy failed (${(err as Error).message})`, branch: "gated" }, { id: p.id, live: !config.dryRun, policyLive: policyMayTradeLive() });
+    }
+    advisedById.set(p.id, advised);
+    return advised;
+  };
+  let proposal: Proposal | null = directive ? null : nextApprovedProposal(approvedProposals(o.address, now), halt !== null);
+  if (!directive && !proposal) {
+    proposal = autoApproveHere(app, o, all, state, lane, halt, now, (p) => {
+      const a = adviseOf(p);
+      return a.ok ? null : a.reason;
+    });
+  }
+  let proposalRefusal: string | null = null;
+  let proposalResult: ReturnType<typeof proposalDecideResult> | null = null;
+  if (proposal) {
+    const advised = adviseOf(proposal);
+    if (!advised.ok) proposalRefusal = advised.reason;
+    proposalResult = proposalDecideResult(advised.decision, `${proposalNote(proposal)}. ${advised.ok ? advised.note : `Refused: ${advised.reason}`}`);
+  }
   // An engine close in a stock pool or a pair pool liquidates: the book returns to the quote (the hedge comes off with it; the token is never kept).
   const directiveDecision = directive && (basisRow || isPair || directive.kind === "ROTATE") && directive.decision.action === "CLOSE_POSITION" ? { ...directive.decision, liquidate: true } : directive?.decision;
   let llm = directive
     ? engineDecideResult(directiveDecision!, `${directive.kind}: ${directive.reason}`)
-    : proposal
-      ? proposalDecideResult(proposalDecision(proposal), `proposal ${proposal.id} by ${proposal.proposerName} (${proposal.proposerId})`)
+    : proposalResult
+      ? proposalResult
       : await decide(observation, { hot: hotRows(app, 8, true), openCostSol: openCostDefault, grow: { allowed: !app.movedThisCycle }, askExit: { bands: state.askBands ?? {}, env: askExitEnv(process.env) } });
   // Every close sells the token back to the quote, whoever proposed it (the model, a proposal, the
   // guards, a directive): the book is quote-denominated, and a token left in the wallet is capital
@@ -1622,7 +1685,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   }
   let verdict = evaluate(
     llm.decision,
-    { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol },
+    { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, skippedMarks: marksHealth().skippedMarks, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol },
     riskLimits,
   );
   if (saleInstead && !verdict.allowed) {
@@ -1630,7 +1693,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     llm = { ...llm, decision: saleInstead, note: `${llm.note ?? ""} The ask was refused by the guards; sold instead.`.trim() };
     verdict = evaluate(
       saleInstead,
-      { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol: openCostDefault },
+      { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, skippedMarks: marksHealth().skippedMarks, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol: openCostDefault },
       riskLimits,
     );
   }
@@ -1716,6 +1779,10 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     ? { band: askBandRecord(state.askBands?.[execution.closed], { pool: o.address, from: execution.closed, tokens: verdict.decision.open!.amountToken, markSol: execution.opened.entryValueSol, now, bankedSol: positions.find((p) => p.address === execution.closed)?.solInPosition ?? 0 }), stopPct: askExitEnv(process.env).stopPct }
     : null;
   if (askLaid) console.log(`${tag} ask band ${execution.opened!.address.slice(0, 6)}: ${askLaid.band.relays > 0 ? `re-lay ${askLaid.band.relays} of the chain from ${askLaid.band.from.slice(0, 6)}` : `the chain starts here`}, basis ${askLaid.band.basisSol.toFixed(4)} SOL${askLaid.band.bankedSol > 0 ? ` less ${askLaid.band.bankedSol.toFixed(4)} banked` : ""}, stop ${askLaid.stopPct}% under it${askExitEnv(process.env).maxHoldMin > 0 ? `, ${Math.max(0, Math.round(askExitEnv(process.env).maxHoldMin - (now - askLaid.band.since) / 60_000))} min left` : ""}`);
+  // a band an outside proposal laid: the auto-approval budget counts it until it closes (src/platform/autoDecide.ts)
+  if (proposal && !proposalRefusal && proposal.kind === "OPEN_BAND" && execution.ok && execution.opened && verdict.decision.action === "OPEN_POSITION") {
+    (state.proposalBands ??= {})[execution.opened.address] = { proposal: proposal.id, pool: o.address, at: now };
+  }
   updateState(state, execution, positions, snapshot, (screen?.launch?.ok || screen?.pair?.ok) && !noLaneExits ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null, askLaid);
 
   // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
@@ -1839,30 +1906,93 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   };
   appendJournal(entry);
   if (proposal) {
-    // The receipt is the journal entry, whether the guards let it through or refused it.
-    markExecuted(proposal.id, entry.id);
-    console.log(`${tag} proposal ${proposal.id} ${verdict.allowed ? "executed" : "refused by the guards"} -> journal ${entry.id}`);
+    // The receipt is the journal entry, whether it ran or the desk policy or the guards said no.
+    const outcome = proposalRefusal ? { status: "refused" as const, reason: `the desk policy said no: ${proposalRefusal}` } : proposalOutcome(proposal, verdict);
+    if (outcome.status === "executed") markExecuted(proposal.id, entry.id);
+    else markRefused(proposal.id, entry.id, outcome.reason);
+    console.log(`${tag} proposal ${proposal.id} ${outcome.status === "executed" ? "executed" : `refused (${outcome.reason})`} -> journal ${entry.id}`);
   }
   console.log(`${tag} final ${verdict.decision.action} in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   return entry;
 }
 
 /**
- * The breakers mark the book once per iteration, only on a complete read: a pool that failed to
- * observe would read as vanished capital, and a phantom crater must never trip a breaker.
+ * Note this cycle's marks as complete or not, keep the count in engine.json (a restart must not lift the block),
+ * and raise the alerts: once the marks have been incomplete MARKS_STALE_CYCLES running, and every cycle a held pool is set aside.
  */
-function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAtStart: number, usdcAtStartSol: number, hedgeSol = 0, usdcAtStart = 0): void {
+function noteMarksFor(app: App, complete: boolean, setAside: readonly string[] = []): void {
+  const h = noteMarks(complete, Date.now(), app.cycle, setAside);
+  try {
+    persistMarksHealth(h);
+  } catch (err) {
+    console.error(`[cycle ${app.cycle}] the marks count could not be saved: ${(err as Error).message}`);
+  }
+  app.engine.skippedMarks = h.skippedMarks;
+  app.engine.lastCompleteMarkAt = h.lastCompleteMarkAt;
+  if (setAside.length) {
+    console.error(`[alert] set aside: ${setAside.map((a) => a.slice(0, 12)).join(", ")} blind ${MARKS_STALE_CYCLES}+ cycles running while the rest of the book reads; its bands are written down to their entry less the full stop and cannot be exited until it reads again`);
+  }
+  if (marksStale(h)) {
+    const since = h.lastCompleteMarkAt ? `the last complete read was ${Math.round((Date.now() - h.lastCompleteMarkAt) / 60_000)} min ago` : "no complete read since the desk started";
+    console.error(`[alert] marks stale: ${h.skippedMarks} cycles running without a complete read of the book (limit ${MARKS_STALE_CYCLES}), ${since}; new opens are blocked, exits and claims run`);
+  }
+}
+
+/**
+ * The breakers mark the book every iteration. `decided` are the pools observed AND decided this cycle,
+ * marked at what they read; a held pool that was not (its read failed, or its decision threw) is blind,
+ * and its bands are carried at their last mark less a haircut (src/engine/marks.ts), so a blind pool
+ * can only bring a breaker closer. Without a SOL price this cycle the wallet's USDC and the paper
+ * hedge are valued at the last price a mark used, turned against the book. `complete` is false
+ * whenever anything was carried: the equity history (the site's chart) takes complete reads only.
+ */
+function markBook(
+  app: App,
+  m: {
+    decided: Observed[];
+    entries: JournalEntry[];
+    blindPools: string[];
+    /** the blind pools set aside (src/engine/marks.ts setAsidePools): their bands are written down */
+    writtenDown: string[];
+    /** positions on the books when the cycle started: only those are carried */
+    heldAtStart: string[];
+    solAtStart: number;
+    usdcAtStart: number;
+    solPriceUsd: number | null;
+    hedgeUsd: number;
+    complete: boolean;
+  },
+): void {
+  const { decided, entries, solAtStart, usdcAtStart, solPriceUsd } = m;
   const now = Date.now();
   const today = todayUtc();
   const mode = config.dryRun ? "dry-run" : "live";
   const state = loadState();
   const closed = new Set(entries.map((e) => e.execution.closed).filter((c): c is string => !!c));
-  const openBands = observed.flatMap((o) => o.positions).filter((p) => !closed.has(p.address));
+  const openBands = decided.flatMap((o) => o.positions).filter((p) => !closed.has(p.address));
   for (const p of openBands) p.entryValueSol = state.entryValueSol[p.address];
+  const carried = carriedBands({
+    blindPools: m.blindPools,
+    writtenDown: m.writtenDown,
+    held: m.heldAtStart,
+    marks: app.engine.bandMarks,
+    entryValueSol: state.entryValueSol,
+    metaPool: Object.fromEntries(Object.entries(state.bandMeta ?? {}).map(([a, meta]) => [a, meta.pool] as const)),
+    stops: state.stops ?? {},
+    stopLossPct: riskLimits.stopLossPct,
+  });
+  const carriedSol = carried.reduce((s, b) => s + b.valueInSol, 0);
+  // the price USDC is valued at: this cycle's, or the last a mark used, turned against the book
+  const usdcAtStartSol = solPriceUsd ? usdcAtStart / solPriceUsd : carriedUsdToSol(usdcAtStart, app.engine.lastSolPriceUsd);
+  const hedgeSol = solPriceUsd ? m.hedgeUsd / solPriceUsd : carriedUsdToSol(m.hedgeUsd, app.engine.lastSolPriceUsd);
+  if (solPriceUsd) {
+    app.engine.lastSolPriceUsd = solPriceUsd;
+    app.engine.lastSolPriceAt = now;
+  }
 
-  // Circuit breaker: today's realized loss from the ledger, netted with the marked drawdown of open bands.
+  // Circuit breaker: today's realized loss from the ledger, netted with the marked drawdown of open bands, carried ones included.
   const rows = readLedgerRows();
-  const loss = circuitLossSol(realizedOnDaySol(rows, mode, today), markedDrawdownSol(openBands));
+  const loss = circuitLossSol(realizedOnDaySol(rows, mode, today), markedDrawdownSol([...openBands, ...carried]));
   const cv = circuitVerdict(app.engine.circuit, loss, workingSol(state.entryValueSol), today, now, { floorSol: cfg.circuitFloorSol });
   app.engine.circuit = cv.next;
   if (cv.tripped) console.error(`[cycle ${app.cycle}] CIRCUIT BREAKER: ${cv.reason}`);
@@ -1870,23 +2000,32 @@ function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAt
   // Portfolio breaker: whole-book equity in SOL (wallet SOL + wallet USDC at the SOL price + bands marked incl. unclaimed fees + wallet base tokens at mark).
   // wallet tokens of the pools worked this cycle at their marks, plus what exits left behind (residues) at the exit's mark,
   // for residues whose pool is NOT on this cycle's books: a worked pool's wallet read (and, in the exit cycle, the closed
-  // band's own value) already holds those tokens
+  // band's own value) already holds those tokens. A blind pool's wallet tokens were not read: they count at nothing, which
+  // only lowers the equity.
   const onBooks = new Set(entries.map((e) => e.pool.address));
   const residueSol = Object.values(state.residues ?? {}).reduce((s, r) => s + (onBooks.has(r.pool) ? 0 : r.amountUi * r.markTokenInSol), 0);
   const tokensSol = entries.reduce((s, e) => s + e.wallet.token * e.pool.tokenPriceInSol, 0) + residueSol;
-  const equity = solAtStart + usdcAtStartSol + observed.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + tokensSol + hedgeSol;
+  const bandsSol = decided.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + carriedSol;
+  const equity = solAtStart + usdcAtStartSol + bandsSol + tokensSol + hedgeSol;
   if (Number.isFinite(equity) && equity > 0) {
     const pv = portfolioVerdict(app.engine.portfolio, equity, today, now, { floorSol: cfg.portfolioFloorSol });
     app.engine.portfolio = pv.next;
     if (pv.fire) console.error(`[cycle ${app.cycle}] PORTFOLIO BREAKER: ${pv.reason}`);
   }
+  // the marks the next blind cycle may carry: this cycle's decided bands and the bands it opened
+  const decidedMarks = decided.flatMap((o) => o.positions.filter((p) => !closed.has(p.address)).map((p) => ({ pool: o.address, address: p.address, valueInSol: p.valueInSol })));
+  const openedMarks = entries.flatMap((e, i) => (e.execution?.ok && e.execution.opened ? [{ pool: decided[i]?.address ?? e.pool.address, ...e.execution.opened }] : []));
+  app.engine.bandMarks = recordMarks(app.engine.bandMarks, decidedMarks, openedMarks, state.entryValueSol, now);
   saveEngineState(app.engine);
+  const carriedNote = carried.length
+    ? ` | carried ${carried.length} band(s) of ${new Set(carried.map((b) => b.pool)).size} blind pool(s) at ${carriedSol.toFixed(4)} SOL (${carried.map((b) => `${b.address.slice(0, 6)} ${b.basis}`).join(", ")})`
+    : "";
+  const priceNote = !solPriceUsd && usdcAtStart > 0.01 ? ` | ${usdcAtStart.toFixed(2)} USDC at ${app.engine.lastSolPriceUsd ? `the last SOL price ${app.engine.lastSolPriceUsd.toFixed(2)} turned ${CARRY_HAIRCUT_PCT}% against the book` : "nothing: no SOL price on record"}` : "";
   console.log(
-    `[cycle ${app.cycle}] marks: equity ${equity.toFixed(4)} SOL (day high ${app.engine.portfolio.hwmSol.toFixed(4)})${hedgeSol !== 0 ? ` incl. hedge ${hedgeSol >= 0 ? "+" : ""}${hedgeSol.toFixed(4)}` : ""} | today's loss ${loss.toFixed(4)} / limit ${app.engine.circuit.lastLimitSol.toFixed(4)} SOL | working ${workingSol(state.entryValueSol).toFixed(4)}`,
+    `[cycle ${app.cycle}] marks: equity ${equity.toFixed(4)} SOL (day high ${app.engine.portfolio.hwmSol.toFixed(4)})${hedgeSol !== 0 ? ` incl. hedge ${hedgeSol >= 0 ? "+" : ""}${hedgeSol.toFixed(4)}` : ""} | today's loss ${loss.toFixed(4)} / limit ${app.engine.circuit.lastLimitSol.toFixed(4)} SOL | working ${workingSol(state.entryValueSol).toFixed(4)}${carriedNote}${priceNote}`,
   );
-  // The same figure, one line a cycle, for the site's "since the start" numbers (src/journal EquityPoint).
-  if (Number.isFinite(equity)) {
-    const bandsSol = observed.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0);
+  // The same figure, one line a cycle, for the site's "since the start" numbers (src/journal EquityPoint): complete reads only.
+  if (m.complete && Number.isFinite(equity)) {
     // fees realised to the wallet: claims plus the fee leg of every close, from the ledger in both
     // modes (the paper book's feesClaimedSol counts claims only; the backfill and this must agree)
     const feesClaimedSol = rowsOf(rows, mode).reduce((s, r) => s + ((r.mech === "collect" || r.mech === "close") && typeof r.feeSol === "number" ? r.feeSol : 0), 0);
@@ -1904,7 +2043,7 @@ function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAt
         tokensSol,
         hedgeSol,
         bands: openBands.length,
-        pools: observed.length,
+        pools: decided.length,
         feesClaimedSol,
         solPriceUsd: solPriceOf(app),
       });
@@ -2034,7 +2173,8 @@ async function runIteration(app: App): Promise<void> {
       }
     } catch (err) {
       // A USDC pool without a SOL price, or a pool quoted in neither, is skipped with its reason: it
-      // cannot be valued in SOL, so no guard, breaker or ledger row sees it this cycle.
+      // cannot be valued in SOL this cycle, so no guard or ledger row sees it, and the breakers carry
+      // its bands at their last mark (markBook) like any other pool that could not be read.
       if (err instanceof QuotePriceUnknownError || err instanceof UnsupportedQuoteError) console.log(`[cycle ${app.cycle}] skipping ${address}: ${err.message}`);
       else console.error(`[cycle ${app.cycle}] could not observe ${address}: ${(err as Error).message}`);
     }
@@ -2190,11 +2330,17 @@ async function runIteration(app: App): Promise<void> {
       console.log(`[cycle ${app.cycle}] seat yield: rotating out ${c.label} (${c.pool.slice(0, 6)}): ${c.reason}`);
     }
   }
+  // the bands on the books before any pool is decided: a blind pool carries only these (a band a throwing
+  // runPool opened was paid for out of the wallet read at the start, so carrying it too would count it twice)
+  const heldAtStart = Object.keys(loadState().entryValueSol);
   const entries: JournalEntry[] = [];
+  // the pools observed AND decided, index-aligned with entries
+  const decided: Observed[] = [];
   for (const o of observed) {
     try {
       const sol = paper ? paper.wallet.sol : await app.wallet.solBalance();
       entries.push(await runPool(app, o, observed, sol));
+      decided.push(o);
     } catch (err) {
       console.error(`[cycle ${app.cycle} ${o.snapshot.label}] failed:`, err);
     }
@@ -2203,21 +2349,42 @@ async function runIteration(app: App): Promise<void> {
   // RESIDUES: what exits could not sell under the caps, sold cycle by cycle with a cap that rises as they wait
   await sellResidues(app);
 
-  // Marks need a complete, consistently valued read: every picked pool observed and decided, and
-  // the wallet's USDC valued whenever it holds any (an unpriced USDC balance would swing equity).
+  // THE MARKS run every cycle. A complete read is every pool holding a band observed and decided, and the wallet's
+  // USDC priced this cycle. Anything less and the breakers still mark: a held pool that was not observed,
+  // or was observed and never decided (its runPool threw, the 429s), is blind and its bands are carried at
+  // their last mark less a haircut; unpriced USDC is valued at the last price a mark used, turned against
+  // the book. A held or pinned pool is never dropped from the picks for being blind: the carry covers it.
   const usdcUnpriced = usdcAtStart > 0.01 && solPriceUsd === null;
-  if (observed.length === pools.length && entries.length === observed.length && observed.length > 0 && !usdcUnpriced) {
-    try {
-      const hedgeSol = paper && solPriceUsd ? paperHedgeEquityUsd(paper.hedge).netUsd / solPriceUsd : 0;
-      markBook(app, observed, entries, solAtStart, solPriceUsd ? usdcAtStart / solPriceUsd : 0, hedgeSol, usdcAtStart);
-    } catch (err) {
-      console.error(`[cycle ${app.cycle}] marks failed:`, err);
-    }
-  } else if (usdcUnpriced) {
-    console.log(`[cycle ${app.cycle}] marks skipped: the wallet holds ${usdcAtStart.toFixed(2)} USDC and no SOL price is known to value it`);
-  } else {
-    console.log(`[cycle ${app.cycle}] marks skipped: ${observed.length}/${pools.length} pools observed, ${entries.length} decided`);
+  // only a pool that holds a band has anything to carry: a pick that holds nothing and could not be read leaves the book whole.
+  // A held pool blind MARKS_STALE_CYCLES running while the rest reads is set aside: written down, named, and no longer
+  // counted against the read, so one pool that cannot be priced does not block every open for good (src/engine/marks.ts).
+  const read = readOfBook({ picks: pools, decided: decided.map((o) => o.address), held: withPositions, usdcUnpriced, streaks: app.engine.blindStreaks });
+  app.engine.blindStreaks = read.streaks;
+  const { blind: blindPools, heldBlind, setAside, complete } = read;
+  let marked = false;
+  try {
+    markBook(app, {
+      decided,
+      entries,
+      blindPools: heldBlind,
+      writtenDown: setAside,
+      heldAtStart,
+      solAtStart,
+      usdcAtStart,
+      solPriceUsd,
+      hedgeUsd: paper ? paperHedgeEquityUsd(paper.hedge).netUsd : 0,
+      complete,
+    });
+    marked = true;
+  } catch (err) {
+    console.error(`[cycle ${app.cycle}] marks failed:`, err);
   }
+  if (blindPools.length > heldBlind.length) console.log(`[cycle ${app.cycle}] ${blindPools.length - heldBlind.length} pick(s) holding no band not read this cycle; nothing to carry`);
+  if (!complete) {
+    const why = [heldBlind.length ? `${observed.length}/${pools.length} pools observed, ${decided.length} decided, ${heldBlind.length} holding a band blind` : null, usdcUnpriced ? `the wallet holds ${usdcAtStart.toFixed(2)} USDC and no SOL price is known this cycle` : null].filter(Boolean).join("; ");
+    console.log(`[cycle ${app.cycle}] marks incomplete: ${why}; the breakers read carried marks`);
+  }
+  noteMarksFor(app, read.counts && marked, setAside);
   // THE FAST WATCH's list (src/engine/fastwatch.ts): the bands held as this cycle observed them, less the ones it closed
   try {
     const st = loadState();
@@ -2330,7 +2497,8 @@ async function main(): Promise<void> {
     else console.log(`[paper] new book: ${pEnv.sol} SOL, ${pEnv.usdc} USDC`);
     savePaperBook(paper);
   }
-  const connection = new Connection(config.rpcUrl, "confirmed");
+  // every RPC request carries a deadline (src/lib/timedFetch.ts): a node that never answers cannot hold the cycle
+  const connection = rpcConnection(config.rpcUrl);
   const wallet = Wallet.fromConfig(connection);
   acquireLock(wallet.publicKey.toBase58(), config.cycleIntervalSec);
   process.on("exit", releaseLock);
@@ -2391,6 +2559,9 @@ async function main(): Promise<void> {
     meteoraStocks: null,
   };
   appRef = app;
+  // the marks count as the last process left it: a restart does not lift "marks stale" (src/engine/marks.ts)
+  const restored = restoreMarksHealth(app.engine);
+  if (marksStale(restored)) console.error(`[alert] marks stale at boot: ${restored.skippedMarks} incomplete cycles carried over from before the restart; new opens stay blocked until a complete read`);
   if (app.screen) app.screenAt = new Date(app.screen.generatedAt).getTime();
   setSolPriceUsd(solPriceOf(app));
   banner(app);
@@ -2420,8 +2591,12 @@ async function main(): Promise<void> {
       await runIteration(app);
     } catch (err) {
       console.error(`[cycle ${app.cycle}] failed:`, err);
+      // a cycle that died before its marks read nothing complete: it counts toward "marks stale"
+      if (marksNotedCycle() !== app.cycle) noteMarksFor(app, false);
     }
-    heartbeat();
+    const beatAt = Date.now();
+    heartbeat(beatAt);
+    noteIteration(beatAt);
     if (once || stopping) break;
     if (config.maxCycles > 0 && app.cycle >= config.maxCycles) {
       console.log(`[loop] MAX_CYCLES=${config.maxCycles} reached; stopping cleanly`);

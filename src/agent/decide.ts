@@ -160,6 +160,55 @@ export function adviseWithPolicy(model: Decision, policy: PolicyResult): { decis
   };
 }
 
+/**
+ * AN OUTSIDE PROPOSAL MEETS THE ENTRY RULES TOO. An approved proposal (src/platform/proposals.ts) is asked of the
+ * desk policy exactly as a model's move is (adviseWithPolicy, always on: MODEL_ADVISES does not reach it), and on a
+ * live book it needs POLICY_LIVE like any open made without the model. What the policy may not do is swap the ask:
+ * a HOLD, another action, another band or another side is a REFUSAL, returned as a desk-written HOLD with the
+ * reason, and the substitute never runs under the proposal's id. Where the policy agrees to open, the band is laid
+ * the policy's way (its width, its geometry) at no more than the proposal asked for: the policy's size scaled down
+ * to the proposal's amounts, never up. PURE.
+ */
+export function adviseProposal(
+  proposed: Decision,
+  policy: PolicyResult,
+  opts: { id: string; live: boolean; policyLive: boolean },
+): { ok: true; decision: Decision; note: string } | { ok: false; decision: Decision; reason: string } {
+  const refuse = (reason: string) => ({
+    ok: false as const,
+    reason,
+    decision: holdDecision(`Outside proposal ${opts.id} refused: ${reason}. ${proposed.reasoning}`.slice(0, 1900), "Outside proposal refused. Holding."),
+  });
+  if (proposed.action === "OPEN_POSITION") {
+    if (!proposed.open) return refuse("an open with no band");
+    if (opts.live && !opts.policyLive) return refuse("this book is live and POLICY_LIVE is not set, so nothing opens without the model");
+    const advised = adviseWithPolicy(proposed, policy).decision;
+    const a = advised.open;
+    if (advised.action !== "OPEN_POSITION" || advised.positionAddress !== null || !a) return refuse(`the desk policy would not open here (${policy.branch}): ${policy.reason}`);
+    if (a.side !== proposed.open.side) return refuse(`the desk policy would open a ${a.side} band here, not the ${proposed.open.side} band asked for (${policy.branch}): ${policy.reason}`);
+    // never bigger than asked: one factor for both legs keeps the policy's mix of quote and token
+    const factors = [1];
+    if (a.amountSol > 0) factors.push(proposed.open.amountSol / a.amountSol);
+    if (a.amountToken > 0) factors.push(proposed.open.amountToken / a.amountToken);
+    const k = Math.max(0, Math.min(...factors));
+    if (!(k > 0)) return refuse(`the desk policy's band needs a leg the proposal did not fund (${policy.branch}): ${policy.reason}`);
+    const open = k < 1 ? { ...a, amountSol: a.amountSol * k, amountToken: a.amountToken * k, ...(a.acquireToken ? { acquireToken: a.acquireToken * k } : {}) } : a;
+    return {
+      ok: true,
+      decision: { ...advised, open },
+      note: `proposal ${opts.id} laid by the desk policy (${policy.branch})${k < 1 ? `, scaled to the ${r4(proposed.open.amountSol)} quote asked for` : ""}: ${policy.reason}`,
+    };
+  }
+  if (proposed.action === "CLOSE_POSITION") {
+    const advised = adviseWithPolicy(proposed, policy).decision;
+    if (advised.action !== "CLOSE_POSITION" || advised.positionAddress !== proposed.positionAddress) return refuse(`the desk policy keeps that band (${policy.branch}): ${policy.reason}`);
+    return { ok: true, decision: advised, note: `proposal ${opts.id}: the desk policy has no objection to the close` };
+  }
+  return refuse(`a proposal may only open or close a band, not ${proposed.action}`);
+}
+
+const r4 = (n: number): string => String(Math.round(n * 1e4) / 1e4);
+
 export const modelAdvises = (env: NodeJS.ProcessEnv = process.env): boolean => (env.MODEL_ADVISES ?? "").trim().toLowerCase() !== "false";
 
 /** A policy result after the model was asked and did not answer usably: the model id goes in the note, the author stays the policy. */

@@ -21,6 +21,7 @@ process.env.DATA_DIR = TEST_DIR;
 process.env.X402_TREASURY = "";
 process.env.X402_VERIFY = "";
 process.env.PLATFORM_OPERATOR_TOKEN = "op-test-token";
+process.env.PLATFORM_HOUSE_TOKEN = "house-test-token";
 process.env.ENGINE_OPEN = "true";
 process.env.ENGINE_ALLOWLIST = "";
 process.env.DRY_RUN = "true";
@@ -532,6 +533,43 @@ async function main(): Promise<void> {
     process.env.PLATFORM_OPERATOR_TOKEN = saved;
   });
 
+  await test("the house bearer: its own audience, the read tools only, and never the operator's powers", async () => {
+    assert.deepEqual([...mcp.HOUSE_TOOLS].sort(), ["bands_agent_thoughts", "bands_limits", "bands_list_pools", "bands_pool_score", "bands_pool_snapshot", "bands_screen"]);
+    assert.equal(rails.mcpAudience("Bearer house-test-token"), "house");
+    assert.equal(rails.mcpAudience("Bearer op-test-token"), "operator");
+    assert.equal(rails.mcpAudience("Bearer house-test-tokem"), "public", "a near miss is a stranger");
+    assert.equal(mcp.houseAuthorized("Bearer house-test-token"), true);
+    assert.equal(mcp.operatorAuthorized("Bearer house-test-token"), false, "the house token is not the operator's");
+    assert.equal(rails.mcpRequestAllowed({ method: "tools/call", params: { name: "bands_decide_proposal" } }, "Bearer house-test-token"), false, "the house cannot decide");
+    // it passes the paywall on a priced tool and records nothing, like the operator
+    const g = gate();
+    const rev = new RevenueLedger();
+    const before = rev.totalRevenueUsd;
+    assert.equal(await rails.checkPayment(g, rev, { method: "tools/call", params: { name: "bands_pool_score" } }, undefined, "Bearer house-test-token"), null);
+    assert.equal(rev.totalRevenueUsd, before);
+    // a house token equal to the operator token is not the house: that bearer is the operator, and only that
+    const saved = process.env.PLATFORM_HOUSE_TOKEN;
+    process.env.PLATFORM_HOUSE_TOKEN = "op-test-token";
+    try {
+      assert.equal(mcp.houseToken(), "");
+      assert.equal(mcp.houseAuthorized("Bearer op-test-token"), false);
+      assert.equal(rails.mcpAudience("Bearer op-test-token"), "operator");
+      assert.equal(rails.mcpAudience("Bearer house-test-token"), "public");
+      assert.equal((await rails.checkPayment(g, rev, { method: "tools/call", params: { name: "bands_pool_score" } }, undefined, "Bearer house-test-token"))?.status, 402);
+    } finally {
+      process.env.PLATFORM_HOUSE_TOKEN = saved;
+    }
+    // unset: nobody is the house
+    process.env.PLATFORM_HOUSE_TOKEN = "";
+    try {
+      assert.equal(mcp.houseAuthorized("Bearer "), false);
+      assert.equal(mcp.houseAuthorized("Bearer house-test-token"), false);
+      assert.equal(rails.mcpAudience("Bearer house-test-token"), "public");
+    } finally {
+      process.env.PLATFORM_HOUSE_TOKEN = saved;
+    }
+  });
+
   await test("checkPayment: free passes, priced without header is a 402, verified payment records revenue", async () => {
     const g = gate();
     const rev = new RevenueLedger();
@@ -657,6 +695,29 @@ async function main(): Promise<void> {
     assert.equal(wrongBearer.status, 401);
   });
 
+  await test("POST /mcp: the house bearer is served exactly the six read tools, passes the paywall, and can neither propose nor decide", async () => {
+    const house = { authorization: "Bearer house-test-token" };
+    const sid = (await rpc(init, house)).headers.get("mcp-session-id")!;
+    const list = await rpc({ jsonrpc: "2.0", id: 40, method: "tools/list" }, { "mcp-session-id": sid, ...house });
+    const names = ((await list.json()) as { result: { tools: Array<{ name: string }> } }).result.tools.map((t) => t.name).sort();
+    assert.deepEqual(names, ["bands_agent_thoughts", "bands_limits", "bands_list_pools", "bands_pool_score", "bands_pool_snapshot", "bands_screen"]);
+    const revenueBefore = ((await (await app.request("/api/revenue")).json()) as { totalUsd: number }).totalUsd;
+    const scored = await rpc({ jsonrpc: "2.0", id: 41, method: "tools/call", params: { name: "bands_pool_score", arguments: { pool } } }, { "mcp-session-id": sid, ...house });
+    assert.equal(scored.status, 200, "a priced tool with the house bearer and no X-PAYMENT");
+    assert.match(JSON.parse(((await scored.json()) as { result: { content: Array<{ text: string }> } }).result.content[0].text).error, /no screen yet/);
+    assert.equal(((await (await app.request("/api/revenue")).json()) as { totalUsd: number }).totalUsd, revenueBefore, "the house pays itself nothing");
+    // decide is refused at the bearer gate; propose is not on his server at all
+    const decide = await rpc({ jsonrpc: "2.0", id: 42, method: "tools/call", params: { name: "bands_decide_proposal", arguments: { id: "x", decision: "approve" } } }, { "mcp-session-id": sid, ...house });
+    assert.equal(decide.status, 401);
+    const pending = proposals.listProposals(200).length;
+    const propose = await rpc({ jsonrpc: "2.0", id: 43, method: "tools/call", params: { name: "bands_propose_band_action", arguments: { ...openInput, agentName: "mr-bands" } } }, { "mcp-session-id": sid, ...house });
+    const out = (await propose.json()) as { result?: { isError?: boolean }; error?: unknown };
+    assert.ok(out.error || out.result?.isError, "the house session has no proposals tool");
+    assert.equal(proposals.listProposals(200).length, pending, "nothing was filed");
+    // the house bearer on the proposals route is not a wallet session either
+    assert.equal((await app.request("/api/proposals/decide", { method: "POST", headers: { ...house, "content-type": "application/json" }, body: JSON.stringify({ id: "x", decision: "approve" }) })).status, 401);
+  });
+
   await test("POST /mcp: the proposals tool writes a proposal for a claimed name; the operator audience can decide it", async () => {
     const sid = (await rpc(init)).headers.get("mcp-session-id")!;
     const args = { ...openInput, agentName: "scout-7" };
@@ -669,7 +730,8 @@ async function main(): Promise<void> {
     assert.equal(out.ok, true);
     assert.equal(out.status, "pending");
     const stored = proposals.getProposal(out.id)!;
-    assert.match(stored.proposerId, /^mcp:[0-9a-f]{12}$/);
+    // a claimed name is marked as one: the desk's own approval rules never take it (src/platform/autoDecide.ts)
+    assert.match(stored.proposerId, /^mcp:n:[0-9a-f]{12}$/);
     assert.equal(stored.proposerName, "scout-7");
     const opInit = await rpc(init, { authorization: "Bearer op-test-token" });
     const opSid = opInit.headers.get("mcp-session-id")!;
@@ -678,6 +740,12 @@ async function main(): Promise<void> {
     const decided = await rpc({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "bands_decide_proposal", arguments: { id: out.id, decision: "reject", note: "not this pool" } } }, { "mcp-session-id": opSid, authorization: "Bearer op-test-token" });
     assert.equal(decided.status, 200);
     assert.equal(proposals.getProposal(out.id)?.status, "rejected");
+    assert.equal(proposals.getProposal(out.id)?.decidedBy, "operator");
+    // a session that sent a bearer proposes under a bearer-derived id
+    const viaBearer = await rpc({ jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "bands_propose_band_action", arguments: { ...args, agentName: "scout-8" } } }, { "mcp-session-id": opSid, authorization: "Bearer op-test-token" });
+    const bOut = JSON.parse(((await viaBearer.json()) as { result: { content: Array<{ text: string }> } }).result.content[0].text);
+    assert.equal(bOut.ok, true);
+    assert.match(proposals.getProposal(bOut.id)!.proposerId, /^mcp:b:[0-9a-f]{12}$/);
   });
 
   await test("engine routes: 401 without a session, access opens with ENGINE_OPEN, skill served with its version, plan validates", async () => {
@@ -707,8 +775,10 @@ async function main(): Promise<void> {
     assert.equal(posted.status, 200);
     const { proposal } = (await posted.json()) as { proposal: Proposal };
     assert.equal(proposal.proposerId, me.publicKey.toBase58());
-    const board = (await (await app.request("/api/proposals?status=pending")).json()) as { ok: boolean; proposals: Proposal[] };
+    const board = (await (await app.request("/api/proposals?status=pending")).json()) as { ok: boolean; proposals: Proposal[]; auto: { on: boolean; approvedToday: number } };
     assert.ok(board.proposals.some((p) => p.id === proposal.id));
+    assert.equal(board.auto.on, false, "the desk's own approval rules are off unless AUTO_APPROVE_PROPOSALS=true");
+    assert.equal(board.auto.approvedToday, 0);
     const noOp = await app.request("/api/proposals/decide", { method: "POST", headers: { authorization: bearer, "content-type": "application/json" }, body: JSON.stringify({ id: proposal.id, decision: "approve" }) });
     assert.equal(noOp.status, 401);
     const bad = await app.request("/api/proposals/decide", { method: "POST", headers: { authorization: "Bearer op-test-token", "content-type": "application/json" }, body: JSON.stringify({ id: proposal.id, decision: "maybe" }) });

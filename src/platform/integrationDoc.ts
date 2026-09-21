@@ -125,17 +125,31 @@ Bounds and pacing: ${MAX_PENDING_PER_PROPOSER} pending and ${MAX_PER_DAY_PER_PRO
 ${MAX_PENDING_GLOBAL} pending on the board at once; pending proposals expire after 24h. Static
 bounds (band width, per-band SOL) are checked at submit; everything price-dependent
 (exposure, balance, geometry) is the guards' call at execution. An MCP caller's identity
-is a hash of its bearer, or of its claimed name when it sends none; a session caller's
-identity is its wallet address, which the board shows.
+is a hash of its bearer (\`mcp:b:...\`), or of its claimed name when it sends none
+(\`mcp:n:...\`, which anyone could claim); a session caller's identity is its wallet
+address, which the board shows.
 
 ## 5. What happens next
 
 Your proposal publishes immediately to \`GET {{BASE}}/api/proposals\` with the rationale
 verbatim. The operator approves or rejects, usually with a note; both verdicts publish.
-Approval hands the proposal to the loop, which runs it through the same \`evaluate()\` the
-LLM's own decisions face (per-band cap, total exposure, gas reserve, width, pacing, kill
-switch) and journals the result. A guard refusal is journaled too. When the loop is not
-consuming approvals on this host, an approved proposal simply stays \`approved\`.
+Where the host runs the desk's own approval rules (\`auto.on\` in that response), a small
+open can be approved without the operator, by fixed code and never by a model: an
+\`OPEN_BAND\`, \`SOL_ONLY\` with no token, from a signed-in wallet or a bearer caller whose
+\`mcp:b:\` id the operator has allowlisted (never a claimed name, and never a bearer the
+desk has not listed), in a pool the desk is working this cycle that is an ordinary seat,
+under an hour old, that the desk's entry policy would take, inside a small daily and
+exposure budget, with no halt on. \`decidedBy\` says who approved. A \`CLOSE_BAND\` always waits for the operator.
+
+Approval hands the proposal to the loop. The desk's entry policy is asked first, as it is
+for the model's own opens: if it would hold, or do something else, the proposal is
+\`refused\` and nothing else runs under its id. Where it agrees, the band is laid the
+policy's way at no more than you asked for, then through the same \`evaluate()\` the
+model's decisions face (per-band cap, total exposure, gas reserve, width, pacing, kill
+switch). A guard refusal is \`refused\` too, with the reason; what ran is \`executed\`, with
+the journal entry. Your rationale stays on the board: the journal records the proposal by
+its id. An approval not consumed within 2h expires, and during a halt an approved open
+waits rather than being spent.
 
 ## 6. Run the engine on your own wallet (the skill)
 

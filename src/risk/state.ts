@@ -84,6 +84,12 @@ export interface RiskState {
    * to the alias the loop works it under.
    */
   pairPools?: Record<string, PairPoolRecord>;
+  /**
+   * position address -> the outside proposal that laid it (src/platform/proposals.ts). Its PRESENCE is what makes a
+   * band a proposal band: the auto-approval budget (src/platform/autoDecide.ts) counts these, so a restart cannot
+   * reset it. A re-lay carries the record to the new band; forgetBand() drops it at the close.
+   */
+  proposalBands?: Record<string, { proposal: string; pool: string; at: number }>;
 }
 
 const STATE_FILE = () => path.resolve(process.cwd(), config.dataDir, "state.json");
@@ -110,6 +116,7 @@ export function emptyState(day = todayUtc()): RiskState {
     launchBands: {},
     askBands: {},
     pairPools: {},
+    proposalBands: {},
   };
 }
 
@@ -132,6 +139,7 @@ export function loadState(): RiskState {
       launchBands: parsed.launchBands ?? {},
       askBands: parsed.askBands ?? {},
       pairPools: parsed.pairPools ?? {},
+      proposalBands: parsed.proposalBands ?? {},
     };
     if (s.day !== todayUtc()) {
       s.day = todayUtc();
@@ -152,7 +160,47 @@ export function saveState(s: RiskState): void {
   fs.renameSync(tmp, file);
 }
 
-/** A file named STOP in the project root (or KILL_SWITCH=true) blocks all new exposure. */
-export function killSwitchActive(): boolean {
-  return fs.existsSync(path.resolve(process.cwd(), "STOP")) || process.env.KILL_SWITCH === "true";
+/**
+ * Where a halt comes from. "root" is a file named STOP in the project root: it halts every desk run from
+ * it, paper and live alike. "desk" is a STOP file in this desk's DATA_DIR: it halts this desk only.
+ * "env" is KILL_SWITCH=true in the environment (the live desk carries it in ops/live.env until the go).
+ */
+export type HaltSource = "root" | "desk" | "env";
+
+export interface HaltWhere {
+  /** the directory the root STOP is looked for in (the project root the desk runs from) */
+  cwd?: string;
+  /** the desk's data directory, relative to cwd or absolute */
+  dataDir?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Every halt that is in force, in that order. A file only has to EXIST: its contents are never read,
+ * so there is no expiry and no condition in it, and an empty file halts as surely as a long note.
+ */
+export function killSwitchSources(where: HaltWhere = {}): HaltSource[] {
+  const cwd = where.cwd ?? process.cwd();
+  const dataDir = where.dataDir ?? config.dataDir;
+  const env = where.env ?? process.env;
+  const out: HaltSource[] = [];
+  if (fs.existsSync(path.resolve(cwd, "STOP"))) out.push("root");
+  if (fs.existsSync(path.resolve(cwd, dataDir, "STOP"))) out.push("desk");
+  if (env.KILL_SWITCH === "true") out.push("env");
+  return out;
+}
+
+/** The root STOP, this desk's DATA_DIR/STOP, or KILL_SWITCH=true: any one blocks all new exposure. */
+export function killSwitchActive(where: HaltWhere = {}): boolean {
+  return killSwitchSources(where).length > 0;
+}
+
+/** The halts in force, in words for the preflight and the status line: "STOP in the repo root (every desk)", and so on. */
+export function describeHalt(sources: HaltSource[], dataDir: string = config.dataDir): string {
+  const words: Record<HaltSource, string> = {
+    root: "STOP in the repo root (halts every desk)",
+    desk: `${path.join(dataDir, "STOP")} (halts this desk only)`,
+    env: "KILL_SWITCH=true in the environment",
+  };
+  return sources.length ? sources.map((s) => words[s]).join(" + ") : "clear";
 }
