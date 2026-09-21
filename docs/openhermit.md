@@ -16,7 +16,7 @@ its own process. Mr Bands follows the same split.
  │ screener -> observation                      │  observation│ agent "mr-bands"                 │
  │ decide()  DECIDER=openhermit ────────────────┼────────────>│  instructions: identity/soul/rules│
  │           (src/agent/openhermit.ts)          │<────────────┼  model: openrouter/anthropic/...  │
- │ guards (src/risk) -> executor -> wallet      │ Decision    │  session api:mr-bands-desk-<mode> │
+ │ guards (src/risk) -> executor -> wallet      │ Decision    │  session desk:<mode>:<pool>       │
  │ journal, sites, MCP server at POST /mcp <────┼─────────────┼─ MCP client (bands-paper|bands-live)
  └──────────────────────────────────────────────┘ bearer:     └──────────────────────────────────┘
                                                   PLATFORM_OPERATOR_TOKEN
@@ -41,11 +41,11 @@ the tokens go in `.env` (git-ignored); the rest may sit in `ops/live.env` or a p
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DECIDER` | unset | Who proposes. Unset: today's behaviour (Anthropic when a key exists, else the desk policy). `openhermit`: `decide()` posts the observation to the agent on the gateway and parses the Decision out of the reply. `policy`: the desk policy proposes, no model is asked. Anything unusable from the agent (a timeout, a 5xx, prose, JSON that is not a Decision) falls back to the desk policy exactly as a bad Anthropic reply does today (`policyAfterModel`), with a note that says why. |
+| `DECIDER` | unset | Who proposes. Unset (or an unknown word): today's behaviour (Anthropic when a key exists, else the desk policy). `anthropic`: Claude directly, as today. `openhermit`: `decide()` posts the observation to the agent on the gateway and parses the Decision out of the reply. `policy`: the desk policy proposes, no model is asked. Anything unusable from the agent (a timeout, a 5xx, prose, JSON that is not a Decision) falls back to the desk policy exactly as a bad Anthropic reply does today (`policyAfterModel`), with a note that says why. |
 | `OPENHERMIT_GATEWAY_URL` | `http://127.0.0.1:4000` | The gateway. |
 | `OPENHERMIT_AGENT_ID` | `mr-bands` | The agent's id on the gateway. |
 | `OPENHERMIT_TOKEN` | (none, required) | The gateway's admin bearer: `GATEWAY_ADMIN_TOKEN` from `~/.openhermit/gateway/.env`. The operator copies it into `.env`; no code here reads the gateway's file. |
-| `OPENHERMIT_TIMEOUT_MS` | `120000` | How long the desk waits for an answer (`?wait=true&timeout=`). Past it the desk policy proposes. |
+| `OPENHERMIT_TIMEOUT_MS` | `120000` | One deadline for the whole ask: opening the session and waiting for the answer (`?wait=true&timeout=`). Past it the desk policy proposes. |
 | `OPENHERMIT_MODEL` | (none) | An OpenRouter model id to pin, e.g. `anthropic/claude-opus-5`. Unset: `provision` picks the newest Anthropic Claude of the desk's `MODEL` family that OpenRouter offers. |
 | `PLATFORM_OPERATOR_TOKEN` | (none, required by `provision`) | The desk's operator bearer (`src/platform`). `provision` writes it into the gateway's MCP server rows as the `Authorization` header. |
 | `DATA_DIR` | `data-live` (for `ask`) | Where `ask` reads the newest journal entry from. |
@@ -107,9 +107,16 @@ for that: `hermit chat --agent mr-bands` and ask him to run it.
 
 `ask` reads the newest entry of `DATA_DIR/decisions.jsonl`, renders it as a thin observation (the pool,
 the wallet, the bands, the screen, the engine directive, the last headline) plus the answer rule, posts
-it to the session `api:mr-bands-ask` with `?wait=true`, and prints the raw reply, every tool call he
-made, and whether the reply parses as a Decision. It exercises the same URL shape and the same parse the
-desk uses.
+it through the desk's own client (`askSession` in `src/agent/openhermit.ts`: the same open, post,
+deadline and parse `decide()` uses) into the session `api:mr-bands-ask`, and prints the raw reply, every
+tool call he made, and whether the reply parses as a Decision. It exits 1 when it does not.
+
+The desk itself talks to him in one session per desk mode and pool, `desk:<mode>:<pool address>`
+(`dry-run` for the paper desk, `live` for the live one), so he sees what he said about a pool last cycle
+and the two desks never read each other's history. Each message is `formatObservation(observation)`, the
+text the Anthropic backend sees, plus two lines: answer with only one JSON object (the Decision fields
+spelled out) and the pool's label. Sessions are opened once per desk process; a 404 on a post (the
+gateway restarted) opens the session again and posts once more.
 
 ## Switching a desk to the agent
 
@@ -135,8 +142,8 @@ one on:
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bands.mrbands.paper.plist
    tail -f data-live/mrbands.log        # data-mainnet/mrbands.log for the live desk
    ```
-   The journal's `llm.source` reads `llm` with the agent's model when he answered and `policy` with a
-   note naming the gateway when he did not.
+   The journal's `llm.source` reads `llm` with model `openhermit:mr-bands` when he answered (the gateway
+   names no model in its reply) and `policy` with a note naming the gateway when he did not.
 
 The live desk keeps `POLICY_LIVE=true` in `ops/live.env`: without it a live book whose model does not
 answer holds instead of trading on the policy (`policyMayTradeLive`). That rule is unchanged.

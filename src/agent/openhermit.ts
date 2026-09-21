@@ -6,9 +6,12 @@
  * only the observation and a two-line instruction to answer with the Decision JSON alone. His hands
  * (the desk's own MCP server) are registered on the gateway, not here.
  *
- * One session per pool ("desk:<pool>"): the gateway keeps the turn history, so he sees what he said
- * about the pool last cycle. A session is opened once per process (POST /sessions reopens an existing
- * one) and remembered in memory; a 404 on a post (the gateway restarted and forgot it) opens it again.
+ * One session per desk mode and pool ("desk:<mode>:<pool>"): the gateway keeps the turn history, so he
+ * sees what he said about the pool last cycle, and the paper desk and the live desk (one agent answers
+ * both) never read each other's. A session is opened once per process (POST /sessions reopens an
+ * existing one) and remembered in memory; a 404 on a post (the gateway restarted and forgot it) opens
+ * it again. askSession is the transport on its own, for the CLI's `ask` and anything else that wants
+ * to put one message in front of him without pretending to be the desk.
  *
  * Nothing here decides anything. The reply is parsed against DecisionSchema and handed to decide(),
  * which runs the same advice-and-guards path an Anthropic reply takes; anything unusable throws a
@@ -74,10 +77,10 @@ export interface OpenHermitReply {
   sessionId: string;
 }
 
-/** "desk:" + the pool address, reduced to what a session id and a URL both like. Base58 addresses pass through untouched. */
-export function decisionSessionId(poolAddress: string): string {
+/** "desk:<mode>:" + the pool address, reduced to what a session id and a URL both like. Base58 addresses pass through untouched. */
+export function decisionSessionId(poolAddress: string, mode: Observation["mode"]): string {
   const slug = poolAddress.trim().replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "pool";
-  return `desk:${slug}`;
+  return `desk:${mode}:${slug}`;
 }
 
 /**
@@ -149,6 +152,18 @@ export interface AskOptions {
   fetchImpl?: typeof fetch;
 }
 
+export interface SessionMessage {
+  /** the session to post into; opened (or resumed) first when this process has not yet */
+  sessionId: string;
+  text: string;
+  /** who is talking, as the gateway's source.platform (the desk by default) */
+  platform?: string;
+  /** stored on the session when it is opened */
+  sessionMetadata?: Record<string, unknown>;
+  /** stored on the message */
+  metadata?: Record<string, unknown>;
+}
+
 /** Sessions this process has opened on the gateway, keyed "<gatewayUrl>|<agentId>|<sessionId>". */
 const openedSessions = new Set<string>();
 
@@ -158,16 +173,17 @@ export function forgetSessions(): void {
 }
 
 /**
- * Ask the agent for a decision on one observation. Throws an OpenHermitError; never returns without text.
- * The deadline covers the whole exchange: an open that takes most of it leaves the post only the rest.
+ * Put one message in front of the agent and wait for the turn to end. Throws an OpenHermitError; never
+ * returns without text. The deadline covers the whole exchange: an open that takes most of it leaves the
+ * post only the rest.
  */
-export async function askForDecision(observation: Observation, opts: AskOptions = {}): Promise<OpenHermitReply> {
+export async function askSession(msg: SessionMessage, opts: AskOptions = {}): Promise<OpenHermitReply> {
   const settings = opts.settings ?? openHermitSettings();
   if (!settings.token) throw new OpenHermitError("unauthorized", "OPENHERMIT_TOKEN is not set");
   const fetchImpl = opts.fetchImpl ?? fetch;
   const started = Date.now();
   const deadline = started + settings.timeoutMs;
-  const sessionId = decisionSessionId(observation.snapshot.address);
+  const { sessionId } = msg;
   const key = `${settings.gatewayUrl}|${settings.agentId}|${sessionId}`;
   const base = `${settings.gatewayUrl}/api/agents/${encodeURIComponent(settings.agentId)}/sessions`;
   const headers = { "content-type": "application/json", authorization: `Bearer ${settings.token}` };
@@ -205,8 +221,8 @@ export async function askForDecision(observation: Observation, opts: AskOptions 
   const open = async (): Promise<void> => {
     const r = await call(base, {
       sessionId,
-      source: { kind: "api", interactive: false, platform: "mr-bands-desk", type: "direct" },
-      metadata: { pool: observation.snapshot.address, label: observation.poolLabel },
+      source: { kind: "api", interactive: false, platform: msg.platform ?? "mr-bands-desk", type: "direct" },
+      ...(msg.sessionMetadata ? { metadata: msg.sessionMetadata } : {}),
     });
     if (r.status === 401 || r.status === 403) throw new OpenHermitError("unauthorized", errorMessage(r.json, "the gateway refused the token"), r.status);
     if (r.status === 404) throw new OpenHermitError("not-found", errorMessage(r.json, `agent ${settings.agentId} is not on the gateway`), r.status);
@@ -217,7 +233,7 @@ export async function askForDecision(observation: Observation, opts: AskOptions 
   const post = async () => {
     const left = Math.max(1, deadline - Date.now());
     const url = `${base}/${encodeURIComponent(sessionId)}/messages?wait=true&timeout=${left}`;
-    return call(url, { text: decisionPrompt(observation), mentioned: true, metadata: { cycle: observation.cycle, pool: observation.snapshot.address } });
+    return call(url, { text: msg.text, mentioned: true, ...(msg.metadata ? { metadata: msg.metadata } : {}) });
   };
 
   if (!openedSessions.has(key)) await open();
@@ -241,4 +257,18 @@ export async function askForDecision(observation: Observation, opts: AskOptions 
     ? (json.toolCalls as Record<string, unknown>[]).map((t) => ({ tool: String(t.tool ?? ""), isError: t.isError === true, ...(typeof t.text === "string" ? { text: t.text } : {}) }))
     : [];
   return { text: json.text, toolCalls, ...(typeof json.model === "string" ? { model: json.model } : {}), ms: Date.now() - started, sessionId };
+}
+
+/** Ask the agent for a decision on one observation, in the pool's session for this desk mode. Throws an OpenHermitError. */
+export function askForDecision(observation: Observation, opts: AskOptions = {}): Promise<OpenHermitReply> {
+  const pool = observation.snapshot.address;
+  return askSession(
+    {
+      sessionId: decisionSessionId(pool, observation.mode),
+      text: decisionPrompt(observation),
+      sessionMetadata: { pool, label: observation.poolLabel, mode: observation.mode },
+      metadata: { cycle: observation.cycle, pool },
+    },
+    opts,
+  );
 }

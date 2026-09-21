@@ -5,7 +5,7 @@
  * engagement, position data for the period, the current personality.json). Text written by other
  * accounts, and every tool output, is wrapped and labelled as data, never as instructions (spec rule 12);
  * "<" inside the data is escaped so nothing in a post can close its block. Claude is asked through the
- * same credential detection as src/agent/decide.ts (hasLlmCredentials, config.model), with structured
+ * same credential detection as src/agent/decide.ts (hasAnthropicCredentials, config.model), with structured
  * output validated by zod. Each proposal is then screened against the locked core (the lint) and the gate
  * rules, dropped with a reason when it conflicts, and the rest go to pending_proposals. With no credentials
  * it returns { skipped: "no ANTHROPIC_API_KEY" }. Never throws.
@@ -20,7 +20,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import { config } from "../config";
-import { hasLlmCredentials } from "../agent/decide";
+import { hasAnthropicCredentials } from "../agent/decide";
 import type { TalkEnv } from "./env";
 import { describeViolations, lintText, normalizeForMatch, SUPERLATIVE_RE, type LintContext, type LintRule } from "./lint";
 import { ACTIONS, flaggedHandles, proposeChanges, suspiciousHandle, TARGETS, type PendingProposal, type Personality, type Proposal } from "./personality";
@@ -247,7 +247,8 @@ export interface ReflectDeps {
 }
 
 export async function reflect(inputs: ReflectInputs, deps: ReflectDeps): Promise<ReflectResult> {
-  if (!deps.model && !hasLlmCredentials()) return { ok: false, skipped: "no ANTHROPIC_API_KEY" };
+  // reflect talks to Anthropic itself, whichever backend decide() uses: it needs that key, not a DECIDER
+  if (!deps.model && !hasAnthropicCredentials()) return { ok: false, skipped: "no ANTHROPIC_API_KEY" };
   const now = deps.now ?? Date.now();
   try {
     const { system, user } = buildReflectPrompt(inputs, deps.env);

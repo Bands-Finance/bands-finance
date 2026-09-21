@@ -83,7 +83,7 @@ function startGateway(): Promise<FakeGateway> {
 
 /** The routes as the transport doc gives them: open (create or reopen) and post with wait=true. Unknown session -> the gateway's 404 shape. */
 const SESSIONS = "/api/agents/mr-bands-test/sessions";
-const MESSAGES = `${SESSIONS}/desk%3A${POOL}/messages`;
+const MESSAGES = `${SESSIONS}/desk%3Adry-run%3A${POOL}/messages`;
 function routes(gw: FakeGateway, answer: (req: Seen) => { status: number; body?: unknown; delayMs?: number }) {
   gw.reply = (req) => {
     if (req.auth !== "Bearer test-admin-token") return { status: 401, body: { error: { code: "unauthorized", message: "Invalid admin token." } } };
@@ -92,13 +92,13 @@ function routes(gw: FakeGateway, answer: (req: Seen) => { status: number; body?:
       return { status: 200, body: { sessionId: req.body.sessionId, source: req.body.source } };
     }
     if (req.path.startsWith(MESSAGES)) {
-      if (!gw.sessions.has(`desk:${POOL}`)) return { status: 404, body: { error: { code: "not_found", message: `Session not found: desk:${POOL}` } } };
+      if (!gw.sessions.has(`desk:dry-run:${POOL}`)) return { status: 404, body: { error: { code: "not_found", message: `Session not found: desk:dry-run:${POOL}` } } };
       return answer(req);
     }
     return { status: 404, body: { error: { code: "not_found", message: "no such route" } } };
   };
 }
-const said = (text: string) => ({ status: 200, body: { sessionId: `desk:${POOL}`, messageId: "msg-1", text, toolCalls: [] } });
+const said = (text: string) => ({ status: 200, body: { sessionId: `desk:dry-run:${POOL}`, messageId: "msg-1", text, toolCalls: [] } });
 
 async function main(): Promise<void> {
   const { binPriceUi } = await import("../tools/dlmm.js");
@@ -164,8 +164,8 @@ async function main(): Promise<void> {
     assert.equal(oh.openHermitSettings({ OPENHERMIT_TIMEOUT_MS: "0" }).timeoutMs, 120_000);
     assert.equal(oh.openHermitAvailable({}), false);
     assert.equal(oh.openHermitAvailable({ OPENHERMIT_TOKEN: " t " }), true);
-    assert.equal(oh.decisionSessionId(POOL), `desk:${POOL}`);
-    assert.equal(oh.decisionSessionId(" a/b c "), "desk:a-b-c");
+    assert.equal(oh.decisionSessionId(POOL, "dry-run"), `desk:dry-run:${POOL}`);
+    assert.equal(oh.decisionSessionId(" a/b c ", "live"), "desk:live:a-b-c");
   });
   await test("deciderOf: DECIDER wins; unset keeps the old rule (anthropic with credentials, else policy); hasLlmCredentials follows the backend", () => {
     assert.equal(deciderOf({ DECIDER: "OpenHermit" }), "openhermit");
@@ -223,7 +223,7 @@ async function main(): Promise<void> {
     assert.deepEqual(r.usage, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
     assert.deepEqual(gw.seen.map((s) => s.path), [SESSIONS, `${MESSAGES}?wait=true&timeout=${(gw.seen[1].path.match(/timeout=(\d+)/) ?? [])[1]}`]);
     const open = gw.seen[0].body as { sessionId: string; source: Record<string, unknown> };
-    assert.equal(open.sessionId, `desk:${POOL}`);
+    assert.equal(open.sessionId, `desk:dry-run:${POOL}`);
     assert.equal(open.source.type, "direct");
     assert.equal(open.source.interactive, false);
     const post = gw.seen[1].body as { text: string; mentioned: boolean };
@@ -264,7 +264,7 @@ async function main(): Promise<void> {
     assert.match(r.note ?? "", /openhermit:mr-bands-test was asked/);
   });
   await test("a turn that ended without text: not a decision", async () => {
-    reset(() => ({ status: 200, body: { sessionId: `desk:${POOL}`, text: null, toolCalls: [], error: "model failed" } }));
+    reset(() => ({ status: 200, body: { sessionId: `desk:dry-run:${POOL}`, text: null, toolCalls: [], error: "model failed" } }));
     const r = await decide(observation);
     assert.equal(r.source, "policy");
     assert.match(r.note ?? "", /OpenHermit reply was not a decision \(the turn ended with an error: model failed\)/);
@@ -295,7 +295,7 @@ async function main(): Promise<void> {
     }
   });
   await test("the gateway's own 504 (it gave up waiting for the agent) reads as a timeout too", async () => {
-    reset(() => ({ status: 504, body: { sessionId: `desk:${POOL}`, text: null, toolCalls: [], error: "Timeout waiting for agent response." } }));
+    reset(() => ({ status: 504, body: { sessionId: `desk:dry-run:${POOL}`, text: null, toolCalls: [], error: "Timeout waiting for agent response." } }));
     const r = await decide(observation);
     assert.equal(r.source, "policy");
     assert.match(r.note ?? "", /OpenHermit timed out \(Timeout waiting for agent response\)/);

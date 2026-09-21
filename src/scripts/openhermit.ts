@@ -23,36 +23,21 @@ import path from "node:path";
 import { userInfo } from "node:os";
 import { config, riskLimits } from "../config";
 import { AGENT_NAME, buildSystemPrompt } from "../agent/persona";
-import { DecisionSchema, type Decision } from "../agent/schema";
+import { askSession, extractDecision, OpenHermitError, openHermitSettings, type OpenHermitSettings as ClientSettings } from "../agent/openhermit";
 import type { JournalEntry } from "../journal";
 
 // ---------------------------------------------------------------------------------------------
 // settings
 // ---------------------------------------------------------------------------------------------
 
-export interface OpenHermitSettings {
-  gatewayUrl: string;
-  token: string;
-  agentId: string;
-  timeoutMs: number;
+/** The desk's own settings (src/agent/openhermit.ts: gateway, agent, token, timeout) plus the one only provisioning reads. */
+export interface OpenHermitSettings extends ClientSettings {
   /** a model id the operator chose (OPENHERMIT_MODEL); absent means "ask OpenRouter for the newest" */
   model: string | null;
 }
 
-export const DEFAULT_GATEWAY_URL = "http://127.0.0.1:4000";
-export const DEFAULT_AGENT_ID = "mr-bands";
-/** the gateway's own sync default is 300 s; a decision that takes longer than two minutes is not one the desk should wait for */
-export const DEFAULT_TIMEOUT_MS = 120_000;
-
 export function settingsFromEnv(env: NodeJS.ProcessEnv = process.env): OpenHermitSettings {
-  const timeout = Number(env.OPENHERMIT_TIMEOUT_MS);
-  return {
-    gatewayUrl: (env.OPENHERMIT_GATEWAY_URL?.trim() || DEFAULT_GATEWAY_URL).replace(/\/+$/, ""),
-    token: env.OPENHERMIT_TOKEN?.trim() ?? "",
-    agentId: env.OPENHERMIT_AGENT_ID?.trim() || DEFAULT_AGENT_ID,
-    timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_TIMEOUT_MS,
-    model: env.OPENHERMIT_MODEL?.trim() || null,
-  };
+  return { ...openHermitSettings(env), model: env.OPENHERMIT_MODEL?.trim() || null };
 }
 
 /** The desk's MCP servers as the gateway will know them. Paper and live are both registered; one is enabled. */
@@ -62,8 +47,8 @@ export const MCP_SERVERS = {
 } as const;
 export type McpTarget = keyof typeof MCP_SERVERS;
 
-/** The session the desk talks to him in. One per desk mode so paper and live never share a history. */
-export const deskSessionId = (mode: string) => `api:mr-bands-desk-${mode}`;
+/** The session `ask` talks to him in. The desk's own sessions are "desk:<mode>:<pool>" (src/agent/openhermit.ts); this one never touches their history. */
+export const ASK_SESSION_ID = "api:mr-bands-ask";
 
 // ---------------------------------------------------------------------------------------------
 // the gateway, over HTTP with the admin bearer (the hermit CLI's own protocol)
@@ -131,15 +116,6 @@ interface AgentMcpRow {
   name?: string;
   url?: string;
   headerKeys?: string[];
-}
-/** what POST .../messages?wait=true answers (docs/transport-protocol.md) */
-export interface AgentReply {
-  sessionId: string;
-  messageId?: string;
-  text: string | null;
-  toolCalls: { tool: string; isError: boolean; text?: string }[];
-  error?: string;
-  triggered?: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -270,66 +246,6 @@ export function agentInstructions(prompt: string, mcp: McpTarget): AgentInstruct
 /** The rows for this desk's limits. */
 export function instructionsForDesk(mcp: McpTarget): AgentInstructions {
   return agentInstructions(buildSystemPrompt(riskLimits, GENERIC_POOL), mcp);
-}
-
-// ---------------------------------------------------------------------------------------------
-// the reply: one Decision JSON, found and parsed
-// ---------------------------------------------------------------------------------------------
-
-export interface ParsedReply {
-  decision: Decision | null;
-  /** why it did not parse, for the journal note */
-  error: string | null;
-}
-
-/**
- * The Decision out of the agent's text. The rules say "one JSON object and nothing else", and a model
- * that fences it or says a word first still gets read: the whole text, then a fenced block, then the
- * outermost braces. What comes out is checked against the schema; anything else is null with a reason,
- * and the desk falls back to its policy exactly as it does on a bad Anthropic reply. PURE.
- */
-export function parseDecisionReply(text: string | null | undefined): ParsedReply {
-  if (!text || !text.trim()) return { decision: null, error: "empty reply" };
-  const candidates: string[] = [text.trim()];
-  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
-  if (fence) candidates.push(fence[1].trim());
-  const first = text.indexOf("{");
-  const last = text.lastIndexOf("}");
-  if (first >= 0 && last > first) candidates.push(text.slice(first, last + 1));
-  let lastError = "no JSON object in the reply";
-  for (const c of candidates) {
-    let raw: unknown;
-    try {
-      raw = JSON.parse(c);
-    } catch {
-      continue;
-    }
-    const parsed = DecisionSchema.safeParse(raw);
-    if (parsed.success) return { decision: parsed.data, error: null };
-    lastError = `reply did not match the decision schema: ${parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}`;
-  }
-  return { decision: null, error: lastError };
-}
-
-// ---------------------------------------------------------------------------------------------
-// asking him: the desk's client, in miniature (src/agent/openhermit.ts is the shared one)
-// ---------------------------------------------------------------------------------------------
-
-/**
- * Open (or resume) his session and post one message, waiting for the turn to end. The session is opened
- * every time because the call is idempotent on the gateway and a runner evicted since the last message
- * has nothing in memory. A gateway timeout comes back as a 504 with `error` set; that is returned, not thrown.
- */
-export async function askAgent(gw: Gateway, agentId: string, sessionId: string, text: string, timeoutMs: number): Promise<AgentReply> {
-  const a = encodeURIComponent(agentId);
-  const s = encodeURIComponent(sessionId);
-  await gw.post(`/api/agents/${a}/sessions`, { sessionId, source: { kind: "api", interactive: false, platform: "desk", type: "direct" }, metadata: { caller: "mr-bands-desk" } });
-  try {
-    return await gw.post<AgentReply>(`/api/agents/${a}/sessions/${s}/messages?wait=true&timeout=${Math.round(timeoutMs)}`, { text });
-  } catch (err) {
-    if (err instanceof GatewayError && err.status === 504 && err.body && typeof err.body === "object") return err.body as AgentReply;
-    throw err;
-  }
 }
 
 /**
@@ -570,20 +486,33 @@ async function status(settings: OpenHermitSettings): Promise<void> {
 // ask
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * One message through the desk's own client (src/agent/openhermit.ts: the same open, the same post, the
+ * same deadline, the same parse decide() uses), into a session of its own so the desk's per-pool history
+ * is never touched. A failure the desk would fall back on (a timeout, a 504, a turn without text) is
+ * printed with its kind, not thrown, so the exit code says whether he answered with a Decision.
+ */
 async function ask(settings: OpenHermitSettings): Promise<void> {
   const dataDir = process.env.DATA_DIR?.trim() || "data-live";
   const entry = newestEntry(dataDir);
   if (!entry) throw new Error(`no journal entry in ${dataDir}/decisions.jsonl (set DATA_DIR)`);
   const text = observationFromEntry(entry);
-  console.log(`asking ${settings.agentId} about ${entry.pool.label} (${entry.ts}, ${entry.mode}, from ${dataDir}) with a ${settings.timeoutMs} ms wait`);
-  const gw = new Gateway(settings.gatewayUrl, settings.token);
+  console.log(`asking ${settings.agentId} about ${entry.pool.label} (${entry.ts}, ${entry.mode}, from ${dataDir}) in session ${ASK_SESSION_ID} with a ${settings.timeoutMs} ms wait`);
   const t0 = Date.now();
-  const reply = await askAgent(gw, settings.agentId, `api:mr-bands-ask`, text, settings.timeoutMs);
-  console.log(`\n--- reply in ${Date.now() - t0} ms${reply.error ? ` (error: ${reply.error})` : ""}${reply.triggered === false ? " (not triggered)" : ""}`);
-  for (const t of reply.toolCalls ?? []) console.log(`tool ${t.tool}${t.isError ? " ERROR" : ""}${t.text ? `: ${t.text.slice(0, 160).replace(/\s+/g, " ")}` : ""}`);
-  console.log(reply.text ?? "(no text)");
-  const parsed = parseDecisionReply(reply.text);
-  console.log(`\n--- decision: ${parsed.decision ? `${parsed.decision.action} (confidence ${parsed.decision.confidence}) "${parsed.decision.headline}"` : `NOT parsed: ${parsed.error}`}`);
+  let reply;
+  try {
+    reply = await askSession({ sessionId: ASK_SESSION_ID, text, platform: "mr-bands-cli", sessionMetadata: { caller: "npm run openhermit -- ask" } }, { settings });
+  } catch (err) {
+    if (!(err instanceof OpenHermitError)) throw err;
+    console.log(`\n--- no reply in ${Date.now() - t0} ms: ${err.kind}${err.status ? ` (HTTP ${err.status})` : ""}: ${err.message}`);
+    process.exit(1);
+  }
+  console.log(`\n--- reply in ${reply.ms} ms${reply.model ? ` from ${reply.model}` : ""}`);
+  for (const t of reply.toolCalls) console.log(`tool ${t.tool}${t.isError ? " ERROR" : ""}${t.text ? `: ${t.text.slice(0, 160).replace(/\s+/g, " ")}` : ""}`);
+  console.log(reply.text);
+  const found = extractDecision(reply.text);
+  console.log(`\n--- decision: ${found.decision ? `${found.decision.action} (confidence ${found.decision.confidence}) "${found.decision.headline}"` : `NOT parsed: ${found.error}`}`);
+  if (!found.decision) process.exit(1);
 }
 
 // ---------------------------------------------------------------------------------------------

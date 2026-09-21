@@ -1,11 +1,12 @@
 /**
- * Mr Bands on OpenHermit (src/scripts/openhermit.ts): the pure parts. No gateway, no network.
+ * Mr Bands on OpenHermit (src/scripts/openhermit.ts): the pure parts. No gateway, no network. The
+ * client the script asks through (src/agent/openhermit.ts) has its own suite, test-openhermit.ts.
  *   npx tsx src/scripts/test-openhermit-provision.ts
  */
 import assert from "node:assert/strict";
 import { buildSystemPrompt } from "../agent/persona";
 import type { JournalEntry } from "../journal";
-import { agentInstructions, instructionsForDesk, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, parseDecisionReply, pickNewest, settingsFromEnv } from "./openhermit";
+import { agentInstructions, instructionsForDesk, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, pickNewest, settingsFromEnv } from "./openhermit";
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -112,28 +113,6 @@ test("the desk's own limits are the ones written", () => {
   const rows = instructionsForDesk("paper");
   assert.match(rows.rules, /Max per band: \d/);
   assert.match(rows.identity, /bands-paper/);
-});
-
-console.log("the reply");
-test("one bare JSON object parses as a Decision", () => {
-  const r = parseDecisionReply('{"action":"HOLD","open":null,"positionAddress":null,"reasoning":"In range, fees ticking.","confidence":0.8,"headline":"in the bands. nothing to do."}');
-  assert.equal(r.error, null);
-  assert.equal(r.decision?.action, "HOLD");
-  assert.equal(r.decision?.headline, "in the bands. nothing to do.");
-});
-test("a fenced object, or one with a word before it, still reads", () => {
-  const fenced = parseDecisionReply('Here you go:\n```json\n{"action":"CLAIM_FEES","open":null,"positionAddress":"Aun","reasoning":"0.04 SOL unclaimed.","confidence":0.9,"headline":"fees to the wallet."}\n```');
-  assert.equal(fenced.decision?.action, "CLAIM_FEES");
-  assert.equal(fenced.decision?.positionAddress, "Aun");
-  const prose = parseDecisionReply('strap check first. {"action":"HOLD","open":null,"positionAddress":null,"reasoning":"x","confidence":1,"headline":"h"} that is all');
-  assert.equal(prose.decision?.action, "HOLD");
-});
-test("no JSON, bad JSON, or JSON that is not a Decision is null with a reason (the desk policy takes over)", () => {
-  assert.equal(parseDecisionReply("").decision, null);
-  assert.equal(parseDecisionReply(null).error, "empty reply");
-  assert.match(parseDecisionReply("i would hold here").error ?? "", /no JSON object/);
-  assert.match(parseDecisionReply('{"action":"HOLD"}').error ?? "", /decision schema/);
-  assert.match(parseDecisionReply('{"action":"YOLO","open":null,"positionAddress":null,"reasoning":"x","confidence":1,"headline":"h"}').error ?? "", /action/);
 });
 
 console.log("the observation from a journal entry");
