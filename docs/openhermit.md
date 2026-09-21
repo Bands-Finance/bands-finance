@@ -167,7 +167,9 @@ one on:
    does not need them).
 2. `npm run openhermit -- provision --mcp paper` (or `--mcp live` from `ops/live.env`'s environment).
 3. `npm run openhermit -- ask` answers with a Decision.
-4. Uncomment in the plist's `EnvironmentVariables` (or in `ops/live.env` for the live desk):
+4. Uncomment in the paper plist's `EnvironmentVariables`. For the live desk, change `DECIDER=policy` at the top of
+   `ops/live.env` to `DECIDER=openhermit` and uncomment the other three there: the service sources that file after
+   launchd sets its environment, so a `DECIDER` in the live plist would lose to it.
    ```xml
    <key>DECIDER</key><string>openhermit</string>
    <key>OPENHERMIT_GATEWAY_URL</key><string>http://127.0.0.1:4000</string>

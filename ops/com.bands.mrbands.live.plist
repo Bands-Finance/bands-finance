@@ -5,13 +5,14 @@
   false. Installing this service is the act of going live; do it on Zach's word and never with the
   paper desk running (one loop at a time).
 
-  Go live:  npm run live:preflight            (every FAIL must be clear)
+  Go live:  npm run live:preflight            (every FAIL but the kill switch must be clear)
             npm run live:rehearse             (one dry-run cycle with the real wallet: builds and simulates, sends nothing)
             launchctl bootout gui/$(id -u)/com.bands.mrbands.paper
             cp ops/com.bands.mrbands.live.plist ~/Library/LaunchAgents/
             launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bands.mrbands.live.plist
   Watch:    tail -f data-mainnet/mrbands.log   ·  API: http://localhost:3101/api/journal
-  Halt now: touch STOP   (blocks every new band; exits still run)
+  Halted:   KILL_SWITCH=true in ops/live.env until the go (clear that line when Zach says go)
+  Halt now: touch data-mainnet/STOP   (this desk only; touch STOP in the repo root halts every desk; exits still run)
   Stop:     launchctl bootout gui/$(id -u)/com.bands.mrbands.live
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -34,7 +35,9 @@
   <dict>
     <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string>
     <key>DRY_RUN</key><string>false</string>
-    <!-- Mr Bands on OpenHermit (docs/openhermit.md): uncomment to have the agent on the gateway propose instead of
+    <!-- Do not switch the decider here: ops/live.env pins DECIDER=policy and is sourced after this environment, so it
+         wins. Change the DECIDER line in ops/live.env instead (docs/openhermit.md). What follows is kept for reference.
+         Mr Bands on OpenHermit (docs/openhermit.md): uncomment to have the agent on the gateway propose instead of
          Anthropic (the guards still decide; an unusable answer falls back to the desk policy). First: OPENHERMIT_TOKEN
          and PLATFORM_OPERATOR_TOKEN in .env, then `npm run openhermit -- provision --mcp live`, then `npm run openhermit -- ask`.
          Switch back with DECIDER=policy. Then bootout and bootstrap this service.
