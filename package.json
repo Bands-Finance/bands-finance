@@ -25,6 +25,7 @@
     "test:learn": "tsx src/scripts/test-learn.ts",
     "test:fastwatch": "tsx src/scripts/test-fastwatch.ts",
     "test:account-flow": "tsx src/scripts/test-account-flow.ts",
+    "test:openhermit": "tsx src/scripts/test-openhermit.ts",
     "live:preflight": "set -a && . ./ops/live.env && set +a && DRY_RUN=false tsx src/scripts/preflight.ts",
     "live:rehearse": "set -a && . ./ops/live.env && set +a && DRY_RUN=true AUTO_DEPLOY=false tsx src/index.ts --once",
     "screen": "tsx src/scripts/screen.ts",
