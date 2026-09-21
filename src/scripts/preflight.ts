@@ -36,7 +36,13 @@ async function main(): Promise<void> {
   if (paperOn) add("paper book", "PASS", `virtual wallet ${paper.sol} SOL + ${paper.usdc} USDC: real pools and prices, pretend money (PAPER_SOL / PAPER_USDC)`);
   else if (paper.usdc > 0 && paper.sol <= 0) add("paper book", "FAIL", `PAPER_USDC=${paper.usdc} without PAPER_SOL: the loop keys paper mode off PAPER_SOL alone, so this would ${config.dryRun ? "dry-run" : "trade LIVE"} with no paper book`);
   else if (paper.sol > 0 && !config.dryRun) add("paper book", "FAIL", `PAPER_SOL=${paper.sol} with DRY_RUN=false: the loop refuses to start (paper runs only under DRY_RUN)`);
-  add("kill switch", killSwitchActive() ? "FAIL" : "PASS", killSwitchActive() ? "STOP file or KILL_SWITCH=true is set: no new bands" : "clear");
+  // The kill switch stops new bands; it does not stop the desk WATCHING. On a live desk it is still a
+  // refusal to boot - you meant to halt, and a restart must not quietly undo that. On a paper or dry-run
+  // desk it is a warning: the loop honours the switch by itself ("Engine says no opens here"), and a
+  // gate here would mean the desk stops observing and journalling the moment launchd restarts it.
+  const halted = killSwitchActive();
+  const haltLevel: Level = !halted ? "PASS" : config.dryRun ? "WARN" : "FAIL";
+  add("kill switch", haltLevel, halted ? `STOP file or KILL_SWITCH=true is set: no new bands${config.dryRun ? " (the desk still watches and journals)" : ""}` : "clear");
   const lockFile = path.join(dataDir, LOCK_FILE);
   const lockCheck = (wallet: string | null): void => {
     if (!fs.existsSync(lockFile)) {
