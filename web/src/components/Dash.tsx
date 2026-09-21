@@ -28,6 +28,8 @@ const MODE_WORD: Record<Status["mode"], string> = { live: "live on Solana", pape
 export interface DashNavProps {
   status: Status;
   agentName: string;
+  /** whether the ledger chapter is on the page: with no executed move there is no "What he did" to point at */
+  hasMoves?: boolean;
 }
 
 const SECTIONS: { id: string; label: string }[] = [
@@ -37,7 +39,7 @@ const SECTIONS: { id: string; label: string }[] = [
   { id: "did", label: "What he did" },
 ];
 
-export function DashNav({ status, agentName }: DashNavProps) {
+export function DashNav({ status, agentName, hasMoves = true }: DashNavProps) {
   return (
     <header className="dash-nav dash-nav--float" role="banner">
       <div className="dash-nav__bar">
@@ -46,13 +48,14 @@ export function DashNav({ status, agentName }: DashNavProps) {
         <span className="dash-nav__name engrave">{agentName}</span>
       </a>
       <nav className="dash-nav__links engrave" aria-label="Sections">
-        {SECTIONS.map((s) => (
+        {SECTIONS.filter((s) => hasMoves || s.id !== "did").map((s) => (
           <a key={s.id} href={`#${s.id}`}>
             {s.label}
           </a>
         ))}
+        {/* named for where it goes: "How it works" beside "How he works" read as the same link, and this one leaves the site */}
         <a href={`${PLATFORM_URL}/#/learn`} target="_blank" rel="noreferrer">
-          How it works ↗
+          bands.finance ↗
         </a>
       </nav>
       <span className={`dash-nav__mode engrave dash-nav__mode--${status.mode}`} title={status.sentence}>
