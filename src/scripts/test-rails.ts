@@ -669,7 +669,8 @@ async function main(): Promise<void> {
     assert.equal(out.ok, true);
     assert.equal(out.status, "pending");
     const stored = proposals.getProposal(out.id)!;
-    assert.match(stored.proposerId, /^mcp:[0-9a-f]{12}$/);
+    // a claimed name is marked as one: the desk's own approval rules never take it (src/platform/autoDecide.ts)
+    assert.match(stored.proposerId, /^mcp:n:[0-9a-f]{12}$/);
     assert.equal(stored.proposerName, "scout-7");
     const opInit = await rpc(init, { authorization: "Bearer op-test-token" });
     const opSid = opInit.headers.get("mcp-session-id")!;
@@ -678,6 +679,12 @@ async function main(): Promise<void> {
     const decided = await rpc({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "bands_decide_proposal", arguments: { id: out.id, decision: "reject", note: "not this pool" } } }, { "mcp-session-id": opSid, authorization: "Bearer op-test-token" });
     assert.equal(decided.status, 200);
     assert.equal(proposals.getProposal(out.id)?.status, "rejected");
+    assert.equal(proposals.getProposal(out.id)?.decidedBy, "operator");
+    // a session that sent a bearer proposes under a bearer-derived id
+    const viaBearer = await rpc({ jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "bands_propose_band_action", arguments: { ...args, agentName: "scout-8" } } }, { "mcp-session-id": opSid, authorization: "Bearer op-test-token" });
+    const bOut = JSON.parse(((await viaBearer.json()) as { result: { content: Array<{ text: string }> } }).result.content[0].text);
+    assert.equal(bOut.ok, true);
+    assert.match(proposals.getProposal(bOut.id)!.proposerId, /^mcp:b:[0-9a-f]{12}$/);
   });
 
   await test("engine routes: 401 without a session, access opens with ENGINE_OPEN, skill served with its version, plan validates", async () => {
@@ -707,8 +714,10 @@ async function main(): Promise<void> {
     assert.equal(posted.status, 200);
     const { proposal } = (await posted.json()) as { proposal: Proposal };
     assert.equal(proposal.proposerId, me.publicKey.toBase58());
-    const board = (await (await app.request("/api/proposals?status=pending")).json()) as { ok: boolean; proposals: Proposal[] };
+    const board = (await (await app.request("/api/proposals?status=pending")).json()) as { ok: boolean; proposals: Proposal[]; auto: { on: boolean; approvedToday: number } };
     assert.ok(board.proposals.some((p) => p.id === proposal.id));
+    assert.equal(board.auto.on, false, "the desk's own approval rules are off unless AUTO_APPROVE_PROPOSALS=true");
+    assert.equal(board.auto.approvedToday, 0);
     const noOp = await app.request("/api/proposals/decide", { method: "POST", headers: { authorization: bearer, "content-type": "application/json" }, body: JSON.stringify({ id: proposal.id, decision: "approve" }) });
     assert.equal(noOp.status, 401);
     const bad = await app.request("/api/proposals/decide", { method: "POST", headers: { authorization: "Bearer op-test-token", "content-type": "application/json" }, body: JSON.stringify({ id: proposal.id, decision: "maybe" }) });

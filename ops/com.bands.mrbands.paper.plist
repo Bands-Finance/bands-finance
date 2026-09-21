@@ -63,6 +63,11 @@
     <key>PAIR_STOCK_PINNED_TICKERS</key><string>NVDA</string>
     <key>SWAP_DEXES</key><string>Meteora DLMM</string>
     <key>SERVE_PORT</key><string>3100</string>
+    <!-- Outside proposals approved by the desk's own rules (src/platform/autoDecide.ts), no operator in the loop:
+         a small SOL-only open from a wallet or a bearer MCP caller, never a claimed name and never a close, within a
+         daily and exposure budget; the desk policy and every guard still decide. Paper only: a live book also needs
+         AUTO_APPROVE_LIVE=true and an AUTO_APPROVE_PROPOSERS allowlist, and ops/live.env sets neither. -->
+    <key>AUTO_APPROVE_PROPOSALS</key><string>true</string>
     <!-- Mr Bands on OpenHermit (docs/openhermit.md): uncomment to have the agent on the gateway propose instead of
          Anthropic (the guards still decide; an unusable answer falls back to the desk policy). First: OPENHERMIT_TOKEN
          and PLATFORM_OPERATOR_TOKEN in .env, then `npm run openhermit -- provision --mcp paper`, then `npm run openhermit -- ask`.

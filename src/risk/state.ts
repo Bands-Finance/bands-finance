@@ -84,6 +84,12 @@ export interface RiskState {
    * to the alias the loop works it under.
    */
   pairPools?: Record<string, PairPoolRecord>;
+  /**
+   * position address -> the outside proposal that laid it (src/platform/proposals.ts). Its PRESENCE is what makes a
+   * band a proposal band: the auto-approval budget (src/platform/autoDecide.ts) counts these, so a restart cannot
+   * reset it. A re-lay carries the record to the new band; forgetBand() drops it at the close.
+   */
+  proposalBands?: Record<string, { proposal: string; pool: string; at: number }>;
 }
 
 const STATE_FILE = () => path.resolve(process.cwd(), config.dataDir, "state.json");
@@ -110,6 +116,7 @@ export function emptyState(day = todayUtc()): RiskState {
     launchBands: {},
     askBands: {},
     pairPools: {},
+    proposalBands: {},
   };
 }
 
@@ -132,6 +139,7 @@ export function loadState(): RiskState {
       launchBands: parsed.launchBands ?? {},
       askBands: parsed.askBands ?? {},
       pairPools: parsed.pairPools ?? {},
+      proposalBands: parsed.proposalBands ?? {},
     };
     if (s.day !== todayUtc()) {
       s.day = todayUtc();

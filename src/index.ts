@@ -51,12 +51,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { config, riskLimits } from "./config";
-import { decide, deciderOf, engineDecideResult, hasLlmCredentials, proposalDecideResult } from "./agent/decide";
+import { adviseProposal, decide, deciderOf, engineDecideResult, hasLlmCredentials, policyMayTradeLive, proposalDecideResult } from "./agent/decide";
 import { openHermitSettings } from "./agent/openhermit";
 import type { Decision } from "./agent/schema";
-import { policyEnv } from "./agent/policy";
+import { policyDecide, policyEnv } from "./agent/policy";
 import { POSITION_RENT_SOL } from "./tools/dlmm";
-import { approvedProposals, markExecuted, Proposal } from "./platform/proposals";
+import { allProposals, approvedProposals, decideProposal, markExecuted, markRefused, pendingProposals, proposalDecision, proposalNote, proposalOutcome, Proposal } from "./platform/proposals";
+import { autoBudget, autoDecide, autoEnv, nextApprovedProposal } from "./platform/autoDecide";
 import type { EngineObservation, Observation, ScreenContext } from "./agent/observation";
 import { evaluate, EngineGuardContext } from "./risk/guards";
 import { describeLimits } from "./risk/limits";
@@ -193,30 +194,6 @@ interface Observed {
 
 const cfg = config.engine;
 
-/** An approved proposal as the decision Mr Bands would otherwise make. Rationale is published verbatim. */
-function proposalDecision(p: Proposal): Decision {
-  if (p.kind === "OPEN_BAND") {
-    const { pool: _pool, ...open } = p.params as Extract<Proposal["params"], { side: string }>;
-    return {
-      action: "OPEN_POSITION",
-      open,
-      positionAddress: null,
-      reasoning: p.rationale,
-      confidence: 0.5,
-      headline: `Proposal from ${p.proposerName}: open a ${open.side.replace("_", " ").toLowerCase()} band.`,
-    };
-  }
-  const params = p.params as Extract<Proposal["params"], { position: string }>;
-  return {
-    action: "CLOSE_POSITION",
-    open: null,
-    positionAddress: params.position,
-    reasoning: p.rationale,
-    confidence: 0.5,
-    headline: `Proposal from ${p.proposerName}: close band ${params.position.slice(0, 6)}.`,
-  };
-}
-
 function banner(app: App): void {
   const mode = app.paper ? `PAPER: virtual ${app.paper.startSol} SOL wallet${app.paper.startUsdc > 0 ? ` + ${app.paper.startUsdc} USDC` : ""}, live prices, nothing broadcast` : config.dryRun ? "DRY RUN (nothing is broadcast)" : "LIVE (real transactions)";
   console.log("=".repeat(72));
@@ -256,6 +233,16 @@ function banner(app: App): void {
       `model     ${decider === "openhermit" ? `openhermit ${oh.agentId} @ ${oh.gatewayUrl}${oh.token ? "" : " (NO OPENHERMIT_TOKEN: the policy proposes)"}, ${oh.timeoutMs / 1000}s a pool`
         : decider === "policy" ? "none: DECIDER=policy, the desk policy proposes"
         : `${config.model}${hasLlmCredentials() ? "" : " (NO KEY: the desk policy proposes)"}`}`,
+    );
+  }
+  {
+    // outside proposals: who approves them on this desk (src/platform/autoDecide.ts)
+    const ae = autoEnv();
+    const liveBlocked = !config.dryRun && (!ae.live || ae.proposers.length === 0);
+    console.log(
+      `proposals ${!ae.on ? "the operator approves (AUTO_APPROVE_PROPOSALS is not true)"
+        : liveBlocked ? "the operator approves (a live book needs AUTO_APPROVE_LIVE=true and AUTO_APPROVE_PROPOSERS)"
+        : `the desk's rules approve a SOL_ONLY open <= ${ae.maxSol} SOL from ${ae.proposers.length ? `${ae.proposers.length} allowlisted proposer(s)` : "any wallet or bearer"}, <= ${ae.maxAgeMin} min old, ${ae.maxPerDay}/day, one at a time, <= ${ae.maxExposurePct}% of total exposure; closes wait for the operator`}; then the desk policy, then the guards`,
     );
   }
   console.log(`interval  ${config.cycleIntervalSec}s cycles, screen every ${config.screen.intervalSec}s`);
@@ -1285,12 +1272,15 @@ function updateState(state: RiskState, exec: ExecutionResult, positions: Positio
   // and a re-lay keeps the chain's rolled stop rather than rolling a new one (a fresh roll could land under the chain's drawdown)
   const closedAsk = exec.closed ? state.askBands?.[exec.closed] : undefined;
   const carriedStop = exec.closed && closedAsk ? state.stops?.[exec.closed] : undefined;
+  // a proposal band re-laid stays a proposal band: the auto-approval budget follows the capital, not the address
+  const carriedProposal = exec.closed ? state.proposalBands?.[exec.closed] : undefined;
   if (exec.ok && exec.opened) {
     state.entryValueSol[exec.opened.address] = exec.opened.entryValueSol;
     // an ask band's stop is the chain's (EXIT_ASK_STOP_PCT, measured against the chain's basis by stopEntryOf), a launch band's the lane's
     (state.stops ??= {})[exec.opened.address] = ask && carriedStop ? carriedStop : rollStop(riskLimits, Math.random, ask ? ask.stopPct : launch ? launch.env.stopPct : null);
     if (launch && !ask) (state.launchBands ??= {})[exec.opened.address] = { pool: snapshot.address, openedAt: Date.now(), vol1hUsd: launch.vol1hUsd };
     if (ask) (state.askBands ??= {})[exec.opened.address] = ask.band;
+    if (carriedProposal && exec.closed !== exec.opened.address) (state.proposalBands ??= {})[exec.opened.address] = carriedProposal;
   }
   // the close landed whether or not the sale after it did: the band is gone, its records go with it
   if (exec.closed) forgetBand(state, exec.closed);
@@ -1359,6 +1349,34 @@ async function sellResidues(app: App): Promise<void> {
   }
   saveState(state);
   for (const n of notes) console.log(`[cycle ${app.cycle}] ${n}`);
+}
+
+/**
+ * The desk's own rules on this pool's pending proposals (src/platform/autoDecide.ts), at the moment the pool is
+ * worked: the first that passes every rule is approved as "desk-auto:<rule>" and returned for this cycle to
+ * consume; it still meets the desk policy and the guards. Null when none qualifies or the rules are off.
+ */
+function autoApproveHere(app: App, o: Observed, all: Observed[], state: RiskState, lane: string | null, halt: string | null, now: number): Proposal | null {
+  const env = autoEnv();
+  if (!env.on) return null;
+  const pending = pendingProposals(o.address, now);
+  if (pending.length === 0) return null;
+  const verdict = autoDecide(pending, {
+    now,
+    dryRun: config.dryRun,
+    env,
+    picks: all.map((x) => x.address),
+    lane,
+    halt,
+    budget: autoBudget(allProposals(now), state, now),
+    maxTotalExposureSol: riskLimits.maxTotalExposureSol,
+  });
+  const tag = `[cycle ${app.cycle} ${o.snapshot.label}]`;
+  for (const l of verdict.left) console.log(`${tag} proposal ${l.id} left for the operator: ${l.reason}`);
+  if (!verdict.approve) return null;
+  const approved = decideProposal(verdict.approve.proposal.id, "approve", `approved by the desk's rules (${verdict.approve.rule}); the desk policy and the guards still decide`, `desk-auto:${verdict.approve.rule}`, now);
+  if (approved) console.log(`${tag} proposal ${approved.id} approved by desk rule ${verdict.approve.rule}`);
+  return approved;
 }
 
 async function runPool(app: App, o: Observed, all: Observed[], sol: number): Promise<JournalEntry> {
@@ -1542,15 +1560,43 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // The engine decides first. When it has a directive the LLM is not asked this cycle.
   const rotateHere = app.rotateOut?.pool === o.address ? { reason: app.rotateOut.reason } : null;
   const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined, pairStock: pairStockWatch, rotate: rotateHere, askExit: { maxHoldMin: askExitEnv(process.env).maxHoldMin } });
-  // Then an approved outside proposal, oldest first: "agents propose, the operator decides, the desk
-  // executes through its own guards". Otherwise Mr Bands proposes.
-  const proposal = directive ? null : (approvedProposals(o.address)[0] ?? null);
+  // Then an outside proposal (src/platform/proposals.ts): an approved one, oldest first, or one the desk's own rules
+  // approve here and now (src/platform/autoDecide.ts). Under the kill switch, a circuit halt or a stand-down an
+  // approved OPEN waits rather than being spent on a certain refusal. Otherwise Mr Bands proposes.
+  const halt = killSwitch ? "the kill switch" : view.haltedUntil !== null ? `circuit halt until ${new Date(view.haltedUntil).toISOString()}` : view.standDownUntil !== null ? `portfolio stand-down until ${new Date(view.standDownUntil).toISOString()}` : null;
+  // why this pool is not an ordinary seat for the desk's rules: these lanes keep their seat caps in the policy, not the guards
+  const lane = screen?.stock || screen?.pinned?.ok ? "a stock pool"
+    : basisRow ? "a basis pool"
+    : isPair ? "a pair pool"
+    : screen?.launch?.ok ? "a launch pool"
+    : Object.values(state.askBands ?? {}).some((a) => a.pool === o.address) ? "an ask band is working here"
+    : rotateHere ? "the pool is rotating out"
+    : positions.length > 0 ? "a band is already seated here"
+    : null;
+  let proposal: Proposal | null = directive ? null : nextApprovedProposal(approvedProposals(o.address, now), halt !== null);
+  if (!directive && !proposal) proposal = autoApproveHere(app, o, all, state, lane, halt, now);
+  // THE PROPOSAL MEETS THE ENTRY RULES (adviseProposal): the desk policy is asked with the same extras a model's
+  // move gets; a HOLD or a substitute is a refusal, journaled as a HOLD in the desk's words
+  let proposalRefusal: string | null = null;
+  let proposalResult: ReturnType<typeof proposalDecideResult> | null = null;
+  if (proposal) {
+    const asked = proposalDecision(proposal);
+    let advised: ReturnType<typeof adviseProposal>;
+    try {
+      const policy = policyDecide(observation, { limits: riskLimits, hot: hotRows(app, 8, true), openCostSol: openCostDefault, grow: { allowed: !app.movedThisCycle }, askExit: { bands: state.askBands ?? {}, env: askExitEnv(process.env) } });
+      advised = adviseProposal(asked, policy, { id: proposal.id, live: !config.dryRun, policyLive: policyMayTradeLive() });
+    } catch (err) {
+      advised = adviseProposal(asked, { decision: { ...asked, action: "HOLD", open: null, positionAddress: null }, reason: `the desk policy failed (${(err as Error).message})`, branch: "gated" }, { id: proposal.id, live: !config.dryRun, policyLive: policyMayTradeLive() });
+    }
+    if (!advised.ok) proposalRefusal = advised.reason;
+    proposalResult = proposalDecideResult(advised.decision, `${proposalNote(proposal)}. ${advised.ok ? advised.note : `Refused: ${advised.reason}`}`);
+  }
   // An engine close in a stock pool or a pair pool liquidates: the book returns to the quote (the hedge comes off with it; the token is never kept).
   const directiveDecision = directive && (basisRow || isPair || directive.kind === "ROTATE") && directive.decision.action === "CLOSE_POSITION" ? { ...directive.decision, liquidate: true } : directive?.decision;
   let llm = directive
     ? engineDecideResult(directiveDecision!, `${directive.kind}: ${directive.reason}`)
-    : proposal
-      ? proposalDecideResult(proposalDecision(proposal), `proposal ${proposal.id} by ${proposal.proposerName} (${proposal.proposerId})`)
+    : proposalResult
+      ? proposalResult
       : await decide(observation, { hot: hotRows(app, 8, true), openCostSol: openCostDefault, grow: { allowed: !app.movedThisCycle }, askExit: { bands: state.askBands ?? {}, env: askExitEnv(process.env) } });
   // Every close sells the token back to the quote, whoever proposed it (the model, a proposal, the
   // guards, a directive): the book is quote-denominated, and a token left in the wallet is capital
@@ -1717,6 +1763,10 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     ? { band: askBandRecord(state.askBands?.[execution.closed], { pool: o.address, from: execution.closed, tokens: verdict.decision.open!.amountToken, markSol: execution.opened.entryValueSol, now, bankedSol: positions.find((p) => p.address === execution.closed)?.solInPosition ?? 0 }), stopPct: askExitEnv(process.env).stopPct }
     : null;
   if (askLaid) console.log(`${tag} ask band ${execution.opened!.address.slice(0, 6)}: ${askLaid.band.relays > 0 ? `re-lay ${askLaid.band.relays} of the chain from ${askLaid.band.from.slice(0, 6)}` : `the chain starts here`}, basis ${askLaid.band.basisSol.toFixed(4)} SOL${askLaid.band.bankedSol > 0 ? ` less ${askLaid.band.bankedSol.toFixed(4)} banked` : ""}, stop ${askLaid.stopPct}% under it${askExitEnv(process.env).maxHoldMin > 0 ? `, ${Math.max(0, Math.round(askExitEnv(process.env).maxHoldMin - (now - askLaid.band.since) / 60_000))} min left` : ""}`);
+  // a band an outside proposal laid: the auto-approval budget counts it until it closes (src/platform/autoDecide.ts)
+  if (proposal && !proposalRefusal && proposal.kind === "OPEN_BAND" && execution.ok && execution.opened && verdict.decision.action === "OPEN_POSITION") {
+    (state.proposalBands ??= {})[execution.opened.address] = { proposal: proposal.id, pool: o.address, at: now };
+  }
   updateState(state, execution, positions, snapshot, (screen?.launch?.ok || screen?.pair?.ok) && !noLaneExits ? { env: laneEnv, vol1hUsd: launchWatch?.vol1hUsd ?? null } : null, askLaid);
 
   // The hedge desk: after execution, the stock token in the wallet and in this pool's bands is carried short on the perp.
@@ -1840,9 +1890,11 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   };
   appendJournal(entry);
   if (proposal) {
-    // The receipt is the journal entry, whether the guards let it through or refused it.
-    markExecuted(proposal.id, entry.id);
-    console.log(`${tag} proposal ${proposal.id} ${verdict.allowed ? "executed" : "refused by the guards"} -> journal ${entry.id}`);
+    // The receipt is the journal entry, whether it ran or the desk policy or the guards said no.
+    const outcome = proposalRefusal ? { status: "refused" as const, reason: `the desk policy said no: ${proposalRefusal}` } : proposalOutcome(proposal, verdict);
+    if (outcome.status === "executed") markExecuted(proposal.id, entry.id);
+    else markRefused(proposal.id, entry.id, outcome.reason);
+    console.log(`${tag} proposal ${proposal.id} ${outcome.status === "executed" ? "executed" : `refused (${outcome.reason})`} -> journal ${entry.id}`);
   }
   console.log(`${tag} final ${verdict.decision.action} in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   return entry;

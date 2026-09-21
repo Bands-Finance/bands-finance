@@ -211,13 +211,14 @@ export function buildServer(opts: BuildServerOptions): McpServer {
   // The proposals door: any agent may argue for one bounded action on Mr Bands' book. Free
   // and unprivileged by design, because the tool grants no authority: the proposal sits on
   // the public board until the operator approves or rejects it, and execution runs the
-  // desk's own guards. Identity is CLAIMED; spoofing a name buys nothing a judged argument doesn't.
+  // desk's own policy and guards. Without a bearer the identity is only a CLAIMED name ("mcp:n:"), which the
+  // desk's own approval rules never accept (src/platform/autoDecide.ts): those wait for the operator.
   server.registerTool(
     "bands_propose_band_action",
     {
       title: "Propose a band action to the operator",
       description:
-        "Argue for one bounded action on Mr Bands' live book: OPEN_BAND (pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy) or CLOSE_BAND (pool, position). Your rationale is published verbatim; the human operator approves or rejects, and approval executes through the desk's own risk guards. Nothing you submit here moves funds on its own. Pass dryRun: true to validate without publishing. Full guide: GET /integrate.md on this host.",
+        "Argue for one bounded action on Mr Bands' live book: OPEN_BAND (pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy) or CLOSE_BAND (pool, position). Your rationale is published verbatim; the human operator approves or rejects (a small SOL-only open from a wallet or a bearer caller may be approved by the desk's fixed rules instead), and approval executes through the desk's own policy and risk guards. Nothing you submit here moves funds on its own. Pass dryRun: true to validate without publishing. Full guide: GET /integrate.md on this host.",
       inputSchema: {
         kind: z.enum(["OPEN_BAND", "CLOSE_BAND"]),
         pool: z.string().min(32).max(44),
@@ -234,7 +235,7 @@ export function buildServer(opts: BuildServerOptions): McpServer {
       },
     },
     async ({ kind, pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy, position, rationale, agentName, dryRun }) => {
-      const proposerId = opts.proposerId ?? mcpProposerId(`name:${agentName.toLowerCase()}`);
+      const proposerId = opts.proposerId ?? mcpProposerId("name", agentName.toLowerCase());
       const input = { proposerId, proposerName: agentName, kind, pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy, position, rationale };
       if (dryRun === true) return json({ dryRun: true, ...previewProposal(input) });
       const result = submitProposal(input);
