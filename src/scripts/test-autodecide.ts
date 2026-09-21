@@ -155,6 +155,22 @@ async function main(): Promise<void> {
     leaves(mk(), ctx({ halt: "portfolio stand-down until later" }), /halted/);
   });
 
+  await test("R7 deskHalt: the kill switch, a circuit halt, a stand-down and stale marks each halt; a short marks gap does not", () => {
+    const clear = { killSwitch: false, haltedUntil: null, standDownUntil: null, skippedMarks: 0, marksStale: false };
+    assert.equal(auto.deskHalt(clear), null);
+    assert.equal(auto.deskHalt({ ...clear, killSwitch: true }), "the kill switch");
+    assert.match(auto.deskHalt({ ...clear, haltedUntil: now + 3600e3 }) ?? "", /^circuit halt until/);
+    assert.match(auto.deskHalt({ ...clear, standDownUntil: now + 3600e3 }) ?? "", /^portfolio stand-down until/);
+    assert.equal(auto.deskHalt({ ...clear, skippedMarks: 2 }), null, "two incomplete cycles are not stale yet");
+    const stale = auto.deskHalt({ ...clear, skippedMarks: 3, marksStale: true });
+    assert.equal(stale, "marks stale (3 incomplete cycles running)");
+    leaves(mk(), ctx({ halt: stale }), /halted: marks stale/);
+    // an approved OPEN is held under stale marks as under any halt; a CLOSE still runs
+    const o = mk({ status: "approved" });
+    const c = mk({ status: "approved", kind: "CLOSE_BAND", params: { pool, position: addr() }, at: now });
+    assert.equal(auto.nextApprovedProposal([o, c], stale !== null)?.id, c.id);
+  });
+
   await test("autoDecide: oldest pending first, one approval, the rest left with reasons", () => {
     const old = mk({ at: now - 30 * 60_000, kind: "CLOSE_BAND", params: { pool, position: addr() } });
     const mid = mk({ at: now - 20 * 60_000 });
@@ -194,6 +210,10 @@ async function main(): Promise<void> {
     leaves(mk({ at: t - 60_000 }), ctx({ now: t, budget }), /AUTO_MAX_PER_DAY/);
     // the daily count starts over on the next UTC day
     assert.equal(auto.autoBudget(proposals.allProposals(t), loadState(), t + 24 * 3600e3).approvedToday, 0);
+    // the counts /api/status shows: desk approvals only, today and ever
+    const counts = auto.deskApprovalCounts(proposals.allProposals(t), t);
+    assert.deepEqual(counts, { today: 2, total: 2 });
+    assert.deepEqual(auto.deskApprovalCounts(proposals.allProposals(t), t + 24 * 3600e3), { today: 0, total: 2 });
     const st = auto.autoApprovalStatus(t, { AUTO_APPROVE_PROPOSALS: "true" });
     assert.equal(st.on, true);
     assert.equal(st.approvedToday, 2);

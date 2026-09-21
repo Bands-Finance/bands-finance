@@ -57,7 +57,7 @@ import type { Decision } from "./agent/schema";
 import { policyDecide, policyEnv } from "./agent/policy";
 import { POSITION_RENT_SOL } from "./tools/dlmm";
 import { allProposals, approvedProposals, decideProposal, markExecuted, markRefused, pendingProposals, proposalDecision, proposalNote, proposalOutcome, Proposal } from "./platform/proposals";
-import { autoBudget, autoDecide, autoEnv, nextApprovedProposal } from "./platform/autoDecide";
+import { autoBudget, autoDecide, autoEnv, deskHalt, nextApprovedProposal, noteDeskApprovals } from "./platform/autoDecide";
 import type { EngineObservation, Observation, ScreenContext } from "./agent/observation";
 import { evaluate, EngineGuardContext } from "./risk/guards";
 import { describeLimits } from "./risk/limits";
@@ -241,6 +241,7 @@ function banner(app: App): void {
   {
     // outside proposals: who approves them on this desk (src/platform/autoDecide.ts)
     const ae = autoEnv();
+    noteDeskApprovals(); // /api/status shows today's count from the first cycle, not from the first approval
     const liveBlocked = !config.dryRun && (!ae.live || ae.proposers.length === 0);
     console.log(
       `proposals ${!ae.on ? "the operator approves (AUTO_APPROVE_PROPOSALS is not true)"
@@ -1371,7 +1372,10 @@ function autoApproveHere(app: App, o: Observed, all: Observed[], state: RiskStat
   for (const l of verdict.left) console.log(`${tag} proposal ${l.id} left for the operator: ${l.reason}`);
   if (!verdict.approve) return null;
   const approved = decideProposal(verdict.approve.proposal.id, "approve", `approved by the desk's rules (${verdict.approve.rule}); the desk policy and the guards still decide`, `desk-auto:${verdict.approve.rule}`, now);
-  if (approved) console.log(`${tag} proposal ${approved.id} approved by desk rule ${verdict.approve.rule}`);
+  if (approved) {
+    console.log(`${tag} proposal ${approved.id} approved by desk rule ${verdict.approve.rule}`);
+    noteDeskApprovals(now);
+  }
   return approved;
 }
 
@@ -1557,9 +1561,10 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   const rotateHere = app.rotateOut?.pool === o.address ? { reason: app.rotateOut.reason } : null;
   const directive = engineDirective({ now, snapshot, positions, state, engine: app.engine, cfg, limits: riskLimits, collectsToday, launch: launchWatch ?? undefined, pairStock: pairStockWatch, rotate: rotateHere, askExit: { maxHoldMin: askExitEnv(process.env).maxHoldMin } });
   // Then an outside proposal (src/platform/proposals.ts): an approved one, oldest first, or one the desk's own rules
-  // approve here and now (src/platform/autoDecide.ts). Under the kill switch, a circuit halt or a stand-down an
-  // approved OPEN waits rather than being spent on a certain refusal. Otherwise Mr Bands proposes.
-  const halt = killSwitch ? "the kill switch" : view.haltedUntil !== null ? `circuit halt until ${new Date(view.haltedUntil).toISOString()}` : view.standDownUntil !== null ? `portfolio stand-down until ${new Date(view.standDownUntil).toISOString()}` : null;
+  // approve here and now (src/platform/autoDecide.ts). Under the kill switch, a circuit halt, a stand-down or stale
+  // marks an approved OPEN waits rather than being spent on a certain refusal. Otherwise Mr Bands proposes.
+  const marks = marksHealth();
+  const halt = deskHalt({ killSwitch, haltedUntil: view.haltedUntil, standDownUntil: view.standDownUntil, skippedMarks: marks.skippedMarks, marksStale: marks.stale });
   // why this pool is not an ordinary seat for the desk's rules: these lanes keep their seat caps in the policy, not the guards
   const lane = screen?.stock || screen?.pinned?.ok ? "a stock pool"
     : basisRow ? "a basis pool"

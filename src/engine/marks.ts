@@ -11,9 +11,10 @@
  * And the count: consecutive cycles whose observation was incomplete, for any reason. At
  * MARKS_STALE_CYCLES the guards refuse new exposure ("marks stale", src/risk/guards.ts); exits
  * and claims keep running. The first complete cycle resets it. Pure but for the one counter the
- * loop notes into and /api/status reads.
+ * loop notes into, which it hands on to /api/status (src/status.ts).
  */
 import type { BandMark } from "./breakers";
+import { noteMarks as noteStatusMarks } from "../status";
 
 /** Consecutive incomplete cycles after which opens are refused. */
 export const MARKS_STALE_CYCLES = 3;
@@ -129,13 +130,14 @@ export const marksStale = (h: Pick<MarksHealth, "skippedMarks">): boolean => h.s
 
 let health: MarksHealth = { skippedMarks: 0, lastCompleteMarkAt: null, cycle: null };
 
-/** The loop notes each cycle once: complete (every picked pool observed and decided, the USDC priced) or not. */
+/** The loop notes each cycle once: complete (every picked pool observed and decided, the USDC priced) or not. /api/status sees it. */
 export function noteMarks(complete: boolean, now: number, cycle: number): MarksHealth {
   health = foldMarksHealth(health, complete, now, cycle);
+  noteStatusMarks({ skipped: health.skippedMarks, lastCompleteAt: health.lastCompleteMarkAt, stale: marksStale(health) });
   return health;
 }
 
-/** The read /api/status shows. */
+/** The counter as it stands: the guards read skippedMarks from it every cycle. */
 export function marksHealth(): { skippedMarks: number; lastCompleteMarkAt: number | null; stale: boolean } {
   return { skippedMarks: health.skippedMarks, lastCompleteMarkAt: health.lastCompleteMarkAt, stale: marksStale(health) };
 }

@@ -35,6 +35,7 @@ import { deciderOf } from "./agent/decide";
 import { openHermitAvailable } from "./agent/openhermit";
 import { loadEngineState } from "./engine/breakers";
 import { readLock } from "./engine/watchdog";
+import { describeHalt, killSwitchSources } from "./risk/state";
 import { decisionSources, snapshot } from "./status";
 import { railsRoutes } from "./platform/railsRoutes";
 
@@ -45,27 +46,22 @@ function lastIterationAt(): number | null {
   return snapshot().lastIterationAt ?? readLock()?.lastIterationAt ?? null;
 }
 
-/** Which kill switch is thrown, if any: the STOP file, the environment, or both (src/risk/state.ts killSwitchActive). */
-function killSwitchSource(): string | null {
-  const file = fs.existsSync(path.resolve(process.cwd(), "STOP"));
-  const env = process.env.KILL_SWITCH === "true";
-  return file && env ? "STOP file + KILL_SWITCH" : file ? "STOP file" : env ? "KILL_SWITCH" : null;
-}
-
 /**
  * GET /api/status. Read-only, and on the loopback with the rest of the desk (SERVE_HOST). It names
  * whether an OpenHermit token is set and never what it is: no secret leaves through here.
  */
 export function statusReport(now = Date.now()): Record<string, unknown> {
   const engine = loadEngineState();
-  const killSource = killSwitchSource();
+  // the same sources killSwitchActive() halts on: the root STOP, this desk's DATA_DIR/STOP, KILL_SWITCH=true
+  const halts = killSwitchSources();
   const hour = decisionSources(path.join(dataDir(), "decisions.jsonl"), now - 3_600_000);
   const snap = snapshot();
   return {
     now,
     mode: modeOf(),
-    killSwitch: killSource !== null,
-    killSwitchSource: killSource,
+    killSwitch: halts.length > 0,
+    killSwitchSources: halts,
+    killSwitchSource: halts.length ? describeHalt(halts) : null,
     circuit: {
       haltUntil: engine.circuit.haltUntil > 0 ? engine.circuit.haltUntil : null,
       halted: engine.circuit.haltUntil > now,

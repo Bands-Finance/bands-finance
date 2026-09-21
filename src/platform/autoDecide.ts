@@ -22,11 +22,12 @@
  *   R6  at most AUTO_MAX_PER_DAY (default 2) desk approvals per UTC day, one proposal band open at a
  *       time, and proposal bands within AUTO_MAX_EXPOSURE_PCT (default 20) of MAX_TOTAL_EXPOSURE_SOL.
  *       Counted from disk (proposals.jsonl and state.json), so a restart cannot reset it.
- *   R7  no kill switch, circuit halt or portfolio stand-down.
+ *   R7  no kill switch, circuit halt, portfolio stand-down or stale marks (deskHalt).
  */
 import { config, riskLimits } from "../config";
 import type { RiskLimits } from "../risk/limits";
 import { killSwitchActive, loadState, type RiskState } from "../risk/state";
+import { noteAutoApprove } from "../status";
 import { allProposals, proposerKind, type OpenBandParams, type Proposal } from "./proposals";
 
 export interface AutoEnv {
@@ -97,13 +98,27 @@ export interface AutoContext {
   picks: readonly string[];
   /** why this pool is not an ordinary seat (stock, basis, pair, launch, ask, rotate-out, holds a band); null when it is one */
   lane: string | null;
-  /** the kill switch, a circuit halt or a portfolio stand-down, in words; null when none is on */
+  /** the kill switch, a circuit halt, a portfolio stand-down or stale marks, in words (deskHalt); null when none is on */
   halt: string | null;
   budget: AutoBudget;
   maxTotalExposureSol: number;
 }
 
 export type AutoVerdict = { approve: true; rule: string } | { approve: false; reason: string };
+
+/**
+ * PURE. What stops the desk opening anything this cycle, in words, or null. The kill switch, a circuit halt,
+ * a portfolio stand-down, and marks stale (src/engine/marks.ts): the guards refuse an open on each of them,
+ * so an approval here would only be spent on a certain refusal. R7 leaves a proposal pending under any of
+ * them, and nextApprovedProposal holds an approved OPEN.
+ */
+export function deskHalt(h: { killSwitch: boolean; haltedUntil: number | null; standDownUntil: number | null; skippedMarks: number; marksStale: boolean }): string | null {
+  if (h.killSwitch) return "the kill switch";
+  if (h.haltedUntil !== null) return `circuit halt until ${new Date(h.haltedUntil).toISOString()}`;
+  if (h.standDownUntil !== null) return `portfolio stand-down until ${new Date(h.standDownUntil).toISOString()}`;
+  if (h.marksStale) return `marks stale (${h.skippedMarks} incomplete cycles running)`;
+  return null;
+}
 
 /** PURE. One proposal against every rule. Reads the params, the ids, the time and the kind; never the rationale or the name. */
 export function autoDecideOne(p: Proposal, ctx: AutoContext): AutoVerdict {
@@ -158,6 +173,20 @@ export function autoDecide(pending: readonly Proposal[], ctx: AutoContext): { ap
  */
 export function nextApprovedProposal(approved: readonly Proposal[], halted: boolean): Proposal | null {
   return [...approved].sort((a, b) => a.at - b.at).find((p) => !(halted && p.kind === "OPEN_BAND")) ?? null;
+}
+
+/** PURE. The desk's own approvals on the board: on this UTC day, and ever. */
+export function deskApprovalCounts(proposals: readonly Proposal[], now: number): { today: number; total: number } {
+  const today = dayOf(now);
+  const desk = proposals.filter((p) => isDeskAuto(p) && p.decidedAt !== undefined);
+  return { today: desk.filter((p) => dayOf(p.decidedAt as number) === today).length, total: desk.length };
+}
+
+/** Hand the desk's approval counts to /api/status (src/status.ts). The loop calls it at boot and after each approval. */
+export function noteDeskApprovals(now = Date.now()): { today: number; total: number } {
+  const c = deskApprovalCounts(allProposals(now), now);
+  noteAutoApprove(c);
+  return c;
 }
 
 /** The auto-approval counters for a status page: the settings in force and the budget spent, read from disk. */

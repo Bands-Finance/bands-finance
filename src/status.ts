@@ -7,8 +7,9 @@
  *   noteScreen(ok, ts)                  the screener ran, or failed (src/index.ts ensureScreen)
  *   noteDeploy(ok, ts)                  a snapshot push finished (src/publish/deploy.ts onDone)
  *   noteHostSleep(ms, ts)               the watchdog saw the host sleep (src/engine/watchdog.ts)
- *   noteMarks({ skipped, lastCompleteAt })   the book's marks: NOT CALLED YET, the marks counter lands on its own branch
- *   noteAutoApprove({ today, total })   outside proposals approved by desk code: NOT CALLED YET, likewise
+ *   noteMarks({ skipped, lastCompleteAt, stale })   the book's marks, each cycle (src/engine/marks.ts noteMarks)
+ *   noteAutoApprove({ today, total })   outside proposals approved by desk code, at boot and at each approval
+ *                                       (src/platform/autoDecide.ts noteDeskApprovals)
  *
  * The registry lives in the desk's process. A server started on its own (`npm run serve`) sees it
  * empty, so the route falls back to the engine lock for the last iteration.
@@ -23,7 +24,7 @@ export interface StatusSnapshot {
   iterations: number;
   screen: { lastAt: number | null; ok: boolean | null; lastOkAt: number | null };
   deploy: { lastAt: number | null; ok: boolean | null };
-  marks: { skipped: number; lastCompleteAt: number | null } | null;
+  marks: { skipped: number; lastCompleteAt: number | null; stale: boolean } | null;
   autoApprove: { today: number; total: number } | null;
   hostSleep: { lastMs: number; at: number } | null;
 }
@@ -59,12 +60,12 @@ export function noteHostSleep(ms: number, ts = Date.now()): void {
   state.hostSleep = { lastMs: ms, at: ts };
 }
 
-/** Setter for the marks counter. Nothing calls it on this branch: the integrator wires it where the marks run. */
-export function noteMarks(m: { skipped: number; lastCompleteAt: number | null }): void {
-  state.marks = { skipped: m.skipped, lastCompleteAt: m.lastCompleteAt };
+/** The marks counter as the loop last noted it: consecutive incomplete cycles, and whether that blocks opens yet. */
+export function noteMarks(m: { skipped: number; lastCompleteAt: number | null; stale: boolean }): void {
+  state.marks = { skipped: m.skipped, lastCompleteAt: m.lastCompleteAt, stale: m.stale };
 }
 
-/** Setter for the auto-approval counters. Nothing calls it on this branch: the integrator wires it where proposals are approved. */
+/** The desk's own approvals of outside proposals: this UTC day and all time, counted from the board on disk. */
 export function noteAutoApprove(a: { today: number; total: number }): void {
   state.autoApprove = { today: a.today, total: a.total };
 }

@@ -4,7 +4,8 @@
  * clocks, the deploy gets a fake exec, and the timeouts are aimed at local fakes that never answer.
  *   npm run test:status
  *
- *   GET /api/status        every field from a fake saved state, and never a secret
+ *   GET /api/status        every field from a fake saved state, and never a secret; every halt source;
+ *                          the marks counter and the desk's approvals, from where they are kept
  *   watchdogStep           a paper desk exits after two AWAKE windows, never after a host sleep or a
  *                          DarkWake burst, and never on a live wallet
  *   createDeployer         one push at a time, each step timed out, the two steps independent
@@ -92,12 +93,13 @@ async function main(): Promise<void> {
     const res = await app.request("/api/status");
     assert.equal(res.status, 200);
     const j = (await res.json()) as Record<string, any>;
-    for (const k of ["now", "mode", "killSwitch", "killSwitchSource", "circuit", "portfolio", "decider", "openhermitTokenPresent", "lastIterationAt", "decisionsLastHour", "iterations", "screen", "deploy", "marks", "autoApprove", "hostSleep"]) {
+    for (const k of ["now", "mode", "killSwitch", "killSwitchSources", "killSwitchSource", "circuit", "portfolio", "decider", "openhermitTokenPresent", "lastIterationAt", "decisionsLastHour", "iterations", "screen", "deploy", "marks", "autoApprove", "hostSleep"]) {
       assert.ok(k in j, `missing ${k}`);
     }
     assert.equal(j.mode, "dry-run");
     assert.equal(j.killSwitch, true);
-    assert.equal(j.killSwitchSource, "KILL_SWITCH");
+    assert.deepEqual(j.killSwitchSources, ["env"]);
+    assert.equal(j.killSwitchSource, "KILL_SWITCH=true in the environment");
     assert.equal(j.circuit.halted, true);
     assert.ok(j.circuit.haltUntil > now);
     assert.equal(j.portfolio.standingDown, false, "a stand-down in the past is over");
@@ -111,7 +113,7 @@ async function main(): Promise<void> {
     assert.equal(j.decisionsLastHour.policyShare, 1 / 5);
     assert.deepEqual(j.screen, { lastAt: now - MIN, ok: false, lastOkAt: now - 5 * MIN });
     assert.deepEqual(j.deploy, { lastAt: now - 3 * MIN, ok: true });
-    assert.equal(j.marks, null, "no marks counter until the integrator wires it");
+    assert.equal(j.marks, null, "nothing in this process has noted the marks yet");
     assert.equal(j.autoApprove, null);
   });
 
@@ -125,11 +127,55 @@ async function main(): Promise<void> {
   });
 
   await test("status: the marks and auto-approval setters show once called", () => {
-    status.noteMarks({ skipped: 2, lastCompleteAt: now - MIN });
+    status.noteMarks({ skipped: 2, lastCompleteAt: now - MIN, stale: false });
     status.noteAutoApprove({ today: 1, total: 4 });
     const r = statusReport(now);
-    assert.deepEqual(r.marks, { skipped: 2, lastCompleteAt: now - MIN });
+    assert.deepEqual(r.marks, { skipped: 2, lastCompleteAt: now - MIN, stale: false });
     assert.deepEqual(r.autoApprove, { today: 1, total: 4 });
+  });
+
+  await test("status: a desk STOP in DATA_DIR is a halt too, named beside the environment's", () => {
+    const stop = path.join(TEST_DIR, "STOP");
+    fs.writeFileSync(stop, "");
+    try {
+      const r = statusReport(now);
+      assert.equal(r.killSwitch, true);
+      assert.deepEqual(r.killSwitchSources, ["desk", "env"]);
+      assert.match(String(r.killSwitchSource), /STOP \(halts this desk only\) \+ KILL_SWITCH=true/);
+    } finally {
+      fs.rmSync(stop, { force: true });
+    }
+    assert.deepEqual(statusReport(now).killSwitchSources, ["env"]);
+  });
+
+  await test("status: the marks counter and the desk's approvals reach it from where they are kept", async () => {
+    const { Keypair } = await import("@solana/web3.js");
+    const marks = await import("../engine/marks.js");
+    const proposals = await import("../platform/proposals.js");
+    const auto = await import("../platform/autoDecide.js");
+    marks.resetMarksHealth();
+    // src/engine/marks.ts noteMarks, as the loop calls it once a cycle
+    marks.noteMarks(true, now - 3 * MIN, 1);
+    marks.noteMarks(false, now - 2 * MIN, 2);
+    assert.deepEqual(statusReport(now).marks, { skipped: 1, lastCompleteAt: now - 3 * MIN, stale: false });
+    marks.noteMarks(false, now - MIN, 3);
+    marks.noteMarks(false, now, 4);
+    assert.deepEqual(statusReport(now).marks, { skipped: 3, lastCompleteAt: now - 3 * MIN, stale: true });
+    marks.resetMarksHealth();
+    // an operator approval is not the desk's; a desk approval is, today and in the total
+    const pool = Keypair.generate().publicKey.toBase58();
+    const ids: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const r = proposals.submitProposal({ kind: "OPEN_BAND", pool, side: "SOL_ONLY", amountSol: 0.1, amountToken: 0, binsBelowActive: 19, binsAboveActive: 0, strategy: "Spot", rationale: "fees are running well ahead of the drift on this pool", proposerId: Keypair.generate().publicKey.toBase58() });
+      if (!r.ok) throw new Error(r.error);
+      ids.push(r.proposal.id);
+    }
+    proposals.decideProposal(ids[0], "approve", undefined, "operator", now);
+    assert.deepEqual(auto.noteDeskApprovals(now), { today: 0, total: 0 });
+    assert.deepEqual(statusReport(now).autoApprove, { today: 0, total: 0 }, "noted at boot, before any approval");
+    proposals.decideProposal(ids[1], "approve", undefined, "desk-auto:small-open", now);
+    auto.noteDeskApprovals(now);
+    assert.deepEqual(statusReport(now).autoApprove, { today: 1, total: 1 });
   });
 
   await test("health: unchanged, plus the last completed iteration", async () => {
