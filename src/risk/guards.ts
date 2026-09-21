@@ -8,13 +8,14 @@
  *
  * The engine (src/engine) feeds `ctx.engine`: halts, stand-down, bench, regime, knife, per-band
  * stops and out-of-range timers. Those gate OPENS only. Exits are never blocked by cooldown,
- * daily cap, kill switch, halts or stand-down; the one check that can stop an exit is "this
+ * daily cap, kill switch, stale marks, halts or stand-down; the one check that can stop an exit is "this
  * position is not ours". A close's `liquidate` flag (sell the token that comes back, stock bands)
  * is never judged here: an exit is an exit. The LLM proposes, the guards decide: every limit lives here.
  */
 import { Decision, holdDecision } from "../agent/schema";
 import { isAskExit } from "../engine/askExit";
 import { antiChurn, bandStopPct, marketDrawdownPct, stopEntryOf } from "../engine/exit";
+import { MARKS_STALE_CYCLES } from "../engine/marks";
 import { OPEN_COST_ESTIMATE_SOL, PoolSnapshot, PositionSnapshot, quoteOf } from "../tools/dlmm";
 import { jupiterEnv } from "../tools/jupiter";
 import { isTradableVenue, tradableVenues } from "../venues/env";
@@ -72,6 +73,8 @@ export interface GuardContext {
   walletQuote?: number;
   state: RiskState;
   killSwitch: boolean;
+  /** consecutive cycles whose marks were incomplete (src/engine/marks.ts); at MARKS_STALE_CYCLES no new exposure */
+  skippedMarks?: number;
   /** SOL-equivalent value of bands in OTHER pools */
   otherExposureSol: number;
   /** pools (excluding this one) that currently hold a band */
@@ -162,6 +165,15 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
     violations.push("kill switch active (STOP file or KILL_SWITCH=true): opening bands is blocked");
   } else {
     passed.push("kill-switch");
+  }
+
+  // 2b. Stale marks: the breakers have been reading carried marks for MARKS_STALE_CYCLES cycles running, so
+  //     the desk adds nothing it cannot watch. The ask exit is an exit (it adds no exposure) and goes through.
+  const skippedMarks = ctx.skippedMarks ?? 0;
+  if (skippedMarks >= MARKS_STALE_CYCLES && isOpening(decision) && !exitAsk) {
+    violations.push(`marks stale: ${skippedMarks} cycles running without a complete read of the book (limit ${MARKS_STALE_CYCLES}): opening bands is blocked until one lands`);
+  } else {
+    passed.push("marks");
   }
 
   // 3. Price sanity: a huge move since last cycle means bad data or a crash. Don't add exposure into it.

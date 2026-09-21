@@ -5,8 +5,9 @@
  *   - the daily-loss circuit breaker with its halt stages in memeGuard.ts (noteBookMark),
  *   - the whole-book portfolio breaker in agent/src/portfolioBreaker.ts (portfolioVerdict).
  *
- * Every verdict function is pure: (state, mark, now) -> next state + verdict. The loop feeds
- * marks only on good reads (a failed observation never becomes a phantom crater), persists the
+ * Every verdict function is pure: (state, mark, now) -> next state + verdict. The loop feeds a
+ * mark every cycle; a band in a pool it could not observe is carried at its last mark less a haircut
+ * (src/engine/marks.ts), so a blind pool can only bring a breaker closer, never hold it off. It persists the
  * returned state, and the guards read the result. A missing state file is the empty state; all
  * timestamps are epoch ms. Halts and stand-downs block opens only: exits never consult them.
  * The operator clears a stand-down or a halt with `tsx src/scripts/engine.ts`.
@@ -57,12 +58,24 @@ export interface PortfolioState {
   lastMarkAt: number | null;
 }
 
+/** A band's last mark: what it was worth, in SOL incl. unclaimed fees, the last cycle its pool was observed and decided. */
+export interface BandMark {
+  pool: string;
+  valueSol: number;
+  at: number;
+}
+
 export interface EngineState {
   version: 1;
   /** pool -> epoch ms of stop-loss closes; the bench ladder reads the trailing 6h */
   stopTimes: Record<string, number[]>;
   circuit: CircuitState;
   portfolio: PortfolioState;
+  /** position -> its last mark: what a band in a pool that cannot be observed is carried at (src/engine/marks.ts) */
+  bandMarks: Record<string, BandMark>;
+  /** the SOL price the last mark valued USDC at, and when: the carried price when the screen has none */
+  lastSolPriceUsd: number | null;
+  lastSolPriceAt: number | null;
 }
 
 export function emptyEngineState(): EngineState {
@@ -71,6 +84,9 @@ export function emptyEngineState(): EngineState {
     stopTimes: {},
     circuit: { day: "", trips: 0, streak: 0, haltUntil: 0, stage: 0, reason: null, workingHwmSol: 0, armedAtLossSol: 0, lastLossSol: 0, lastLimitSol: 0, lastMarkAt: null },
     portfolio: { day: "", hwmSol: 0, streak: 0, standDownUntil: 0, standDownReason: null, lastEquitySol: 0, lastDrawdownSol: 0, lastLimitSol: 0, lastMarkAt: null },
+    bandMarks: {},
+    lastSolPriceUsd: null,
+    lastSolPriceAt: null,
   };
 }
 
@@ -84,6 +100,9 @@ export function loadEngineState(file = dataPath(ENGINE_STATE_FILE)): EngineState
       stopTimes: parsed.stopTimes ?? {},
       circuit: { ...empty.circuit, ...(parsed.circuit ?? {}) },
       portfolio: { ...empty.portfolio, ...(parsed.portfolio ?? {}) },
+      bandMarks: parsed.bandMarks ?? {},
+      lastSolPriceUsd: typeof parsed.lastSolPriceUsd === "number" && parsed.lastSolPriceUsd > 0 ? parsed.lastSolPriceUsd : null,
+      lastSolPriceAt: typeof parsed.lastSolPriceAt === "number" ? parsed.lastSolPriceAt : null,
     };
   } catch {
     return empty;

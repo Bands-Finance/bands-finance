@@ -107,6 +107,7 @@ import {
   saveEngineState,
 } from "./engine/breakers";
 import { clearFeesPending, skimPlan, trackFeesPending, unclaimedFeesSol } from "./engine/collect";
+import { CARRY_HAIRCUT_PCT, carriedBands, carriedUsdToSol, marksHealth, marksNotedCycle, marksStale, MARKS_STALE_CYCLES, noteMarks, recordMarks } from "./engine/marks";
 import { marketDrawdownPct, stopEntryOf } from "./engine/exit";
 import { askBandRecord, askExitEnv, askExitOf, askOnlyPools, askPoolsOf, isAskExit, type AskBand } from "./engine/askExit";
 import { sellResidue, swapImpactEnv } from "./executor";
@@ -1622,7 +1623,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   }
   let verdict = evaluate(
     llm.decision,
-    { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol },
+    { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, skippedMarks: marksHealth().skippedMarks, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol },
     riskLimits,
   );
   if (saleInstead && !verdict.allowed) {
@@ -1630,7 +1631,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     llm = { ...llm, decision: saleInstead, note: `${llm.note ?? ""} The ask was refused by the guards; sold instead.`.trim() };
     verdict = evaluate(
       saleInstead,
-      { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol: openCostDefault },
+      { now, snapshot, positions, walletSol: sol, walletToken: token.ui, walletQuote: quote, state: guardState, killSwitch, skippedMarks: marksHealth().skippedMarks, ...portfolio, engine: engineCtx, source: directive ? "engine" : "llm", openCostSol: openCostDefault },
       riskLimits,
     );
   }
@@ -1847,22 +1848,67 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   return entry;
 }
 
+/** Note this cycle's marks as complete or not, and raise the alert once they have been incomplete MARKS_STALE_CYCLES running. */
+function noteMarksFor(app: App, complete: boolean): void {
+  const h = noteMarks(complete, Date.now(), app.cycle);
+  if (marksStale(h)) {
+    const since = h.lastCompleteMarkAt ? `the last complete read was ${Math.round((Date.now() - h.lastCompleteMarkAt) / 60_000)} min ago` : "no complete read since the desk started";
+    console.error(`[alert] marks stale: ${h.skippedMarks} cycles running without a complete read of the book (limit ${MARKS_STALE_CYCLES}), ${since}; new opens are blocked, exits and claims run`);
+  }
+}
+
 /**
- * The breakers mark the book once per iteration, only on a complete read: a pool that failed to
- * observe would read as vanished capital, and a phantom crater must never trip a breaker.
+ * The breakers mark the book every iteration. `decided` are the pools observed AND decided this cycle,
+ * marked at what they read; a held pool that was not (its read failed, or its decision threw) is blind,
+ * and its bands are carried at their last mark less a haircut (src/engine/marks.ts), so a blind pool
+ * can only bring a breaker closer. Without a SOL price this cycle the wallet's USDC and the paper
+ * hedge are valued at the last price a mark used, turned against the book. `complete` is false
+ * whenever anything was carried: the equity history (the site's chart) takes complete reads only.
  */
-function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAtStart: number, usdcAtStartSol: number, hedgeSol = 0, usdcAtStart = 0): void {
+function markBook(
+  app: App,
+  m: {
+    decided: Observed[];
+    entries: JournalEntry[];
+    blindPools: string[];
+    /** positions on the books when the cycle started: only those are carried */
+    heldAtStart: string[];
+    solAtStart: number;
+    usdcAtStart: number;
+    solPriceUsd: number | null;
+    hedgeUsd: number;
+    complete: boolean;
+  },
+): void {
+  const { decided, entries, solAtStart, usdcAtStart, solPriceUsd } = m;
   const now = Date.now();
   const today = todayUtc();
   const mode = config.dryRun ? "dry-run" : "live";
   const state = loadState();
   const closed = new Set(entries.map((e) => e.execution.closed).filter((c): c is string => !!c));
-  const openBands = observed.flatMap((o) => o.positions).filter((p) => !closed.has(p.address));
+  const openBands = decided.flatMap((o) => o.positions).filter((p) => !closed.has(p.address));
   for (const p of openBands) p.entryValueSol = state.entryValueSol[p.address];
+  const carried = carriedBands({
+    blindPools: m.blindPools,
+    held: m.heldAtStart,
+    marks: app.engine.bandMarks,
+    entryValueSol: state.entryValueSol,
+    metaPool: Object.fromEntries(Object.entries(state.bandMeta ?? {}).map(([a, meta]) => [a, meta.pool] as const)),
+    stops: state.stops ?? {},
+    stopLossPct: riskLimits.stopLossPct,
+  });
+  const carriedSol = carried.reduce((s, b) => s + b.valueInSol, 0);
+  // the price USDC is valued at: this cycle's, or the last a mark used, turned against the book
+  const usdcAtStartSol = solPriceUsd ? usdcAtStart / solPriceUsd : carriedUsdToSol(usdcAtStart, app.engine.lastSolPriceUsd);
+  const hedgeSol = solPriceUsd ? m.hedgeUsd / solPriceUsd : carriedUsdToSol(m.hedgeUsd, app.engine.lastSolPriceUsd);
+  if (solPriceUsd) {
+    app.engine.lastSolPriceUsd = solPriceUsd;
+    app.engine.lastSolPriceAt = now;
+  }
 
-  // Circuit breaker: today's realized loss from the ledger, netted with the marked drawdown of open bands.
+  // Circuit breaker: today's realized loss from the ledger, netted with the marked drawdown of open bands, carried ones included.
   const rows = readLedgerRows();
-  const loss = circuitLossSol(realizedOnDaySol(rows, mode, today), markedDrawdownSol(openBands));
+  const loss = circuitLossSol(realizedOnDaySol(rows, mode, today), markedDrawdownSol([...openBands, ...carried]));
   const cv = circuitVerdict(app.engine.circuit, loss, workingSol(state.entryValueSol), today, now, { floorSol: cfg.circuitFloorSol });
   app.engine.circuit = cv.next;
   if (cv.tripped) console.error(`[cycle ${app.cycle}] CIRCUIT BREAKER: ${cv.reason}`);
@@ -1870,23 +1916,32 @@ function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAt
   // Portfolio breaker: whole-book equity in SOL (wallet SOL + wallet USDC at the SOL price + bands marked incl. unclaimed fees + wallet base tokens at mark).
   // wallet tokens of the pools worked this cycle at their marks, plus what exits left behind (residues) at the exit's mark,
   // for residues whose pool is NOT on this cycle's books: a worked pool's wallet read (and, in the exit cycle, the closed
-  // band's own value) already holds those tokens
+  // band's own value) already holds those tokens. A blind pool's wallet tokens were not read: they count at nothing, which
+  // only lowers the equity.
   const onBooks = new Set(entries.map((e) => e.pool.address));
   const residueSol = Object.values(state.residues ?? {}).reduce((s, r) => s + (onBooks.has(r.pool) ? 0 : r.amountUi * r.markTokenInSol), 0);
   const tokensSol = entries.reduce((s, e) => s + e.wallet.token * e.pool.tokenPriceInSol, 0) + residueSol;
-  const equity = solAtStart + usdcAtStartSol + observed.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + tokensSol + hedgeSol;
+  const bandsSol = decided.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + carriedSol;
+  const equity = solAtStart + usdcAtStartSol + bandsSol + tokensSol + hedgeSol;
   if (Number.isFinite(equity) && equity > 0) {
     const pv = portfolioVerdict(app.engine.portfolio, equity, today, now, { floorSol: cfg.portfolioFloorSol });
     app.engine.portfolio = pv.next;
     if (pv.fire) console.error(`[cycle ${app.cycle}] PORTFOLIO BREAKER: ${pv.reason}`);
   }
+  // the marks the next blind cycle may carry: this cycle's decided bands and the bands it opened
+  const decidedMarks = decided.flatMap((o) => o.positions.filter((p) => !closed.has(p.address)).map((p) => ({ pool: o.address, address: p.address, valueInSol: p.valueInSol })));
+  const openedMarks = entries.flatMap((e, i) => (e.execution?.ok && e.execution.opened ? [{ pool: decided[i]?.address ?? e.pool.address, ...e.execution.opened }] : []));
+  app.engine.bandMarks = recordMarks(app.engine.bandMarks, decidedMarks, openedMarks, state.entryValueSol, now);
   saveEngineState(app.engine);
+  const carriedNote = carried.length
+    ? ` | carried ${carried.length} band(s) of ${new Set(carried.map((b) => b.pool)).size} blind pool(s) at ${carriedSol.toFixed(4)} SOL (${carried.map((b) => `${b.address.slice(0, 6)} ${b.basis}`).join(", ")})`
+    : "";
+  const priceNote = !solPriceUsd && usdcAtStart > 0.01 ? ` | ${usdcAtStart.toFixed(2)} USDC at ${app.engine.lastSolPriceUsd ? `the last SOL price ${app.engine.lastSolPriceUsd.toFixed(2)} turned ${CARRY_HAIRCUT_PCT}% against the book` : "nothing: no SOL price on record"}` : "";
   console.log(
-    `[cycle ${app.cycle}] marks: equity ${equity.toFixed(4)} SOL (day high ${app.engine.portfolio.hwmSol.toFixed(4)})${hedgeSol !== 0 ? ` incl. hedge ${hedgeSol >= 0 ? "+" : ""}${hedgeSol.toFixed(4)}` : ""} | today's loss ${loss.toFixed(4)} / limit ${app.engine.circuit.lastLimitSol.toFixed(4)} SOL | working ${workingSol(state.entryValueSol).toFixed(4)}`,
+    `[cycle ${app.cycle}] marks: equity ${equity.toFixed(4)} SOL (day high ${app.engine.portfolio.hwmSol.toFixed(4)})${hedgeSol !== 0 ? ` incl. hedge ${hedgeSol >= 0 ? "+" : ""}${hedgeSol.toFixed(4)}` : ""} | today's loss ${loss.toFixed(4)} / limit ${app.engine.circuit.lastLimitSol.toFixed(4)} SOL | working ${workingSol(state.entryValueSol).toFixed(4)}${carriedNote}${priceNote}`,
   );
-  // The same figure, one line a cycle, for the site's "since the start" numbers (src/journal EquityPoint).
-  if (Number.isFinite(equity)) {
-    const bandsSol = observed.reduce((s, o) => s + o.positions.reduce((t, p) => t + p.valueInSol, 0), 0);
+  // The same figure, one line a cycle, for the site's "since the start" numbers (src/journal EquityPoint): complete reads only.
+  if (m.complete && Number.isFinite(equity)) {
     // fees realised to the wallet: claims plus the fee leg of every close, from the ledger in both
     // modes (the paper book's feesClaimedSol counts claims only; the backfill and this must agree)
     const feesClaimedSol = rowsOf(rows, mode).reduce((s, r) => s + ((r.mech === "collect" || r.mech === "close") && typeof r.feeSol === "number" ? r.feeSol : 0), 0);
@@ -1904,7 +1959,7 @@ function markBook(app: App, observed: Observed[], entries: JournalEntry[], solAt
         tokensSol,
         hedgeSol,
         bands: openBands.length,
-        pools: observed.length,
+        pools: decided.length,
         feesClaimedSol,
         solPriceUsd: solPriceOf(app),
       });
@@ -2034,7 +2089,8 @@ async function runIteration(app: App): Promise<void> {
       }
     } catch (err) {
       // A USDC pool without a SOL price, or a pool quoted in neither, is skipped with its reason: it
-      // cannot be valued in SOL, so no guard, breaker or ledger row sees it this cycle.
+      // cannot be valued in SOL this cycle, so no guard or ledger row sees it, and the breakers carry
+      // its bands at their last mark (markBook) like any other pool that could not be read.
       if (err instanceof QuotePriceUnknownError || err instanceof UnsupportedQuoteError) console.log(`[cycle ${app.cycle}] skipping ${address}: ${err.message}`);
       else console.error(`[cycle ${app.cycle}] could not observe ${address}: ${(err as Error).message}`);
     }
@@ -2190,11 +2246,17 @@ async function runIteration(app: App): Promise<void> {
       console.log(`[cycle ${app.cycle}] seat yield: rotating out ${c.label} (${c.pool.slice(0, 6)}): ${c.reason}`);
     }
   }
+  // the bands on the books before any pool is decided: a blind pool carries only these (a band a throwing
+  // runPool opened was paid for out of the wallet read at the start, so carrying it too would count it twice)
+  const heldAtStart = Object.keys(loadState().entryValueSol);
   const entries: JournalEntry[] = [];
+  // the pools observed AND decided, index-aligned with entries
+  const decided: Observed[] = [];
   for (const o of observed) {
     try {
       const sol = paper ? paper.wallet.sol : await app.wallet.solBalance();
       entries.push(await runPool(app, o, observed, sol));
+      decided.push(o);
     } catch (err) {
       console.error(`[cycle ${app.cycle} ${o.snapshot.label}] failed:`, err);
     }
@@ -2203,21 +2265,39 @@ async function runIteration(app: App): Promise<void> {
   // RESIDUES: what exits could not sell under the caps, sold cycle by cycle with a cap that rises as they wait
   await sellResidues(app);
 
-  // Marks need a complete, consistently valued read: every picked pool observed and decided, and
-  // the wallet's USDC valued whenever it holds any (an unpriced USDC balance would swing equity).
+  // THE MARKS run every cycle. A complete read is every picked pool observed and decided, and the wallet's
+  // USDC priced this cycle. Anything less and the breakers still mark: a held pool that was not observed,
+  // or was observed and never decided (its runPool threw, the 429s), is blind and its bands are carried at
+  // their last mark less a haircut; unpriced USDC is valued at the last price a mark used, turned against
+  // the book. A held or pinned pool is never dropped from the picks for being blind: the carry covers it.
   const usdcUnpriced = usdcAtStart > 0.01 && solPriceUsd === null;
-  if (observed.length === pools.length && entries.length === observed.length && observed.length > 0 && !usdcUnpriced) {
-    try {
-      const hedgeSol = paper && solPriceUsd ? paperHedgeEquityUsd(paper.hedge).netUsd / solPriceUsd : 0;
-      markBook(app, observed, entries, solAtStart, solPriceUsd ? usdcAtStart / solPriceUsd : 0, hedgeSol, usdcAtStart);
-    } catch (err) {
-      console.error(`[cycle ${app.cycle}] marks failed:`, err);
-    }
-  } else if (usdcUnpriced) {
-    console.log(`[cycle ${app.cycle}] marks skipped: the wallet holds ${usdcAtStart.toFixed(2)} USDC and no SOL price is known to value it`);
-  } else {
-    console.log(`[cycle ${app.cycle}] marks skipped: ${observed.length}/${pools.length} pools observed, ${entries.length} decided`);
+  const decidedSet = new Set(decided.map((o) => o.address));
+  const heldPools = new Set(withPositions);
+  const blindPools = pools.filter((a) => !decidedSet.has(a));
+  const complete = blindPools.length === 0 && !usdcUnpriced;
+  let marked = false;
+  try {
+    markBook(app, {
+      decided,
+      entries,
+      // only a pool that holds a band has anything to carry
+      blindPools: blindPools.filter((a) => heldPools.has(a)),
+      heldAtStart,
+      solAtStart,
+      usdcAtStart,
+      solPriceUsd,
+      hedgeUsd: paper ? paperHedgeEquityUsd(paper.hedge).netUsd : 0,
+      complete,
+    });
+    marked = true;
+  } catch (err) {
+    console.error(`[cycle ${app.cycle}] marks failed:`, err);
   }
+  if (!complete) {
+    const why = [blindPools.length ? `${observed.length}/${pools.length} pools observed, ${decided.length} decided` : null, usdcUnpriced ? `the wallet holds ${usdcAtStart.toFixed(2)} USDC and no SOL price is known this cycle` : null].filter(Boolean).join("; ");
+    console.log(`[cycle ${app.cycle}] marks incomplete: ${why}; the breakers read carried marks`);
+  }
+  noteMarksFor(app, complete && marked);
   // THE FAST WATCH's list (src/engine/fastwatch.ts): the bands held as this cycle observed them, less the ones it closed
   try {
     const st = loadState();
@@ -2420,6 +2500,8 @@ async function main(): Promise<void> {
       await runIteration(app);
     } catch (err) {
       console.error(`[cycle ${app.cycle}] failed:`, err);
+      // a cycle that died before its marks read nothing complete: it counts toward "marks stale"
+      if (marksNotedCycle() !== app.cycle) noteMarksFor(app, false);
     }
     heartbeat();
     if (once || stopping) break;
