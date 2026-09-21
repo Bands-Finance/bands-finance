@@ -70,13 +70,14 @@
          AUTO_APPROVE_LIVE=true and an AUTO_APPROVE_PROPOSERS allowlist, and ops/live.env sets neither. -->
     <key>AUTO_APPROVE_PROPOSALS</key><string>true</string>
     <!-- Mr Bands on OpenHermit (docs/openhermit.md): uncomment to have the agent on the gateway propose instead of
-         Anthropic (the guards still decide; an unusable answer falls back to the desk policy). First: OPENHERMIT_TOKEN
-         and PLATFORM_OPERATOR_TOKEN in .env, then `npm run openhermit -- provision --mcp paper`, then `npm run openhermit -- ask`.
-         Switch back with DECIDER=policy. Then bootout and bootstrap this service.
+         the desk policy (the guards still decide; an unusable answer falls back to the desk policy). First put
+         OPENHERMIT_TOKEN and PLATFORM_HOUSE_TOKEN in .env, then run the openhermit script's provision command for the
+         paper MCP, then its ask command (both spelled out in docs/openhermit.md). Switch back with DECIDER=policy, then
+         bootout and bootstrap this service. (No double hyphens in this comment: they are not legal inside XML comments.)
     <key>DECIDER</key><string>openhermit</string>
     <key>OPENHERMIT_GATEWAY_URL</key><string>http://127.0.0.1:4000</string>
     <key>OPENHERMIT_AGENT_ID</key><string>mr-bands</string>
-    <key>OPENHERMIT_TIMEOUT_MS</key><string>120000</string>
+    <key>OPENHERMIT_TIMEOUT_MS</key><string>60000</string>
     -->
   </dict>
 </dict>
