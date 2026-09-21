@@ -107,8 +107,9 @@ export function buildApp(): Hono {
 
 export function startServer(port: number): void {
   const app = buildApp();
-  serve({ fetch: app.fetch, port }, (info) => {
-    console.log(`bands.finance server listening on http://localhost:${info.port}`);
+  const hostname = config.serveHost;
+  serve({ fetch: app.fetch, port, hostname }, (info) => {
+    console.log(`bands.finance server listening on http://${hostname}:${info.port}${hostname === "127.0.0.1" ? "" : " (ALL INTERFACES: the rails are reachable from the network)"}`);
   });
 }
 

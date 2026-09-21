@@ -38,8 +38,10 @@ its own process. Mr Bands follows the same split.
   Mounting them turns on MORE than `/mcp`: the same call adds `/api/engine/*`, `/api/proposals`,
   `/api/revenue` and `/api/credits` to a desk that served none of them before. They are the platform's
   own rails and carry their own auth, the desk listens on `127.0.0.1` only, and an outside proposal
-  still reaches the book only through the guards; but it is a real widening of what the process answers,
-  and it is worth knowing when reading a restarted desk's access log.
+  still reaches the book only through the guards; but it is a real widening of what the process answers.
+  Because of it the desk now binds `127.0.0.1` rather than every interface (`SERVE_HOST`, default
+  loopback): the gateway calls it on loopback, so nothing here needs more. Set `SERVE_HOST=0.0.0.0` to
+  read the dashboard from another machine, knowing the rails go with it.
 
 ## Environment
 

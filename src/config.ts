@@ -24,6 +24,10 @@ const Raw = z.object({
   AGENT_ID: z.string().default("mr-bands"),
   AGENT_NAME: z.string().default("Mr Bands"),
   SERVE_PORT: z.coerce.number().default(0),
+  // The desk's own server now carries the platform rails (POST /mcp, proposals, revenue, credits) as
+  // well as the dashboard, so it listens on the loopback alone unless told otherwise. Set 0.0.0.0 to
+  // reach the dashboard from another machine on the network, knowing the rails come with it.
+  SERVE_HOST: z.string().default("127.0.0.1"),
   SCREEN_INTERVAL_SEC: z.coerce.number().default(900),
   SCREEN_ACTIVE_HOURS: z.coerce.number().default(24),
   SCREEN_MAX_LIVE: z.coerce.number().default(1500),
@@ -109,6 +113,7 @@ export const config = {
   agentName: raw.AGENT_NAME,
   /** when > 0, `npm start` also serves the bands.finance API + site on this port */
   servePort: raw.SERVE_PORT,
+  serveHost: raw.SERVE_HOST,
   screen: {
     intervalSec: raw.SCREEN_INTERVAL_SEC,
     activeHours: raw.SCREEN_ACTIVE_HOURS,
