@@ -38,7 +38,8 @@ import { renderIntegrationDoc } from "./integrationDoc";
 import { OPERATOR_ONLY_TOOLS, TOOL_PRICES_USD, buildServer, operatorAuthorized, toolPriceUsd, type McpAudience } from "./mcp/server";
 import { PaymentGate, SOLANA_MAINNET_CAIP2, USDC_MINT } from "./payments/PaymentGate";
 import { RevenueLedger } from "./payments/RevenueLedger";
-import { decideProposal, listProposals, mcpProposerId, previewProposal, submitProposal, type ProposalStatus } from "./proposals";
+import { decideProposal, listProposals, mcpProposerId, previewProposal, PROPOSAL_STATUSES, submitProposal, type ProposalStatus } from "./proposals";
+import { autoApprovalStatus } from "./autoDecide";
 
 interface JsonRpcLike {
   method?: string;
@@ -193,9 +194,9 @@ export function railsRoutes(app: Hono): void {
         if (t.sessionId) sessions.delete(t.sessionId);
       };
       // A session's proposer identity is fixed at initialize: a hash of its bearer when it
-      // sent one, else the tool hashes the claimed agent name per call.
+      // sent one ("mcp:b:"), else the tool hashes the claimed agent name per call ("mcp:n:").
       const m = auth ? /^Bearer\s+(.+)$/i.exec(auth.trim()) : null;
-      await buildServer({ audience, proposerId: m ? mcpProposerId(`bearer:${m[1]}`) : undefined, connection }).connect(t);
+      await buildServer({ audience, proposerId: m ? mcpProposerId("bearer", m[1]) : undefined, connection }).connect(t);
       transport = t;
     }
     try {
@@ -306,11 +307,12 @@ export function railsRoutes(app: Hono): void {
   // ---------------------------------------------------------------------------------
   // Proposals: agents propose, the operator decides, the loop executes through the guards.
   // ---------------------------------------------------------------------------------
-  const STATUSES: ReadonlySet<string> = new Set<ProposalStatus>(["pending", "approved", "rejected", "expired", "executed"]);
+  const STATUSES: ReadonlySet<string> = new Set<ProposalStatus>(PROPOSAL_STATUSES);
   app.get("/api/proposals", (c) => {
     const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200);
     const status = c.req.query("status");
-    return c.json({ ok: true, proposals: listProposals(limit, status && STATUSES.has(status) ? (status as ProposalStatus) : undefined) });
+    // auto: the desk's own approval rules and what they have spent (src/platform/autoDecide.ts)
+    return c.json({ ok: true, proposals: listProposals(limit, status && STATUSES.has(status) ? (status as ProposalStatus) : undefined), auto: autoApprovalStatus() });
   });
 
   app.post("/api/proposals", async (c) => {

@@ -209,4 +209,5 @@ export function forgetBand(state: RiskState, position: string): void {
   if (state.feesPendingSince) delete state.feesPendingSince[position];
   if (state.launchBands) delete state.launchBands[position];
   if (state.askBands) delete state.askBands[position];
+  if (state.proposalBands) delete state.proposalBands[position];
 }

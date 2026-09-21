@@ -192,7 +192,7 @@ it. The platform layer ports Meridian's protocol to Solana. It needs a persisten
 | MCP tools | `POST /mcp` | `bands_list_pools`, `bands_limits`, `bands_agent_thoughts` free; `bands_pool_snapshot` $0.01, `bands_screen` $0.02, `bands_pool_score` $0.05 over x402. |
 | x402 in USDC | `402` challenge, `X-PAYMENT` proof | Self-facilitated: SPL transfer to the treasury USDC account, signed authorization, on-chain verify, replay ledger. Fails closed without `X402_VERIFY=self`. |
 | Engine skill | `GET /api/engine/access`, `skill`, `positions`; `POST /api/engine/plan`, `collect`, `close` | Advise-then-approve: the API runs Mr Bands' guards for the caller and returns unsigned transactions; the wallet signs. Closed until `ENGINE_OPEN=true` or `ENGINE_ALLOWLIST`. |
-| Proposals | `GET/POST /api/proposals`, `POST /api/proposals/decide` | Agents propose band actions on Mr Bands' book; the operator decides; the loop executes through the guards and receipts with the journal entry. |
+| Proposals | `GET/POST /api/proposals`, `POST /api/proposals/decide` | Agents propose band actions on Mr Bands' book; the operator decides, or with `AUTO_APPROVE_PROPOSALS=true` the desk's fixed rules approve a small SOL-only open (`src/platform/autoDecide.ts`, never a close, never a claimed name). The loop asks the desk policy, then the guards; the receipt is `executed` or `refused` with the journal entry. The journal records the proposal by id, never its rationale. |
 | Docs | `GET /integrate.md`, `skills/bands-engine/SKILL.md`, `web/public/quickstart.html` | For agents that want to read, pay, propose or run the engine. |
 
 Keys live in `.env.example` and `.env.platform.example`. Everything ships dormant: no treasury means
