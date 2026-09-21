@@ -68,6 +68,10 @@ export default function DashboardApp() {
     [bands, feesAll, chart],
   );
 
+  // the newest entry the page holds: when it is no newer than the frozen run's end, the live ledger IS that run
+  const newestTs = useMemo(() => agentEntries.reduce((m, e) => Math.max(m, Date.parse(e.ts) || 0), 0), [agentEntries]);
+  const didIsTheRun = !!liveRun && status.mode === "live" && newestTs <= liveRun.lastTs;
+
   // THE CHAPTERS
   const beats = useMemo<Beat[]>(() => {
     const m = narrative.headline.match(/^(.*?\bis (?:up|down|about flat))\s+(.*)$/);
@@ -92,7 +96,8 @@ export default function DashboardApp() {
             station: i < 2 ? `row${i}` : "plan",
             side: i % 2 === 0 ? "right" : "left",
             wide: true,
-            eyebrow: `What he holds · ${i + 1} of ${nBands}${asOf ? ` · as of ${asOf}` : ""}`,
+            // the time is one unbreakable word, so a phone never orphans "PM" on its own line
+            eyebrow: `What he holds · ${i + 1} of ${nBands}${asOf ? ` · as\u00a0of\u00a0${asOf.replace(/ /g, "\u00a0")}` : ""}`,
             line1: quote ? `${base} / ${quote}` : base,
             line2: st.word,
             tone: st.tone,
@@ -168,12 +173,13 @@ export default function DashboardApp() {
         links: live && walletAddress ? [{ href: `https://solscan.io/account/${walletAddress}`, label: "His wallet on Solscan", external: true }] : undefined,
       },
       // what the live desk did on Solana, when there is a frozen run to show
-      ...(liveRun ? [liveRunBeat(liveRun, now)] : []),
-      // a ledger with nothing in it is not a chapter: with no executed move the page goes from the record to the close
-      ...(actions.length
+      ...(liveRun ? [liveRunBeat(liveRun, now, status.mode)] : []),
+      // a ledger with nothing in it is not a chapter: with no executed move the page goes from the record to the close;
+      // and while the live feed still holds the frozen run and nothing newer, the ledger would print that run twice
+      ...(actions.length && !didIsTheRun
         ? [{
             id: "did", station: "tape", side: "left", wide: true, eyebrow: status.mode === "paper" ? "What he did on paper" : "What he did", line1: "Each move,", line2: "newest first.",
-            body: <><p>One sentence a move, with the money it realised and its transaction. Holds are not moves.</p></>,
+            body: <><p>One sentence a move, with the money it realised{live ? " and its transaction" : ""}. Holds are not moves.</p></>,
             content: <Actions actions={actions} status={status} now={now} agentName={agentName} />,
           } satisfies Beat]
         : []),
@@ -182,10 +188,10 @@ export default function DashboardApp() {
         // tools and the x402 payments are built and served at bands.finance/#/agents; the token is announced for the
         // Clawrena and not minted, so it is "coming", never "trading", and whenever it is named so is its owner
         // (docs/mr-bands-agent.md, hard rule 6). The ClawPump and X links print only once those pages exist (site.ts).
-        id: "hire", station: "hands", side: "left", eyebrow: "For hire", line1: "He is for hire,", line2: "by the call.",
+        id: "hire", station: "hands", side: "left", frame: { x: 0.04, y: 0.06 }, frameTall: { x: 0.04, y: 0.12 }, eyebrow: "For hire", line1: "He is for hire,", line2: "by the call.",
         body: <><p>Other agents can rent what he works with: his screener, his pool reads and his reasoning, served over MCP. A paid call names its price in USDC, the agent pays over x402, and the data comes back. No account, no key.</p><p>His token, $BANDS, is coming to ClawPump for the AnsemHack Clawrena. It is his operator's token, and he does not call its price.</p></>,
         links: [
-          { href: `${PLATFORM_URL}/#/agents`, label: "Rent him over MCP", external: true },
+          { href: `${PLATFORM_URL}/#/learn`, label: "Rent him over MCP", external: true },
           ...(TOKEN_URL ? [{ href: TOKEN_URL, label: "$BANDS on ClawPump", external: true }] : []),
           ...(X_URL ? [{ href: X_URL, label: "Follow him on X", external: true }] : []),
           { href: "https://github.com/louz514/bands-finance", label: "The code", external: true },
@@ -193,14 +199,15 @@ export default function DashboardApp() {
       },
       {
         id: "house", station: "him", side: "right", travel: 3.2, frameTall: { x: 0, y: -0.14 }, eyebrow: "The house", line1: "Liquidity", line2: "in between.",
-        content: <ClosingBlock agentName={agentName} walletAddress={walletAddress} />,
+        // the wallet is proof only when the desk is live: the same gate as the hero and the record
+        content: <ClosingBlock agentName={agentName} walletAddress={live && walletAddress ? walletAddress : null} />,
       },
     ];
     // THE NUMERALS: every chapter between the hero and the house carries one, in the order it appears, sheets included,
     // so the count never skips. A chapter added later (the live run, after "The record") is numbered by its place.
     let k = 0;
     return chapters.map((b) => (b.id === "hero" || b.id === "house" ? b : { ...b, eyebrow: `${roman(k++)} · ${b.eyebrow}` }));
-  }, [narrative, bands, book, record, actions, flows, flowTotals, feesAll, chart, walletAddress, solPriceUsd, selected, status, stamp, agentName, now, liveRun]);
+  }, [narrative, bands, book, record, actions, flows, flowTotals, feesAll, chart, walletAddress, solPriceUsd, selected, status, stamp, agentName, now, liveRun, didIsTheRun]);
 
   // SMOOTH SCROLL: only smoothing, never steering; off with reduced motion or the footer's switch, and never on touch
   const motion = useMotion();
@@ -241,7 +248,7 @@ export default function DashboardApp() {
   return (
     <div className="dash">
       <EngraveDefs />
-      <DashNav status={status} agentName={agentName} hasMoves={actions.length > 0} />
+      <DashNav status={status} agentName={agentName} hasMoves={actions.length > 0 && !didIsTheRun} hasLived={!!liveRun} />
       {error && !entries && (
         <div className="error dash__error">
           Could not load the journal: <code>{error}</code>.

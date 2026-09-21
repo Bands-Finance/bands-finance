@@ -30,17 +30,20 @@ export interface DashNavProps {
   agentName: string;
   /** whether the ledger chapter is on the page: with no executed move there is no "What he did" to point at */
   hasMoves?: boolean;
+  /** the frozen live run is on the page (web/public/live-run.json loaded) */
+  hasLived?: boolean;
 }
 
-const SECTIONS: { id: string; label: string }[] = [
-  { id: "lays", label: "How he works" },
-  { id: "holds", label: "What he holds" },
-  { id: "made", label: "What he made" },
+// the shared words of each label are one span, hidden on a phone, so the bar's second row reads HOLDS · MADE · ON SOLANA · DID
+const SECTIONS: { id: string; label: ReactNode }[] = [
+  { id: "lays", label: <><span className="dash-nav__long">How he </span>works</> },
+  { id: "holds", label: <><span className="dash-nav__long">What he </span>holds</> },
+  { id: "made", label: <><span className="dash-nav__long">What he </span>made</> },
   { id: "lived", label: "On Solana" },
-  { id: "did", label: "What he did" },
+  { id: "did", label: <><span className="dash-nav__long">What he </span>did</> },
 ];
 
-export function DashNav({ status, agentName, hasMoves = true }: DashNavProps) {
+export function DashNav({ status, agentName, hasMoves = true, hasLived = false }: DashNavProps) {
   return (
     <header className="dash-nav dash-nav--float" role="banner">
       <div className="dash-nav__bar">
@@ -49,7 +52,7 @@ export function DashNav({ status, agentName, hasMoves = true }: DashNavProps) {
         <span className="dash-nav__name engrave">{agentName}</span>
       </a>
       <nav className="dash-nav__links engrave" aria-label="Sections">
-        {SECTIONS.filter((s) => hasMoves || s.id !== "did").map((s) => (
+        {SECTIONS.filter((s) => (hasMoves || s.id !== "did") && (hasLived || s.id !== "lived")).map((s) => (
           <a key={s.id} href={`#${s.id}`}>
             {s.label}
           </a>

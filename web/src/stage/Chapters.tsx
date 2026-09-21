@@ -218,7 +218,7 @@ export function ClosingBlock({ agentName, walletAddress }: { agentName: string; 
       {/* the words pin to the window's centre while the camera walks round him, so the close stays short: the ask is the
           chapter before this one (the "hire" beat, DashboardApp.tsx) and this row only points at where to go */}
       <nav className="close__links engrave" aria-label="Footer">
-        <a href={`${PLATFORM_URL}/#/agents`} target="_blank" rel="noreferrer">Rent him over MCP</a>
+        <a href={`${PLATFORM_URL}/#/learn`} target="_blank" rel="noreferrer">Rent him over MCP</a>
         {walletAddress && <a href={`https://solscan.io/account/${walletAddress}`} target="_blank" rel="noreferrer">His wallet</a>}
         <a href={PLATFORM_URL} target="_blank" rel="noreferrer">bands.finance</a>
         <a href={`${PLATFORM_URL}/#/learn`} target="_blank" rel="noreferrer">How it works</a>

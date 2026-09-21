@@ -1566,8 +1566,8 @@ for o in (stack, strap, chip, coin):
 STATIONS = [
     # name       cam (x, y, z)             look (x, y, z)          fov  follow     drift (x, y, z)     note
     ("hero",     (19.0, -25.0, 8.5),       (2.5, 0.0, 5.2),        33,  "",        (0, 0, 0),          "the desk as a landscape along the bottom of the window, the words in the sky above it"),
-    ("rows",     (-11.0, -12.0, 5.5),      (1.0, -0.5, 0.3),       32,  "",        (0, 0, 0),          "he lays SOL under the price: down the rows"),
-    ("cursor",   (2.5, -9.5, 4.2),         (0.6, -1.2, 0.6),       30,  "cursor",  (0, 0, 0),          "traders cross his band: on the cursor"),
+    ("rows",     (-10.0, -11.0, 9.6),      (1.0, -0.5, -2.6),      32,  "",        (0, 0, 0),          "he lays SOL under the price: down the rows"),
+    ("cursor",   (2.5, -9.5, 6.2),         (0.6, -1.2, -0.2),      30,  "cursor",  (0, 0, 0),          "traders cross his band: on the cursor"),
     # The row stations stand high and close (about 50 degrees down) so the frame's top edge falls on the blotter just short
     # of Mr Bands, who stands at FIG_AT right behind the trays: from the old low three-quarter his shins hung from the top
     # of the "what he holds" chapter. A tilt below the tray (look z under the desk) keeps his shoes off the picture even when

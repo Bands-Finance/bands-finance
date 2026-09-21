@@ -113,7 +113,8 @@ export async function loadJournal(limit = 600): Promise<JournalEntry[]> {
 export async function loadLimits(): Promise<RiskLimits | null> {
   if (window.__BANDS_DATA__?.limits) return window.__BANDS_DATA__.limits;
   const live = await loadLiveFeed();
-  if (live?.limits && typeof live.limits.maxPositionSol === "number") return live.limits;
+  // a stale feed's limits are the stopped desk's: only a fresh feed speaks for the page (loadJournal's rule)
+  if (live?.limits && typeof live.limits.maxPositionSol === "number" && Date.now() - Date.parse(live.generatedAt) < LIVE_MAX_AGE_MS) return live.limits;
   const candidates = limitsSource ? [limitsSource] : [env.VITE_LIMITS_URL, `${base}/api/limits`, `${base}/limits.json`].filter((u): u is string => Boolean(u));
   for (const url of candidates) {
     try {

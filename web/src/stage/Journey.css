@@ -140,7 +140,8 @@
   .beat__words, .beat--right .beat__words, .beat--wide .beat__words, .beat--right.beat--wide .beat__words { width: 100%; }
   /* a narrow window has no empty side: the words carry their own paper, soft at the top and bottom, and the plate shows above and below it */
   .beat__words::before { content: ""; position: absolute; z-index: -1; inset: -70px calc(-1 * var(--gut)) -64px; pointer-events: none; background: linear-gradient(to bottom, rgba(243, 236, 221, 0) 0, rgba(243, 236, 221, 0.95) 58px, rgba(243, 236, 221, 0.95) calc(100% - 52px), rgba(243, 236, 221, 0) 100%); }
-  .beat--hero .beat__words::before { display: none; }
+  /* the hero's words too: a softer paper, open at the top, so the man and the trays show through above the headline */
+  .beat--hero .beat__words::before { inset: -40px calc(-1 * var(--gut)) -20px; background: linear-gradient(to bottom, rgba(243, 236, 221, 0) 0, rgba(243, 236, 221, 0.84) 56px, rgba(243, 236, 221, 0.84) calc(100% - 30px), rgba(243, 236, 221, 0) 100%); }
   /* the close: its words' paper would sit on the whole 320vh block and wash the turn out for its entire length, so the
      pinned window carries the paper instead, from the foot up, and the words sit low so the walk round him has the top
      of the window to itself (the pin is sticky, so it is the containing block) */
@@ -151,11 +152,12 @@
   .stage__mist--t { background: linear-gradient(to top, rgba(243, 236, 221, 0.97) 0, rgba(243, 236, 221, 0.92) 40%, rgba(243, 236, 221, 0) 58%); }
   .stage__labels { display: none; }
   /* the section links stay, as a second row of the bar, so a phone can jump to the ledger of moves without swiping the
-     whole journey; the first chapter's link goes (the hero's "See how he works" is the same jump), so the three that
+     whole journey; the first chapter's link goes (the hero's "See how he works" is the same jump) and the shared words of the rest, so the four that
      are left fit 390px without scrolling */
   .dash-nav--float .dash-nav__bar { flex-wrap: wrap; row-gap: 8px; padding: 10px 14px; justify-content: space-between; }
   .dash-nav--float .dash-nav__links { order: 3; flex: 1 0 100%; margin: 0; justify-content: space-between; gap: 8px; font-size: 10px; letter-spacing: 0.12em; }
   .dash-nav--float .dash-nav__links a[href="#lays"] { display: none; }
+  .dash-nav__long { display: none; }
   .figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* the daily table on a phone: the heads may wrap, and the three counts (moves, claims, holds) go, since they are in the
      statement's "Decisions" row and the ledger anyway; Day, Fees earned and The book then fit 390px with no sideways scroll */
