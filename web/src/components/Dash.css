@@ -365,7 +365,7 @@
 }
 @media (max-width: 640px) {
   .dash-nav { gap: 14px; padding-top: 18px; flex-wrap: wrap; }
-  .dash-nav__links { display: none; }
+  /* the section links are not hidden here: on a narrow window they are the bar's second row (Journey.css) */
   .dash-nav__mode { margin-left: auto; }
   .tape { margin-top: 14px; }
   .banknote { padding: 26px var(--gut) 40px; }

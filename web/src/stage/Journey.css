@@ -25,7 +25,8 @@
   margin: 0 auto;
 }
 .beat--hero { min-height: 100vh; align-items: flex-start; padding-top: clamp(120px, 19vh, 210px); padding-bottom: 40vh; }
-.beat:last-child { padding-bottom: 22vh; }
+/* the page's tail, unless the last chapter travels: its pinned words must still be in place when the document ends, so it gets no tail at all */
+.beat:last-child:not(.beat--travel) { padding-bottom: 22vh; }
 .beat--right { justify-content: flex-end; }
 .beat__words { position: relative; width: min(100%, 540px); padding: 8px 0; }
 .beat--right .beat__words { width: min(100%, 470px); }
@@ -35,9 +36,9 @@
 .beat--travel { align-items: flex-start; padding-top: 0; padding-bottom: 0; }
 .beat--travel .beat__pin { position: sticky; top: 0; min-height: 100vh; min-height: 100svh; display: flex; flex-direction: column; justify-content: center; }
 .beat--travel .beat__pin > * { flex: 0 0 auto; }
-/* the ticker tape runs along the foot of the first window */
-.beat__foot { position: absolute; left: 50%; width: 100vw; transform: translateX(-50%); top: calc(100vh - 44px); top: calc(100svh - 44px); }
-.beat__foot .tape { background: rgba(243, 236, 221, 0.82); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); border-bottom: 0; }
+/* the ticker tape runs along the foot of the first window: its bottom edge is the fold, whatever the tape's height (the tape's own top margin from Dash.css goes, or it would push the strip half under the fold) */
+.beat__foot { position: absolute; left: 50%; width: 100vw; transform: translate(-50%, -100%); top: 100vh; top: 100svh; }
+.beat__foot .tape { margin: 0; background: rgba(243, 236, 221, 0.82); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); border-bottom: 0; }
 
 .beat__eyebrow { margin: 0 0 18px; font-size: 12px; color: var(--strap-deep); opacity: 0; transform: translateY(8px); transition: opacity 0.7s ease 0.05s, transform 0.7s cubic-bezier(0.2, 0.7, 0.1, 1) 0.05s; }
 .beat__head { margin: 0; font-family: var(--font-serif); font-weight: 600; font-size: clamp(36px, 4.5vw, 66px); line-height: 1; letter-spacing: -0.025em; color: var(--ink); }
@@ -55,7 +56,8 @@
 .beat__figure b { font-family: var(--font-mono, "JetBrains Mono", monospace); font-weight: 500; font-size: clamp(22px, 2.3vw, 32px); color: var(--ink); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .beat__figure span { font-family: var(--font-serif); font-style: italic; font-size: 15px; line-height: 1.45; color: var(--ink-3, var(--ink-2)); }
 .beat__links { margin: 24px 0 0; display: flex; gap: 26px; flex-wrap: wrap; opacity: 0; transition: opacity 0.8s ease 0.5s; }
-.dash .beat__links a { color: var(--ink); text-decoration: none; font-size: 15px; border-bottom: 1px solid var(--ink); padding-bottom: 5px; }
+/* the hero's links are set like the footer's: engraved capitals, the page's one link voice (they would otherwise inherit the sans, the only sans on the page) */
+.dash .beat__links a { color: var(--ink); text-decoration: none; font-family: var(--font-engrave); font-weight: 600; text-transform: uppercase; letter-spacing: 0.16em; font-size: 13px; font-feature-settings: "lnum" 1; border-bottom: 1px solid var(--ink); padding-bottom: 5px; }
 .dash .beat__links a:hover { color: var(--strap-deep); border-bottom-color: var(--strap); }
 
 .beat__content { margin-top: 30px; opacity: 0; transform: translateY(16px); transition: opacity 0.9s ease 0.4s, transform 1s cubic-bezier(0.2, 0.7, 0.1, 1) 0.4s; }
@@ -125,24 +127,51 @@
 
 /* ---------- narrow windows: the desk above, the words below on their mist ---------- */
 @media (max-width: 820px) {
-  .beat { min-height: 100vh; padding: 46vh var(--gut); align-items: center; }
-  .beat--hero { min-height: 100vh; min-height: 100svh; align-items: flex-end; padding-top: 0; padding-bottom: calc(9vh + 44px); margin-bottom: 40vh; }
+  /* a phone shows less desk per swipe than a wide window, so the wordless run between two chapters is shorter (68vh) than a full screen */
+  .beat { min-height: 100vh; padding: 34vh var(--gut); align-items: center; }
+  .beat--hero { min-height: 100vh; min-height: 100svh; align-items: flex-end; padding-top: 0; padding-bottom: 9vh; margin-bottom: 20vh; }
+  /* room under the hero's words for the ticker tape, only while there is a tape (it is not rendered before his first move) */
+  .beat--hero:has(.beat__foot .tape) { padding-bottom: calc(9vh + 44px); }
+  /* the rule above re-pads the travelling chapter too; its scroll room is the block itself, so it keeps no padding of its own */
+  .beat--travel { padding-top: 0; padding-bottom: 0; }
   .beat--right { justify-content: flex-start; }
+  /* the longest chapter head ("Traders cross his band.") needs a touch under 36px to hold its line at 390px */
+  .beat__head { font-size: clamp(30px, 8vw, 36px); }
   .beat__words, .beat--right .beat__words, .beat--wide .beat__words, .beat--right.beat--wide .beat__words { width: 100%; }
   /* a narrow window has no empty side: the words carry their own paper, soft at the top and bottom, and the plate shows above and below it */
   .beat__words::before { content: ""; position: absolute; z-index: -1; inset: -70px calc(-1 * var(--gut)) -64px; pointer-events: none; background: linear-gradient(to bottom, rgba(243, 236, 221, 0) 0, rgba(243, 236, 221, 0.95) 58px, rgba(243, 236, 221, 0.95) calc(100% - 52px), rgba(243, 236, 221, 0) 100%); }
   .beat--hero .beat__words::before { display: none; }
+  /* the close: its words' paper would sit on the whole 320vh block and wash the turn out for its entire length, so the
+     pinned window carries the paper instead, from the foot up, and the words sit low so the walk round him has the top
+     of the window to itself (the pin is sticky, so it is the containing block) */
+  .beat--travel .beat__words::before { display: none; }
+  .beat--travel .beat__pin { justify-content: flex-end; padding-bottom: 4vh; }
+  .beat--travel .beat__pin::before { content: ""; position: absolute; z-index: -1; left: calc(-1 * var(--gut)); right: calc(-1 * var(--gut)); bottom: 0; height: 62%; pointer-events: none; background: linear-gradient(to bottom, rgba(243, 236, 221, 0) 0, rgba(243, 236, 221, 0.95) 90px); }
   .stage__mist--l, .stage__mist--r { display: none; }
   .stage__mist--t { background: linear-gradient(to top, rgba(243, 236, 221, 0.97) 0, rgba(243, 236, 221, 0.92) 40%, rgba(243, 236, 221, 0) 58%); }
   .stage__labels { display: none; }
-  .dash-nav--float .dash-nav__links { display: none; }
-  .dash-nav--float .dash-nav__bar { justify-content: space-between; }
+  /* the section links stay, as a second row of the bar, so a phone can jump to the ledger of moves without swiping the
+     whole journey; the first chapter's link goes (the hero's "See how he works" is the same jump), so the three that
+     are left fit 390px without scrolling */
+  .dash-nav--float .dash-nav__bar { flex-wrap: wrap; row-gap: 8px; padding: 10px 14px; justify-content: space-between; }
+  .dash-nav--float .dash-nav__links { order: 3; flex: 1 0 100%; margin: 0; justify-content: space-between; gap: 8px; font-size: 10px; letter-spacing: 0.12em; }
+  .dash-nav--float .dash-nav__links a[href="#lays"] { display: none; }
   .figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* the daily table on a phone: the heads may wrap, and the three counts (moves, claims, holds) go, since they are in the
+     statement's "Decisions" row and the ledger anyway; Day, Fees earned and The book then fit 390px with no sideways scroll */
+  .chap__table th { white-space: normal; padding-right: 10px; }
+  .chap__table td { padding-right: 10px; }
+  .chap__table th:nth-child(n + 4), .chap__table td:nth-child(n + 4) { display: none; }
   .beat .acts__row { grid-template-columns: 48px minmax(0, 1fr) 70px; font-size: 15px; }
   .beat .acts__tx { display: none; }
   .beat .acts__list::before { left: 58px; }
   .beat .acts__day { padding-left: 76px; }
   .close__row { flex-direction: column; align-items: flex-start; }
+}
+
+/* a phone: the ledger's result stacks under its sentence (Actions.css), so the third column goes with it, or it would stand empty beside every row */
+@media (max-width: 640px) {
+  .beat .acts__row { grid-template-columns: 48px minmax(0, 1fr); gap: 2px 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
