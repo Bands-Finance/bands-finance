@@ -13,7 +13,10 @@ service is the act of going live. It is done on Zach's word, in words, and never
 - **Pools:** Meteora DLMM stock pools that already trade, ranked by fee on depth, at most 3, plus the NVDA
   pairing (`PAIR_STOCK_PINNED_TICKERS=NVDA`). No pools of our own (`PAIR_STOCK_LANE=false`, `PAIR_LANE=false`),
   no launches, no memecoins under the 30-day rule.
-- **Who decides:** the desk policy (`POLICY_LIVE=true`); there is no Anthropic key. The guards decide last, as always.
+- **Who decides:** the desk policy (`POLICY_LIVE=true`, and `DECIDER=policy` pinned in `ops/live.env`, since `.env` names
+  OpenHermit for the paper desk); there is no Anthropic key. The guards decide last, as always.
+- **Halted until the go:** `KILL_SWITCH=true` in `ops/live.env`. While the line is there the live service does not start at all:
+  `npm run live` runs the preflight first, and a live preflight FAILs on the kill switch. It is cleared at step 4 and nowhere else.
 - **Hedging:** off. The stock halves of the straddles run unhedged until Backpack keys exist.
 - **Stops:** 15% per band, the circuit and portfolio breakers as in paper, 120 actions a day at most.
 - **RPC:** `.env`'s `RPC_URL`. The public endpoint rate-limits; a Helius URL is strongly preferred for real money.
@@ -32,12 +35,16 @@ window over `DATA_DIR`, and a restart on `data-mainnet` would print that run a s
 
 
 1. Zach sends 20 SOL to the wallet above.
-2. `npm run live:preflight` — every FAIL must be clear (the SOL balance line turns PASS once funded).
-3. `npm run live:rehearse` — ONE cycle with the real wallet and `DRY_RUN=true`: it screens, picks, builds
+2. `npm run live:preflight`: every FAIL except the kill switch must be clear before the rehearsal (the SOL balance
+   line turns PASS once funded). The kill switch row FAILs by design: it names `KILL_SWITCH=true` until step 4.
+3. `npm run live:rehearse`: ONE cycle with the real wallet and `DRY_RUN=true`. It screens, picks, builds
    the real transactions and simulates them against the chain, and sends nothing. Read `data-mainnet/mrbands.log`.
+   It runs with `KILL_SWITCH=false` so the open path is exercised, and `LIVE_FEED=false` so a dry-run cycle is not
+   published to the public live feed the sites read.
    Pause the paper desk for it (`launchctl bootout gui/$(id -u)/com.bands.mrbands.paper`) so the two do not
    share rate limits; start it again after if the go is not given.
-4. Zach says go, in words.
+4. Zach says go, in words. Then, and only then, delete the `KILL_SWITCH=true` line from `ops/live.env` and run
+   `npm run live:preflight` once more: the kill switch row now reads clear.
 5. Stop the paper desk, install the live service:
    ```
    launchctl bootout gui/$(id -u)/com.bands.mrbands.paper
@@ -50,7 +57,12 @@ window over `DATA_DIR`, and a restart on `data-mainnet` would print that run a s
 
 ## Stopping
 
-- `touch STOP` in the repo root blocks every new band at once; exits and claims still run.
+- `touch data-mainnet/STOP` halts the live desk alone; `touch data-live/STOP` halts the paper desk alone. Every new
+  band is blocked at once; exits and claims still run. `rm` the file to lift it. Only the file's existence counts:
+  nothing written in it is read, so it holds until someone removes it.
+- `touch STOP` in the repo root halts every desk run from it, paper and live alike. Both desks run from the repo root,
+  so this is the big red button, not the way to stop one of them.
+- `KILL_SWITCH=true` back in `ops/live.env` halts the live desk from its next start (bootout and bootstrap to apply it now).
 - `launchctl bootout gui/$(id -u)/com.bands.mrbands.live` stops the loop; open bands stay open on chain
   until the desk runs again or they are closed by hand on Meteora.
 
