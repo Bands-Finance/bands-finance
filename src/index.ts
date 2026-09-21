@@ -92,6 +92,9 @@ import { bookEnv, isTradableVenue, liveVenues, loadVenuePool, poolsWithPositions
 import { fetchPoolAnalytics } from "./tools/lpagent";
 import { Wallet } from "./tools/wallet";
 import { startServer } from "./server";
+import { noteDeploy, noteIteration, noteScreen } from "./status";
+import { createDeployer } from "./publish/deploy";
+import { rpcConnection } from "./lib/timedFetch";
 import { basisForPool, basisForTicker, basisVerdict, refreshBasis, sessionClock, sessionWidthMultiplier, type BasisRow } from "./basis";
 import { hotPicks, HotRow, launchRowOf, loadHot, runHotTick, startHotWatch } from "./hot";
 import {
@@ -257,23 +260,14 @@ function banner(app: App): void {
   console.log("=".repeat(72));
 }
 
-let lastDeployAt = 0;
 const DEPLOY_MIN_MINUTES = Number(process.env.AUTO_DEPLOY_MIN_MINUTES ?? 30);
 
+// One push at a time, each step with a hard timeout (src/publish/deploy.ts); never awaited by the cycle.
+const deployer = createDeployer({ exec, cwd: process.cwd(), minMinutes: DEPLOY_MIN_MINUTES, onDone: (ok, at) => noteDeploy(ok, at) });
+
 function deploySnapshot(): void {
-  const sinceMin = (Date.now() - lastDeployAt) / 60000;
-  if (lastDeployAt > 0 && sinceMin < DEPLOY_MIN_MINUTES) {
-    console.log(`[deploy] skipped: ${sinceMin.toFixed(0)} min since the last push, minimum ${DEPLOY_MIN_MINUTES}`);
-    return;
-  }
-  lastDeployAt = Date.now();
   // the platform, then the dashboard site when its Vercel link exists (dash/README.md)
-  const dash = fs.existsSync(path.join(process.cwd(), "dash", ".vercel", "project.json"));
-  console.log(`[deploy] pushing snapshot to Vercel${dash ? " (platform + dashboard)" : ""}`);
-  exec(dash ? "npm run web:deploy && npm run dash:deploy" : "npm run web:deploy", { cwd: process.cwd() }, (err, stdout, stderr) => {
-    if (err) console.error(`[deploy] failed: ${err.message}\n${stderr.slice(-400)}`);
-    else console.log(`[deploy] ${stdout.trim().split("\n").slice(-2).join(" | ")}`);
-  });
+  deployer.deploy(fs.existsSync(path.join(process.cwd(), "dash", ".vercel", "project.json")));
 }
 
 /** Symbols come from the screener.s enrichment; the on-chain snapshot only knows mints. */
@@ -293,6 +287,7 @@ async function ensureScreen(app: App): Promise<void> {
   try {
     app.screen = await runScreen(app.connection, (s) => console.log(s));
     app.screenAt = Date.now();
+    noteScreen(true, app.screenAt);
     registerTokens(app.screen);
     // Stock pools: refresh the basis to Backpack's perps in the background; the loop reads the file.
     refreshBasis()
@@ -301,6 +296,7 @@ async function ensureScreen(app: App): Promise<void> {
     setSolPriceUsd(solPriceOf(app));
   } catch (err) {
     console.error(`[screen] failed: ${(err as Error).message}`);
+    noteScreen(false);
     if (!app.screen) {
       app.screen = loadScreen();
       if (app.screen) console.log(`[screen] using saved screen from ${app.screen.generatedAt}`);
@@ -2462,7 +2458,8 @@ async function main(): Promise<void> {
     else console.log(`[paper] new book: ${pEnv.sol} SOL, ${pEnv.usdc} USDC`);
     savePaperBook(paper);
   }
-  const connection = new Connection(config.rpcUrl, "confirmed");
+  // every RPC request carries a deadline (src/lib/timedFetch.ts): a node that never answers cannot hold the cycle
+  const connection = rpcConnection(config.rpcUrl);
   const wallet = Wallet.fromConfig(connection);
   acquireLock(wallet.publicKey.toBase58(), config.cycleIntervalSec);
   process.on("exit", releaseLock);
@@ -2555,7 +2552,9 @@ async function main(): Promise<void> {
       // a cycle that died before its marks read nothing complete: it counts toward "marks stale"
       if (marksNotedCycle() !== app.cycle) noteMarksFor(app, false);
     }
-    heartbeat();
+    const beatAt = Date.now();
+    heartbeat(beatAt);
+    noteIteration(beatAt);
     if (once || stopping) break;
     if (config.maxCycles > 0 && app.cycle >= config.maxCycles) {
       console.log(`[loop] MAX_CYCLES=${config.maxCycles} reached; stopping cleanly`);
