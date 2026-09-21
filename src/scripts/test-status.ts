@@ -132,6 +132,9 @@ async function main(): Promise<void> {
     const r = statusReport(now);
     assert.deepEqual(r.marks, { skipped: 2, lastCompleteAt: now - MIN, stale: false });
     assert.deepEqual(r.autoApprove, { today: 1, total: 4 });
+    // a held pool set aside for staying blind is named, and only when there is one
+    status.noteMarks({ skipped: 0, lastCompleteAt: now, stale: false, setAside: ["pair-Xsoq"] });
+    assert.deepEqual(statusReport(now).marks, { skipped: 0, lastCompleteAt: now, stale: false, setAside: ["pair-Xsoq"] });
   });
 
   await test("status: a desk STOP in DATA_DIR is a halt too, named beside the environment's", () => {

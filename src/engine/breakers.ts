@@ -76,6 +76,11 @@ export interface EngineState {
   /** the SOL price the last mark valued USDC at, and when: the carried price when the screen has none */
   lastSolPriceUsd: number | null;
   lastSolPriceAt: number | null;
+  /** the marks count (src/engine/marks.ts), kept here so a restart does not lift "marks stale" */
+  skippedMarks: number;
+  lastCompleteMarkAt: number | null;
+  /** held pool -> cycles running it could not be read: at MARKS_STALE_CYCLES it is written down and set aside */
+  blindStreaks: Record<string, number>;
 }
 
 export function emptyEngineState(): EngineState {
@@ -87,6 +92,9 @@ export function emptyEngineState(): EngineState {
     bandMarks: {},
     lastSolPriceUsd: null,
     lastSolPriceAt: null,
+    skippedMarks: 0,
+    lastCompleteMarkAt: null,
+    blindStreaks: {},
   };
 }
 
@@ -103,6 +111,9 @@ export function loadEngineState(file = dataPath(ENGINE_STATE_FILE)): EngineState
       bandMarks: parsed.bandMarks ?? {},
       lastSolPriceUsd: typeof parsed.lastSolPriceUsd === "number" && parsed.lastSolPriceUsd > 0 ? parsed.lastSolPriceUsd : null,
       lastSolPriceAt: typeof parsed.lastSolPriceAt === "number" ? parsed.lastSolPriceAt : null,
+      skippedMarks: typeof parsed.skippedMarks === "number" && parsed.skippedMarks > 0 ? Math.floor(parsed.skippedMarks) : 0,
+      lastCompleteMarkAt: typeof parsed.lastCompleteMarkAt === "number" ? parsed.lastCompleteMarkAt : null,
+      blindStreaks: parsed.blindStreaks ?? {},
     };
   } catch {
     return empty;

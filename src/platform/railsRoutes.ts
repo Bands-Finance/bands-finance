@@ -199,6 +199,8 @@ export function railsRoutes(app: Hono): void {
       };
       // A session's proposer identity is fixed at initialize: a hash of its bearer when it
       // sent one ("mcp:b:"), else the tool hashes the claimed agent name per call ("mcp:n:").
+      // The bearer is not checked here, so the desk's own rules take an mcp:b: id only when it
+      // is on AUTO_APPROVE_PROPOSERS (src/platform/autoDecide.ts R2); anyone can send a header.
       const m = auth ? /^Bearer\s+(.+)$/i.exec(auth.trim()) : null;
       await buildServer({ audience, proposerId: m ? mcpProposerId("bearer", m[1]) : undefined, connection }).connect(t);
       transport = t;

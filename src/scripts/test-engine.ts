@@ -43,7 +43,7 @@ import {
 } from "../engine/breakers";
 import { clearFeesPending, collectDirective, skimPlan, trackFeesPending, unclaimedFeesQuote, unclaimedFeesSol } from "../engine/collect";
 import { engineDirective } from "../engine/directives";
-import { CARRY_HAIRCUT_PCT, carriedBands, carriedUsdToSol, foldMarksHealth, marksHealth, marksStale, noteMarks, recordMarks, resetMarksHealth } from "../engine/marks";
+import { CARRY_HAIRCUT_PCT, carriedBands, carriedUsdToSol, foldMarksHealth, marksHealth, marksStale, MARKS_STALE_CYCLES, noteMarks, readOfBook, recordMarks, resetMarksHealth } from "../engine/marks";
 import { lockBlocks, loopStale, staleWindowMs } from "../engine/watchdog";
 
 const limits: RiskLimits = {
@@ -996,6 +996,73 @@ test("marks: the stale count climbs on incomplete cycles, is stale at 3, and res
   noteMarks(true, T0 + 3 * M, 4);
   assert.deepEqual(marksHealth(), { skippedMarks: 0, lastCompleteMarkAt: T0 + 3 * M, stale: false });
   resetMarksHealth();
+});
+
+test("marks: a pick that holds no band and cannot be read never makes the read incomplete", () => {
+  // the paper pair pool that could not be priced for 590 cycles, held nothing on this run: the book is read whole
+  let streaks: Record<string, number> = {};
+  let h = { skippedMarks: 0, lastCompleteMarkAt: null as number | null, cycle: null as number | null };
+  for (let c = 1; c <= 10; c += 1) {
+    const r = readOfBook({ picks: ["spcx", "pair", "sol"], decided: ["spcx", "sol"], held: ["spcx"], usdcUnpriced: false, streaks });
+    streaks = r.streaks;
+    assert.deepEqual(r.blind, ["pair"]);
+    assert.deepEqual(r.heldBlind, []);
+    assert.equal(r.complete, true);
+    h = foldMarksHealth(h, r.counts, T0 + c * M, c);
+  }
+  assert.equal(h.skippedMarks, 0);
+  assert.equal(marksStale(h), false, "opens are not blocked over a pick with nothing in it");
+  // unpriced USDC still makes a cycle incomplete
+  assert.equal(readOfBook({ picks: ["a"], decided: ["a"], held: ["a"], usdcUnpriced: true, streaks: {} }).counts, false);
+});
+
+test("marks: one held pool blind for good is set aside at MARKS_STALE_CYCLES and written down; the rest of the book opens again", () => {
+  // the paper pair pool held a band and could not be priced from cycle 1: SPCX, also held, read fine every cycle
+  let streaks: Record<string, number> = {};
+  let h = { skippedMarks: 0, lastCompleteMarkAt: null as number | null, cycle: null as number | null };
+  const stale: boolean[] = [];
+  let last = readOfBook({ picks: [], decided: [], held: [], usdcUnpriced: false, streaks });
+  for (let c = 1; c <= 20; c += 1) {
+    last = readOfBook({ picks: ["spcx", "pair"], decided: ["spcx"], held: ["spcx", "pair"], usdcUnpriced: false, streaks });
+    streaks = last.streaks;
+    h = foldMarksHealth(h, last.counts, T0 + c * M, c);
+    stale.push(marksStale(h));
+    if (c < MARKS_STALE_CYCLES) assert.deepEqual(last.setAside, [], `cycle ${c}: carried, not yet set aside`);
+  }
+  assert.deepEqual(last.setAside, ["pair"]);
+  assert.equal(last.complete, false, "the equity history still takes whole reads only");
+  assert.equal(last.counts, true);
+  assert.equal(stale.some(Boolean), false, "it never blocks the book for good");
+  assert.equal(streaks.pair, 20);
+  // its band is written down to its entry less the full stop, below its carried mark
+  const c = carriedBands(blindInput({ blindPools: ["pair"], marks: { b1: { pool: "pair", valueSol: 0.48, at: T0 } }, entryValueSol: { b1: 0.5 }, writtenDown: last.setAside }));
+  assert.equal(c[0].basis, "written down");
+  near(c[0].valueInSol, 0.5 * 0.85);
+  // a carried mark already under the floor stays at the mark: the write-down never raises a value
+  const lower = carriedBands(blindInput({ blindPools: ["pair"], marks: { b1: { pool: "pair", valueSol: 0.3, at: T0 } }, writtenDown: ["pair"] }));
+  near(lower[0].valueInSol, 0.3 * (1 - CARRY_HAIRCUT_PCT / 100));
+  // the pool reads again: its streak is gone and it is no longer set aside
+  const back = readOfBook({ picks: ["spcx", "pair"], decided: ["spcx", "pair"], held: ["spcx", "pair"], usdcUnpriced: false, streaks });
+  assert.deepEqual(back.streaks, {});
+  assert.deepEqual(back.setAside, []);
+  assert.equal(back.complete, true);
+});
+
+test("marks: when nothing at all is decided, nothing is set aside and the block stands", () => {
+  // the RPC, not one pool: every held pool blind, however long
+  let streaks: Record<string, number> = { a: 9, b: 9 };
+  let h = { skippedMarks: 0, lastCompleteMarkAt: null as number | null, cycle: null as number | null };
+  for (let c = 1; c <= MARKS_STALE_CYCLES; c += 1) {
+    const r = readOfBook({ picks: ["a", "b", "c"], decided: [], held: ["a", "b"], usdcUnpriced: false, streaks });
+    streaks = r.streaks;
+    assert.deepEqual(r.setAside, []);
+    h = foldMarksHealth(h, r.counts, T0 + c * M, c);
+  }
+  assert.equal(marksStale(h), true);
+  // two held pools blind while a third is read: each is set aside only on its own streak
+  const r = readOfBook({ picks: ["a", "b", "c"], decided: ["c"], held: ["a", "b", "c"], usdcUnpriced: false, streaks: { a: MARKS_STALE_CYCLES } });
+  assert.deepEqual(r.setAside, ["a"]);
+  assert.equal(r.counts, false, "b has been blind one cycle: that cycle still counts as incomplete");
 });
 
 console.log(`${n} engine tests passed (with USDC-quote, ask-exit and carried-mark checks)`);

@@ -111,7 +111,7 @@ import {
   saveEngineState,
 } from "./engine/breakers";
 import { clearFeesPending, skimPlan, trackFeesPending, unclaimedFeesSol } from "./engine/collect";
-import { CARRY_HAIRCUT_PCT, carriedBands, carriedUsdToSol, marksHealth, marksNotedCycle, marksStale, MARKS_STALE_CYCLES, noteMarks, recordMarks } from "./engine/marks";
+import { CARRY_HAIRCUT_PCT, carriedBands, carriedUsdToSol, marksHealth, marksNotedCycle, marksStale, MARKS_STALE_CYCLES, noteMarks, persistMarksHealth, readOfBook, recordMarks, restoreMarksHealth } from "./engine/marks";
 import { marketDrawdownPct, stopEntryOf } from "./engine/exit";
 import { askBandRecord, askExitEnv, askExitOf, askOnlyPools, askPoolsOf, isAskExit, type AskBand } from "./engine/askExit";
 import { sellResidue, swapImpactEnv } from "./executor";
@@ -246,7 +246,7 @@ function banner(app: App): void {
     console.log(
       `proposals ${!ae.on ? "the operator approves (AUTO_APPROVE_PROPOSALS is not true)"
         : liveBlocked ? "the operator approves (a live book needs AUTO_APPROVE_LIVE=true and AUTO_APPROVE_PROPOSERS)"
-        : `the desk's rules approve a SOL_ONLY open <= ${ae.maxSol} SOL from ${ae.proposers.length ? `${ae.proposers.length} allowlisted proposer(s)` : "any wallet or bearer"}, <= ${ae.maxAgeMin} min old, ${ae.maxPerDay}/day, one at a time, <= ${ae.maxExposurePct}% of total exposure; closes wait for the operator`}; then the desk policy, then the guards`,
+        : `the desk's rules approve a SOL_ONLY open <= ${ae.maxSol} SOL from ${ae.proposers.length ? `${ae.proposers.length} allowlisted proposer(s)` : "any signed-in wallet (a bearer only from the list)"}, <= ${ae.maxAgeMin} min old, ${ae.maxPerDay}/day, one at a time, <= ${ae.maxExposurePct}% of total exposure; closes wait for the operator`}; then the desk policy, then the guards`,
     );
   }
   console.log(`interval  ${config.cycleIntervalSec}s cycles, screen every ${config.screen.intervalSec}s`);
@@ -1350,10 +1350,11 @@ async function sellResidues(app: App): Promise<void> {
 
 /**
  * The desk's own rules on this pool's pending proposals (src/platform/autoDecide.ts), at the moment the pool is
- * worked: the first that passes every rule is approved as "desk-auto:<rule>" and returned for this cycle to
- * consume; it still meets the desk policy and the guards. Null when none qualifies or the rules are off.
+ * worked: the first that passes every rule and that the desk policy would take (`policy`, asked before anything is
+ * written) is approved as "desk-auto:<rule>" and returned for this cycle to consume; it still meets the guards.
+ * Null when none qualifies or the rules are off.
  */
-function autoApproveHere(app: App, o: Observed, all: Observed[], state: RiskState, lane: string | null, halt: string | null, now: number): Proposal | null {
+function autoApproveHere(app: App, o: Observed, all: Observed[], state: RiskState, lane: string | null, halt: string | null, now: number, policy: (p: Proposal) => string | null): Proposal | null {
   const env = autoEnv();
   if (!env.on) return null;
   const pending = pendingProposals(o.address, now);
@@ -1367,7 +1368,7 @@ function autoApproveHere(app: App, o: Observed, all: Observed[], state: RiskStat
     halt,
     budget: autoBudget(allProposals(now), state, now),
     maxTotalExposureSol: riskLimits.maxTotalExposureSol,
-  });
+  }, policy);
   const tag = `[cycle ${app.cycle} ${o.snapshot.label}]`;
   for (const l of verdict.left) console.log(`${tag} proposal ${l.id} left for the operator: ${l.reason}`);
   if (!verdict.approve) return null;
@@ -1574,21 +1575,35 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     : rotateHere ? "the pool is rotating out"
     : positions.length > 0 ? "a band is already seated here"
     : null;
-  let proposal: Proposal | null = directive ? null : nextApprovedProposal(approvedProposals(o.address, now), halt !== null);
-  if (!directive && !proposal) proposal = autoApproveHere(app, o, all, state, lane, halt, now);
   // THE PROPOSAL MEETS THE ENTRY RULES (adviseProposal): the desk policy is asked with the same extras a model's
-  // move gets; a HOLD or a substitute is a refusal, journaled as a HOLD in the desk's words
-  let proposalRefusal: string | null = null;
-  let proposalResult: ReturnType<typeof proposalDecideResult> | null = null;
-  if (proposal) {
-    const asked = proposalDecision(proposal);
+  // move gets; a HOLD or a substitute is a refusal, journaled as a HOLD in the desk's words. Asked once per proposal
+  // per pool per cycle: the desk's own rules ask it before approving, and the consumption below reads the same answer.
+  const advisedById = new Map<string, ReturnType<typeof adviseProposal>>();
+  const adviseOf = (p: Proposal): ReturnType<typeof adviseProposal> => {
+    const known = advisedById.get(p.id);
+    if (known) return known;
+    const asked = proposalDecision(p);
     let advised: ReturnType<typeof adviseProposal>;
     try {
       const policy = policyDecide(observation, { limits: riskLimits, hot: hotRows(app, 8, true), openCostSol: openCostDefault, grow: { allowed: !app.movedThisCycle }, askExit: { bands: state.askBands ?? {}, env: askExitEnv(process.env) } });
-      advised = adviseProposal(asked, policy, { id: proposal.id, live: !config.dryRun, policyLive: policyMayTradeLive() });
+      advised = adviseProposal(asked, policy, { id: p.id, live: !config.dryRun, policyLive: policyMayTradeLive() });
     } catch (err) {
-      advised = adviseProposal(asked, { decision: { ...asked, action: "HOLD", open: null, positionAddress: null }, reason: `the desk policy failed (${(err as Error).message})`, branch: "gated" }, { id: proposal.id, live: !config.dryRun, policyLive: policyMayTradeLive() });
+      advised = adviseProposal(asked, { decision: { ...asked, action: "HOLD", open: null, positionAddress: null }, reason: `the desk policy failed (${(err as Error).message})`, branch: "gated" }, { id: p.id, live: !config.dryRun, policyLive: policyMayTradeLive() });
     }
+    advisedById.set(p.id, advised);
+    return advised;
+  };
+  let proposal: Proposal | null = directive ? null : nextApprovedProposal(approvedProposals(o.address, now), halt !== null);
+  if (!directive && !proposal) {
+    proposal = autoApproveHere(app, o, all, state, lane, halt, now, (p) => {
+      const a = adviseOf(p);
+      return a.ok ? null : a.reason;
+    });
+  }
+  let proposalRefusal: string | null = null;
+  let proposalResult: ReturnType<typeof proposalDecideResult> | null = null;
+  if (proposal) {
+    const advised = adviseOf(proposal);
     if (!advised.ok) proposalRefusal = advised.reason;
     proposalResult = proposalDecideResult(advised.decision, `${proposalNote(proposal)}. ${advised.ok ? advised.note : `Refused: ${advised.reason}`}`);
   }
@@ -1901,9 +1916,22 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   return entry;
 }
 
-/** Note this cycle's marks as complete or not, and raise the alert once they have been incomplete MARKS_STALE_CYCLES running. */
-function noteMarksFor(app: App, complete: boolean): void {
-  const h = noteMarks(complete, Date.now(), app.cycle);
+/**
+ * Note this cycle's marks as complete or not, keep the count in engine.json (a restart must not lift the block),
+ * and raise the alerts: once the marks have been incomplete MARKS_STALE_CYCLES running, and every cycle a held pool is set aside.
+ */
+function noteMarksFor(app: App, complete: boolean, setAside: readonly string[] = []): void {
+  const h = noteMarks(complete, Date.now(), app.cycle, setAside);
+  try {
+    persistMarksHealth(h);
+  } catch (err) {
+    console.error(`[cycle ${app.cycle}] the marks count could not be saved: ${(err as Error).message}`);
+  }
+  app.engine.skippedMarks = h.skippedMarks;
+  app.engine.lastCompleteMarkAt = h.lastCompleteMarkAt;
+  if (setAside.length) {
+    console.error(`[alert] set aside: ${setAside.map((a) => a.slice(0, 12)).join(", ")} blind ${MARKS_STALE_CYCLES}+ cycles running while the rest of the book reads; its bands are written down to their entry less the full stop and cannot be exited until it reads again`);
+  }
   if (marksStale(h)) {
     const since = h.lastCompleteMarkAt ? `the last complete read was ${Math.round((Date.now() - h.lastCompleteMarkAt) / 60_000)} min ago` : "no complete read since the desk started";
     console.error(`[alert] marks stale: ${h.skippedMarks} cycles running without a complete read of the book (limit ${MARKS_STALE_CYCLES}), ${since}; new opens are blocked, exits and claims run`);
@@ -1924,6 +1952,8 @@ function markBook(
     decided: Observed[];
     entries: JournalEntry[];
     blindPools: string[];
+    /** the blind pools set aside (src/engine/marks.ts setAsidePools): their bands are written down */
+    writtenDown: string[];
     /** positions on the books when the cycle started: only those are carried */
     heldAtStart: string[];
     solAtStart: number;
@@ -1943,6 +1973,7 @@ function markBook(
   for (const p of openBands) p.entryValueSol = state.entryValueSol[p.address];
   const carried = carriedBands({
     blindPools: m.blindPools,
+    writtenDown: m.writtenDown,
     held: m.heldAtStart,
     marks: app.engine.bandMarks,
     entryValueSol: state.entryValueSol,
@@ -2318,23 +2349,25 @@ async function runIteration(app: App): Promise<void> {
   // RESIDUES: what exits could not sell under the caps, sold cycle by cycle with a cap that rises as they wait
   await sellResidues(app);
 
-  // THE MARKS run every cycle. A complete read is every picked pool observed and decided, and the wallet's
+  // THE MARKS run every cycle. A complete read is every pool holding a band observed and decided, and the wallet's
   // USDC priced this cycle. Anything less and the breakers still mark: a held pool that was not observed,
   // or was observed and never decided (its runPool threw, the 429s), is blind and its bands are carried at
   // their last mark less a haircut; unpriced USDC is valued at the last price a mark used, turned against
   // the book. A held or pinned pool is never dropped from the picks for being blind: the carry covers it.
   const usdcUnpriced = usdcAtStart > 0.01 && solPriceUsd === null;
-  const decidedSet = new Set(decided.map((o) => o.address));
-  const heldPools = new Set(withPositions);
-  const blindPools = pools.filter((a) => !decidedSet.has(a));
-  const complete = blindPools.length === 0 && !usdcUnpriced;
+  // only a pool that holds a band has anything to carry: a pick that holds nothing and could not be read leaves the book whole.
+  // A held pool blind MARKS_STALE_CYCLES running while the rest reads is set aside: written down, named, and no longer
+  // counted against the read, so one pool that cannot be priced does not block every open for good (src/engine/marks.ts).
+  const read = readOfBook({ picks: pools, decided: decided.map((o) => o.address), held: withPositions, usdcUnpriced, streaks: app.engine.blindStreaks });
+  app.engine.blindStreaks = read.streaks;
+  const { blind: blindPools, heldBlind, setAside, complete } = read;
   let marked = false;
   try {
     markBook(app, {
       decided,
       entries,
-      // only a pool that holds a band has anything to carry
-      blindPools: blindPools.filter((a) => heldPools.has(a)),
+      blindPools: heldBlind,
+      writtenDown: setAside,
       heldAtStart,
       solAtStart,
       usdcAtStart,
@@ -2346,11 +2379,12 @@ async function runIteration(app: App): Promise<void> {
   } catch (err) {
     console.error(`[cycle ${app.cycle}] marks failed:`, err);
   }
+  if (blindPools.length > heldBlind.length) console.log(`[cycle ${app.cycle}] ${blindPools.length - heldBlind.length} pick(s) holding no band not read this cycle; nothing to carry`);
   if (!complete) {
-    const why = [blindPools.length ? `${observed.length}/${pools.length} pools observed, ${decided.length} decided` : null, usdcUnpriced ? `the wallet holds ${usdcAtStart.toFixed(2)} USDC and no SOL price is known this cycle` : null].filter(Boolean).join("; ");
+    const why = [heldBlind.length ? `${observed.length}/${pools.length} pools observed, ${decided.length} decided, ${heldBlind.length} holding a band blind` : null, usdcUnpriced ? `the wallet holds ${usdcAtStart.toFixed(2)} USDC and no SOL price is known this cycle` : null].filter(Boolean).join("; ");
     console.log(`[cycle ${app.cycle}] marks incomplete: ${why}; the breakers read carried marks`);
   }
-  noteMarksFor(app, complete && marked);
+  noteMarksFor(app, read.counts && marked, setAside);
   // THE FAST WATCH's list (src/engine/fastwatch.ts): the bands held as this cycle observed them, less the ones it closed
   try {
     const st = loadState();
@@ -2525,6 +2559,9 @@ async function main(): Promise<void> {
     meteoraStocks: null,
   };
   appRef = app;
+  // the marks count as the last process left it: a restart does not lift "marks stale" (src/engine/marks.ts)
+  const restored = restoreMarksHealth(app.engine);
+  if (marksStale(restored)) console.error(`[alert] marks stale at boot: ${restored.skippedMarks} incomplete cycles carried over from before the restart; new opens stay blocked until a complete read`);
   if (app.screen) app.screenAt = new Date(app.screen.generatedAt).getTime();
   setSolPriceUsd(solPriceOf(app));
   banner(app);

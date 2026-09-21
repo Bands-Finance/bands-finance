@@ -135,10 +135,11 @@ Your proposal publishes immediately to \`GET {{BASE}}/api/proposals\` with the r
 verbatim. The operator approves or rejects, usually with a note; both verdicts publish.
 Where the host runs the desk's own approval rules (\`auto.on\` in that response), a small
 open can be approved without the operator, by fixed code and never by a model: an
-\`OPEN_BAND\`, \`SOL_ONLY\` with no token, from a signed-in wallet or a bearer caller (never
-a claimed name), in a pool the desk is working this cycle that is an ordinary seat, under
-an hour old, inside a small daily and exposure budget, with no halt on. \`decidedBy\` says
-who approved. A \`CLOSE_BAND\` always waits for the operator.
+\`OPEN_BAND\`, \`SOL_ONLY\` with no token, from a signed-in wallet or a bearer caller whose
+\`mcp:b:\` id the operator has allowlisted (never a claimed name, and never a bearer the
+desk has not listed), in a pool the desk is working this cycle that is an ordinary seat,
+under an hour old, that the desk's entry policy would take, inside a small daily and
+exposure budget, with no halt on. \`decidedBy\` says who approved. A \`CLOSE_BAND\` always waits for the operator.
 
 Approval hands the proposal to the loop. The desk's entry policy is asked first, as it is
 for the model's own opens: if it would hold, or do something else, the proposal is

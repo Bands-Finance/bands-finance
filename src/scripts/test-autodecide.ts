@@ -90,11 +90,24 @@ async function main(): Promise<void> {
     assert.deepEqual(auto.autoEnv({ AUTO_APPROVE_PROPOSERS: " a, b ,," }, { maxPositionSol: 44 }).proposers, ["a", "b"]);
   });
 
-  await test("a qualifying proposal is approved: a wallet, a bearer, an allowlisted proposer", () => {
+  await test("a qualifying proposal is approved: a wallet, an allowlisted bearer, an allowlisted proposer", () => {
     assert.deepEqual(auto.autoDecideOne(mk(), ctx()), { approve: true, rule: "small-open" });
-    assert.deepEqual(auto.autoDecideOne(mk({ proposerId: proposals.mcpProposerId("bearer", "tok") }), ctx()), { approve: true, rule: "small-open" });
+    const bearer = proposals.mcpProposerId("bearer", "tok");
+    assert.deepEqual(auto.autoDecideOne(mk({ proposerId: bearer }), ctx({ env: { ...env, proposers: [bearer] } })), { approve: true, rule: "allowlisted-open" });
     const listed = { ...env, proposers: [wallet] };
     assert.deepEqual(auto.autoDecideOne(mk(), ctx({ env: listed })), { approve: true, rule: "allowlisted-open" });
+  });
+
+  await test("R2: a bearer the caller made up is not approved on paper, and a fresh one each time buys nothing", () => {
+    // the desk does not check a bearer it did not issue: any Authorization header gives an mcp:b: id
+    for (const made of ["x", "anything-i-like-1", "anything-i-like-2"]) {
+      const id = proposals.mcpProposerId("bearer", made);
+      assert.equal(proposals.proposerKind(id), "mcp-bearer");
+      leaves(mk({ proposerId: id }), ctx(), /bearer not on AUTO_APPROVE_PROPOSERS/);
+      assert.equal(auto.autoDecide([mk({ proposerId: id })], ctx()).approve, null);
+    }
+    // a list that names someone else leaves it too
+    leaves(mk({ proposerId: proposals.mcpProposerId("bearer", "x") }), ctx({ env: { ...env, proposers: [proposals.mcpProposerId("bearer", "fleet")] } }), /not on AUTO_APPROVE_PROPOSERS/);
   });
 
   await test("R0: off, or a live book without AUTO_APPROVE_LIVE and an allowlist", () => {
@@ -178,6 +191,30 @@ async function main(): Promise<void> {
     const r = auto.autoDecide([young, mid, old], ctx());
     assert.equal(r.approve?.proposal.id, mid.id);
     assert.deepEqual(r.left.map((l) => l.id), [old.id]);
+  });
+
+  await test("autoDecide: the desk policy is asked before the approval; a refusal stays pending and spends nothing", () => {
+    const first = mk({ at: now - 20 * 60_000 });
+    const second = mk({ at: now - 10 * 60_000 });
+    const asked: string[] = [];
+    const r = auto.autoDecide([first, second], ctx(), (p) => {
+      asked.push(p.id);
+      return p.id === first.id ? "the desk policy would not open here (lively): in flight" : null;
+    });
+    assert.deepEqual(asked, [first.id, second.id]);
+    assert.equal(r.approve?.proposal.id, second.id, "the next that passes is asked in turn");
+    assert.match(r.left[0].reason, /desk policy would refuse it .*no approval spent/);
+    // every one refused: none approved, so none reaches the board as desk-auto and the day's budget is untouched
+    const none = auto.autoDecide([first, second], ctx(), () => "a HOLD");
+    assert.equal(none.approve, null);
+    assert.equal(none.left.length, 2);
+    // the policy is never asked about a proposal the rules already left
+    let calls = 0;
+    auto.autoDecide([mk({ proposerId: proposals.mcpProposerId("name", "merd") })], ctx(), () => {
+      calls++;
+      return null;
+    });
+    assert.equal(calls, 0);
   });
 
   await test("the rules never read the rationale or the name", () => {

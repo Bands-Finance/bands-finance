@@ -256,7 +256,7 @@ export function buildServer(opts: BuildServerOptions): McpServer {
     {
       title: "Propose a band action to the operator",
       description:
-        "Argue for one bounded action on Mr Bands' live book: OPEN_BAND (pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy) or CLOSE_BAND (pool, position). Your rationale is published verbatim; the human operator approves or rejects (a small SOL-only open from a wallet or a bearer caller may be approved by the desk's fixed rules instead), and approval executes through the desk's own policy and risk guards. Nothing you submit here moves funds on its own. Pass dryRun: true to validate without publishing. Full guide: GET /integrate.md on this host.",
+        "Argue for one bounded action on Mr Bands' live book: OPEN_BAND (pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy) or CLOSE_BAND (pool, position). Your rationale is published verbatim; the human operator approves or rejects (a small SOL-only open from a signed-in wallet, or from a bearer caller the operator has allowlisted, may be approved by the desk's fixed rules instead), and approval executes through the desk's own policy and risk guards. Nothing you submit here moves funds on its own. Pass dryRun: true to validate without publishing. Full guide: GET /integrate.md on this host.",
       inputSchema: {
         kind: z.enum(["OPEN_BAND", "CLOSE_BAND"]),
         pool: z.string().min(32).max(44),

@@ -7,7 +7,8 @@
  *   noteScreen(ok, ts)                  the screener ran, or failed (src/index.ts ensureScreen)
  *   noteDeploy(ok, ts)                  a snapshot push finished (src/publish/deploy.ts onDone)
  *   noteHostSleep(ms, ts)               the watchdog saw the host sleep (src/engine/watchdog.ts)
- *   noteMarks({ skipped, lastCompleteAt, stale })   the book's marks, each cycle (src/engine/marks.ts noteMarks)
+ *   noteMarks({ skipped, lastCompleteAt, stale, setAside })   the book's marks, each cycle (src/engine/marks.ts noteMarks);
+ *                                       setAside names a held pool blind so long its bands are written down
  *   noteAutoApprove({ today, total })   outside proposals approved by desk code, at boot and at each approval
  *                                       (src/platform/autoDecide.ts noteDeskApprovals)
  *
@@ -24,7 +25,7 @@ export interface StatusSnapshot {
   iterations: number;
   screen: { lastAt: number | null; ok: boolean | null; lastOkAt: number | null };
   deploy: { lastAt: number | null; ok: boolean | null };
-  marks: { skipped: number; lastCompleteAt: number | null; stale: boolean } | null;
+  marks: { skipped: number; lastCompleteAt: number | null; stale: boolean; setAside?: string[] } | null;
   autoApprove: { today: number; total: number } | null;
   hostSleep: { lastMs: number; at: number } | null;
 }
@@ -60,9 +61,12 @@ export function noteHostSleep(ms: number, ts = Date.now()): void {
   state.hostSleep = { lastMs: ms, at: ts };
 }
 
-/** The marks counter as the loop last noted it: consecutive incomplete cycles, and whether that blocks opens yet. */
-export function noteMarks(m: { skipped: number; lastCompleteAt: number | null; stale: boolean }): void {
-  state.marks = { skipped: m.skipped, lastCompleteAt: m.lastCompleteAt, stale: m.stale };
+/**
+ * The marks counter as the loop last noted it: consecutive incomplete cycles, whether that blocks opens yet, and
+ * the held pools set aside for staying blind (src/engine/marks.ts), named only when there are any.
+ */
+export function noteMarks(m: { skipped: number; lastCompleteAt: number | null; stale: boolean; setAside?: string[] }): void {
+  state.marks = { skipped: m.skipped, lastCompleteAt: m.lastCompleteAt, stale: m.stale, ...(m.setAside?.length ? { setAside: [...m.setAside] } : {}) };
 }
 
 /** The desk's own approvals of outside proposals: this UTC day and all time, counted from the board on disk. */

@@ -180,6 +180,43 @@ async function main(): Promise<void> {
     assert.doesNotMatch(scripts["live:preflight"], /KILL_SWITCH/, "the preflight must still FAIL on the halt");
   });
 
+  await test("marks stale survives a restart: the count is kept in engine.json and restored at boot", async () => {
+    const marks = await import("../engine/marks.js");
+    const { deskHalt } = await import("../platform/autoDecide.js");
+    const { loadEngineState, saveEngineState, emptyEngineState } = await import("../engine/breakers.js");
+    const file = path.join(root, "data-live", "engine.json");
+    // other engine state on disk is left as it was
+    const before = emptyEngineState();
+    before.lastSolPriceUsd = 150;
+    saveEngineState(before, file);
+    marks.resetMarksHealth();
+    let h = marks.noteMarks(true, 1_000, 1);
+    for (let c = 2; c <= 1 + marks.MARKS_STALE_CYCLES; c += 1) {
+      h = marks.noteMarks(false, c * 1_000, c);
+      marks.persistMarksHealth(h, file);
+    }
+    assert.equal(marks.marksHealth().stale, true);
+    // the restart: the process's counter is gone, and the file is all there is
+    marks.resetMarksHealth();
+    assert.equal(marks.marksHealth().skippedMarks, 0);
+    const saved = loadEngineState(file);
+    assert.equal(saved.skippedMarks, marks.MARKS_STALE_CYCLES);
+    assert.equal(saved.lastCompleteMarkAt, 1_000);
+    assert.equal(saved.lastSolPriceUsd, 150, "nothing else in engine.json is touched");
+    marks.restoreMarksHealth(saved);
+    const back = marks.marksHealth();
+    assert.equal(back.stale, true, "a restarted desk is still stale, so opens stay blocked");
+    assert.match(String(deskHalt({ killSwitch: false, haltedUntil: null, standDownUntil: null, skippedMarks: back.skippedMarks, marksStale: back.stale })), /marks stale/);
+    // the first complete read lifts it, and that is saved too
+    h = marks.noteMarks(true, 9_000, 9);
+    marks.persistMarksHealth(h, file);
+    assert.equal(loadEngineState(file).skippedMarks, 0);
+    // an old engine.json with no count starts clear
+    fs.writeFileSync(file, JSON.stringify({ version: 1 }));
+    assert.equal(marks.restoreMarksHealth(loadEngineState(file)).skippedMarks, 0);
+    marks.resetMarksHealth();
+  });
+
   fs.rmSync(root, { recursive: true, force: true });
   console.log(`\n${passed} passed${process.exitCode ? ", with failures" : ""}`);
 }

@@ -5,6 +5,9 @@
  * asked. An approval by these rules is only the first of three gates: the loop then asks the desk
  * policy (adviseProposal, src/agent/decide.ts), which must agree or the proposal is refused, and
  * then the full guard battery (src/risk/guards.ts). Rules, then policy, then guards; nothing skips a guard.
+ * The policy is asked BEFORE the approval is written: a proposal it would refuse stays pending for the operator
+ * and spends none of the day's AUTO_MAX_PER_DAY, so a stranger cannot use the budget up with proposals built to
+ * pass the rules and fail the policy.
  *
  * The loop calls autoDecide at CONSUMPTION time, inside runPool for that pool, so the checks and the
  * open happen in the same pass. One proposal per pool per cycle, the oldest pending first.
@@ -13,8 +16,10 @@
  *       AUTO_APPROVE_LIVE=true and a non-empty AUTO_APPROVE_PROPOSERS.
  *   R1  OPEN_BAND only. A CLOSE_BAND always waits for the operator: the guards never block an exit,
  *       so an outside agent could otherwise force a close of a band that is earning.
- *   R2  a signed-in wallet or a bearer-derived MCP id ("mcp:b:"); a claimed name ("mcp:n:") never.
- *       With AUTO_APPROVE_PROPOSERS set, the proposer must be on it.
+ *   R2  a signed-in wallet, or a bearer-derived MCP id ("mcp:b:") that is on AUTO_APPROVE_PROPOSERS; a
+ *       claimed name ("mcp:n:") never. The desk does not check a bearer it did not issue: any caller can send
+ *       one, and each new string is a new id, so a bearer is only worth what the allowlist says it is, even on
+ *       paper. An empty list means signed-in wallets only. With the list set, every proposer must be on it.
  *   R3  SOL_ONLY, no token, amountSol at most AUTO_MAX_SOL (default a quarter of MAX_POSITION_SOL).
  *   R4  the pool is in this cycle's picks, holds no band, and is none of the lanes that keep their
  *       own seat caps in the policy: stock, basis, pair, launch, ask, rotate-out.
@@ -134,6 +139,7 @@ export function autoDecideOne(p: Proposal, ctx: AutoContext): AutoVerdict {
   // R2
   const kind = proposerKind(p.proposerId);
   if (kind !== "wallet" && kind !== "mcp-bearer") return leave(`proposer ${p.proposerId.slice(0, 10)} is a claimed name, not a wallet or a bearer`);
+  if (kind === "mcp-bearer" && !e.proposers.includes(p.proposerId)) return leave(`proposer ${p.proposerId.slice(0, 10)} is a bearer not on AUTO_APPROVE_PROPOSERS: the desk does not check a bearer it did not issue`);
   if (e.proposers.length > 0 && !e.proposers.includes(p.proposerId)) return leave(`proposer ${p.proposerId.slice(0, 10)} is not on AUTO_APPROVE_PROPOSERS`);
   // R3
   const o = p.params as OpenBandParams;
@@ -155,13 +161,26 @@ export function autoDecideOne(p: Proposal, ctx: AutoContext): AutoVerdict {
   return { approve: true, rule: e.proposers.length > 0 ? "allowlisted-open" : "small-open" };
 }
 
-/** PURE. The pool's pending proposals, oldest first: the first that passes every rule is approved, one per pool per cycle. */
-export function autoDecide(pending: readonly Proposal[], ctx: AutoContext): { approve: { proposal: Proposal; rule: string } | null; left: { id: string; reason: string }[] } {
+/**
+ * PURE but for `policy`. The pool's pending proposals, oldest first: the first that passes every rule AND that the
+ * desk policy would take is approved, one per pool per cycle. `policy` answers the refusal in words, or null when the
+ * policy would open it (the loop hands in adviseProposal); a proposal it refuses is left pending, and the next is asked.
+ */
+export function autoDecide(
+  pending: readonly Proposal[],
+  ctx: AutoContext,
+  policy: (p: Proposal) => string | null = () => null,
+): { approve: { proposal: Proposal; rule: string } | null; left: { id: string; reason: string }[] } {
   const left: { id: string; reason: string }[] = [];
   for (const p of [...pending].filter((x) => x.status === "pending").sort((a, b) => a.at - b.at)) {
     const v = autoDecideOne(p, ctx);
-    if (v.approve) return { approve: { proposal: p, rule: v.rule }, left };
-    left.push({ id: p.id, reason: v.reason });
+    if (!v.approve) {
+      left.push({ id: p.id, reason: v.reason });
+      continue;
+    }
+    const refused = policy(p);
+    if (refused === null) return { approve: { proposal: p, rule: v.rule }, left };
+    left.push({ id: p.id, reason: `the desk policy would refuse it (${refused}); no approval spent` });
   }
   return { approve: null, left };
 }
