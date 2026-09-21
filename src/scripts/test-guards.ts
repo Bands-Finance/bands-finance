@@ -4,6 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { EngineGuardContext, evaluate, GuardContext, NO_ENGINE } from "../risk/guards";
+import { MARKS_STALE_CYCLES } from "../engine/marks";
 import type { RiskLimits } from "../risk/limits";
 import type { RiskState } from "../risk/state";
 import type { Decision } from "../agent/schema";
@@ -166,6 +167,25 @@ test("kill switch still allows closing", () => {
   const close: Decision = { ...open(), action: "CLOSE_POSITION", open: null, positionAddress: "pos1" };
   const v = evaluate(close, ctx({ killSwitch: true, positions: [position] }), limits);
   assert.equal(v.allowed, true, v.violations.join("; "));
+});
+
+test("marks stale: after MARKS_STALE_CYCLES incomplete cycles an OPEN is refused, a CLOSE and a CLAIM go through", () => {
+  const stale = { skippedMarks: MARKS_STALE_CYCLES };
+  const refused = evaluate(open(), ctx(stale), limits);
+  assert.equal(refused.allowed, false);
+  assert.equal(refused.decision.action, "HOLD");
+  assert.match(refused.violations.join(), /^marks stale: 3 cycles running/);
+  const relay: Decision = { ...open(), action: "REBALANCE", positionAddress: "pos1" };
+  assert.match(evaluate(relay, ctx({ ...stale, positions: [position], walletSol: 2 }), limits).violations.join(), /marks stale/, "a re-lay adds a band: refused too");
+  const close: Decision = { ...open(), action: "CLOSE_POSITION", open: null, positionAddress: "pos1" };
+  const closed = evaluate(close, ctx({ ...stale, positions: [position] }), limits);
+  assert.equal(closed.allowed, true, closed.violations.join("; "));
+  const claim: Decision = { ...open(), action: "CLAIM_FEES", open: null, positionAddress: "pos1" };
+  const claimed = evaluate(claim, ctx({ ...stale, positions: [position] }), limits);
+  assert.equal(claimed.allowed, true, claimed.violations.join("; "));
+  // two incomplete cycles are not yet stale; a complete one (the counter back at 0) opens as before
+  assert.equal(evaluate(open(), ctx({ skippedMarks: MARKS_STALE_CYCLES - 1 }), limits).allowed, true);
+  assert.equal(evaluate(open(), ctx({ skippedMarks: 0 }), limits).allowed, true);
 });
 
 test("price move sanity check", () => {
@@ -681,4 +701,4 @@ test("ask exit: the stop reads an ask band against its chain's basis", () => {
   assert.equal(banked.decision.action, "HOLD", "0.26 against a basis of 0.30 less 0.04 banked: whole");
 });
 
-console.log(`${n} guard tests passed (with portfolio, engine, USDC-quote, basis, straddle and ask-exit checks)`);
+console.log(`${n} guard tests passed (with portfolio, engine, stale-marks, USDC-quote, basis, straddle and ask-exit checks)`);
