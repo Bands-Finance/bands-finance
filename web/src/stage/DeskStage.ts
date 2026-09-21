@@ -686,12 +686,14 @@ export class DeskStage {
     const near = Math.max(0, 1 - Math.abs(this.pNow - k) * 2.5);
     const drift = this.drifts[k];
     const turning = near > 0 && (this.orbits[k] !== 0 || this.zooms[k] !== 1 || this.rises[k] !== 0);
+    // the drift trails the scroll a little, like the camera does; under reduced motion it follows it exactly and never moves on its own
+    const ease = this.motion ? 0.12 : 1;
     if (drift && near > 0 && drift.lengthSq() > 0) {
-      this.holdNow += (this.hold - this.holdNow) * 0.12;
+      this.holdNow += (this.hold - this.holdNow) * ease;
       const w = (this.holdNow - 0.5) * near;
       pos.addScaledVector(drift, w);
       look.addScaledVector(drift, w);
-    } else if (turning) this.holdNow += (this.hold - this.holdNow) * 0.12;
+    } else if (turning) this.holdNow += (this.hold - this.holdNow) * ease;
     // a station that turns: as the chapter scrolls the camera walks round its subject, closes in and lifts its eyes (not under reduced motion)
     let close = 0;
     if (turning && this.motion) {

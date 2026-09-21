@@ -167,8 +167,9 @@ export function Journey({ beats, data, heroFoot }: JourneyProps) {
   }, [state, at]);
 
   // scroll -> station. A beat holds its station from the moment its words are a quarter of the way down the
-  // window until their foot is three quarters down (a short block: while it is centred); between two beats
-  // the camera travels. A long block reports how far through it the reader is, and the camera drifts.
+  // window until their foot is three quarters down (a short block: over a half window centred on it; a pinned
+  // block: until the pin runs out of room); between two beats the camera travels. A long block reports how far
+  // through it the reader is, and the camera drifts.
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
@@ -182,10 +183,17 @@ export function Journey({ beats, data, heroFoot }: JourneyProps) {
       els.forEach((el, i) => {
         const r = el.getBoundingClientRect();
         const top = r.top + window.scrollY;
-        if (r.height <= vh * 0.5) {
+        if (el.closest(".beat--travel")) {
+          // a chapter with travel: its words pin to the window's top and stay until the block runs out of room under
+          // them, so the hold reaches 1 (the turn's last frame) exactly where the pin unsticks, words still in place
+          enter.push(Math.max(0, top - vh * 0.25));
+          exit.push(Math.max(0, top + r.height - vh));
+        } else if (r.height <= vh * 0.5) {
+          // a short block holds its station over a half-window band centred on it, so the hold runs 0 -> 1 with the
+          // scroll and a station's drift follows the reader (a one-pixel hold would flip it, moving the camera on its own)
           const c = Math.max(0, top + r.height / 2 - vh / 2);
-          enter.push(i === 0 ? 0 : c);
-          exit.push(i === 0 ? Math.max(0, c) : c);
+          enter.push(i === 0 ? 0 : Math.max(0, c - vh * 0.25));
+          exit.push(c + vh * 0.25);
         } else {
           enter.push(i === 0 ? 0 : Math.max(0, top - vh * 0.25));
           exit.push(Math.max(0, top + r.height - vh * 0.75));
@@ -270,8 +278,10 @@ export function Journey({ beats, data, heroFoot }: JourneyProps) {
         <div className="stage__veil" />
       </div>
       {beats.map((b, i) => (
-        <section key={b.id} id={b.id} data-beat={i} className={`beat beat--${b.side}${b.wide ? " beat--wide" : ""}${i === 0 ? " beat--hero" : ""}${b.travel ? " beat--travel" : ""}${seen.has(i) ? " is-seen" : ""}`} aria-labelledby={`${b.id}-h`}>
-          <div className="beat__words" style={b.travel ? { minHeight: `${Math.round(b.travel * 100)}vh` } : undefined}>
+        // a chapter travels only while motion is on: the turn does not run under reduced motion, so the scroll room
+        // would be windows of nothing changing, and the chapter stands like any other instead
+        <section key={b.id} id={b.id} data-beat={i} className={`beat beat--${b.side}${b.wide ? " beat--wide" : ""}${i === 0 ? " beat--hero" : ""}${b.travel && motion ? " beat--travel" : ""}${seen.has(i) ? " is-seen" : ""}`} aria-labelledby={`${b.id}-h`}>
+          <div className="beat__words" style={b.travel && motion ? { minHeight: `${Math.round(b.travel * 100)}vh` } : undefined}>
            <div className="beat__pin">
             <p className="beat__eyebrow engrave">{b.eyebrow}</p>
             <Head i={i} className="beat__head" id={`${b.id}-h`}>
