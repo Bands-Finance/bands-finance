@@ -8,7 +8,7 @@
  * Fetch Request directly; no Node req/res adapter is involved.
  *
  * Route table (auth · price · codes):
- *   POST /mcp                       x402 for priced tools; operator bearer for operator-only tools · 400 batch/parse/no-session, 401, 402, 503 session cap
+ *   POST /mcp                       x402 for priced tools (the operator bearer passes it: the house does not pay itself); operator bearer for operator-only tools · 400 batch/parse/no-session, 401, 402, 503 session cap
  *   GET|DELETE /mcp                 session id required · 400
  *   GET  /api/engine/access         session · 200 {ok,hasAccess,via,paths,detail} · 401
  *   GET  /api/engine/skill          session + access · text/markdown + X-Bands-Skill-Version · 401, 403, 503
@@ -75,13 +75,20 @@ export interface Paywall {
  * Free tools and every other method pass straight through. Returns the 402 to send, or
  * null when the request may proceed. A stub-mode acceptance is not recorded as revenue:
  * the ledger is the truth, and nothing arrived.
+ *
+ * The operator bearer passes the paywall outright: the house's own agent (Mr Bands on
+ * OpenHermit, reasoning through this very server) must not pay itself, and a payment it
+ * did send would be revenue from our own treasury to our own treasury. The check is the
+ * same constant-time match that guards operator-only tools; a wrong bearer is a stranger
+ * and pays like one. Nothing else about the paywall changes.
  */
-export async function checkPayment(gate: PaymentGate, revenue: RevenueLedger, body: unknown, paymentHeader: string | undefined): Promise<Paywall | null> {
+export async function checkPayment(gate: PaymentGate, revenue: RevenueLedger, body: unknown, paymentHeader: string | undefined, authorization?: string | undefined): Promise<Paywall | null> {
   const b = body as JsonRpcLike | null;
   if (b?.method !== "tools/call") return null;
   const tool = b.params?.name ?? "";
   const priceUsd = toolPriceUsd(tool);
   if (!priceUsd) return null;
+  if (operatorAuthorized(authorization)) return null;
   if (!paymentHeader) return { status: 402, body: gate.requirements(priceUsd, tool) };
   const result = await gate.verify(paymentHeader, priceUsd, tool);
   if (!result.ok) return { status: 402, body: { ok: false, error: result.error } };
@@ -156,7 +163,7 @@ export function railsRoutes(app: Hono): void {
     if (Array.isArray(body)) return rpcError(c, 400, -32600, "batched requests are not accepted; send one JSON-RPC message per request");
     const auth = c.req.header("authorization");
     if (!mcpRequestAllowed(body, auth)) return c.json({ error: "this tool is operator-only; data tools need no auth, just x402 payment" }, 401);
-    const paywall = await checkPayment(gate, revenue, body, c.req.header("x-payment"));
+    const paywall = await checkPayment(gate, revenue, body, c.req.header("x-payment"), auth);
     if (paywall) return c.json(paywall.body, paywall.status);
 
     const sessionId = c.req.header("mcp-session-id");
@@ -168,11 +175,15 @@ export function railsRoutes(app: Hono): void {
         console.error(`[bands-mcp] session cap reached (${sessions.size}/${MCP_MAX_SESSIONS}), refusing new sessions`);
         return rpcError(c, 503, -32000, "too many open MCP sessions right now, try again shortly");
       }
+      // The audience is fixed here, at initialize, and logged so the desk's log shows
+      // which sessions were the house's own agent and which were the public.
+      const audience = mcpAudience(auth);
       const t = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         enableJsonResponse: true,
         onsessioninitialized: (id) => {
           sessions.set(id, { transport: t, lastSeenAt: Date.now() });
+          console.log(`[bands-mcp] session ${id.slice(0, 8)} opened · audience ${audience} · ${sessions.size}/${MCP_MAX_SESSIONS} open`);
         },
         onsessionclosed: (id) => {
           sessions.delete(id);
@@ -184,7 +195,7 @@ export function railsRoutes(app: Hono): void {
       // A session's proposer identity is fixed at initialize: a hash of its bearer when it
       // sent one, else the tool hashes the claimed agent name per call.
       const m = auth ? /^Bearer\s+(.+)$/i.exec(auth.trim()) : null;
-      await buildServer({ audience: mcpAudience(auth), proposerId: m ? mcpProposerId(`bearer:${m[1]}`) : undefined, connection }).connect(t);
+      await buildServer({ audience, proposerId: m ? mcpProposerId(`bearer:${m[1]}`) : undefined, connection }).connect(t);
       transport = t;
     }
     try {

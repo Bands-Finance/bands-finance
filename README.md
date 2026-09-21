@@ -203,6 +203,19 @@ the advisor answers 503 rather than a canned line.
 npm run test:all           # guards, engine, platform, rails suites (no RPC, no LLM)
 ```
 
+## Mr Bands on OpenHermit (docs/openhermit.md)
+
+The agent can live on the OpenHermit gateway (`/Users/zach/OpenHermit`, `127.0.0.1:4000`): his persona
+as instruction rows, an OpenRouter model, and the desk's own MCP server as his hands. The desk stays the
+desk: the loop, the guards, the wallet and the journal do not move, and `DECIDER=openhermit` only changes
+who is asked; an unusable answer falls back to the desk policy as a bad Anthropic reply does.
+
+```bash
+npm run openhermit -- provision [--mcp paper|live] [--model <openrouter id>]   # idempotent; needs OPENHERMIT_TOKEN, PLATFORM_OPERATOR_TOKEN
+npm run openhermit -- status
+npm run openhermit -- ask                                                      # the newest journal entry, answered
+```
+
 ## Analytics: LP Agent
 
 With `LPAGENT_API_KEY` set, pool stats come from LP Agent's open API (`GET /pools/{pool}/info`,

@@ -552,6 +552,16 @@ async function main(): Promise<void> {
     const stubBefore = rev.totalRevenueUsd;
     assert.equal(await rails.checkPayment(new PaymentGate({ connection: () => fakeConnection }), rev, { method: "tools/call", params: { name: "bands_pool_score" } }, "anything"), null);
     assert.equal(rev.totalRevenueUsd, stubBefore);
+    // the operator bearer passes the paywall with no payment and records nothing; a wrong bearer pays like anyone
+    const opBefore = rev.totalRevenueUsd;
+    assert.equal(await rails.checkPayment(g, rev, { method: "tools/call", params: { name: "bands_pool_score" } }, undefined, "Bearer op-test-token"), null);
+    assert.equal(rev.totalRevenueUsd, opBefore);
+    assert.equal((await rails.checkPayment(g, rev, { method: "tools/call", params: { name: "bands_pool_score" } }, undefined, "Bearer wrong"))?.status, 402);
+    assert.equal((await rails.checkPayment(g, rev, { method: "tools/call", params: { name: "bands_pool_score" } }, undefined, "Bearer "))?.status, 402);
+    const tokenWas = process.env.PLATFORM_OPERATOR_TOKEN;
+    process.env.PLATFORM_OPERATOR_TOKEN = "";
+    assert.equal((await rails.checkPayment(g, rev, { method: "tools/call", params: { name: "bands_pool_score" } }, undefined, "Bearer op-test-token"))?.status, 402, "no configured token = nobody passes the paywall on a bearer");
+    process.env.PLATFORM_OPERATOR_TOKEN = tokenWas;
   });
 
   // ----- the routes, through Hono ----------------------------------------------------
@@ -606,6 +616,45 @@ async function main(): Promise<void> {
     assert.match(out.error, /no screen yet/);
     const operatorOnly = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "bands_decide_proposal", arguments: { id: "x", decision: "approve" } } }, { "mcp-session-id": sid });
     assert.equal(operatorOnly.status, 401);
+  });
+
+  await test("POST /mcp: the operator bearer passes the paywall on priced tools; no bearer and a wrong bearer still pay; operator-only still needs the bearer", async () => {
+    const op = { authorization: "Bearer op-test-token" };
+    const opSid = (await rpc(init, op)).headers.get("mcp-session-id")!;
+    // the operator's own agent needs every data tool to reason about a pool, plus the two proposal tools
+    const opList = await rpc({ jsonrpc: "2.0", id: 20, method: "tools/list" }, { "mcp-session-id": opSid, ...op });
+    const opNames = ((await opList.json()) as { result: { tools: Array<{ name: string }> } }).result.tools.map((t) => t.name).sort();
+    assert.deepEqual(opNames, ["bands_agent_thoughts", "bands_decide_proposal", "bands_limits", "bands_list_pools", "bands_pool_score", "bands_pool_snapshot", "bands_propose_band_action", "bands_screen"]);
+    const revenueBefore = ((await (await app.request("/api/revenue")).json()) as { totalUsd: number }).totalUsd;
+    // bands_pool_snapshot is priced the same way but reads the chain, so it stays out of an offline test
+    for (const [id, name, args] of [
+      [21, "bands_pool_score", { pool }],
+      [23, "bands_screen", {}],
+    ] as const) {
+      const r = await rpc({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }, { "mcp-session-id": opSid, ...op });
+      assert.equal(r.status, 200, `${name} with the operator bearer and no X-PAYMENT`);
+      const out = JSON.parse(((await r.json()) as { result: { content: Array<{ text: string }> } }).result.content[0].text);
+      // no screen.json and no RPC on this host: the tools answer honestly, but they answered
+      assert.equal(out.ok, false);
+    }
+    assert.equal(((await (await app.request("/api/revenue")).json()) as { totalUsd: number }).totalUsd, revenueBefore, "the house pays itself nothing");
+    // no bearer: 402, exactly as before
+    const pubSid = (await rpc(init)).headers.get("mcp-session-id")!;
+    const unpaid = await rpc({ jsonrpc: "2.0", id: 24, method: "tools/call", params: { name: "bands_pool_score", arguments: { pool } } }, { "mcp-session-id": pubSid });
+    assert.equal(unpaid.status, 402);
+    assert.equal(((await unpaid.json()) as { accepts: Array<{ maxAmountRequired: string }> }).accepts[0].maxAmountRequired, "50000");
+    // a wrong bearer is a stranger: public audience and a 402
+    const wrong = { authorization: "Bearer not-the-operator" };
+    const wrongSid = (await rpc(init, wrong)).headers.get("mcp-session-id")!;
+    const wrongList = await rpc({ jsonrpc: "2.0", id: 25, method: "tools/list" }, { "mcp-session-id": wrongSid, ...wrong });
+    assert.ok(!((await wrongList.json()) as { result: { tools: Array<{ name: string }> } }).result.tools.some((t) => t.name === "bands_decide_proposal"));
+    const wrongPaid = await rpc({ jsonrpc: "2.0", id: 26, method: "tools/call", params: { name: "bands_pool_score", arguments: { pool } } }, { "mcp-session-id": wrongSid, ...wrong });
+    assert.equal(wrongPaid.status, 402);
+    // operator-only without the bearer: 401, and the bearer check runs before the paywall so a wrong bearer is 401 too
+    const noBearer = await rpc({ jsonrpc: "2.0", id: 27, method: "tools/call", params: { name: "bands_decide_proposal", arguments: { id: "x", decision: "approve" } } }, { "mcp-session-id": pubSid });
+    assert.equal(noBearer.status, 401);
+    const wrongBearer = await rpc({ jsonrpc: "2.0", id: 28, method: "tools/call", params: { name: "bands_decide_proposal", arguments: { id: "x", decision: "approve" } } }, { "mcp-session-id": wrongSid, ...wrong });
+    assert.equal(wrongBearer.status, 401);
   });
 
   await test("POST /mcp: the proposals tool writes a proposal for a claimed name; the operator audience can decide it", async () => {

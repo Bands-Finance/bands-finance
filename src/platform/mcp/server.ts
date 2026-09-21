@@ -6,7 +6,8 @@
  *
  * The paywall is NOT here. src/platform/railsRoutes.ts peeks at every tools/call before the
  * request reaches the transport and answers 402 for a priced tool without a valid
- * X-PAYMENT; a tool priced 0 is free. The audience split is a payload reduction, not a
+ * X-PAYMENT; a tool priced 0 is free, and the operator bearer passes the paywall (the
+ * house's own agent does not pay itself). The audience split is a payload reduction, not a
  * gate: an operator-only tool is refused by the bearer check in railsRoutes whatever list
  * the caller was served.
  */
@@ -57,8 +58,11 @@ export function operatorAuthorized(authorization: string | undefined | null): bo
 
 /**
  * Who the tool list is rendered for. "public" omits the tools a credential-free caller can
- * never call; "operator" is the complete surface. Sessions hold whichever server they were
- * built with, and session ids are random UUIDs, so an audience cannot be swapped mid-session.
+ * never call; "operator" is the complete surface: every data tool (bands_list_pools,
+ * bands_limits, bands_agent_thoughts, bands_pool_snapshot, bands_screen, bands_pool_score),
+ * the proposals door and the decision tool, which is what the house's own agent needs to
+ * reason about a pool. Sessions hold whichever server they were built with, and session ids
+ * are random UUIDs, so an audience cannot be swapped mid-session.
  */
 export type McpAudience = "public" | "operator";
 
