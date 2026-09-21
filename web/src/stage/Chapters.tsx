@@ -40,6 +40,9 @@ export function bandStatus(b: BandCard): { word: string; tone: "good" | "bad" | 
   return { word: `Out by ${n} bin${n === 1 ? "" : "s"}.`, tone: n <= 2 ? undefined : "bad" };
 }
 
+/** A base58 Solana account, as opposed to the paper desk's "paper-<pool>-<n>" tag for a pretend position. */
+const isOnchainAddress = (a: string) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a);
+
 /** One open band: the four figures that matter, what the pool paid in the last hour, and the small facts. */
 export function BandBlock({ band: b, flow, now }: { band: BandCard; flow?: PoolFlow; now: number }) {
   const move = b.marketMove;
@@ -68,9 +71,16 @@ export function BandBlock({ band: b, flow, now }: { band: BandCard; flow?: PoolF
         <span>{b.widthBins} bins</span>
         <span>±{(b.widthPct / 2).toFixed(1)}%</span>
         <span>{b.side}</span>
-        <a href={`https://solscan.io/account/${b.address}`} target="_blank" rel="noreferrer" title="the position on Solscan">
-          No. {b.address.slice(0, 4)}…{b.address.slice(-4)} ↗
+        {/* the pool is the real venue in every mode; the position itself is on Solscan only when its address is one Solana knows
+            (a paper band's "address" is the desk's own tag, src/paper/book.ts, and a Solscan page for it is a dead end) */}
+        <a href={`https://app.meteora.ag/dlmm/${b.poolAddress}`} target="_blank" rel="noreferrer" title="the pool on Meteora">
+          The pool on Meteora ↗
         </a>
+        {isOnchainAddress(b.address) && (
+          <a href={`https://solscan.io/account/${b.address}`} target="_blank" rel="noreferrer" title="the position on Solscan">
+            No. {b.address.slice(0, 4)}…{b.address.slice(-4)} ↗
+          </a>
+        )}
       </p>
     </>
   );
@@ -131,8 +141,11 @@ export function MadeBlock({ record, solPriceUsd, now, chart }: { record: AgentRe
           { label: "Claims", value: record.feePoints.length.toLocaleString(), note: last ? `the last one ${ago(last.t, now)}` : undefined },
         ]}
       />
+      {/* the abacus only means something once a claim has put a coin on it; before that, say why it is bare */}
       <p className="chap__p">
-        On the desk, each column of coins is one {chart.bucket} of claims and each coin is {chart.unit} SOL. The newest {chart.bucket} stands at the right.
+        {chart.coins.some((c) => c > 0)
+          ? `On the desk, each column of coins is one ${chart.bucket} of claims and each coin is ${chart.unit} SOL. The newest ${chart.bucket} stands at the right.`
+          : "No claim yet, so the abacus on the desk is empty; the fees sit in his bands until he collects them."}
       </p>
       {days.length > 0 && (
         <div className="chap__scroll">
@@ -140,7 +153,7 @@ export function MadeBlock({ record, solPriceUsd, now, chart }: { record: AgentRe
             <thead>
               <tr className="engrave">
                 <th>Day</th>
-                <th>Fees earned</th>
+                <th>Fees claimed</th>
                 <th>The book, open to close</th>
                 <th>Moves</th>
                 <th>Claims</th>
@@ -148,18 +161,23 @@ export function MadeBlock({ record, solPriceUsd, now, chart }: { record: AgentRe
               </tr>
             </thead>
             <tbody>
-              {days.map((d) => (
+              {days.map((d) => {
+                // num() rounds a book over 100 SOL to whole SOL, which can print "174 → 174 (−0.55)": when the two
+                // round to the same figure, print them to the cent so the bracket adds up
+                const same = num(d.open) === num(d.close);
+                return (
                 <tr key={d.date}>
                   <td>{dayLabel(d.date)}</td>
                   <td className="chap__good">+{num(d.fees)}</td>
                   <td>
-                    {num(d.open)} → {num(d.close)} <span className={d.close - d.open >= 0 ? "chap__good" : "chap__bad"}>({signed(d.close - d.open)})</span>
+                    {same ? d.open.toFixed(2) : num(d.open)} → {same ? d.close.toFixed(2) : num(d.close)} <span className={d.close - d.open >= 0 ? "chap__good" : "chap__bad"}>({signed(d.close - d.open)})</span>
                   </td>
                   <td>{d.moves}</td>
                   <td>{d.claims}</td>
                   <td>{d.holds}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -185,7 +203,7 @@ export function StatementList({ rows }: { rows: { label: string; value: ReactNod
 
 /* ---------- the close ---------- */
 
-export function ClosingBlock({ agentName }: { agentName: string }) {
+export function ClosingBlock({ agentName, walletAddress }: { agentName: string; walletAddress: string | null }) {
   const motion = useMotion();
   const system = motionSystemReduced();
   return (
@@ -197,7 +215,11 @@ export function ClosingBlock({ agentName }: { agentName: string }) {
           your money. Every move above is published as it happened, including the ones that lost.
         </p>
       </div>
+      {/* the words pin to the window's centre while the camera walks round him, so the close stays short: the ask is the
+          chapter before this one (the "hire" beat, DashboardApp.tsx) and this row only points at where to go */}
       <nav className="close__links engrave" aria-label="Footer">
+        <a href={`${PLATFORM_URL}/#/learn`} target="_blank" rel="noreferrer">Rent him over MCP</a>
+        {walletAddress && <a href={`https://solscan.io/account/${walletAddress}`} target="_blank" rel="noreferrer">His wallet</a>}
         <a href={PLATFORM_URL} target="_blank" rel="noreferrer">bands.finance</a>
         <a href={`${PLATFORM_URL}/#/learn`} target="_blank" rel="noreferrer">How it works</a>
         <a href="https://app.meteora.ag" target="_blank" rel="noreferrer">Meteora</a>

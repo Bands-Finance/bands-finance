@@ -1566,20 +1566,34 @@ for o in (stack, strap, chip, coin):
 STATIONS = [
     # name       cam (x, y, z)             look (x, y, z)          fov  follow     drift (x, y, z)     note
     ("hero",     (19.0, -25.0, 8.5),       (2.5, 0.0, 5.2),        33,  "",        (0, 0, 0),          "the desk as a landscape along the bottom of the window, the words in the sky above it"),
-    ("rows",     (-11.0, -12.0, 5.5),      (1.0, -0.5, 0.3),       32,  "",        (0, 0, 0),          "he lays SOL under the price: down the rows"),
-    ("cursor",   (2.5, -9.5, 4.2),         (0.6, -1.2, 0.6),       30,  "cursor",  (0, 0, 0),          "traders cross his band: on the cursor"),
-    ("row0",     (-9.5, -8.9, 6.4),        (0.5, -1.9, 0.4),                  30,  "row0",    (1.5, 0, 0),        "what he holds: the first tray, corner to corner"),
-    ("row1",     (-9.5, -4.7, 6.4),        (0.5, 2.3, 0.4),                     30,  "row1",    (1.5, 0, 0),        "what he holds: the second tray"),
+    ("rows",     (-10.0, -11.0, 9.6),      (1.0, -0.5, -2.6),      32,  "",        (0, 0, 0),          "he lays SOL under the price: down the rows"),
+    ("cursor",   (2.5, -9.5, 6.2),         (0.6, -1.2, -0.2),      30,  "cursor",  (0, 0, 0),          "traders cross his band: on the cursor"),
+    # The row stations stand high and close (about 50 degrees down) so the frame's top edge falls on the blotter just short
+    # of Mr Bands, who stands at FIG_AT right behind the trays: from the old low three-quarter his shins hung from the top
+    # of the "what he holds" chapter. A tilt below the tray (look z under the desk) keeps his shoes off the picture even when
+    # the web stage slides the station along the tray to the price. The second tray sits closer to him, so its look drops
+    # further (the tray sits in the upper part of the frame), which is as much as the geometry allows: with the price at the
+    # very top of the band the station slides right, he stands straight behind the look point, and his shoes reach the nav.
+    ("row0",     (-6.5, -8.7, 11.0),       (0.5, -1.9, -1.6),      30,  "row0",    (1.5, 0, 0),        "what he holds: the first tray, from high on its left, the bundles the subject"),
+    ("row1",     (-6.5, -4.5, 11.0),       (0.5, 2.3, -3.2),       30,  "row1",    (1.5, 0, 0),        "what he holds: the second tray, the same high view slid back one row, tilted so the tray sits high in the frame"),
     ("vault",    (-19.0, -9.0, 5.0),       (-11.6, -0.4, 1.0),     30,  "",        (0, 0, 0),          "he holds nothing: his SOL stacked by the hat"),
     ("dish",     (5.2, -8.4, 7.2),         (9.5, -0.9, 0.2),       28,  "",        (0, 0, 0),          "fees fall: the dish"),
     ("chart",    (9.0, -12.0, 4.2),        (1.5, -5.3, 0.7),            30,  "",        (-2.0, 0, 0),       "what he made: the abacus of fees"),
     ("plan",     (-1.4, -7.5, 29.0),       (-1.4, -0.4, 0.0),      30,  "",        (0, 0, 0),          "price walks away, he lays the band again: the plan view"),
     ("ledger",   (17.5, -12.5, 7.0),       (11.3, -3.4, 0.5),      30,  "",        (0, 0, 0),          "every move on the record: tape and ledger"),
-    ("tape",     (18.5, -4.0, 6.0),        (12.0, 1.6, 1.2),       30,  "",        (0, -3.5, -0.4),    "what he did: the ticker and its tape, the camera following the tape out as the list scrolls"),
+    # Thirteen units off, with the look point at the dome's middle and a touch wider, so the dome stands whole with air above the
+    # finial and the tape's first bends run out past the dish toward the ledger in the lower left; the old station was so close
+    # the ticker read as a wall of hatching with no edge. Seen from the front-right rather than the right, so Mr Bands' legs
+    # (he stands behind the trays, level with the dome's middle in this view) fall on the left under the chapter's words instead
+    # of between the words and the dome. The drift is shorter than it was, so the start of the chapter (the camera half a drift
+    # forward) keeps the finial under the top edge.
+    ("tape",     (17.5, -10.0, 7.5),       (12.0, 1.0, 2.6),       32,  "",        (0, -2.0, -0.3),    "what he did: the ticker and its tape, the camera following the tape out as the list scrolls"),
     ("hat",      (-17.5, -7.5, 4.4),       (-10.6, 3.0, 1.7),      30,  "",        (0, 0, 0),          "his hat, his shades, his cigar, laid on the desk"),
     ("hands",    (8.65, 0.42, 10.92),       (5.50, 4.20, 10.55),    24,  "",        (0, 0, 0),          "the cigar hand: cuff, fist, band, ember and ash"),
     ("shoes",    (7.4, 1.3, 3.6),            (3.8, 5.1, 0.35),       22,  "",        (0, 0, 0),          "his oxfords from a low three-quarter on his left: welt, heel and laces"),
-    ("him",      (-0.6, -15.6, 8.3),       (3.6, 5.3, 7.4),        40,  "",        (0, 0, 0),          "the close: the man himself, full length; as the chapter scrolls the camera walks once round him and closes on his face"),
+    # Field of view 44 (not 40) so the full length, shoes and the cane's ferrule included, fits a 1440x900 window at the start
+    # of the turn, with the same look point; the end portrait inherits the width through zoom_to and gains a little headroom.
+    ("him",      (-0.6, -15.6, 8.3),       (3.6, 5.3, 7.4),        44,  "",        (0, 0, 0),          "the close: the man himself, full length; as the chapter scrolls the camera walks once round him and closes on his face"),
 ]
 # what a station does while its chapter scrolls (web/src/stage/DeskStage.ts place()): a turn round the look point, in degrees;
 # the distance it closes to, as a factor; how far the look point lifts (the eyes rising from the chest to the face)

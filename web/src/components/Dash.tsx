@@ -28,16 +28,22 @@ const MODE_WORD: Record<Status["mode"], string> = { live: "live on Solana", pape
 export interface DashNavProps {
   status: Status;
   agentName: string;
+  /** whether the ledger chapter is on the page: with no executed move there is no "What he did" to point at */
+  hasMoves?: boolean;
+  /** the frozen live run is on the page (web/public/live-run.json loaded) */
+  hasLived?: boolean;
 }
 
-const SECTIONS: { id: string; label: string }[] = [
-  { id: "lays", label: "How he works" },
-  { id: "holds", label: "What he holds" },
-  { id: "made", label: "What he made" },
-  { id: "did", label: "What he did" },
+// the shared words of each label are one span, hidden on a phone, so the bar's second row reads HOLDS · MADE · ON SOLANA · DID
+const SECTIONS: { id: string; label: ReactNode }[] = [
+  { id: "lays", label: <><span className="dash-nav__long">How he </span>works</> },
+  { id: "holds", label: <><span className="dash-nav__long">What he </span>holds</> },
+  { id: "made", label: <><span className="dash-nav__long">What he </span>made</> },
+  { id: "lived", label: "On Solana" },
+  { id: "did", label: <><span className="dash-nav__long">What he </span>did</> },
 ];
 
-export function DashNav({ status, agentName }: DashNavProps) {
+export function DashNav({ status, agentName, hasMoves = true, hasLived = false }: DashNavProps) {
   return (
     <header className="dash-nav dash-nav--float" role="banner">
       <div className="dash-nav__bar">
@@ -46,13 +52,14 @@ export function DashNav({ status, agentName }: DashNavProps) {
         <span className="dash-nav__name engrave">{agentName}</span>
       </a>
       <nav className="dash-nav__links engrave" aria-label="Sections">
-        {SECTIONS.map((s) => (
+        {SECTIONS.filter((s) => (hasMoves || s.id !== "did") && (hasLived || s.id !== "lived")).map((s) => (
           <a key={s.id} href={`#${s.id}`}>
             {s.label}
           </a>
         ))}
+        {/* named for where it goes: "How it works" beside "How he works" read as the same link, and this one leaves the site */}
         <a href={`${PLATFORM_URL}/#/learn`} target="_blank" rel="noreferrer">
-          How it works ↗
+          bands.finance ↗
         </a>
       </nav>
       <span className={`dash-nav__mode engrave dash-nav__mode--${status.mode}`} title={status.sentence}>

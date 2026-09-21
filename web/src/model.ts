@@ -377,7 +377,8 @@ export function bookOf(newestFirst: JournalEntry[]): Book {
         .reduce((s, x) => s + x.positions.filter((q) => q.address === p.address).reduce((u, q) => u + feesInSol(q, x), 0), 0);
       const fees = feesInSol(p, e) + feesClaimed;
       const putIn = p.entryValueSol ?? opened?.execution.opened?.entryValueSol ?? null;
-      const days = openedAt ? Math.max((new Date(e.ts).getTime() - openedAt) / 86400e3, 1 / 288) : null;
+      // the band's age in days, unfloored: the pace below asks for a quarter of a day before it says anything
+      const days = openedAt ? Math.max((new Date(e.ts).getTime() - openedAt) / 86400e3, 0) : null;
       const solY = isSolY(e);
       bands.push({
         poolLabel: e.pool.label,
@@ -401,7 +402,9 @@ export function bookOf(newestFirst: JournalEntry[]): Book {
         fees,
         feesClaimed,
         worthNow: p.valueInSol,
-        pacePerDay: days ? fees / days : null,
+        // a straight-line pace of a band open for minutes is a number nobody believes (1.8 SOL in
+        // twenty minutes reads as "514 SOL a day"), so there is no pace until the band is six hours old
+        pacePerDay: days !== null && days >= 0.25 ? fees / days : null,
         openedAt,
         holds: solY
           ? `${p.amountX.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${e.pool.tokenX.symbol} + ${p.amountY.toFixed(quoteOf(e.pool).symbol === "SOL" ? 4 : 2)} ${e.pool.tokenY.symbol}`

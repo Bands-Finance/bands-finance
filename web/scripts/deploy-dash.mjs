@@ -25,7 +25,11 @@ if (!link.projectId || !link.orgId) {
 const preview = process.argv.includes("--preview");
 // the live feed the desk uploads every cycle (src/publish/live.ts): baked in as VITE_LIVE_URL when the env names it
 const liveUrl = (process.env.LIVE_FEED_URL ?? "").trim();
-const args = ["deploy", "--yes", "--build-env", "VITE_SITE=dashboard", ...(liveUrl ? ["--build-env", `VITE_LIVE_URL=${liveUrl}`] : []), preview ? "--target=preview" : "--prod"];
+// the token's page and the X account are baked in the same way once they exist (site.ts reads them; the For-hire chapter links them)
+const tokenUrl = (process.env.TOKEN_URL ?? "").trim();
+const xUrl = (process.env.X_URL ?? "").trim();
+const args = ["deploy", "--yes", "--build-env", "VITE_SITE=dashboard", ...(liveUrl ? ["--build-env", `VITE_LIVE_URL=${liveUrl}`] : []),
+  ...(tokenUrl ? ["--build-env", `VITE_TOKEN_URL=${tokenUrl}`] : []), ...(xUrl ? ["--build-env", `VITE_X_URL=${xUrl}`] : []), preview ? "--target=preview" : "--prod"];
 const r = spawnSync("vercel", args, {
   cwd: path.join(root, "web"),
   stdio: "inherit",

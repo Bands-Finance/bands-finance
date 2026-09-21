@@ -45,7 +45,13 @@ export interface LiveFeed {
   limits: RiskLimits;
   solPriceUsd: number | null;
 }
-const LIVE_URL = env.VITE_LIVE_URL?.trim() || "";
+/**
+ * Where the desk uploads the feed (src/publish/live.ts, ops/live.env LIVE_FEED_URL). The blob is public
+ * and holds nothing secret, and the desk's own auto-deploys do not bake VITE_LIVE_URL, so a build made
+ * without it reads this one rather than nothing; VITE_LIVE_URL still wins when it is set.
+ */
+const DEFAULT_LIVE_URL = "https://j8hghfydpxfm7hfb.public.blob.vercel-storage.com/live.json";
+const LIVE_URL = env.VITE_LIVE_URL?.trim() || DEFAULT_LIVE_URL;
 let liveAt = 0;
 let livePending: Promise<LiveFeed | null> | null = null;
 export function loadLiveFeed(): Promise<LiveFeed | null> {
@@ -107,7 +113,8 @@ export async function loadJournal(limit = 600): Promise<JournalEntry[]> {
 export async function loadLimits(): Promise<RiskLimits | null> {
   if (window.__BANDS_DATA__?.limits) return window.__BANDS_DATA__.limits;
   const live = await loadLiveFeed();
-  if (live?.limits && typeof live.limits.maxPositionSol === "number") return live.limits;
+  // a stale feed's limits are the stopped desk's: only a fresh feed speaks for the page (loadJournal's rule)
+  if (live?.limits && typeof live.limits.maxPositionSol === "number" && Date.now() - Date.parse(live.generatedAt) < LIVE_MAX_AGE_MS) return live.limits;
   const candidates = limitsSource ? [limitsSource] : [env.VITE_LIMITS_URL, `${base}/api/limits`, `${base}/limits.json`].filter((u): u is string => Boolean(u));
   for (const url of candidates) {
     try {
