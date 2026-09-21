@@ -40,7 +40,7 @@ Two things to know before touching it:
  │ guards (src/risk) -> executor -> wallet      │ Decision    │  session desk:<mode>:<pool>       │
  │ journal, sites, MCP server at POST /mcp <────┼─────────────┼─ MCP client (bands-paper|bands-live)
  └──────────────────────────────────────────────┘ bearer:     └──────────────────────────────────┘
-                                                  PLATFORM_OPERATOR_TOKEN
+                                                  PLATFORM_HOUSE_TOKEN
 ```
 
 - The desk builds the observation, asks, runs the answer through its guards, signs, journals. Nothing
@@ -51,9 +51,16 @@ Two things to know before touching it:
   with one Decision JSON.
 - The agent's hands are the desk's own MCP server (`bands_list_pools`, `bands_limits`,
   `bands_agent_thoughts`, `bands_pool_snapshot`, `bands_screen`, `bands_pool_score`). They read the
-  book and the screen. Nothing on the gateway can move money.
-- The gateway calls the desk's MCP server with the operator bearer, so the operator's own agent is not
-  charged at his own paywall and is served the operator tool list. The rails (`POST /mcp` and the
+  book and the screen. Nothing on the gateway can move money, and nothing on it can approve a proposal.
+- The gateway calls the desk's MCP server with the HOUSE bearer (`PLATFORM_HOUSE_TOKEN`), so the house's
+  own agent is not charged at its own paywall and is served the house tool list: those six read tools
+  and nothing else, not `bands_propose_band_action` and not `bands_decide_proposal`. The operator token
+  (`PLATFORM_OPERATOR_TOKEN`) never leaves `.env`. Until 2026-09-21 the rows carried the operator token,
+  which meant any session on the agent was served `bands_decide_proposal` and could approve proposals;
+  a model must never hold that. A proposal is approved one of two ways: Zach calls
+  `POST /api/proposals/decide` (or `bands_decide_proposal`) with the operator token directly, or the
+  desk's own auto-approver, deterministic code with no model in it, approves it. Either way the
+  approved proposal still runs through the guards before anything executes. The rails (`POST /mcp` and the
   engine, proposals, revenue and credits routes in `src/platform/railsRoutes.ts`) are mounted by
   `src/server.ts` since 2026-09-21; a desk process started before that serves no `/mcp` at all.
   Mounting them turns on MORE than `/mcp`: the same call adds `/api/engine/*`, `/api/proposals`,
@@ -78,7 +85,8 @@ the tokens go in `.env` (git-ignored); the rest may sit in `ops/live.env` or a p
 | `OPENHERMIT_TIMEOUT_MS` | `60000` | One deadline for the whole ask: opening the session and waiting for the answer (`?wait=true&timeout=`). Past it the desk policy proposes. It is per POOL and the pools are decided one after another, so this is the slowest a pool can make a cycle; raising it raises the whole cycle. Once one pool has missed the deadline (or the gateway was unreachable), the rest of that cycle goes straight to the policy without asking again, so a dead gateway costs one wait, not six. |
 | `OPENHERMIT_PROVIDER` | `openrouter` | Who serves the model (`provision` only; `--provider` overrides). `openrouter`: the gateway's shared `OPENROUTER_API_KEY`. `anthropic`: Anthropic directly on an `ANTHROPIC_API_KEY` the owner has given the agent (`hermit config secrets set ANTHROPIC_API_KEY <key> --agent mr-bands`); `provision` checks the secret is there by name and refuses otherwise. It never writes a key. |
 | `OPENHERMIT_MODEL` | (none) | A model id to pin (`provision` only). Unset: on OpenRouter the newest Anthropic Claude of the desk's `MODEL` family that OpenRouter offers; at Anthropic the desk's `MODEL` itself. |
-| `PLATFORM_OPERATOR_TOKEN` | (none, required by `provision`) | The desk's operator bearer (`src/platform`). `provision` writes it into the gateway's MCP server rows as the `Authorization` header. |
+| `PLATFORM_HOUSE_TOKEN` | (none, required by `provision`) | The desk's house bearer (`src/platform/mcp/server.ts`). `provision` writes it into the gateway's MCP server rows as the `Authorization` header. The desk serves it the six read tools free of the paywall. It must differ from `PLATFORM_OPERATOR_TOKEN`: the desk does not treat an equal one as the house (it logs so once), and `provision` refuses it. Generate it with `openssl rand -hex 32`. |
+| `PLATFORM_OPERATOR_TOKEN` | (none) | The desk's operator bearer: decides proposals, settles stranded payments. Zach's alone; it stays in `.env` and `provision` never sends it anywhere. `status` reads it only to warn when a gateway row still holds it. |
 | `DATA_DIR` | `data-live` (for `ask`) | Where `ask` reads the newest journal entry from. |
 
 The model key: the agent runtime resolves a provider's key from the agent's own secrets first and from
@@ -96,7 +104,7 @@ gateway, returned masked by its API). An agent secret of either name also wins o
 ```bash
 # once, in .env (never committed):
 #   OPENHERMIT_TOKEN=<GATEWAY_ADMIN_TOKEN from ~/.openhermit/gateway/.env>
-#   PLATFORM_OPERATOR_TOKEN=<a long random string; the same one the desk runs with>
+#   PLATFORM_HOUSE_TOKEN=<openssl rand -hex 32; the same one the desk runs with, NOT the operator token>
 
 npm run openhermit -- provision                       # the paper desk's MCP server enabled
 npm run openhermit -- provision --mcp live            # the live desk's
@@ -107,7 +115,8 @@ npm run openhermit -- ask                             # one observation from DAT
 ```
 
 `provision` is idempotent: run it again after a persona change, a limit change, a token rotation or a
-model change and it writes only what differs. It does, in order:
+model change and it writes only what differs. It refuses to start, before it touches the gateway, when
+`PLATFORM_HOUSE_TOKEN` is unset or is the operator token. It does, in order:
 
 1. **The agent.** `mr-bands` ("Mr Bands") exists, created without a sandbox (his hands are MCP; a docker
    container he never uses would only cost). The OS user running the script is made its owner through
@@ -132,8 +141,10 @@ model change and it writes only what differs. It does, in order:
    provision --mcp live` for the live desk. The rules also say the observation wins where it differs.
 4. **The MCP servers.** `bands-paper` (`http://127.0.0.1:3100/mcp`) and `bands-live`
    (`http://127.0.0.1:3101/mcp`) are both registered (`--mcp-url` overrides the chosen one's URL), each
-   with `Authorization: Bearer <PLATFORM_OPERATOR_TOKEN>`. The one matching `--mcp` (default `paper`) is
-   enabled for the agent, the other disabled. The row is rewritten every run so a rotated token lands.
+   with `Authorization: Bearer <PLATFORM_HOUSE_TOKEN>` and `metadata.audience: "house"`. The one
+   matching `--mcp` (default `paper`) is enabled for the agent, the other disabled. The row is
+   rewritten every run so a rotated token lands, and so a row that once held the operator token is
+   overwritten by the first provision after this change.
    The gateway keeps the header in Postgres (`mcp_servers.headers`) and shows only its key name over the
    agent API; the admin API returns it whole, as it does for the Meridian rows.
 5. **The runner.** The agent is started, or restarted when its config or instructions changed so the
@@ -141,7 +152,10 @@ model change and it writes only what differs. It does, in order:
 
 `status` prints the gateway health, the agent row (enabled, runner running or stopped), the model, the
 first line of each instruction row, and the MCP servers enabled for him with whether an auth header is
-set. The gateway does not serve MCP connection state over HTTP (it is an agent tool, `mcp_status`), so
+set and which audience it buys at the desk: `house` when the header is this environment's
+`PLATFORM_HOUSE_TOKEN`, `OPERATOR` (loudly, with "run provision again") when it is the operator token,
+`public` with no header. The value is read from the admin API and compared in-process, never printed;
+with neither token in the environment the row's `metadata.audience` is shown and marked unchecked. The gateway does not serve MCP connection state over HTTP (it is an agent tool, `mcp_status`), so
 for that: `hermit chat --agent mr-bands` and ask him to run it.
 
 `ask` reads the newest entry of `DATA_DIR/decisions.jsonl`, renders it as a thin observation (the pool,
@@ -163,8 +177,9 @@ The paper desk (`ops/com.bands.mrbands.paper.plist`, `SERVE_PORT` 3100) and the 
 (`ops/com.bands.mrbands.live.plist` + `ops/live.env`, 3101) each carry the lines commented out. To switch
 one on:
 
-1. `.env` holds `OPENHERMIT_TOKEN` and `PLATFORM_OPERATOR_TOKEN` (the desk reads `.env` itself; launchd
-   does not need them).
+1. `.env` holds `OPENHERMIT_TOKEN` and `PLATFORM_HOUSE_TOKEN` (the desk reads `.env` itself; launchd
+   does not need them). The desk must have been restarted since the house token was added, or it
+   serves the gateway's bearer as a stranger: the public list, and a 402 on every priced tool.
 2. `npm run openhermit -- provision --mcp paper` (or `--mcp live` from `ops/live.env`'s environment).
 3. `npm run openhermit -- ask` answers with a Decision.
 4. Uncomment in the paper plist's `EnvironmentVariables`. For the live desk, change `DECIDER=policy` at the top of
@@ -229,8 +244,9 @@ the gateway needs to change. `hermit agents disable mr-bands` parks him if wante
   proposal, taken the same way an Anthropic reply is today: the entry rules (`adviseWithPolicy`) and the
   guards still have the last word, and an unusable answer means the desk policy proposes.
 - **The paywall.** The desk's MCP server charges `bands_pool_snapshot`, `bands_screen` and
-  `bands_pool_score` over x402. The gateway sends the operator bearer with every call; the desk's `/mcp`
-  route lets the operator bearer past the paywall so the operator's agent does not pay the operator.
+  `bands_pool_score` over x402. The gateway sends the house bearer with every call; the desk's `/mcp`
+  route lets the house bearer (and the operator's) past the paywall so the house's agent does not pay
+  the house. The house bearer buys nothing else: the read tools, no proposing, no deciding.
   Anyone else's agent on the same gateway pays as before - once `X402_TREASURY` (and `X402_VERIFY`) are
   set. Without them the gate is a stub that charges nobody, so on the paper desk today the bearer buys
   nothing that was not already free. It matters on the live desk, where the treasury is set.

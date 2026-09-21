@@ -211,7 +211,7 @@ desk: the loop, the guards, the wallet and the journal do not move, and `DECIDER
 who is asked; an unusable answer falls back to the desk policy as a bad Anthropic reply does.
 
 ```bash
-npm run openhermit -- provision [--mcp paper|live] [--model <openrouter id>]   # idempotent; needs OPENHERMIT_TOKEN, PLATFORM_OPERATOR_TOKEN
+npm run openhermit -- provision [--mcp paper|live] [--model <openrouter id>]   # idempotent; needs OPENHERMIT_TOKEN, PLATFORM_HOUSE_TOKEN
 npm run openhermit -- status
 npm run openhermit -- ask                                                      # the newest journal entry, answered
 ```
