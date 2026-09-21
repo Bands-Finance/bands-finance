@@ -32,7 +32,9 @@ its own process. Mr Bands follows the same split.
   `bands_agent_thoughts`, `bands_pool_snapshot`, `bands_screen`, `bands_pool_score`). They read the
   book and the screen. Nothing on the gateway can move money.
 - The gateway calls the desk's MCP server with the operator bearer, so the operator's own agent is not
-  charged at his own paywall and is served the operator tool list.
+  charged at his own paywall and is served the operator tool list. The rails (`POST /mcp` and the
+  engine, proposals, revenue and credits routes in `src/platform/railsRoutes.ts`) are mounted by
+  `src/server.ts` since 2026-09-21; a desk process started before that serves no `/mcp` at all.
 
 ## Environment
 
@@ -46,14 +48,20 @@ the tokens go in `.env` (git-ignored); the rest may sit in `ops/live.env` or a p
 | `OPENHERMIT_AGENT_ID` | `mr-bands` | The agent's id on the gateway. |
 | `OPENHERMIT_TOKEN` | (none, required) | The gateway's admin bearer: `GATEWAY_ADMIN_TOKEN` from `~/.openhermit/gateway/.env`. The operator copies it into `.env`; no code here reads the gateway's file. |
 | `OPENHERMIT_TIMEOUT_MS` | `120000` | One deadline for the whole ask: opening the session and waiting for the answer (`?wait=true&timeout=`). Past it the desk policy proposes. |
-| `OPENHERMIT_MODEL` | (none) | An OpenRouter model id to pin, e.g. `anthropic/claude-opus-5`. Unset: `provision` picks the newest Anthropic Claude of the desk's `MODEL` family that OpenRouter offers. |
+| `OPENHERMIT_PROVIDER` | `openrouter` | Who serves the model (`provision` only; `--provider` overrides). `openrouter`: the gateway's shared `OPENROUTER_API_KEY`. `anthropic`: Anthropic directly on an `ANTHROPIC_API_KEY` the owner has given the agent (`hermit config secrets set ANTHROPIC_API_KEY <key> --agent mr-bands`); `provision` checks the secret is there by name and refuses otherwise. It never writes a key. |
+| `OPENHERMIT_MODEL` | (none) | A model id to pin (`provision` only). Unset: on OpenRouter the newest Anthropic Claude of the desk's `MODEL` family that OpenRouter offers; at Anthropic the desk's `MODEL` itself. |
 | `PLATFORM_OPERATOR_TOKEN` | (none, required by `provision`) | The desk's operator bearer (`src/platform`). `provision` writes it into the gateway's MCP server rows as the `Authorization` header. |
 | `DATA_DIR` | `data-live` (for `ask`) | Where `ask` reads the newest journal entry from. |
 
-The model key: the agent runtime resolves `OPENROUTER_API_KEY` from the agent's own secrets first and
-from the gateway's environment second (`apps/agent/src/agent-runner.ts`, `resolveApiKey`). The gateway's
-`.env` already holds one, so the agent needs no secret of its own. To give him one:
-`hermit config secrets set OPENROUTER_API_KEY sk-or-... --agent mr-bands`.
+The model key: the agent runtime resolves a provider's key from the agent's own secrets first and from
+the gateway's environment second (`apps/agent/src/agent-runner.ts`, `resolveApiKey`). The gateway's
+`.env` holds an `OPENROUTER_API_KEY` shared by every agent on it, so on OpenRouter the agent needs no
+secret of his own, but that key's credit is shared too (on 2026-09-21 it was empty: OpenRouter answered
+"can only afford 124 tokens", and the desk policy would have proposed every cycle). Two ways out, both
+the owner's: add credit at openrouter.ai/settings/credits, or `--provider anthropic` after giving the
+agent the desk's own key, the one `DECIDER=anthropic` already spends on the same decisions:
+`hermit config secrets set ANTHROPIC_API_KEY sk-ant-... --agent mr-bands` (encrypted at rest by the
+gateway, returned masked by its API). An agent secret of either name also wins over the shared key.
 
 ## Provisioning
 
@@ -65,6 +73,7 @@ from the gateway's environment second (`apps/agent/src/agent-runner.ts`, `resolv
 npm run openhermit -- provision                       # the paper desk's MCP server enabled
 npm run openhermit -- provision --mcp live            # the live desk's
 npm run openhermit -- provision --model anthropic/claude-sonnet-5
+npm run openhermit -- provision --provider anthropic    # the agent's own ANTHROPIC_API_KEY and the desk's MODEL
 npm run openhermit -- status
 npm run openhermit -- ask                             # one observation from DATA_DIR's newest journal entry
 ```
@@ -75,9 +84,11 @@ model change and it writes only what differs. It does, in order:
 1. **The agent.** `mr-bands` ("Mr Bands") exists, created without a sandbox (his hands are MCP; a docker
    container he never uses would only cost). The OS user running the script is made its owner through
    the gateway's `cli` identity, the way `hermit chat` claims ownership, unless someone already owns it.
-2. **The model.** `config.model = { provider: "openrouter", model, max_tokens: 4096 }`. The model is
-   `--model`, else `OPENHERMIT_MODEL`, else the newest `anthropic/claude-<family>*` on OpenRouter where
-   the family is the desk's `MODEL` (`claude-opus-5` today, so opus); the script prints what it chose.
+2. **The model.** `config.model = { provider, model, max_tokens: 4096 }`. The provider is `--provider`,
+   else `OPENHERMIT_PROVIDER`, else `openrouter`. The model is `--model`, else `OPENHERMIT_MODEL`, else
+   (OpenRouter) the newest `anthropic/claude-<family>*` on OpenRouter where the family is the desk's
+   `MODEL` (`claude-opus-5` today, so opus) or (Anthropic) the desk's `MODEL` itself; the script prints
+   what it chose. At Anthropic the agent must already hold an `ANTHROPIC_API_KEY` secret.
    Memory introspection is turned off: one decision a cycle is not a conversation, and the introspection
    would run a second model every few turns to write memories nobody reads.
 3. **The instructions.** `identity`, `soul` and `rules` are cut from the desk's own system prompt with

@@ -5,13 +5,15 @@
  * script makes the gateway side true, idempotently, over the gateway's HTTP API with the admin
  * bearer (OPENHERMIT_TOKEN), the way the hermit CLI does.
  *
- *   npm run openhermit -- provision [--mcp paper|live] [--mcp-url <url>] [--model <openrouter id>] [--agent <id>]
+ *   npm run openhermit -- provision [--mcp paper|live] [--mcp-url <url>] [--provider openrouter|anthropic] [--model <id>] [--agent <id>]
  *   npm run openhermit -- status    [--agent <id>]
  *   npm run openhermit -- ask       [--agent <id>]       one observation from DATA_DIR's newest journal entry
  *
  * Env: OPENHERMIT_GATEWAY_URL (http://127.0.0.1:4000), OPENHERMIT_TOKEN (the gateway's admin token,
  * set by the operator from ~/.openhermit/gateway/.env; this script never reads that file),
- * OPENHERMIT_AGENT_ID (mr-bands), OPENHERMIT_MODEL, OPENHERMIT_TIMEOUT_MS, PLATFORM_OPERATOR_TOKEN
+ * OPENHERMIT_AGENT_ID (mr-bands), OPENHERMIT_PROVIDER (openrouter on the gateway's shared key, or anthropic
+ * on a key the owner has given the agent with `hermit config secrets set`; this script writes no key),
+ * OPENHERMIT_MODEL, OPENHERMIT_TIMEOUT_MS, PLATFORM_OPERATOR_TOKEN
  * (the desk's operator bearer, sent by the gateway on every MCP call so the agent never pays his
  * own paywall), DATA_DIR (ask; data-live by default).
  *
@@ -32,12 +34,23 @@ import type { JournalEntry } from "../journal";
 
 /** The desk's own settings (src/agent/openhermit.ts: gateway, agent, token, timeout) plus the one only provisioning reads. */
 export interface OpenHermitSettings extends ClientSettings {
-  /** a model id the operator chose (OPENHERMIT_MODEL); absent means "ask OpenRouter for the newest" */
+  /** who serves the model (OPENHERMIT_PROVIDER): openrouter on the gateway's shared key, or anthropic on the agent's own */
+  provider: ModelProvider;
+  /** a model id the operator chose (OPENHERMIT_MODEL); absent means the newest of the desk's family on OpenRouter, or the desk's MODEL at Anthropic */
   model: string | null;
 }
 
+export type ModelProvider = "openrouter" | "anthropic";
+
+export function providerOf(v: string | undefined): ModelProvider {
+  const p = (v ?? "").trim().toLowerCase();
+  if (p === "anthropic" || p === "openrouter") return p;
+  if (p) throw new Error(`OPENHERMIT_PROVIDER / --provider must be openrouter or anthropic, not ${p}`);
+  return "openrouter";
+}
+
 export function settingsFromEnv(env: NodeJS.ProcessEnv = process.env): OpenHermitSettings {
-  return { ...openHermitSettings(env), model: env.OPENHERMIT_MODEL?.trim() || null };
+  return { ...openHermitSettings(env), provider: providerOf(env.OPENHERMIT_PROVIDER), model: env.OPENHERMIT_MODEL?.trim() || null };
 }
 
 /** The desk's MCP servers as the gateway will know them. Paper and live are both registered; one is enabled. */
@@ -158,10 +171,15 @@ async function newestOnOpenRouter(family: ModelFamily): Promise<string | null> {
   return pickNewest(body.data ?? [], family);
 }
 
-/** --model, else OPENHERMIT_MODEL, else the newest of the desk's family on OpenRouter, else the desk's own MODEL under anthropic/. */
+/**
+ * --model, else OPENHERMIT_MODEL, else: at Anthropic the desk's own MODEL (the same id the Anthropic backend
+ * uses, so the two backends answer with the same model); on OpenRouter the newest of the desk's family,
+ * else the desk's MODEL under anthropic/.
+ */
 async function chooseModel(flag: string | null, settings: OpenHermitSettings): Promise<{ model: string; how: string }> {
   if (flag) return { model: flag, how: "--model" };
   if (settings.model) return { model: settings.model, how: "OPENHERMIT_MODEL" };
+  if (settings.provider === "anthropic") return { model: config.model, how: "the desk's MODEL" };
   const family = modelFamily(config.model);
   try {
     const newest = await newestOnOpenRouter(family);
@@ -360,13 +378,13 @@ async function ensureOwner(gw: Gateway, agentId: string): Promise<string> {
   return `owner: ${osUser} (${user.userId}, promoted)`;
 }
 
-async function ensureModel(gw: Gateway, agentId: string, model: string): Promise<boolean> {
+async function ensureModel(gw: Gateway, agentId: string, provider: ModelProvider, model: string): Promise<boolean> {
   const a = encodeURIComponent(agentId);
   const cfg = await gw.get<Record<string, unknown>>(`/api/agents/${a}/config`);
   const current = (cfg.model ?? {}) as Record<string, unknown>;
   const memory = (cfg.memory ?? {}) as Record<string, unknown>;
   const introspection = (memory.introspection ?? {}) as Record<string, unknown>;
-  const wanted = { ...current, provider: "openrouter", model, max_tokens: 4096 };
+  const wanted = { ...current, provider, model, max_tokens: 4096 };
   // a decision a cycle is not a conversation: the memory introspection would run a second model over
   // every few turns to write memories nobody reads, so it is off
   const wantedIntrospection = { ...introspection, enabled: false };
@@ -374,6 +392,20 @@ async function ensureModel(gw: Gateway, agentId: string, model: string): Promise
   if (same) return false;
   await gw.put(`/api/agents/${a}/config`, { ...cfg, model: wanted, memory: { ...memory, introspection: wantedIntrospection } });
   return true;
+}
+
+/**
+ * The key the model is billed to. The runtime resolves a provider's key from the agent's own secrets first
+ * and the gateway's environment second (apps/agent/src/agent-runner.ts, resolveApiKey); the gateway's
+ * environment carries an OpenRouter key only. So at Anthropic the agent needs an ANTHROPIC_API_KEY of his
+ * own, and that is the owner's to give (`hermit config secrets set`): this script only checks it is there,
+ * by name, and refuses to provision an agent that could not answer. It never reads or writes a key.
+ */
+async function checkProviderKey(gw: Gateway, agentId: string, provider: ModelProvider): Promise<string> {
+  if (provider !== "anthropic") return "key: the gateway's OPENROUTER_API_KEY (shared by every agent on it)";
+  const have = await gw.get<Record<string, { masked: string }>>(`/api/agents/${encodeURIComponent(agentId)}/secrets`);
+  if (have.ANTHROPIC_API_KEY) return `key: ANTHROPIC_API_KEY on the agent (${have.ANTHROPIC_API_KEY.masked})`;
+  throw new Error(`provider anthropic: the agent has no ANTHROPIC_API_KEY secret. Give him one first: hermit config secrets set ANTHROPIC_API_KEY <key> --agent ${agentId}`);
 }
 
 async function ensureInstructions(gw: Gateway, agentId: string, rows: AgentInstructions): Promise<string[]> {
@@ -422,8 +454,10 @@ async function provision(settings: OpenHermitSettings, opts: ProvisionOptions): 
   console.log(`  ${await ensureOwner(gw, settings.agentId)}`);
 
   const chosen = await chooseModel(opts.model, settings);
-  const modelChanged = await ensureModel(gw, settings.agentId, chosen.model);
-  console.log(`  model: openrouter / ${chosen.model} (${chosen.how}) max_tokens 4096 ${modelChanged ? "written" : "unchanged"}`);
+  // the key is checked before the model row is written, so a provider he cannot answer for never lands
+  console.log(`  ${await checkProviderKey(gw, settings.agentId, settings.provider)}`);
+  const modelChanged = await ensureModel(gw, settings.agentId, settings.provider, chosen.model);
+  console.log(`  model: ${settings.provider} / ${chosen.model} (${chosen.how}) max_tokens 4096 ${modelChanged ? "written" : "unchanged"}`);
 
   const rows = instructionsForDesk(opts.mcp);
   const changed = await ensureInstructions(gw, settings.agentId, rows);
@@ -519,8 +553,8 @@ async function ask(settings: OpenHermitSettings): Promise<void> {
 // main
 // ---------------------------------------------------------------------------------------------
 
-export function parseArgs(argv: string[]): { command: string; agent: string | null; mcp: McpTarget; mcpUrl: string | null; model: string | null } {
-  const out = { command: argv[0] ?? "", agent: null as string | null, mcp: "paper" as McpTarget, mcpUrl: null as string | null, model: null as string | null };
+export function parseArgs(argv: string[]): { command: string; agent: string | null; mcp: McpTarget; mcpUrl: string | null; provider: ModelProvider | null; model: string | null } {
+  const out = { command: argv[0] ?? "", agent: null as string | null, mcp: "paper" as McpTarget, mcpUrl: null as string | null, provider: null as ModelProvider | null, model: null as string | null };
   for (let i = 1; i < argv.length; i++) {
     const [flag, inline] = argv[i].split("=", 2);
     const value = () => inline ?? argv[++i];
@@ -530,13 +564,14 @@ export function parseArgs(argv: string[]): { command: string; agent: string | nu
       if (v !== "paper" && v !== "live") throw new Error(`--mcp must be paper or live, not ${v}`);
       out.mcp = v;
     } else if (flag === "--mcp-url") out.mcpUrl = value();
+    else if (flag === "--provider") out.provider = providerOf(value());
     else if (flag === "--model") out.model = value();
     else throw new Error(`unknown flag ${flag}`);
   }
   return out;
 }
 
-const USAGE = `usage: npm run openhermit -- provision [--mcp paper|live] [--mcp-url <url>] [--model <openrouter id>] [--agent <id>]
+const USAGE = `usage: npm run openhermit -- provision [--mcp paper|live] [--mcp-url <url>] [--provider openrouter|anthropic] [--model <id>] [--agent <id>]
        npm run openhermit -- status    [--agent <id>]
        npm run openhermit -- ask       [--agent <id>]`;
 
@@ -548,6 +583,7 @@ async function main(): Promise<void> {
   }
   const settings = settingsFromEnv();
   if (args.agent) settings.agentId = args.agent;
+  if (args.provider) settings.provider = args.provider;
   if (!settings.token) throw new Error("OPENHERMIT_TOKEN is not set: export the gateway's admin token (GATEWAY_ADMIN_TOKEN in ~/.openhermit/gateway/.env).");
   if (args.command === "provision") await provision(settings, { mcp: args.mcp, mcpUrl: args.mcpUrl, model: args.model });
   else if (args.command === "status") await status(settings);

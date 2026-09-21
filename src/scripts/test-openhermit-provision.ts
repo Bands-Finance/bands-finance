@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { buildSystemPrompt } from "../agent/persona";
 import type { JournalEntry } from "../journal";
-import { agentInstructions, instructionsForDesk, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, pickNewest, settingsFromEnv } from "./openhermit";
+import { agentInstructions, instructionsForDesk, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, pickNewest, providerOf, settingsFromEnv } from "./openhermit";
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -29,6 +29,10 @@ test("the defaults: the local gateway, mr-bands, a two minute wait; the env over
   assert.equal(d.timeoutMs, 120_000);
   assert.equal(d.token, "");
   assert.equal(d.model, null);
+  assert.equal(d.provider, "openrouter");
+  assert.equal(settingsFromEnv({ OPENHERMIT_PROVIDER: "Anthropic" }).provider, "anthropic");
+  assert.throws(() => settingsFromEnv({ OPENHERMIT_PROVIDER: "openai" }), /openrouter or anthropic/);
+  assert.equal(providerOf(undefined), "openrouter");
   const e = settingsFromEnv({ OPENHERMIT_GATEWAY_URL: "http://gw:4000/", OPENHERMIT_AGENT_ID: "mr-bands-2", OPENHERMIT_TIMEOUT_MS: "5000", OPENHERMIT_TOKEN: " t ", OPENHERMIT_MODEL: "anthropic/claude-sonnet-5" });
   assert.equal(e.gatewayUrl, "http://gw:4000", "no trailing slash");
   assert.equal(e.agentId, "mr-bands-2");
@@ -37,10 +41,12 @@ test("the defaults: the local gateway, mr-bands, a two minute wait; the env over
   assert.equal(e.model, "anthropic/claude-sonnet-5");
   assert.equal(settingsFromEnv({ OPENHERMIT_TIMEOUT_MS: "nope" }).timeoutMs, 120_000, "a bad timeout is the default");
 });
-test("the flags: --mcp paper|live, --mcp-url, --model, --agent, in either spelling", () => {
+test("the flags: --mcp paper|live, --mcp-url, --provider, --model, --agent, in either spelling", () => {
   const a = parseArgs(["provision", "--mcp", "live", "--model=anthropic/claude-opus-5", "--agent", "x", "--mcp-url", "http://h:3101/mcp"]);
-  assert.deepEqual(a, { command: "provision", agent: "x", mcp: "live", mcpUrl: "http://h:3101/mcp", model: "anthropic/claude-opus-5" });
+  assert.deepEqual(a, { command: "provision", agent: "x", mcp: "live", mcpUrl: "http://h:3101/mcp", provider: null, model: "anthropic/claude-opus-5" });
   assert.equal(parseArgs(["status"]).mcp, "paper");
+  assert.equal(parseArgs(["provision", "--provider", "anthropic"]).provider, "anthropic");
+  assert.throws(() => parseArgs(["provision", "--provider", "openai"]), /openrouter or anthropic/);
   assert.throws(() => parseArgs(["provision", "--mcp", "prod"]), /paper or live/);
   assert.throws(() => parseArgs(["provision", "--bogus"]), /unknown flag/);
 });

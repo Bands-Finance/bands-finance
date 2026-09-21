@@ -30,6 +30,7 @@ import { basisRoutes } from "./basis";
 import { hotRoutes } from "./hot";
 import { paperRoutes } from "./paper";
 import { platformRoutes } from "./platform/routes";
+import { railsRoutes } from "./platform/railsRoutes";
 
 export function buildApp(): Hono {
   const app = new Hono();
@@ -50,6 +51,10 @@ export function buildApp(): Hono {
   // The platform: security headers + rate buckets on /api/*, wallet sign-in, "your own Mr Bands"
   // (src/platform/routes.ts). Registered first so its middleware covers every route below.
   platformRoutes(app);
+  // The rails: the MCP server at POST /mcp (the agent's hands on OpenHermit, and anyone's over x402),
+  // the engine skill, proposals, revenue and credits (src/platform/railsRoutes.ts). Registered right
+  // after the platform so its middleware covers them and no page fallback below can shadow /mcp.
+  railsRoutes(app);
 
   app.get("/api/health", (c) => c.json({ ok: true, now: new Date().toISOString(), mode: paperEnabled(process.env, config.dryRun) ? "paper" : config.dryRun ? "dry-run" : "live" }));
 
