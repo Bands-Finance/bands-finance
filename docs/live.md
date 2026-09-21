@@ -18,7 +18,18 @@ service is the act of going live. It is done on Zach's word, in words, and never
 - **Stops:** 15% per band, the circuit and portfolio breakers as in paper, 120 actions a day at most.
 - **RPC:** `.env`'s `RPC_URL`. The public endpoint rate-limits; a Helius URL is strongly preferred for real money.
 
-## The order of operations
+## The order of operations (the second run, 21 September 2026 and after)
+
+The first run (17-19 September, 19.79 -> 19.68 SOL, 204 moves) is frozen as `web/public/live-run.json` and printed as
+the "On Solana" chapter of mrbands.finance. Its data directory must NOT be reused: the page reads the desk's feed as a
+window over `DATA_DIR`, and a restart on `data-mainnet` would print that run a second time under the new one. So:
+
+0. Archive the first run and start clean: `mv data-mainnet data-mainnet-2026-09-17 && mkdir data-mainnet`
+   (the engine state it held - stops, seats, cooldowns - belongs to positions that are closed; the wallet was emptied).
+   If the token launched first, put its mint in `ops/live.env` as `PAIR_HOUSE_MINTS=<mint>` before starting, so the
+   desk makes and works BANDS/SOL on Meteora from its first cycle; and fill `TOKEN_URL=` / `X_URL=` there once the
+   token page and the announcement exist, then deploy the dashboard so the "For hire" chapter links them.
+
 
 1. Zach sends 20 SOL to the wallet above.
 2. `npm run live:preflight` — every FAIL must be clear (the SOL balance line turns PASS once funded).
