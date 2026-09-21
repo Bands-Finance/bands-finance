@@ -63,6 +63,15 @@
     <key>PAIR_STOCK_PINNED_TICKERS</key><string>NVDA</string>
     <key>SWAP_DEXES</key><string>Meteora DLMM</string>
     <key>SERVE_PORT</key><string>3100</string>
+    <!-- Mr Bands on OpenHermit (docs/openhermit.md): uncomment to have the agent on the gateway propose instead of
+         Anthropic (the guards still decide; an unusable answer falls back to the desk policy). First: OPENHERMIT_TOKEN
+         and PLATFORM_OPERATOR_TOKEN in .env, then `npm run openhermit -- provision --mcp paper`, then `npm run openhermit -- ask`.
+         Switch back with DECIDER=policy. Then bootout and bootstrap this service.
+    <key>DECIDER</key><string>openhermit</string>
+    <key>OPENHERMIT_GATEWAY_URL</key><string>http://127.0.0.1:4000</string>
+    <key>OPENHERMIT_AGENT_ID</key><string>mr-bands</string>
+    <key>OPENHERMIT_TIMEOUT_MS</key><string>120000</string>
+    -->
   </dict>
 </dict>
 </plist>
