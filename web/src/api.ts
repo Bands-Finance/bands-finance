@@ -45,7 +45,13 @@ export interface LiveFeed {
   limits: RiskLimits;
   solPriceUsd: number | null;
 }
-const LIVE_URL = env.VITE_LIVE_URL?.trim() || "";
+/**
+ * Where the desk uploads the feed (src/publish/live.ts, ops/live.env LIVE_FEED_URL). The blob is public
+ * and holds nothing secret, and the desk's own auto-deploys do not bake VITE_LIVE_URL, so a build made
+ * without it reads this one rather than nothing; VITE_LIVE_URL still wins when it is set.
+ */
+const DEFAULT_LIVE_URL = "https://j8hghfydpxfm7hfb.public.blob.vercel-storage.com/live.json";
+const LIVE_URL = env.VITE_LIVE_URL?.trim() || DEFAULT_LIVE_URL;
 let liveAt = 0;
 let livePending: Promise<LiveFeed | null> | null = null;
 export function loadLiveFeed(): Promise<LiveFeed | null> {
