@@ -8,7 +8,7 @@
  * Fetch Request directly; no Node req/res adapter is involved.
  *
  * Route table (auth · price · codes):
- *   POST /mcp                       x402 for priced tools (the operator bearer passes it: the house does not pay itself); operator bearer for operator-only tools · 400 batch/parse/no-session, 401, 402, 503 session cap
+ *   POST /mcp                       x402 for priced tools (the operator and house bearers pass it: the house does not pay itself); operator bearer for operator-only tools · 400 batch/parse/no-session, 401, 402, 503 session cap
  *   GET|DELETE /mcp                 session id required · 400
  *   GET  /api/engine/access         session · 200 {ok,hasAccess,via,paths,detail} · 401
  *   GET  /api/engine/skill          session + access · text/markdown + X-Bands-Skill-Version · 401, 403, 503
@@ -35,7 +35,7 @@ import { requireWallet } from "./accounts";
 import { PACKS, addPurchase } from "./credits";
 import { decreaseSteps, hasEngineAccess, parseSkillVersion, planOpenSteps, positionsFor, validatePlanInput } from "./engineSkill";
 import { renderIntegrationDoc } from "./integrationDoc";
-import { OPERATOR_ONLY_TOOLS, TOOL_PRICES_USD, buildServer, operatorAuthorized, toolPriceUsd, type McpAudience } from "./mcp/server";
+import { OPERATOR_ONLY_TOOLS, TOOL_PRICES_USD, buildServer, houseAuthorized, houseToken, operatorAuthorized, toolPriceUsd, type McpAudience } from "./mcp/server";
 import { PaymentGate, SOLANA_MAINNET_CAIP2, USDC_MINT } from "./payments/PaymentGate";
 import { RevenueLedger } from "./payments/RevenueLedger";
 import { decideProposal, listProposals, mcpProposerId, previewProposal, submitProposal, type ProposalStatus } from "./proposals";
@@ -60,7 +60,9 @@ export function mcpRequestAllowed(body: unknown, authorization: string | undefin
 
 /** Which tool list a session is served. NOT a gate: mcpRequestAllowed still runs on every tools/call. */
 export function mcpAudience(authorization: string | undefined): McpAudience {
-  return operatorAuthorized(authorization) ? "operator" : "public";
+  if (operatorAuthorized(authorization)) return "operator";
+  if (houseAuthorized(authorization)) return "house";
+  return "public";
 }
 
 export interface Paywall {
@@ -76,11 +78,11 @@ export interface Paywall {
  * null when the request may proceed. A stub-mode acceptance is not recorded as revenue:
  * the ledger is the truth, and nothing arrived.
  *
- * The operator bearer passes the paywall outright: the house's own agent (Mr Bands on
- * OpenHermit, reasoning through this very server) must not pay itself, and a payment it
- * did send would be revenue from our own treasury to our own treasury. The check is the
- * same constant-time match that guards operator-only tools; a wrong bearer is a stranger
- * and pays like one. Nothing else about the paywall changes.
+ * The operator and house bearers pass the paywall outright: the house's own agent (Mr Bands
+ * on OpenHermit, reasoning through this very server with the house token) must not pay
+ * itself, and a payment it did send would be revenue from our own treasury to our own
+ * treasury. The checks are the same constant-time match that guards operator-only tools; a
+ * wrong bearer is a stranger and pays like one. Nothing else about the paywall changes.
  */
 export async function checkPayment(gate: PaymentGate, revenue: RevenueLedger, body: unknown, paymentHeader: string | undefined, authorization?: string | undefined): Promise<Paywall | null> {
   const b = body as JsonRpcLike | null;
@@ -88,7 +90,7 @@ export async function checkPayment(gate: PaymentGate, revenue: RevenueLedger, bo
   const tool = b.params?.name ?? "";
   const priceUsd = toolPriceUsd(tool);
   if (!priceUsd) return null;
-  if (operatorAuthorized(authorization)) return null;
+  if (operatorAuthorized(authorization) || houseAuthorized(authorization)) return null;
   if (!paymentHeader) return { status: 402, body: gate.requirements(priceUsd, tool) };
   const result = await gate.verify(paymentHeader, priceUsd, tool);
   if (!result.ok) return { status: 402, body: { ok: false, error: result.error } };
@@ -131,7 +133,9 @@ export function railsRoutes(app: Hono): void {
   const gate = PaymentGate.fromEnv(connection);
   const revenue = new RevenueLedger();
   console.log(
-    `[rails] x402 ${gate.mode}${gate.treasuryAta ? ` · payTo ${gate.treasuryAta}` : ""} · operator bearer ${process.env.PLATFORM_OPERATOR_TOKEN ? "set" : "UNSET (operator routes closed)"} · engine ${
+    `[rails] x402 ${gate.mode}${gate.treasuryAta ? ` · payTo ${gate.treasuryAta}` : ""} · operator bearer ${process.env.PLATFORM_OPERATOR_TOKEN ? "set" : "UNSET (operator routes closed)"} · house bearer ${
+      houseToken() ? "set" : process.env.PLATFORM_HOUSE_TOKEN?.trim() ? "IGNORED (same as the operator's)" : "UNSET (the gateway agent pays like anyone)"
+    } · engine ${
       process.env.ENGINE_OPEN?.trim().toLowerCase() === "true" ? "open" : process.env.ENGINE_ALLOWLIST ? "allowlist" : "closed"
     }`,
   );
