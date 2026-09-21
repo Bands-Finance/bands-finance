@@ -3,6 +3,13 @@
  * call throws or the model refuses, the desk policy (src/agent/policy.ts) proposes instead, with
  * source "policy" and a note saying why. A bare HOLD ("fallback") remains only for the case where
  * the policy itself throws. Never throws.
+ *
+ * Two model backends: DECIDER=anthropic asks Claude directly (structured output, the persona as the
+ * system prompt); DECIDER=openhermit posts the observation to Mr Bands' agent on the OpenHermit
+ * gateway (src/agent/openhermit.ts), where the persona lives in his instructions. DECIDER=policy
+ * asks nobody. Unset, the choice is what it always was: anthropic with a key, else policy. Whatever
+ * answers, the reply walks the same road: exitAsk dropped, the desk policy advises on any move of
+ * money, the guards decide.
  */
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
@@ -11,6 +18,7 @@ import { buildSystemPrompt } from "./persona";
 import { policyDecide, type PolicyExtras, type PolicyResult } from "./policy";
 import { Decision, DecisionSchema, holdDecision } from "./schema";
 import { formatObservation, Observation } from "./observation";
+import { askForDecision, extractDecision, openHermitAvailable, OpenHermitError, openHermitSettings } from "./openhermit";
 
 export interface LlmUsage {
   inputTokens: number;
@@ -56,9 +64,30 @@ function getClient(): Anthropic {
   return client;
 }
 
-/** A key in the config or an auth token in the environment; without either the model is not asked. */
-export function hasLlmCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
+/** A key in the config or an auth token in the environment; without either Claude is not asked directly. */
+export function hasAnthropicCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
   return !!(config.anthropicApiKey || (env.ANTHROPIC_AUTH_TOKEN && env.ANTHROPIC_AUTH_TOKEN.trim()));
+}
+
+export type Decider = "anthropic" | "openhermit" | "policy";
+
+/**
+ * Who is asked each cycle. DECIDER names a backend; unset (or an unknown word) keeps the old rule,
+ * anthropic when there are credentials for it and the desk policy otherwise, so nobody who has not
+ * set it sees a change. Read at call time like the desk's other toggles.
+ */
+export function deciderOf(env: NodeJS.ProcessEnv = process.env): Decider {
+  const v = (env.DECIDER ?? "").trim().toLowerCase();
+  if (v === "anthropic" || v === "openhermit" || v === "policy") return v;
+  return hasAnthropicCredentials(env) ? "anthropic" : "policy";
+}
+
+/** Whether a model will be asked at all: the chosen backend has what it needs. The desk's boot log and the talk layer read this. */
+export function hasLlmCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
+  const decider = deciderOf(env);
+  if (decider === "openhermit") return openHermitAvailable(env);
+  if (decider === "policy") return false;
+  return hasAnthropicCredentials(env);
 }
 
 function fallback(note: string): DecideResult {
@@ -139,9 +168,60 @@ function policyAfterModel(observation: Observation, note: string, opts: DecideOp
   return { ...r, usage, note: `${r.note ?? note} (${model} was asked.)` };
 }
 
+/**
+ * A decision the model gave, made the desk's: the ask exit is the desk's to mark, never the model's (a model
+ * REBALANCE marked exitAsk would skip the cooldown, the size limits and every open gate in src/risk/guards.ts),
+ * so the flag is dropped and the desk sets it where it belongs; then the policy is asked when the model wants
+ * money to work, and when it wants to close an ASK band (worked off by the desk's rules). Both backends end here.
+ */
+function acceptModelDecision(raw: Decision, observation: Observation, opts: DecideOptions, model: string, usage: LlmUsage): DecideResult {
+  const parsed: Decision = raw.exitAsk ? { ...raw, exitAsk: undefined } : raw;
+  const closesAsk = parsed.action === "CLOSE_POSITION" && !!parsed.positionAddress && !!opts.askExit?.bands[parsed.positionAddress];
+  if (modelAdvises() && (parsed.action === "OPEN_POSITION" || parsed.action === "REBALANCE" || closesAsk)) {
+    const advised = adviseWithPolicy(parsed, policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow, askExit: opts.askExit }));
+    return { decision: advised.decision, source: "llm", model, usage, note: advised.note ?? undefined };
+  }
+  return { decision: parsed, source: "llm", model, usage };
+}
+
+const NO_USAGE: LlmUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+
+/**
+ * The OpenHermit backend: post the observation to the agent's session and read the Decision JSON out of
+ * his reply. Every failure is named in the note and the desk policy proposes; the client's own deadline
+ * (OPENHERMIT_TIMEOUT_MS) bounds the wait, so a cycle never hangs on the gateway. Never throws.
+ */
+async function decideWithOpenHermit(observation: Observation, opts: DecideOptions): Promise<DecideResult> {
+  const settings = openHermitSettings();
+  const model = `openhermit:${settings.agentId}`;
+  if (!settings.token) return policyDecideResult(observation, "DECIDER=openhermit but OPENHERMIT_TOKEN is not set.", opts);
+  try {
+    const reply = await askForDecision(observation, { settings });
+    const found = extractDecision(reply.text);
+    if (!found.decision) return policyAfterModel(observation, `OpenHermit reply was not a decision (${found.error}).`, opts, NO_USAGE, model);
+    return acceptModelDecision(found.decision, observation, opts, reply.model ?? model, NO_USAGE);
+  } catch (err) {
+    if (err instanceof OpenHermitError) {
+      const why = err.message.replace(/\.$/, "");
+      const note =
+        err.kind === "unreachable" ? `OpenHermit unreachable (${why}).`
+        : err.kind === "unauthorized" ? `OpenHermit refused the token (${err.status ?? "auth"}): check OPENHERMIT_TOKEN.`
+        : err.kind === "timeout" ? `OpenHermit timed out (${why}).`
+        : err.kind === "not-found" ? `OpenHermit has no agent or session for the desk (${why}).`
+        : err.kind === "bad-reply" ? `OpenHermit reply was not a decision (${why}).`
+        : `OpenHermit gateway error (${why}).`;
+      return policyAfterModel(observation, note, opts, NO_USAGE, model);
+    }
+    return policyAfterModel(observation, `OpenHermit call failed: ${(err as Error).message}.`, opts, NO_USAGE, model);
+  }
+}
+
 /** Ask Mr Bands what to do. Never throws: without a key or on any failure the desk policy proposes. */
 export async function decide(observation: Observation, opts: DecideOptions = {}): Promise<DecideResult> {
-  if (!hasLlmCredentials()) return policyDecideResult(observation, "No ANTHROPIC_API_KEY configured.", opts);
+  const decider = deciderOf();
+  if (decider === "openhermit") return decideWithOpenHermit(observation, opts);
+  if (decider === "policy") return policyDecideResult(observation, hasAnthropicCredentials() ? "DECIDER=policy: the model is not asked." : "No ANTHROPIC_API_KEY configured.", opts);
+  if (!hasAnthropicCredentials()) return policyDecideResult(observation, "No ANTHROPIC_API_KEY configured.", opts);
   try {
     const response = await getClient().messages.parse({
       model: config.model,
@@ -175,16 +255,7 @@ export async function decide(observation: Observation, opts: DecideOptions = {})
     if (!raw) {
       return policyAfterModel(observation, "Model output did not match the decision schema.", opts, usage, response.model);
     }
-    // the ask exit is the desk's to mark, never the model's: a model REBALANCE marked exitAsk would skip the cooldown, the
-    // size limits and every open gate (src/risk/guards.ts); the flag is dropped, and the desk sets it where it belongs
-    const parsed: Decision = raw.exitAsk ? { ...raw, exitAsk: undefined } : raw;
-    // the policy is asked when the model wants money to work, and when it wants to close an ASK band (worked off by the desk's rules)
-    const closesAsk = parsed.action === "CLOSE_POSITION" && !!parsed.positionAddress && !!opts.askExit?.bands[parsed.positionAddress];
-    if (modelAdvises() && (parsed.action === "OPEN_POSITION" || parsed.action === "REBALANCE" || closesAsk)) {
-      const advised = adviseWithPolicy(parsed, policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow, askExit: opts.askExit }));
-      return { decision: advised.decision, source: "llm", model: response.model, usage, note: advised.note ?? undefined };
-    }
-    return { decision: parsed, source: "llm", model: response.model, usage };
+    return acceptModelDecision(raw, observation, opts, response.model, usage);
   } catch (err) {
     if (err instanceof Anthropic.AuthenticationError) return policyDecideResult(observation, "Anthropic auth failed: check ANTHROPIC_API_KEY.", opts);
     if (err instanceof Anthropic.RateLimitError) return policyDecideResult(observation, "Anthropic rate limit hit.", opts);
