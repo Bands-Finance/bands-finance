@@ -111,7 +111,7 @@ vision.
 
 ## Today, Tue 22 Sep
 
-Nobody has registered "Mr Bands" yet, and a copycat token already uses the name (below). Registration needs an
+Zach registered "Mr Bands" on 22 Sep. A copycat token already uses the name (below). Registration needs an
 X handle, so the X account is the first thing that exists.
 
 **Zach:**
@@ -125,7 +125,7 @@ X handle, so the X account is the first thing that exists.
    day, 90 minutes apart, every one saying paper. **His Clawrena entry post waits for Zach's word** (`talk announce
    entry`, due by Thu 1 Oct 24:00 EST). Follow @clawpumptech by hand (the API cannot follow since April). Stop him
    at once: `touch data-talk/TALK_STOP`.
-3. **Register** at clawpump.tech/ansemhack with that handle, with the ClawPump x pump.fun track ticked, and the
+3. **Registered** (Zach confirmed, Tue 22 Sep). Was: register at clawpump.tech/ansemhack with that handle, with the ClawPump x pump.fun track ticked, and the
    Inference Markets (UsePod) track too (UsePod is how he will pay for his own inference; the same entry is
    judged in both). It is free and the token link is optional. The token later attaches to the entry by this
    handle.
