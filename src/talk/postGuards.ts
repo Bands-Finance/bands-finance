@@ -83,6 +83,8 @@ const BASE58_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/;
 
 /** Words that are hype, filler or an epigram in this voice, whatever the lint allows. */
 export const BUILDER_NEVER: readonly { re: RegExp; rule: string }[] = [
+  // no end date for the paper book, and no countdown to one (Zach, 22 Sep)
+  { rule: "paper-end", re: /\b(8 oct(ober)?|oct(ober)? 8)\b|\bpaper (until|till|through|ends?)\b|\buntil after\b|\b(days?|weeks?) (left|to go)\b|\bgo(es|ing)? live (on|after|from|in)\b|\breal money (from|after|on|in) /i },
   { rule: "token", re: /\b(the|a|my|our|his|new|one) token\b|\btoken (is|was|will|drop|sale|launch)\w*\b|\bcoins?\b|\blaunch\w*\b|\bon ?-?chain\b|\bcoming soon\b|\balmost ready\b|\bsomething (of mine|new)\b|\bkey to my tools\b|\bmint(s|ed)?\b|\bcopycat\b|\bimpostor\b|\bimposter\b|\bimpersonat\w*|\bclawpump\b|\bpump ?\.? ?fun\b|\b(my|our|his) (own )?(token|coin)\b|\btoken (launch|sale)\b|\blaunch(ed|ing)? (a|my|the) (token|coin)\b|\bticker\b|\bbands token\b|\bmrbands\b|\bholders?\b|\bairdrop\w*\b/ },
   { rule: "hype", re: /\b(gm|gn|lfg|wagmi|excited|exciting|thrilled|proud|journey|stay tuned|big news|game ?changer|amazing|incredible|insane|huge|massive|let'?s go|alpha|unlock(ed|s)?|revolution\w*|next level|buckle up|here'?s the thing|the best part|plot twist|spoiler)\b/ },
   { rule: "epigram", re: /\bthat'?s the (job|game|work|point|number the)\b|\bquiet days (are|is) the strategy\b|\bwhat i'?m building against\b|\bi post both numbers or neither\b|\bkeep(ing)? the powder dry\b|\bsitting in the chop\b|\bone band at a time\b|\bthe (market|pool) (always )?(decides|wins)\b|\bthat'?s how (it goes|this works)\b/ },

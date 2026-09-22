@@ -127,8 +127,18 @@ async function main(): Promise<void> {
   await test("a date or a clock time in a paper fact belongs to no book; its figures keep theirs", () => {
     const b = facts.blockOf("k", facts.standingFacts({ now: NOW, startSol: 150, startUsdc: 10000, startedAt: START }));
     const a = facts.allowedTokens(b);
-    assert.deepEqual([...a.get("d:8 Oct")!.books], ["none"]);
+    assert.deepEqual([...a.get("d:7 Oct")!.books], ["none"]);
+    assert.ok(!a.has("d:8 Oct"), "no end date for the paper book (Zach, 22 Sep)");
     assert.ok(a.get("150")!.books.has("paper"));
+  });
+
+  await test("no end date for the paper book: the standing facts carry none, and a draft that names one is refused (Zach, 22 Sep)", () => {
+    const b = facts.blockOf("k", facts.standingFacts({ now: NOW, startSol: 150, startUsdc: 10000, startedAt: START }));
+    assert.ok(!b.facts.some((f) => /8 Oct|days are left|until after/i.test(f.text)));
+    for (const bad of ["My book stays paper until after 8 Oct.", "16 days left on paper.", "I go live on 8 October.", "Paper ends soon, then real money from 9 Oct."]) {
+      assert.ok(g.BUILDER_NEVER.some((n) => n.rule === "paper-end" && n.re.test(bad)), bad);
+    }
+    for (const ok of ["My book is paper for now.", "Judging runs 28 Sep to 7 Oct."]) assert.ok(!g.BUILDER_NEVER.find((n) => n.rule === "paper-end")!.re.test(ok), ok);
   });
 
   // ------------------------------------------------------------ the picker
@@ -300,7 +310,7 @@ async function main(): Promise<void> {
   await test("clean drafts pass: a close, the daily, the arc", () => {
     assert.equal(vC(GOOD_CLOSE), null);
     assert.equal(vD(daily.template!), null);
-    assert.equal(vA("My one real-money run, 17 to 19 Sep, went from 19.79 to 19.71 SOL. Until after 8 Oct my book is paper, 150 SOL and 10,000 USDC against live prices.", { arc: true }), null);
+    assert.equal(vA("My one real-money run, 17 to 19 Sep, went from 19.79 to 19.71 SOL. My book is paper for now, 150 SOL and 10,000 USDC against live prices.", { arc: true }), null);
   });
   await test("numbers: any figure not in the facts, a number written as a word, and 0.00 are refused", () => {
     assert.equal(ruleOf(vC("On paper I closed my band on ORE/SOL, a loss of 0.56 SOL.")), "numbers");
@@ -690,20 +700,21 @@ async function main(): Promise<void> {
   await test("pinned: the standing disclosure, its paper figures from the book, the real run's 19.79 to 19.71", () => {
     const c = announce.composeAnnouncement("pinned", annFacts, CTX);
     assert.ok(c.ok, JSON.stringify(c));
-    assert.deepEqual(c.ok && c.parts, ["I'm Mr Bands, an AI agent making markets on Meteora: I place liquidity in bands around the price and collect swap fees. Until after 8 Oct my book is paper, 150 SOL and 10,000 USDC against live prices. My one real-money run, 17 to 19 Sep, went from 19.79 to 19.71 SOL."]);
+    assert.deepEqual(c.ok && c.parts, ["I'm Mr Bands, an AI agent making markets on Meteora: I place liquidity in bands around the price and collect swap fees. My book is paper for now, 150 SOL and 10,000 USDC against live prices. My one real-money run, 17 to 19 Sep, went from 19.79 to 19.71 SOL."]);
     assert.ok(!announce.composeAnnouncement("pinned", { ...annFacts, source: "live" }, CTX).ok, "the pinned post says paper: a live desk refuses it");
     assert.ok(announce.composeAnnouncement("correction", { ...annFacts, tokenProblem: "TOKEN_MINT is the copycat's mint, not his" }, CTX).ok, "a token problem is not the one-offs' to refuse on");
   });
   await test("the one-offs refuse hostile versions: lowercase, no paper word, a name, a tag, a token, a number of their own", () => {
     const block = announce.announceFactsBlock("pinned", annFacts.bookStart, NOW);
     const bad = (t: string) => announce.checkParts("pinned", [t], false, CTX, block).map((v) => v.rule);
-    const P = "I'm Mr Bands, an AI agent making markets on Meteora. Until after 8 Oct my book is paper, 150 SOL and 10,000 USDC against live prices.";
+    const P = "I'm Mr Bands, an AI agent making markets on Meteora. My book is paper for now, 150 SOL and 10,000 USDC against live prices.";
     assert.deepEqual(bad(P), []);
     assert.deepEqual(bad(P.toLowerCase()), ["builder-case"]);
     assert.deepEqual(bad(P.replace("is paper", "is virtual")), ["builder-books"]);
     assert.deepEqual(bad(`${P} Built with Zach.`), ["builder-architect"]);
     assert.deepEqual(bad(`${P} Hi @clawpumptech.`), ["builder-symbols"]);
     assert.deepEqual(bad(`${P} My own token is coming.`), ["builder-token"]);
+    assert.ok(bad(P.replace("paper for now", "paper until after 8 Oct")).length > 0, "no end date for the paper book");
     assert.deepEqual(bad(P.replace("150", "200")), ["builder-numbers"]);
   });
   await test("posted only by the explicit command, once: dormant, each is a draft row and nothing is recorded; the lint takes the capitals", async () => {

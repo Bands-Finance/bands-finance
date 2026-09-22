@@ -186,19 +186,21 @@ export const ARC = {
  */
 export const REAL_RUN = { startSol: 19.79, endSol: 19.7125, feesSol: 7.9126, netSol: -0.0775 };
 
-/** The facts every block carries: where he stands (paper until after 8 Oct, the book's start) and the arc's dates. */
+/**
+ * The facts every block carries: where he stands (the book is paper for now, and its start) and the arc's dates. No
+ * end date for the paper book and no countdown to one (Zach, 22 Sep: "can we not give a date of how long we are going
+ * to be running on a paper book"); vetBuilderPost refuses one too.
+ */
 export function standingFacts(o: { now: number; startSol: number; startUsdc: number; startedAt: number }): Fact[] {
-  const daysLeft = Math.max(0, Math.ceil((Date.parse(new Date(ARC.paperUntil).toISOString().slice(0, 10)) - Date.parse(new Date(o.now).toISOString().slice(0, 10))) / 86400e3));
   return [
     fact("today", `Today is ${dateOf(o.now)}.`, "none", "the clock", []),
     fact(
       "paper.start",
-      `Until after ${dateOf(ARC.paperUntil)} my book is paper: virtual money against live prices, started ${dateOf(o.startedAt)} with ${count(o.startSol)} SOL and ${count(o.startUsdc)} USDC.`,
+      `My book is paper for now: virtual money against live prices, started ${dateOf(o.startedAt)} with ${count(o.startSol)} SOL and ${count(o.startUsdc)} USDC.`,
       "paper",
       "data-live/paper-book.json startSol, startUsdc, startedAt",
       [fig("paper.startSol", count(o.startSol), "paper", CTX.start), fig("paper.startUsdc", count(o.startUsdc), "paper", CTX.start)],
     ),
-    fact("paper.daysLeft", `${daysLeft} days are left until ${dateOf(ARC.paperUntil)}.`, "none", "the clock", [fig("paper.daysLeft", String(daysLeft), "none", CTX.days)]),
     fact("arc.judging", `AnsemHack's Clawrena judges the entries ${dateOf(ARC.judgingFrom)} to ${dateOf(ARC.judgingTo)}.`, "none", "docs/clawrena.md", []),
   ];
 }

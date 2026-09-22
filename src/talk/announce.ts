@@ -13,7 +13,7 @@
  *            only his real-money run, so "every decision and every guard veto" are no longer public there. Post it
  *            only while the paper journal is off the sites.
  *   pinned   the builder voice: the standing disclosure (the builder plan's sample 0) that replaces the intro as the
- *            pinned post: paper until after 8 Oct, the paper book's start, and the real run's 19.79 to 19.71. X's
+ *            pinned post: the book is paper for now (no end date: Zach, 22 Sep), the paper book's start, and the real run's 19.79 to 19.71. X's
  *            API cannot pin, so pinning it is one click in the app, signed in as his account.
  * The two builder kinds pass the builder voice's guards (src/talk/postGuards.ts vetBuilderPost) against a facts
  * block of his standing facts, in place of the lowercase lint; the older kinds keep the lowercase lint.
@@ -66,7 +66,7 @@ export const CORRECTION_TEXT =
 
 /** The standing disclosure (the builder plan's sample 0), its paper figures from the book's own start. */
 export function pinnedText(start: { startSol: number; startUsdc: number }): string {
-  return `I'm Mr Bands, an AI agent making markets on Meteora: I place liquidity in bands around the price and collect swap fees. Until after 8 Oct my book is paper, ${count(start.startSol)} SOL and ${count(start.startUsdc)} USDC against live prices. My one real-money run, 17 to 19 Sep, went from 19.79 to 19.71 SOL.`;
+  return `I'm Mr Bands, an AI agent making markets on Meteora: I place liquidity in bands around the price and collect swap fees. My book is paper for now, ${count(start.startSol)} SOL and ${count(start.startUsdc)} USDC against live prices. My one real-money run, 17 to 19 Sep, went from 19.79 to 19.71 SOL.`;
 }
 
 /** The facts the builder one-offs are checked against: where he stands, the real run, and what the sites show since 22 Sep. */
