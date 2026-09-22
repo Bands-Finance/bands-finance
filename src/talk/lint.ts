@@ -8,10 +8,17 @@
  * deliberate over-reach: any mention of a seed phrase fails even as a warning; "going to" fails
  * anywhere; any cashtag that is not the disclosed house token fails.
  *
+ * The house token is $MRBANDS (docs/sprint.md): its symbols, its mint (TOKEN_MINT) and, always, a bare "$bands" in
+ * any case, since a reader cannot tell ours from the copycat's by the ticker. Any of them needs the disclosure and
+ * may never sit next to price, chart, cap, holders, volume, fee, value, a % or a $. The copycat's mint and its X
+ * handle (@MrBandsSol) may only appear in a sentence that says it is not his.
+ *
  * Matching runs on a normalized copy (lowercase, curly quotes straightened, hyphens and underscores
  * read as spaces, whitespace collapsed), so "Risk-Free" and "risk   free" both fail. The lowercase,
  * dash, length, link and invisible-character rules read the raw text.
  */
+
+import { COPYCAT_MINTS } from "../risk/house";
 
 export type LintRule =
   | "empty"
@@ -36,7 +43,8 @@ export type LintRule =
   | "tag-spam"
   | "cashtag"
   | "house-token-disclosure"
-  | "house-token-price";
+  | "house-token-price"
+  | "copycat";
 
 export interface LintViolation {
   rule: LintRule;
@@ -183,7 +191,7 @@ export const RETURN_TALK_PATTERNS: readonly Pat[] = [
 export const RISK_ACK_RE = /\bimpermanent loss\b|\bil\b|\brange risk\b|\bout of range\b|\bout the bands\b|\blosses\b|\bloss\b|\blost\b|\bred (strap|days?)\b|\brisk\b/;
 
 /** Disclosure that satisfies hard rule 6 when the house token is named. */
-export const DISCLOSURE_PHRASES: readonly string[] = ["disclosure:", "our token", "our own token", "operator launched", "launched by my operator", "my operator launched", "house token", "we launched", "i launched"];
+export const DISCLOSURE_PHRASES: readonly string[] = ["disclosure:", "our token", "our own token", "my own token", "operator launched", "launched by my operator", "my operator launched", "house token", "we launched", "i launched"];
 
 /** Price or return language that may never sit next to the house token, disclosure or not. */
 export const HOUSE_PRICE_PATTERNS: readonly Pat[] = [
@@ -192,6 +200,25 @@ export const HOUSE_PRICE_PATTERNS: readonly Pat[] = [
   p(/\bgains?\b|\bprofits?\b|\breturns?\b|\byield|\bapy\b|\bapr\b|\bearn|\bfees?\b/, "return talk"),
   p(/\b\d+(\.\d+)? ?%|\$ ?\d|\b\d+(\.\d+)?x\b/, "a number that reads as price or return"),
 ];
+
+/** Cashtags that always name the house token, whatever TALK_HOUSE_SYMBOLS says: $mrbands, and a bare $bands. */
+export const HOUSE_CASHTAGS: readonly string[] = ["mrbands", "bands"];
+
+/** The copycat's X handle, lowercased without "@" (its mint is COPYCAT_MINTS, src/risk/house.ts). */
+export const COPYCAT_HANDLES: readonly string[] = ["mrbandssol"];
+
+/**
+ * A sentence that says the copycat is not his: "not mine", "is not ours", "is not me", "not affiliated",
+ * "not by us", "nothing to do with me". The denial has to end its phrase (end of text, punctuation, or a
+ * following and/or/but), so "not my usual pick", "not our first stop" or "never me without a band" do not count.
+ */
+const WHO = "(?:me|us|him|my operator)";
+const PHRASE_END = "(?=\\s*(?:$|[^\\w\\s']|(?:and|or|but|nor)\\b))";
+export const NOT_HIS_RE = new RegExp(
+  `\\b(?:(?:not|isn't|aren't|wasn't|never) (?:mine|ours|his|official|affiliated(?: with ${WHO})?|(?:from|by) ${WHO})` +
+    `|(?:(?:is|are|was) not|isn't|aren't|wasn't) (?:me|us|him))${PHRASE_END}` +
+    `|\\bnothing to do with ${WHO}\\b`,
+);
 
 /** Hosts a link may point at (subdomains included). x.com only as x.com/<OPERATOR_HANDLE>. */
 export const LINK_ALLOWLIST: readonly string[] = ["bands.finance", "solscan.io", "meteora.ag"];
@@ -254,6 +281,7 @@ export function mentionsHouseToken(text: string, ctx: LintContext): string | nul
   const unlinked = text.replace(URL_RE, " ").replace(BARE_DOMAIN_RE, " ");
   const norm = normalizeForMatch(unlinked);
   for (const mint of ctx.houseMints ?? []) if (mint && text.includes(mint)) return mint;
+  for (const tag of HOUSE_CASHTAGS) if (new RegExp(`(^|[^\\w])\\$${tag}\\b`).test(norm)) return `$${tag}`;
   for (const raw of ctx.houseSymbols ?? []) {
     const s = escapeRe(raw.toLowerCase().replace(/^\$/, ""));
     if (!s) continue;
@@ -318,7 +346,7 @@ export function lintText(text: string, ctx: LintContext = {}): LintResult {
   const mentions = raw.match(/(^|[^\w])@\w{1,15}/g) ?? [];
   if (mentions.length > MAX_MENTIONS) v.push({ rule: "tag-spam", detail: `${mentions.length} mentions (max ${MAX_MENTIONS})` });
 
-  const house = new Set((ctx.houseSymbols ?? []).map((s) => s.toLowerCase().replace(/^\$/, "")));
+  const house = new Set([...HOUSE_CASHTAGS, ...(ctx.houseSymbols ?? []).map((s) => s.toLowerCase().replace(/^\$/, ""))]);
   for (const m of raw.matchAll(/(?:^|[^\w$])\$([a-z][a-z0-9_]{0,19})\b/gi)) {
     if (!house.has(m[1].toLowerCase())) v.push({ rule: "cashtag", detail: `cashtag $${m[1]}: only the disclosed house token may be cashtagged` });
   }
@@ -329,6 +357,12 @@ export function lintText(text: string, ctx: LintContext = {}): LintResult {
       v.push({ rule: "house-token-disclosure", detail: `names the house token (${named}) without a disclosure such as "disclosure:" or "our token"` });
     }
     scan(norm, HOUSE_PRICE_PATTERNS, "house-token-price", v);
+  }
+
+  // the copycat: its mint or its handle only in a sentence that says it is not his
+  for (const sentence of raw.split(/(?<=[.!?])\s+|\n+/)) {
+    const hit = COPYCAT_MINTS.find((m) => sentence.includes(m)) ?? COPYCAT_HANDLES.find((h) => new RegExp(`(^|[^\\w])@${h}\\b`, "i").test(sentence));
+    if (hit && !NOT_HIS_RE.test(normalizeForMatch(sentence))) v.push({ rule: "copycat", detail: `names the copycat (${hit}) without saying in the same sentence that it is not his` });
   }
 
   return { ok: v.length === 0, violations: v, length };

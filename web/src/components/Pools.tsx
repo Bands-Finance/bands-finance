@@ -143,7 +143,7 @@ export function Pools({ screen, status, now }: PoolsProps) {
   };
 
   if (!screen) {
-    return <div className="loading">The screener has not filed a scan yet. It runs every 15 minutes.</div>;
+    return <div className="loading">The screener has not filed a scan yet. It runs every half hour.</div>;
   }
 
   const venues = venuesOf(screen);

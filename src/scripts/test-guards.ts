@@ -9,6 +9,8 @@ import type { RiskLimits } from "../risk/limits";
 import type { RiskState } from "../risk/state";
 import type { Decision } from "../agent/schema";
 import { USDC_MINT, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
+import { COPYCAT_MINTS, houseMintsOf, housePoolViolation, houseSwapViolation } from "../risk/house";
+import { JupiterClient } from "../tools/jupiter";
 
 const limits: RiskLimits = {
   maxPositionSol: 0.5,
@@ -701,4 +703,89 @@ test("ask exit: the stop reads an ask band against its chain's basis", () => {
   assert.equal(banked.decision.action, "HOLD", "0.26 against a basis of 0.30 less 0.04 banked: whole");
 });
 
-console.log(`${n} guard tests passed (with portfolio, engine, stale-marks, USDC-quote, basis, straddle and ask-exit checks)`);
+// ---- H1: the desk never swaps its own token or the copycat's, and never seats a pool that holds either ----
+const HOUSE = "MRBANDSm1ntXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump";
+const COPYCAT = "JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m";
+const h1 = { house: [HOUSE], copycat: COPYCAT_MINTS };
+const housePool: PoolSnapshot = { ...snapshot, address: "housepool", label: "MRBANDS/SOL", tokenX: { ...snapshot.tokenX, mint: HOUSE, symbol: "MRBANDS" }, baseToken: { ...snapshot.baseToken, mint: HOUSE, symbol: "MRBANDS" } };
+
+test("H1: the house mint is TOKEN_MINT plus PAIR_HOUSE_MINTS, de-duplicated; empty until the token exists; the copycat is on the list", () => {
+  assert.deepEqual(houseMintsOf({}), []);
+  assert.deepEqual(houseMintsOf({ TOKEN_MINT: ` ${HOUSE} ` }), [HOUSE]);
+  assert.deepEqual(houseMintsOf({ TOKEN_MINT: HOUSE, PAIR_HOUSE_MINTS: `b, ${HOUSE}` }), [HOUSE, "b"]);
+  assert.deepEqual([...COPYCAT_MINTS], [COPYCAT]);
+});
+
+test("H1: any swap leg with the house mint in or out is refused, and the copycat's too; other legs pass", () => {
+  assert.match(houseSwapViolation("So11111111111111111111111111111111111111112", HOUSE, h1)!, /output is the house mint .*never swaps its own token/);
+  assert.match(houseSwapViolation(HOUSE, "So11111111111111111111111111111111111111112", h1)!, /input is the house mint/);
+  assert.match(houseSwapViolation(COPYCAT, "So11111111111111111111111111111111111111112", h1)!, /copycat token: .*not ours/);
+  assert.match(houseSwapViolation("So11111111111111111111111111111111111111112", COPYCAT, { house: [], copycat: COPYCAT_MINTS })!, /copycat/, "the copycat is refused before our token exists");
+  assert.equal(houseSwapViolation("ansem", "So11111111111111111111111111111111111111112", h1), null);
+  assert.equal(housePoolViolation({ address: "p", mints: ["ansem", "So11111111111111111111111111111111111111112"] }, h1), null);
+});
+
+test("H1: no band in the house token's pool, SOL_ONLY or a straddle with an acquire leg, the mint on either side; the verdict says why", () => {
+  const plain = evaluate(open(), ctx({ snapshot: housePool, untouchable: h1 }), limits);
+  assert.equal(plain.allowed, false);
+  assert.equal(plain.decision.action, "HOLD");
+  assert.ok(plain.violations.some((x) => /house token: MRBANDS\/SOL \(housepool\) holds the house mint/.test(x)), plain.violations.join("; "));
+  const withAcquire = evaluate(open({ side: "BOTH", amountSol: 0.2, amountToken: 10, acquireToken: 10, binsBelowActive: 5, binsAboveActive: 5 }), ctx({ snapshot: housePool, untouchable: h1 }), limits);
+  assert.ok(withAcquire.violations.some((x) => x.startsWith("house token:")), withAcquire.violations.join("; "));
+  // the house mint on the quote side of a pool is caught as well
+  const quoteSide: PoolSnapshot = { ...snapshot, tokenY: { ...snapshot.tokenY, mint: HOUSE } };
+  assert.ok(evaluate(open(), ctx({ snapshot: quoteSide, untouchable: h1 }), limits).violations.some((x) => x.startsWith("house token:")));
+  // the ordinary pool is untouched by the rule and says it passed
+  const fine = evaluate(open(), ctx({ untouchable: h1 }), limits);
+  assert.equal(fine.allowed, true, fine.violations.join("; "));
+  assert.ok(fine.passed.includes("house-token"));
+});
+
+test("H1: the copycat's pool is never seated either", () => {
+  const copyPool: PoolSnapshot = { ...snapshot, address: "copypool", label: "BANDS/SOL", tokenX: { ...snapshot.tokenX, mint: COPYCAT }, baseToken: { ...snapshot.baseToken, mint: COPYCAT } };
+  const v = evaluate(open(), ctx({ snapshot: copyPool, untouchable: { house: [], copycat: COPYCAT_MINTS } }), limits);
+  assert.equal(v.allowed, false);
+  assert.ok(v.violations.some((x) => /copycat token: BANDS\/SOL \(copypool\) .*not ours/.test(x)), v.violations.join("; "));
+});
+
+test("H1: the guard reads TOKEN_MINT from the environment when the context names no list; exits are not held by it", () => {
+  const before = process.env.TOKEN_MINT;
+  process.env.TOKEN_MINT = HOUSE;
+  try {
+    assert.ok(evaluate(open(), ctx({ snapshot: housePool }), limits).violations.some((x) => x.startsWith("house token:")));
+    const inHouse = { ...position, address: "hpos" };
+    const close = evaluate({ action: "CLOSE_POSITION", open: null, positionAddress: "hpos", reasoning: "test", confidence: 1, headline: "test" }, ctx({ snapshot: housePool, positions: [inHouse] }), limits);
+    assert.equal(close.allowed, true, close.violations.join("; "));
+  } finally {
+    if (before === undefined) delete process.env.TOKEN_MINT;
+    else process.env.TOKEN_MINT = before;
+  }
+});
+
+async function jupiterDoor(): Promise<void> {
+  const before = process.env.TOKEN_MINT;
+  process.env.TOKEN_MINT = HOUSE;
+  let calls = 0;
+  const client = new JupiterClient({ fetch: async () => (calls++, new Response("{}")), minGapMs: 0, maxRetries: 0 });
+  try {
+    await assert.rejects(client.quote({ inputMint: "So11111111111111111111111111111111111111112", outputMint: HOUSE, amount: 1000n }), /quote refused: house token: the swap's output is the house mint/);
+    await assert.rejects(client.quote({ inputMint: HOUSE, outputMint: "So11111111111111111111111111111111111111112", amount: 1000n }), /quote refused: house token: the swap's input/);
+    await assert.rejects(client.quote({ inputMint: COPYCAT, outputMint: "So11111111111111111111111111111111111111112", amount: 1000n }), /quote refused: copycat token/);
+    const fakeQuote = { inputMint: HOUSE, outputMint: "So11111111111111111111111111111111111111112", inAmount: 1n, outAmount: 1n, otherAmountThreshold: 1n, swapMode: "ExactIn" as const, slippageBps: 50, priceImpactPct: 0, routeLabels: [], raw: {} };
+    await assert.rejects(client.buildSwap(fakeQuote, "9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW"), /swap refused: house token/);
+    assert.equal(calls, 0, "refused before any request to Jupiter");
+  } finally {
+    if (before === undefined) delete process.env.TOKEN_MINT;
+    else process.env.TOKEN_MINT = before;
+  }
+  n += 1;
+  console.log(`ok ${n} - H1: the Jupiter door refuses a house or copycat leg on quote and on build, before any request`);
+}
+
+jupiterDoor().then(
+  () => console.log(`${n} guard tests passed (with portfolio, engine, stale-marks, USDC-quote, basis, straddle, ask-exit and house-token checks)`),
+  (err) => {
+    console.error(err);
+    process.exit(1);
+  },
+);

@@ -81,6 +81,7 @@ async function main(): Promise<void> {
   const proposals = await import("../platform/proposals.js");
   const mcp = await import("../platform/mcp/server.js");
   const rails = await import("../platform/railsRoutes.js");
+  const { platformRoutes } = await import("../platform/routes.js");
 
   assert.ok(dataPath("x").includes(TEST_DIR), `ledgers must land in ${TEST_DIR}, got ${dataPath("x")}`);
 
@@ -366,7 +367,7 @@ async function main(): Promise<void> {
     assert.equal(engine.parseSkillVersion("---\nname: x\nversion: 3\n---"), "3");
     assert.equal(engine.parseSkillVersion("no frontmatter"), "unknown");
     const skill = fs.readFileSync(path.resolve(process.cwd(), "skills/bands-engine/SKILL.md"), "utf8");
-    assert.equal(engine.parseSkillVersion(skill), "1");
+    assert.equal(engine.parseSkillVersion(skill), "2");
   });
 
   await test("validatePlanInput: shape, integers, finiteness", () => {
@@ -756,7 +757,7 @@ async function main(): Promise<void> {
     const skill = await app.request("/api/engine/skill", { headers: { authorization: bearer } });
     assert.equal(skill.status, 200);
     assert.match(skill.headers.get("content-type") ?? "", /text\/markdown/);
-    assert.equal(skill.headers.get("x-bands-skill-version"), "1");
+    assert.equal(skill.headers.get("x-bands-skill-version"), "2");
     assert.match(await skill.text(), /never holds your keys/);
     const badPlan = await app.request("/api/engine/plan", { method: "POST", headers: { authorization: bearer, "content-type": "application/json" }, body: JSON.stringify({ pool: "x" }) });
     assert.equal(badPlan.status, 400);
@@ -767,6 +768,29 @@ async function main(): Promise<void> {
     assert.equal(closed.status, 403);
     assert.deepEqual(await closed.json(), { ok: false, error: "engine access is not open yet" });
     process.env.ENGINE_OPEN = "true";
+  });
+
+  await test("the shipped skill names every account and engine route with the method the app serves", async () => {
+    // an agent follows SKILL.md to the letter: a GET where the app serves POST is a 404 before it ever signs in
+    const both = new Hono();
+    platformRoutes(both);
+    rails.railsRoutes(both);
+    const skill = fs.readFileSync(path.resolve(process.cwd(), "skills/bands-engine/SKILL.md"), "utf8");
+    const named = [...skill.matchAll(/`(GET|POST) (\/api\/(?:account|engine)\/[a-z/]+)/g)].map((m) => ({ method: m[1], path: m[2] }));
+    assert.ok(named.some((r) => r.method === "POST" && r.path === "/api/account/challenge"), "the challenge step is a POST");
+    assert.ok(named.length >= 8, `the skill names its routes (found ${named.length})`);
+    for (const r of named) {
+      const res = await both.request(r.path, { method: r.method, headers: { "content-type": "application/json" }, body: r.method === "POST" ? "{}" : undefined });
+      assert.notEqual(res.status, 404, `${r.method} ${r.path} is served`);
+    }
+    // GET /api/account/challenge is not a 404: it falls through to GET /api/account/:address and answers "invalid address".
+    // So the sign-in steps are checked by what they return, not by a status.
+    assert.ok(!named.some((r) => r.method === "GET" && r.path.startsWith("/api/account/")), "every sign-in step the skill names is a POST");
+    const wallet = Keypair.generate().publicKey.toBase58();
+    const posted = (await (await both.request("/api/account/challenge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ address: wallet }) })).json()) as { message?: string; nonce?: string };
+    assert.ok(posted.message && posted.nonce, "POST /api/account/challenge with { address } answers { message, nonce }");
+    const got = (await (await both.request(`/api/account/challenge?address=${wallet}`)).json()) as { nonce?: string };
+    assert.equal(got.nonce, undefined, "a GET never hands out a challenge");
   });
 
   await test("proposal routes: public board, session to propose, operator bearer to decide", async () => {

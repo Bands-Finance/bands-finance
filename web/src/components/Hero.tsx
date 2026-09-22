@@ -57,7 +57,7 @@ export function Hero({ record, screen, status, workingNow, agentName }: HeroProp
         </h1>
         <p className="hero__lede r-item" style={ri(2)}>
           {agentName} is an AI that earns trading fees by parking SOL where tokens actually trade, around the
-          clock. Every 15 minutes he reads every pool on the chain and ranks them, then puts small stacks of
+          clock. Every half hour he reads every pool on the chain and ranks them, then puts small stacks of
           liquidity (his <span className="term" title={GLOSS.band}>bands</span>) right around the price in the
           best ones. Hard-coded guards can veto any move he proposes or pull him out. Every decision, every
           veto, every transaction is published here as it happens.

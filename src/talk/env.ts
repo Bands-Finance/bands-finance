@@ -15,8 +15,10 @@
  *   TALK_FEE_MILESTONE_SOL   realized fees crossing a multiple of this is a milestone (default 1)
  *   TALK_CHOP_RANGE_PCT      a held pool whose price stayed inside this % range over the window is chop (default 2)
  *   TALK_CHOP_WINDOW_HOURS   the chop window (default 6)
- *   TALK_HOUSE_SYMBOLS       the house token's symbols for the disclosure lint (default "bands")
- *   PAIR_HOUSE_MINTS         the house token's mints (the desk's own key, read here for the lint; default none)
+ *   TALK_HOUSE_SYMBOLS       the house token's symbols for the disclosure lint (default "mrbands,bands"; a bare
+ *                            "$bands" and "$mrbands" count as the house token whatever this says, src/talk/lint.ts)
+ *   TOKEN_MINT               the house token's mint, $MRBANDS once launched (with PAIR_HOUSE_MINTS, which stays
+ *                            unset through 8 Oct; both read through src/risk/house.ts; default none)
  *   POSTS_PER_DAY            {{POSTS_PER_DAY}} original posts per UTC day (default 8)
  *   REPLIES_PER_HOUR         {{REPLIES_PER_HOUR}} replies per rolling hour (default 10)
  *   MAX_REPLIES_PER_ACCOUNT  {{MAX_REPLIES_PER_ACCOUNT}} replies to one account per UTC day (default 3)
@@ -30,6 +32,7 @@
  *                            which are missing; the values are read by xCredentials() inside src/talk/x.ts.
  */
 import path from "node:path";
+import { houseMintsOf } from "../risk/house";
 import { tradableVenues } from "../venues/env";
 
 /**
@@ -47,7 +50,7 @@ export const DEFAULT_MAX_BIT_USES_PER_WEEK = 3;
 export const DEFAULT_FEE_MILESTONE_SOL = 1;
 export const DEFAULT_CHOP_RANGE_PCT = 2;
 export const DEFAULT_CHOP_WINDOW_HOURS = 6;
-export const DEFAULT_HOUSE_SYMBOLS: readonly string[] = ["bands"];
+export const DEFAULT_HOUSE_SYMBOLS: readonly string[] = ["mrbands", "bands"];
 export const DEFAULT_CYCLE_INTERVAL_SEC = 300;
 
 export const X_CREDENTIAL_KEYS = ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET"] as const;
@@ -135,7 +138,7 @@ export function talkEnv(env: NodeJS.ProcessEnv = process.env, cwd: string = proc
     chopRangePct: num(env, "TALK_CHOP_RANGE_PCT", DEFAULT_CHOP_RANGE_PCT),
     chopWindowHours: num(env, "TALK_CHOP_WINDOW_HOURS", DEFAULT_CHOP_WINDOW_HOURS, 1e-9),
     houseSymbols: val(env, "TALK_HOUSE_SYMBOLS") === undefined ? [...DEFAULT_HOUSE_SYMBOLS] : list(env.TALK_HOUSE_SYMBOLS).map((s) => s.replace(/^\$/, "").toLowerCase()),
-    houseMints: list(env.PAIR_HOUSE_MINTS),
+    houseMints: houseMintsOf(env),
     postsPerDay: Math.floor(num(env, "POSTS_PER_DAY", DEFAULT_POSTS_PER_DAY)),
     repliesPerHour: Math.floor(num(env, "REPLIES_PER_HOUR", DEFAULT_REPLIES_PER_HOUR)),
     maxRepliesPerAccount: Math.floor(num(env, "MAX_REPLIES_PER_ACCOUNT", DEFAULT_MAX_REPLIES_PER_ACCOUNT)),

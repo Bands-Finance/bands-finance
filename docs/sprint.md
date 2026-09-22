@@ -6,8 +6,8 @@ docs/clawrena.md disagree, this file is newer.
 
 **The plan in one line.** Do the three entry steps first. Then Mr Bands, a market maker for tokenized stocks
 on Meteora, takes on each new role in public while the judges watch: trader from Mon 28 Sep, platform manager from Thu 1 Oct, teacher from Sun 4 Oct. His
-token, $MRBANDS, is a key that opens his tools. It pays nobody, it never opens his lessons, and the desk
-never touches it.
+token, $MRBANDS, is a key that opens his tools. It pays nobody who holds it: its creator fees go to his operator's
+treasury, which paid for the launch. It never opens his lessons, and the desk never touches it.
 
 **Decided by Zach, Tue 22 Sep.**
 - The copycat "Mr Bands" $BANDS (`JAARLU...pJ6m`, `@MrBandsSol`) is **not ours**: report it, and register first.
@@ -178,8 +178,7 @@ inventory, "never swaps it" is the whole rule.)
   profitable positions and teaches with fake SOL.
 
 **How he talks about it.** Every mention carries the disclosure, in code and linted: "my own token. i launched
-it myself. the desk holds none and never trades it. holding <mint> in a signed-in wallet opens the engine. it is
-not a share of anything and pays nobody." He names the mint, never a bare ticker, and says other $BANDS
+it myself. the desk holds none and never trades it. holding <mint> in a signed-in wallet opens the engine. not a share, it pays nobody who holds it, and its trades pay a cut to my operator's treasury." He names the mint, never a bare ticker, and says other $BANDS
 tokens are not his. He never puts a price, chart, cap, holders, volume, fee, % or $ next to it, never says buy,
 sell or early, never links it to the desk's P&L, and never names it in a lesson. Asked "should I buy it?": "I
 don't tell anyone what to buy. here is what it opens, and the lessons are free without it." He posts his own
@@ -195,7 +194,7 @@ announcements, not a hold-back: a judge who looks on 28 Sep should already find 
 Decided: no live money. So the scored record is what already happened, told straight, and the trader keeps
 working in public on paper.
 
-- **The real-money record, frozen and honest.** 17-19 Sep: 329 signed transactions, 0 errors, 0 guard
+- **The real-money record, frozen and honest.** 17-19 Sep: 293 signed transactions (295 with the hand close), 0 errors, 0 guard
   violations, every decision journalled. Fees claimed against a book that finished down. "Fees are not profit"
   on mrbands.finance, from the equity series only (see "One headline number").
 - **The paper desk, trading in public**, clearly labelled paper: it already runs alone (breakers that survive a
@@ -296,17 +295,64 @@ price knobs, the position watcher.
 - **Split the work by owner.** Zach's list each morning is keys, money and accounts. Code waits on it, not the
   other way round.
 
-## One headline number (settle before anything posts)
+## One headline number (settled 22 Sep)
 
-The sources disagree, and a judge who adds them up will notice:
-- Fees claimed on 17-19 Sep: 7.91 SOL in 111 claims (the earlier brief) against 6.60 SOL in 110 claims
-  (recomputed from web/public/live-run.json at claim-time value).
-- Net: the book went 19.79 to 19.68 SOL (about -0.11; -0.18 on another cut) against the per-seat lessons, which
-  sum to +1.12 SOL (+0.65 on the 56 live seats). The open band at the end and the tokens left over are the
-  likely gap.
+`npm run record` (src/scripts/record.ts, read-only) recomputes all of it from data-mainnet and
+web/public/live-run.json, and its walk from the per-seat sum to the cash closes to the last 0.0000 SOL.
 
-Until it is reconciled, public figures come from the equity series and nothing else, and the casebook prints
-the gap if it can't be closed.
+**The figures every page and post uses, for the real-money run of 17-19 Sep:**
+- **Fees: 7.91 SOL**, realised to the wallet in 111 claims and the fee legs of 52 closes, each valued at
+  its own mark when it landed. Source: data-mainnet/ledger.jsonl (`feeSol` on collect and close rows);
+  equity.jsonl's last `feesClaimedSol` says the same to the hundredth. About 3.27 SOL of it came as tokens,
+  sold later at whatever they fetched, so it is a fee figure, never a profit figure.
+- **Net: -0.08 SOL.** The book went from 19.79 SOL to 19.71 SOL, all SOL once the last band was closed and
+  its tokens sold (19 Sep 01:44Z), before the withdrawal's own account rent and transfer. At its best
+  23.50 (18 Sep 06:13Z), at its worst 19.29 (17 Sep 13:31Z). Source: data-mainnet/ledger.jsonl, every live
+  row's cash summed from the start in data-mainnet/equity.jsonl. Why this and not the site's -0.11: the
+  equity series' last mark (19.68, 19 Sep 01:40Z) still had 3.18 SOL in an open band at its mark; the
+  ledger has that band closed. The two cuts are the same book 4 minutes apart, and the ledger matches the
+  wallet read to 0.0000 SOL at all three moments the book was all cash (17 Sep 12:44Z, 18 Sep 22:28Z,
+  19 Sep 00:51Z). If a page shows the marks instead, it says "19.68 at the last mark, with 3.18 SOL still
+  in a band".
+
+**Why the per-seat sum says +1.12 and the book -0.08**, line by line (SOL):
+
+| | |
+|---|---|
+| +1.12 | the per-seat sum as lessons.jsonl holds it (59 seats; +0.65 on the 56 tagged live, +0.47 on 3 written before the tag). Recomputing every lesson with today's accounting changes none of them. |
+| -9.79 | tokens a seat handed back and left unsold, counted in its net at its close's mark (43 seats). Value, not cash. |
+| +7.43 | the next seat re-laid 7.43 SOL of them (at its open's mark) and was charged for them (4 seats) |
+| +0.61 | swap cash from selling leftovers beyond any one seat's share (18 swap rows) |
+| (-1.75) | so the three lines above net to -1.75: leftover tokens were counted at 9.79 and were worth 8.04 when re-laid or sold. That is the per-seat sum's overstatement. |
+| +0.64 | the 8 seats opened before lessons were kept (17 Sep 10:34Z to 13:26Z), with their share of the swaps: never in the per-seat sum |
+| -0.08 | the band open when the desk stopped (19 Sep 01:19Z to 01:44Z, closed by hand): no lesson |
+| **-0.08** | **the ledger's cash change: 19.79 to 19.71** (unexplained 0.0000) |
+
+So the gap closes. The per-seat sum is right for comparing seats and wrong for adding up: it values
+leftover tokens at the close's mark and they fell before they were sold. The casebook shows per-seat nets
+beside this total and says so; it never sums them into a result.
+
+Retired: 6.60 SOL in 110 claims (the journal's pending-fee estimate over the site's claim rows, one claim
+short, and without the close fee legs); "7.91 SOL in 111 claims" (the figure is right, but it is 111 claims
+plus the fee legs of 52 closes); -0.18 matches no cut from start to end (the book's first five minutes
+went 19.79 to 19.61, when the stock halves were bought and marked at the pool).
+
+**What the site shows, checked against this** (fixed on 22 Sep in sprint-day1; `npm run record` now
+prints every row as agreeing, and test-web-model pins the shipped file to these figures):
+- **Net:** web/public/live-run.json carries a `settled` block (19.7125 SOL at 19 Sep 01:44Z, fees 7.9126,
+  3.2691 of them as tokens, from the ledger), and LiveRun.tsx states it: "Stopped with 19.71", -0.08, with
+  the last mark (19.68, a band still open) named in the note. The chart still ends on the last mark.
+- **Claims 111, moves 205, transactions 293:** the missing GP/SOL claim of 18 Sep 00:58:36Z is in the file.
+  It had been left out because its sweep leg (selling the leftover GP) failed in simulation while the claim
+  itself landed; web/src/model.ts `verdictOf` now calls a move placed when the desk reports it ok and a leg
+  signed, and failed only when the desk reports it not ok.
+- **Failed 4:** the journal's 4 moves the desk reported not ok (2 re-lays, 1 claim, 1 open). The fifth the old
+  file counted was that claim's sweep leg. Role 1's "0 errors" still needs to say what it counts before it
+  is posted.
+- **The sentence** now reads "He earned 7.91 SOL in fees over those 39 hours, each valued when it was
+  claimed, and about 3.27 of it came as tokens, sold later for what they fetched", and the figure is
+  labelled "Fees earned ... Fees, not profit."
+- Start 19.79, peak 23.50, low 19.29, 39 hours: agree.
 
 ## Decisions (Zach, Tue 22 Sep)
 

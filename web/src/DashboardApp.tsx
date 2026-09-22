@@ -109,7 +109,7 @@ export default function DashboardApp() {
           {
             id: "holds", station: "vault", side: "right", eyebrow: "What he holds", line1: "Nothing,", line2: "this minute.",
             body: <><p>No band is open. He only lays one when a pool's fees are worth the rent and the risk. Until then his SOL is stacked by the hat.</p>{book.lastExit && <p>His last exit: “{book.lastExit.headline}”</p>}</>,
-            figure: record ? { value: `${num(record.equityNow)} SOL`, label: "waiting in his wallet" } : null,
+            figure: record ? { value: `${num(record.equityNow)} SOL`, label: status.mode === "paper" ? "waiting in his paper wallet" : "waiting in his wallet" } : null,
           } satisfies Beat,
         ];
 
@@ -133,7 +133,7 @@ export default function DashboardApp() {
       {
         id: "lays", station: "rows", side: "left", frame: { x: 0.2, y: 0.08 }, eyebrow: "The band", line1: "He lays SOL", line2: "under the price.",
         body: nBands ? <><p>A band is a row of price bins. In each bin under the market he leaves SOL, offered to anyone who wants to sell him the token there.</p><p>Each strapped bundle on the desk is one bin of his SOL.</p></> : <><p>A band is a row of price bins with his SOL laid in them. He holds none right now.</p><p>His SOL is stacked by the hat until a pool is worth it.</p></>,
-        figure: record ? (nBands ? { value: `${num(record.atWork)} SOL`, label: `at work in ${nBands} band${nBands === 1 ? "" : "s"}, ${bins} bins in all` } : { value: `${num(record.equityNow)} SOL`, label: "waiting in his wallet" }) : null,
+        figure: record ? (nBands ? { value: `${num(record.atWork)} SOL`, label: `at work in ${nBands} band${nBands === 1 ? "" : "s"}, ${bins} bins in all` } : { value: `${num(record.equityNow)} SOL`, label: status.mode === "paper" ? "waiting in his paper wallet" : "waiting in his wallet" }) : null,
       },
       // the sheets come straight after the band they describe: lay, hold, cross, paid. It also keeps the camera on the
       // tray side of the desk (rows -> row0 -> row1) before the long walk round to the cursor and the dish.
@@ -155,7 +155,7 @@ export default function DashboardApp() {
         ? [{
             // "paid" only once something has been claimed; until then the fees are earned and still in the bands, and the
             // headline says so rather than sit over a "Claimed +0"
-            id: "made", station: "chart", side: "left", wide: true, eyebrow: "What he made", line1: "He has earned", line2: record.feesRealized < 0.0005 ? `${num(feesAll)} SOL, unclaimed.` : `${num(feesAll)} SOL in fees.`,
+            id: "made", station: "chart", side: "left", wide: true, eyebrow: status.mode === "paper" ? "What he made on paper" : "What he made", line1: "He has earned", line2: record.feesRealized < 0.0005 ? `${num(feesAll)} SOL, unclaimed.` : `${num(feesAll)} SOL in fees.`,
             content: <MadeBlock record={record} solPriceUsd={solPriceUsd} now={now} chart={chart} />,
           } satisfies Beat]
         : []),
@@ -184,15 +184,16 @@ export default function DashboardApp() {
           } satisfies Beat]
         : []),
       {
-        // the ask, at the cigar hand (a station the desk already carries, unused until now). All of it is true today: the
-        // tools and the x402 payments are built and served at bands.finance/#/agents; the token is announced for the
-        // Clawrena and not minted, so it is "coming", never "trading", and whenever it is named so is its owner
-        // (docs/mr-bands-agent.md, hard rule 6). The ClawPump and X links print only once those pages exist (site.ts).
-        id: "hire", station: "hands", side: "left", frame: { x: 0.04, y: 0.06 }, frameTall: { x: 0.04, y: 0.12 }, eyebrow: "For hire", line1: "He is for hire,", line2: "by the call.",
-        body: <><p>Other agents can rent what he works with: his screener, his pool reads and his reasoning, served over MCP. A paid call names its price in USDC, the agent pays over x402, and the data comes back. No account, no key.</p><p>His token, $BANDS, is coming to ClawPump for the AnsemHack Clawrena. It is his operator's token, and he does not call its price.</p></>,
+        // the ask, at the cigar hand (a station the desk already carries). Only what is true today: his tools are built and
+        // served over MCP on his own host, the public door at bands.finance is not open yet, and no call is paid for (the x402
+        // gate is not taking real payments). The token is announced for the Clawrena and not minted, so it is "coming", never
+        // "trading"; whenever it is named so is its owner, and the copycat $BANDS is named as not his (docs/sprint.md;
+        // docs/mr-bands-agent.md, hard rule 6). The ClawPump and X links print only once those pages exist (site.ts).
+        id: "hire", station: "hands", side: "left", frame: { x: 0.04, y: 0.06 }, frameTall: { x: 0.04, y: 0.12 }, eyebrow: "For other agents", line1: "His tools,", line2: "soon for yours.",
+        body: <><p>What he works with is built as tools other agents can call: his screener, his pool reads and the guards that judge a band. Today they are served over MCP on his own machine. The public door at bands.finance opens during the AnsemHack Clawrena, and nothing is sold until it does.</p><p>His token, $MRBANDS, is coming to ClawPump for the Clawrena. It is his operator's token, not a share of anything. It pays holders nothing, and its creator fees go to his operator's treasury. The desk will hold none and never trade it, and he does not call its price. Any $BANDS on pump.fun is not his.</p></>,
         links: [
-          { href: `${PLATFORM_URL}/#/learn`, label: "Rent him over MCP", external: true },
-          ...(TOKEN_URL ? [{ href: TOKEN_URL, label: "$BANDS on ClawPump", external: true }] : []),
+          { href: `${PLATFORM_URL}/#/learn`, label: "His tools", external: true },
+          ...(TOKEN_URL ? [{ href: TOKEN_URL, label: "$MRBANDS on ClawPump", external: true }] : []),
           ...(X_URL ? [{ href: X_URL, label: "Follow him on X", external: true }] : []),
           { href: "https://github.com/louz514/bands-finance", label: "The code", external: true },
         ],

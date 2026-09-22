@@ -260,7 +260,7 @@ function DeskInner({ entries, status, limits, screen, agentName, id }: DeskProps
 
         <div className="term__body" ref={bodyRef}>
           <p className="term__boot">
-            {agentId} v0.1 · strategy: concentrated-liquidity <Gloss term="band">bands</Gloss> · venue: Meteora DLMM (Solana) · decides every 5 min per pool · screens every pool every 15 min · mode:{" "}
+            {agentId} v0.1 · strategy: concentrated-liquidity <Gloss term="band">bands</Gloss> · venue: Meteora DLMM (Solana) · decides every 5 min per pool · screens every pool every 30 min · mode:{" "}
             {status.mode === "dry-run" ? <Gloss term="dryRun">{status.short}</Gloss> : status.mode === "paper" ? <Gloss term="paper">{status.short}</Gloss> : demo ? <Gloss term="demo">{status.short}</Gloss> : status.short}
           </p>
 
