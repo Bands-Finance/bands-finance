@@ -120,14 +120,11 @@ export function Record({ record, solPriceUsd, status, agentName, compact = false
         <details className="pnl__how">
           <summary>How this is computed</summary>
           <p>
-            {agentName} puts SOL into a narrow slice of price in a pool. Every trade that crosses that slice pays the pool's fee,
-            and he gets his share. ‘At work’ is SOL sitting in bands, marked to the pool's current price, so it breathes with the
-            market; ‘wallet’ is SOL already back in hand. ‘Rent’ is what Solana charges to keep a band open, about 0.06 SOL,
-            refunded when it closes. Fees only go up. The market line breathes. Every figure comes from the journal his own loop
-            writes; in a live run every action links to its transaction.
+            ‘At work’ is SOL in bands, marked to the pool's price. ‘Wallet’ is SOL back in hand. ‘Rent’ is what Solana
+            charges to keep a band open, refunded when it closes. Every figure is from his journal.
           </p>
           {record.anySimulated && (
-            <p>In a dry run the transactions are built and simulated, never sent, so these fees are what he would have earned.</p>
+            <p>In a dry run nothing is sent, so these fees are what he would have earned.</p>
           )}
         </details>
         <span className="pnl__links">
@@ -261,8 +258,8 @@ function EarningsChart({ points, feesUnclaimed, solPriceUsd, agentName }: { poin
           <span className="pnl__chart-substat">nothing claimed yet</span>
         </div>
         <span className="pnl__chart-label">
-          No fees claimed yet. The chart draws on the first claim.
-          {feesUnclaimed > 0 ? ` ${feeSol(feesUnclaimed)} is waiting inside open bands, earned trade by trade and not yet claimed.` : ""}
+          No fees claimed yet.
+          {feesUnclaimed > 0 ? ` ${feeSol(feesUnclaimed)} is waiting inside open bands.` : ""}
         </span>
       </div>
     );
@@ -444,13 +441,12 @@ function EarningsChart({ points, feesUnclaimed, solPriceUsd, agentName }: { poin
         )}
       </svg>
       <span className="pnl__chart-label pnl__chart-label--why">
-        cumulative fees {agentName} has claimed, from the journal his own loop writes. the curve never rises above a claim that
-        has not happened; every dot is one claim, sized by amount · click a dot to open its transaction on Solscan when the
-        journal holds the signature{anySim ? " · simulated claims are drawn hollow" : ""}
+        fees {agentName} has claimed, from his journal. every dot is one claim, sized by amount · click a dot for its
+        transaction{anySim ? " · simulated claims are drawn hollow" : ""}
       </span>
       <span className="pnl__chart-label">
         last 24h: {plural(claims24, "claim")}, {plusFee(last24)}
-        {feesUnclaimed > 0 ? ` · ${feeSol(feesUnclaimed)} waiting inside open bands, earned trade by trade and not yet claimed` : ""}
+        {feesUnclaimed > 0 ? ` · ${feeSol(feesUnclaimed)} waiting inside open bands` : ""}
       </span>
     </div>
   );
@@ -514,9 +510,7 @@ function ConsistencyBoard({ days, feesRealized, solPriceUsd }: { days: DayRow[];
         </table>
       </div>
       <span className="pnl__chart-label pnl__chart-label--why">
-        days roll at midnight UTC, the journal's clock. fees are income and cannot retrace; the book breathes with the market.
-        Red is printed as plainly as green. A band the price walks through ends the day holding the token that fell; that shows
-        up here, unedited.
+        days roll at midnight UTC. fees cannot retrace; the book breathes with the market. Red is printed as plainly as green.
       </span>
     </div>
   );

@@ -32,9 +32,9 @@ export function MadePairs({ pairs, status, agentName }: MadePairsProps) {
         </span>
       </div>
       <p className="livepos__gloss">
-        // pools {agentName} created himself on Meteora DLMM for a token he judged worth one, and seated his own liquidity in · the
-        ‘share’ is a routing model: the slice of the token's existing flow for which his pool is the cheaper route, by trade size
-        {paper ? " · on paper the pool is virtual and its fees are the model's figure, not fills" : ""}
+        // pools {agentName} created on Meteora DLMM and seated his own liquidity in · ‘share’ is the slice of the token's flow
+        for which his pool is the cheaper route
+        {paper ? " · on paper the pool is virtual and its fees are modelled, not filled" : ""}
       </p>
       <div className="livepos__grid">
         {pairs.map((p) => (
@@ -50,7 +50,7 @@ export function MadePairs({ pairs, status, agentName }: MadePairsProps) {
               <div><dt>bins</dt><dd>{(p.binStep / 100).toFixed(2)}% each</dd></div>
               <div><dt>seat</dt><dd>up to {solFmt(p.seatCapSol, 1)}</dd></div>
               <div><dt>rent</dt><dd>{p.rentSol > 0 ? `${solFmt(p.rentSol)} to make it` : "paid"}</dd></div>
-              <div><dt>share</dt><dd title="the routing model's share of the reference pool's flow, after the split with any competing concentrated pool">{pct(p.routedShare)}{p.competingDepthUsd > 0 ? ` (${pct(p.routedShareGross)} alone)` : ""}</dd></div>
+              <div><dt>share</dt><dd title="his pool's share of the token's flow, after any competing concentrated pool">{pct(p.routedShare)}{p.competingDepthUsd > 0 ? ` (${pct(p.routedShareGross)} alone)` : ""}</dd></div>
               <div><dt>vs</dt><dd>{venueWord(p.refVenue)}{p.refLiquidityUsd !== null ? `, ${usd(p.refLiquidityUsd)} deep` : ""}</dd></div>
             </dl>
             <p className="madepairs__now">
@@ -70,10 +70,8 @@ export function MadePairs({ pairs, status, agentName }: MadePairsProps) {
         ))}
       </div>
       <p className="livepos__foot">
-        A pool of his own pays him every fee it earns while nobody else is in it. A constant-product pool spreads its depth over every
-        price; a few bins at the current price are deeper in range, so routers send trades his way even at a higher fee. The catch is
-        the mirror image: when the token falls, his liquidity is the first thing the sells hit, which is why a made pool carries a
-        tighter stop and, for a launch, a maximum hold.
+        A pool of his own pays him every fee while nobody else is in it. When the token falls his liquidity is the first thing
+        the sells hit, so a made pool carries a tighter stop.
       </p>
     </section>
   );

@@ -194,7 +194,7 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
   const dot = agent.state === "error" ? "offline" : agent.state === "ready" ? "live" : "connecting";
   const thinking = agent.state === "thinking";
   const creditsLabel =
-    agent.credits === null ? null : agent.creditsInfo?.enforced ? `${agent.credits} credit${agent.credits === 1 ? "" : "s"}` : `${agent.credits} credits · free right now`;
+    agent.credits === null ? null : agent.creditsInfo?.enforced ? `${agent.credits} credit${agent.credits === 1 ? "" : "s"}` : `${agent.credits} credits · free`;
 
   return (
     <>
@@ -229,7 +229,7 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
         <div className="term__body" ref={bodyRef}>
           <p className="term__boot">
             {agent.name} · keyed to {who} · reads his desk · holds no key, moves nothing · messages
-            {agent.creditsInfo?.enforced ? " cost 1 credit" : " are free right now"} · commands are free
+            {agent.creditsInfo?.enforced ? " cost 1 credit" : " are free"} · commands are free
           </p>
 
           {agent.state === "provisioning" && <p className="term__line term__line--dim">// setting up your mr bands…</p>}

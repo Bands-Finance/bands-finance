@@ -52,8 +52,7 @@ export function Holdings({ book, screen, status, now, agentName, flows }: Holdin
   if (bands.length === 0) {
     return (
       <p className="hold__flat">
-        Flat. No band on the book this minute. {agentName} only opens one when a pool's fees are worth the rent and the risk; until
-        then he sits in SOL.
+        Flat. No band on the book. {agentName} opens one only when the fees are worth the rent and the risk.
         {book.lastExit ? ` Last exit ${ago(book.lastExit.ts, now)}: “${book.lastExit.headline}”.` : ""}
       </p>
     );

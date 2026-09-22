@@ -158,7 +158,7 @@ export function TryIt() {
       <div className="tryit__head r-item" style={ri(0)}>
         <span className="eyebrow tryit__eyebrow">Try it · nothing to connect</span>
         <h2 className="tryit__title">Read the board yourself.</h2>
-        <p className="tryit__sub">Pick one and run it: a real read of the same files Mr Bands works from. No wallet, no sign-up, no charge.</p>
+        <p className="tryit__sub">A real read of the files Mr Bands works from. No wallet, no sign-up.</p>
       </div>
 
       <div className="tryit__panel r-item" style={ri(1)}>
@@ -192,8 +192,8 @@ export function TryIt() {
       </div>
 
       <p className="tryit__fine r-item" style={ri(2)}>
-        That was a real read. <strong>Every number on this site comes from these three sources</strong>, and you can call them from anywhere:{" "}
-        <span className="tryit__402">/api/screen</span>, <span className="tryit__402">/api/journal</span>, <span className="tryit__402">/api/limits</span> (or the bundled snapshots). Want the full record? The journal is one JSON line per decision.
+        <strong>Every number on this site comes from these three sources</strong>:{" "}
+        <span className="tryit__402">/api/screen</span>, <span className="tryit__402">/api/journal</span>, <span className="tryit__402">/api/limits</span>. The journal is one JSON line per decision.
       </p>
     </section>
   );

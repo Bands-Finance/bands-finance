@@ -49,25 +49,22 @@ export function Book({ book, status, agentName, compact = false }: BookProps) {
   const waiting = bands.reduce((s, b) => s + b.fees, 0);
 
   return (
-    <section className="livepos" aria-label={`Bands ${agentName} holds right now`}>
+    <section className="livepos" aria-label={`Bands ${agentName} holds`}>
       <div className="livepos__head">
-        <h2 className="livepos__title">Bands on the book, right now</h2>
+        <h2 className="livepos__title">Bands on the book</h2>
         <span className={`livepos__pulse ${pulse.cls}`} title={pulse.gloss}>{pulse.word}</span>
         {book.asOf !== null && <span className="livepos__asof">as of {ago(book.asOf, now)}</span>}
       </div>
       {!compact && <p className="livepos__gloss">
-        // every band {agentName} holds this second, from the newest cycle in the journal · a ‘<span className="term" title={GLOSS.band}>band</span>’ is a slice of
-        price he has put SOL into · ‘<span className="term" title={GLOSS.inRange}>in range</span>’ means the current price is inside it, so every trade pays
-        him · ‘out by 3 <span className="term" title={GLOSS.bin}>bins</span>’ means the price walked out and it earns nothing until it comes back or he
-        moves it
+        // every <span className="term" title={GLOSS.band}>band</span> {agentName} holds, from the newest cycle in the journal · ‘<span className="term" title={GLOSS.inRange}>in range</span>’
+        means the price is inside it and it earns · ‘out by 3 <span className="term" title={GLOSS.bin}>bins</span>’ means it earns nothing until the price comes back
       </p>}
 
       {bands.length === 0 ? (
         <p className="livepos__flat">
-          Flat. No band on the book this minute. {agentName} only opens a band when a pool's fees are worth the rent and the risk;
-          when they aren't, he sits in SOL and waits.
+          Flat. No band on the book. {agentName} opens one only when the fees are worth the rent and the risk.
           {book.lastExit ? ` Last exit: ${ACTION_PAST[book.lastExit.action]} ${ago(book.lastExit.ts, now)}, “${book.lastExit.headline}”.` : ""}
-          {" "}Flat is a decision, and you are seeing it unedited.
+          {" "}Flat is a decision.
         </p>
       ) : (
         <div className="livepos__grid">
@@ -79,16 +76,13 @@ export function Book({ book, status, agentName, compact = false }: BookProps) {
 
       {!compact && bands.length > 0 && (
         <p className="livepos__foot">
-          Each band holds SOL (or the token) in a slice of price, earning the pool's fee on every trade through it while the dot
-          stays inside the bar. Below the band, his SOL is slowly swapped into the token as the price falls; above it, the token
-          is swapped back to SOL as the price rises. The ledger separates the two forces on the money: what the token's price did
-          to what he holds, and what fees earned back. Fees only go up; the market line breathes.
+          Each band earns the pool's fee on every trade while the dot stays inside the bar. Below the band his SOL buys the token
+          as the price falls; above it the token sells back to SOL as the price rises.
         </p>
       )}
       {!compact && bands.length > 0 && waiting > 0 && (
         <p className="livepos__foot">
-          <strong>{feeSol(waiting)}</strong> of fees is sitting inside these bands, earned trade by trade and not yet claimed.
-          Claiming is one of his decisions; the journal shows when he makes it.
+          <strong>{feeSol(waiting)}</strong> of fees is waiting inside these bands, not yet claimed.
         </p>
       )}
       {!compact && <p className="livepos__foot">{status.sentence}</p>}

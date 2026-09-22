@@ -87,14 +87,14 @@ export function HotNow({ hot: given, refreshSec = 120, now }: HotNowProps) {
   const at = now ?? Date.now();
 
   return (
-    <section className="hot reveal" id="hot" ref={ref} aria-label="Hot right now">
+    <section className="hot reveal" id="hot" ref={ref} aria-label="Hot now">
       <div className="hot__head r-item">
         <div>
-          <span className="eyebrow">Hot right now · every 2 minutes · last tick {ago(hot.generatedAt, at)}</span>
+          <span className="eyebrow">Hot now · every 2 minutes · last tick {ago(hot.generatedAt, at)}</span>
           <h2 className="hot__title">Where the fees are this hour.</h2>
         </div>
         <p className="hot__sub">
-          The screener ranks a day; this watches the hour. Volume from the last five and sixty minutes, fee yield per dollar of liquidity, the pools running ahead of their own daily pace.
+          The screener ranks a day; this watches the hour. Volume in the last five and sixty minutes, fee yield per dollar, and the pools ahead of their daily pace.
           {surges > 0 && (
             <>
               {" "}
@@ -182,7 +182,7 @@ export function HotNow({ hot: given, refreshSec = 120, now }: HotNowProps) {
       </ol>
 
       <p className="hot__gloss r-item">
-        <b>Fee yield last hour</b>: what a dollar in the pool earned in the last 60 minutes; the <b>daily pace</b> is that times 24. <b>Accel</b> is the hour against the day's hourly pace. Flags: <b>new</b> = under 12 hours old, kept off the tradable list · <b>dumping</b> = mostly sells and a falling price · <b>wild</b> = more than 15% moved in the hour · <b>fading</b> = the last five minutes went quiet · <b>fee-unknown</b> = ordered by turnover, nobody reported the fee. <b>SURGE</b> = the daily pace crossed 5% with the hour running at twice the day, or the pool broke into the top ten for the first time in six hours.
+        <b>Fee yield last hour</b>: what a dollar in the pool earned in 60 minutes; <b>daily pace</b> is that times 24. <b>Accel</b>: the hour against the day's pace. <b>new</b>: under 12 hours old, not tradable · <b>dumping</b>: mostly sells, price falling · <b>wild</b>: moved over 15% in the hour · <b>fading</b>: the last five minutes went quiet · <b>fee-unknown</b>: ordered by turnover. <b>SURGE</b>: daily pace over 5% with the hour at twice the day, or new to the top ten.
       </p>
     </section>
   );
