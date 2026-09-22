@@ -3,7 +3,8 @@
   Mr Bands, running continuously as a PAPER desk: real pools, live prices, a pretend wallet of
   100 SOL + 10,000 USDC. Nothing is broadcast (DRY_RUN stays on and PAPER_SOL refuses to run
   with it off). After each screen the loop pushes a snapshot to bands.finance, at most every
-  30 minutes, so the site shows what the desk is doing.
+  30 minutes, for the market data and the site's code: its own book never reaches the site
+  (SNAPSHOT_BOOK=none below).
 
   Install:  cp ops/com.bands.mrbands.paper.plist ~/Library/LaunchAgents/
             launchctl load ~/Library/LaunchAgents/com.bands.mrbands.paper.plist
@@ -58,6 +59,12 @@
     <key>SCREEN_INTERVAL_SEC</key><string>1800</string>
     <key>AUTO_DEPLOY</key><string>true</string>
     <key>AUTO_DEPLOY_MIN_MINUTES</key><string>30</string>
+    <!-- The sites show only his real-money record (Zach, 22 Sep: "can we clean all the paper trading data from the
+         website please"). This desk still redeploys them, but its snapshot writes NO book: journal.json and
+         equity.json go out empty, learned.json is read from the real seats in data-mainnet, and the screener and
+         the hot watch (market data) ship as before (src/publish/snapshot.ts). none is also the default on a paper
+         book; it is spelled out here so nobody flips it by accident. Never set it to paper on this desk. -->
+    <key>SNAPSHOT_BOOK</key><string>none</string>
     <key>HEDGE_MIN_REBALANCE_USD</key><string>5</string>
     <key>PAIR_SEAT_PCT</key><string>20</string>
     <key>PAIR_QUOTE</key><string>USDC</string>
