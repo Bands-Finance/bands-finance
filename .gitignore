@@ -28,6 +28,7 @@ data-live/
 data-paper-stock/
 web/dist-dash/
 data-mainnet/
+data-talk/
 
 # Blender backup saves
 *.blend1

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mr Bands' posting loop: every 15 minutes one tick of src/talk/tick.ts reads the paper desk (data-live) and
+  picks at most one post (a band closed or opened, a strap change, a fee milestone, the daily numbers, a lesson
+  from a closed seat, the Monday stack), vets it through the lint, and hands it to src/talk/x.ts. It does not
+  reply to anyone and does not read mentions. It never trades.
+
+  POSTING IS OFF in this file. There is no X_LIVE here, so every tick only appends a draft to
+  data-talk/x-drafts.jsonl (and a dry record to data-talk/x-posts.jsonl). Nothing reaches X.
+
+  Install:  mkdir -p data-talk
+            cp ops/com.bands.mrbands.talk.plist ~/Library/LaunchAgents/
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bands.mrbands.talk.plist
+  Stop:     launchctl bootout gui/$(id -u)/com.bands.mrbands.talk
+  Halt now: touch data-talk/TALK_STOP   (the next tick, and any tick about to post, stops; rm it to resume)
+  Watch:    tail -f data-talk/talk.log   ·   drafts: data-talk/x-drafts.jsonl
+  One tick by hand:  DATA_DIR=data-live TALK_STATE_PATH=data-talk npx tsx src/scripts/talk.ts tick
+
+  Going live, in order:
+    1. Put X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET, X_HANDLE and OPERATOR_HANDLE in .env
+       (the scripts load .env from the repo; keys never go in this file).
+    2. npx tsx src/scripts/talk.ts check   (a read: prints the handle the keys sign in as and whether it is X_HANDLE)
+    3. Read a day of data-talk/x-drafts.jsonl.
+    4. Add X_LIVE=true to .env, or uncomment the X_LIVE pair below and bootout + bootstrap this job.
+       Only the literal "true" turns posting on. To turn it off again, remove it (or touch data-talk/TALK_STOP).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.bands.mrbands.talk</string>
+  <key>WorkingDirectory</key><string>/Users/zach/Bands.Finance/mr-bands</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/npx</string>
+    <string>tsx</string>
+    <string>src/scripts/talk.ts</string>
+    <string>tick</string>
+  </array>
+  <key>StartInterval</key><integer>900</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-talk/talk.log</string>
+  <key>StandardErrorPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-talk/talk.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string>
+    <key>DATA_DIR</key><string>data-live</string>
+    <key>TALK_STATE_PATH</key><string>data-talk</string>
+    <!-- the paper desk's cycle: data older than 3 cycles (15 min) is stale and nothing about positions goes out -->
+    <key>CYCLE_INTERVAL_SEC</key><string>300</string>
+    <key>TALK_VENUES</key><string>meteora dlmm</string>
+    <!-- going live (step 4 above): uncomment this pair.
+    <key>X_LIVE</key><string>true</string>
+    -->
+  </dict>
+</dict>
+</plist>

@@ -19,8 +19,12 @@ src/talk/drafts.ts       drafts for each post type, from live data only (pure)
 src/talk/personality.ts  personality.json: propose, record uses, the gate, approve/veto (Zach's handle)
 src/talk/reflect.ts      the daily reflect call and the weekly drift check
 src/talk/x.ts            the X API v2 client (OAuth 1.0a, rate limits, mention screen), dormant
+src/talk/tick.ts         the posting loop: one tick picks at most one event post (see "The posting loop")
+src/talk/lock.ts         the lock file around the tick and around read-rate, post, write-rate
 src/scripts/talk.ts      the command line
 src/scripts/test-talk.ts the tests: npx tsx src/scripts/test-talk.ts
+src/scripts/test-tick.ts the posting loop's tests: npx tsx src/scripts/test-tick.ts
+ops/com.bands.mrbands.talk.plist  launchd: one tick every 15 minutes, posting off
 ```
 
 ## Commands
@@ -36,7 +40,33 @@ npx tsx src/scripts/talk.ts veto <id> --operator <handle> --reason "<reason>"
 npx tsx src/scripts/talk.ts use <bit-id> landed|flopped              # the measure step for one bit
 npx tsx src/scripts/talk.ts reflect                                  # daily
 npx tsx src/scripts/talk.ts drift                                    # weekly, before review
+npx tsx src/scripts/talk.ts tick [--force strap|daily|lesson|stack]  # one tick of the posting loop
+npx tsx src/scripts/talk.ts check                                    # which account the X keys sign in as (a read)
+npx tsx src/scripts/talk.ts announce intro|entry|token|follow [--preview]   # his one-off posts, each once
 ```
+
+## One-off announcements
+
+`src/talk/announce.ts`, `talk.ts announce <kind>`. Each kind is composed from current facts (the desk's source
+must read paper, the paper book's open bands, `TOKEN_MINT`), checked, and posted once:
+
+| kind | what | parts |
+|---|---|---|
+| `intro` | his first post: an ai agent making markets on meteora across the screener's pools, tokenized stocks one part of the book, the book is paper, the one real-money run and every decision and guard veto on mrbands.finance. No token. | 1 |
+| `entry` | his AnsemHack Clawrena entry in his own words, tagging `@clawpumptech` (required), never the hackathon template. With `TOKEN_MINT`: his token by its mint, any other "mr bands" $bands not his, and the disclosure line as a self-reply. | 1, or 2 with a mint |
+| `token` | only with `TOKEN_MINT`: live, by its mint, a key and not a share, the copycat by its mint as not his, the disclosure line as a self-reply | 2 |
+| `follow` | a printed instruction: X removed follows (and likes, quote posts) from every self-serve API tier on 16 Apr 2026, so the follow is done by hand, signed in as his account | 0 |
+
+Checks on every part: the lint, and a per-kind @mention allowlist (only the entry may tag, only `@clawpumptech`,
+and it must). The lint's own mention rule is unchanged (at most two anywhere). No token talk before `TOKEN_MINT`;
+a `TOKEN_MINT` that is the copycat's, several mints or not base58 refuses every kind. Links end the text, as full
+URLs, so the length counts them as X does.
+
+Dormant (`X_LIVE` unset): every part goes to `x-drafts.jsonl`, nothing is recorded, and it can be run again. Live:
+`GET /2/users/me` must answer `X_HANDLE` (keys generated on the operator's own account are refused), then the parts
+go out as a thread through `postTweet` (lint, gate, rate limit), and each posted id is written to
+`TALK_STATE_PATH/announcements.json` as it lands. A kind whose parts are all recorded is refused; a thread cut short
+resumes at its next part; a file that exists but cannot be read refuses. `--preview` composes and checks only.
 
 Point it at a desk with `DATA_DIR` (the paper desk under launchd uses `data-live`). Set `TALK_STATE_PATH` to a
 directory of its own (for example `data-talk`) so the talking layer's files never sit among the desk's.
@@ -210,6 +240,86 @@ To go live on X, Zach:
 5. Sets `X_LIVE=true`.
 
 For reflect: `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`).
+
+## The posting loop
+
+He posts by himself: launchd runs `talk.ts tick` every 15 minutes (`ops/com.bands.mrbands.talk.plist`,
+`StartInterval` 900, no KeepAlive, `DATA_DIR=data-live`, `TALK_STATE_PATH=data-talk`, no `X_LIVE`). One tick
+(`src/talk/tick.ts`; `planTick` is pure, `runTick` the runner):
+
+1. Reads the desk (journal tail, paper book, ledger, `lessons.jsonl`) and its own state: `x-posts.jsonl`,
+   `x-drafts.jsonl`, `x-rate.json` and `tick-state.json` (the last strap state, the milestone count, the days the
+   daily numbers, a lesson and the stack last went).
+2. Builds candidates from events. Templates for the new post types live in `tick.ts`; the strap and the stack use
+   `strapCheck` and `stackUpdate` from `drafts.ts` unchanged.
+
+   | kind | when | key |
+   |---|---|---|
+   | close | a band closed in the last 2h: its net in SOL over the band's whole life (claims while open included; its lessons.jsonl row when there is one, so the close and the lesson agree), a loss said as a loss | `close:<band>` |
+   | open | a band opened in the last 2h, unless a close in the same pool within two cycles covers it (a re-centre) | `open:<band>` |
+   | strap | the strap state changed since the last tick (not on the first tick), at most one every 3h | `strap:<from>><to>:<slot>` |
+   | milestone | realized fees crossed a multiple of `TALK_LOOP_MILESTONE_SOL` (10), with the net over the same stretch; from `TALK_DAY_START_UTC` (12) | `milestone:<source>:<sol>` |
+   | daily | from `TALK_DAILY_HOUR_UTC` (14) once a UTC day: the book, the day's moves, fees, net; no link unless `TALK_DAILY_LINK=true` (a post with a URL costs $0.20, not $0.015, on X pay-per-use) | `daily:<day>` |
+   | lesson | from `TALK_LESSON_HOUR_UTC` (18), at most once a UTC day: the seat closed in the last 24h with the biggest net either way | `lesson:<band>` |
+   | stack | UTC Mondays from `TALK_STACK_HOUR_UTC` (15), once: the 7-day stack update | `stack:<day>` |
+
+3. Picks at most one, in that order (close > open > strap > milestone > daily > lesson > stack), skipping any key
+   posted, drafted or refused in the last 7 days, and nothing once the UTC day holds `POSTS_PER_DAY` loop records
+   (6 for the loop unless the env sets it; the loop passes the same number to the x.ts limiter). Spacing holds
+   everything (status `spaced`) while: the last post went less than `TALK_MIN_GAP_MIN` (90) minutes ago; the last
+   `TALK_WINDOW_HOURS` (6) hours hold `TALK_WINDOW_POSTS` (2); it is before `TALK_DAY_START_UTC` (12, 8am EDT) and
+   the day already holds `TALK_NIGHT_POSTS` (2). The day's last slot is kept for the daily numbers until they go.
+4. Vets it: no `@`, `#` or `$` at all, links only to mrbands.finance, solscan.io and app.meteora.ag, links counted
+   as 23 characters, "paper" in the text while the desk is paper, then the full lint. A text that fails is never
+   posted: it goes to `x-drafts.jsonl` with the reason and its key, so it is not tried again. A word from
+   `src/talk/wordguard.ts` (slurs, hate, sexual and scam words) anywhere in the text fails it too.
+5. Hands it to `postTweet`: posted only when `X_LIVE=true` (and the keys and handles are set), otherwise a draft in
+   `x-drafts.jsonl`. Either way the result lands in `x-posts.jsonl`: the tweet id, or `draft:<key>` with
+   `dry: true`. `readPosts` (reflect, drift, engagement) leaves dry records out. Live, the tick first asks X whose
+   account the access token is for (`GET /2/users/me`, once per token: the handle and a hash of the token are kept
+   in `tick-state.json`) and posts nothing unless it is `X_HANDLE`. A transient failure (X 5xx, 429 or 402,
+   unreachable, the rate lock busy, the stop file) is marked `retry: true`: the key is not used and the day gates
+   stay put, so the post goes on a later tick. A lint refusal or another X error is final.
+
+Safety, all in code:
+
+- **No double posts.** The tick holds `data-talk/tick.lock`; x.ts holds `x-rate.lock` around reading the rate
+  file, posting and writing it (before, that sequence was unlocked). A lock whose owner died, or older than 10
+  minutes, is taken over.
+- **Labels from the chain are data.** Every pool and token label goes through `sanitizeLabel`: words starting
+  with `@` or `#` dropped, then only a-z and 0-9 kept on each side of the pair. A pool named `$PEPE @someone`
+  prints as `pepe`; a label with a blocked word (`src/talk/wordguard.ts`: slurs, hate, sexual and scam words,
+  leetspeak folded) prints as `a pool`.
+- **No replies, no mentions.** The loop never reads mentions and never replies; replies stay off entirely. The
+  reply code in x.ts (`replyToMention`, `screenMention`) is not run by anything scheduled.
+- **Stop at once.** `touch data-talk/TALK_STOP`: the tick stops before it reads anything, and again right before
+  it posts; `postTweet` itself refuses while the file is there, so an announcement or a manual post stops too.
+  Remove the file to resume.
+- **Stale data says nothing.** If the paper book's last mark (or, live, the newest journal entry) is older than
+  3 cycles, nothing about positions goes out.
+- **Paper is said.** While the desk is paper (`DRY_RUN`, or a book that is not live) every post says "paper": the
+  loop adds "(paper)" if a template left it out, and refuses a post without it.
+- **The daily numbers never state a rate.** Book, moves, fees realized and net realized, in SOL, over the last 24h.
+
+`talk.ts check` calls `GET /2/users/me` with the four keys and prints the handle they sign in as, whether it
+matches `X_HANDLE`, and whether posting is on. It is the one X call that `X_LIVE` does not gate (a read that changes
+nothing, `verifyCredentials` in x.ts); it never prints a key.
+
+Going live: keys and handles in `.env`, `talk.ts check`, a day of drafts read, then `X_LIVE=true` in `.env` or in
+the plist (its header says how). `talk.ts tick --force daily|lesson|strap|stack` is a PREVIEW: it prints that post
+now, vetted, ignoring its hour and day gate, and writes, records and posts nothing (not even with `X_LIVE=true`).
+
+| key | default | meaning |
+|---|---|---|
+| `POSTS_PER_DAY` | `6` in the loop | loop posts and dry drafts per UTC day |
+| `TALK_DAILY_HOUR_UTC` | `14` | the daily numbers go from this UTC hour |
+| `TALK_LOOP_MILESTONE_SOL` | `10` | the fee milestone step (the strap's `TALK_FEE_MILESTONE_SOL` stays 1) |
+| `TALK_MIN_GAP_MIN` | `90` | minutes between two loop posts (0: off) |
+| `TALK_WINDOW_POSTS` / `TALK_WINDOW_HOURS` | `2` / `6` | at most this many posts in any rolling window (0: off) |
+| `TALK_DAY_START_UTC` / `TALK_NIGHT_POSTS` | `12` / `2` | before this UTC hour, at most this many posts that day; milestones wait for it |
+| `TALK_LESSON_HOUR_UTC` | `18` | the lesson goes from this UTC hour |
+| `TALK_STACK_HOUR_UTC` | `15` | the Monday stack goes from this UTC hour |
+| `TALK_DAILY_LINK` | off | `true`: the daily ends with mrbands.finance |
 
 ## The weekly review
 
