@@ -535,7 +535,7 @@ async function main(): Promise<void> {
   });
 
   await test("the house bearer: its own audience, the read tools only, and never the operator's powers", async () => {
-    assert.deepEqual([...mcp.HOUSE_TOOLS].sort(), ["bands_agent_thoughts", "bands_limits", "bands_list_pools", "bands_pool_score", "bands_pool_snapshot", "bands_screen"]);
+    assert.deepEqual([...mcp.HOUSE_TOOLS].sort(), ["bands_agent_thoughts", "bands_lessons", "bands_limits", "bands_list_pools", "bands_pool_score", "bands_pool_snapshot", "bands_screen"]);
     assert.equal(rails.mcpAudience("Bearer house-test-token"), "house");
     assert.equal(rails.mcpAudience("Bearer op-test-token"), "operator");
     assert.equal(rails.mcpAudience("Bearer house-test-tokem"), "public", "a near miss is a stranger");
@@ -627,7 +627,7 @@ async function main(): Promise<void> {
     const list = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" }, { "mcp-session-id": sid! });
     assert.equal(list.status, 200);
     const names = ((await list.json()) as { result: { tools: Array<{ name: string }> } }).result.tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ["bands_agent_thoughts", "bands_limits", "bands_list_pools", "bands_pool_score", "bands_pool_snapshot", "bands_propose_band_action", "bands_screen"]);
+    assert.deepEqual(names, ["bands_agent_thoughts", "bands_lessons", "bands_limits", "bands_list_pools", "bands_pool_score", "bands_pool_snapshot", "bands_propose_band_action", "bands_screen"]);
     assert.ok(!names.includes("bands_decide_proposal"), "the public audience is not served operator tools");
     const unknown = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/list" }, { "mcp-session-id": "not-a-session" });
     assert.equal(unknown.status, 400);
@@ -663,7 +663,7 @@ async function main(): Promise<void> {
     // the operator's own agent needs every data tool to reason about a pool, plus the two proposal tools
     const opList = await rpc({ jsonrpc: "2.0", id: 20, method: "tools/list" }, { "mcp-session-id": opSid, ...op });
     const opNames = ((await opList.json()) as { result: { tools: Array<{ name: string }> } }).result.tools.map((t) => t.name).sort();
-    assert.deepEqual(opNames, ["bands_agent_thoughts", "bands_decide_proposal", "bands_limits", "bands_list_pools", "bands_pool_score", "bands_pool_snapshot", "bands_propose_band_action", "bands_screen"]);
+    assert.deepEqual(opNames, ["bands_agent_thoughts", "bands_decide_proposal", "bands_lessons", "bands_limits", "bands_list_pools", "bands_pool_score", "bands_pool_snapshot", "bands_propose_band_action", "bands_screen"]);
     const revenueBefore = ((await (await app.request("/api/revenue")).json()) as { totalUsd: number }).totalUsd;
     // bands_pool_snapshot is priced the same way but reads the chain, so it stays out of an offline test
     for (const [id, name, args] of [
@@ -696,12 +696,12 @@ async function main(): Promise<void> {
     assert.equal(wrongBearer.status, 401);
   });
 
-  await test("POST /mcp: the house bearer is served exactly the six read tools, passes the paywall, and can neither propose nor decide", async () => {
+  await test("POST /mcp: the house bearer is served exactly the seven read tools, passes the paywall, and can neither propose nor decide", async () => {
     const house = { authorization: "Bearer house-test-token" };
     const sid = (await rpc(init, house)).headers.get("mcp-session-id")!;
     const list = await rpc({ jsonrpc: "2.0", id: 40, method: "tools/list" }, { "mcp-session-id": sid, ...house });
     const names = ((await list.json()) as { result: { tools: Array<{ name: string }> } }).result.tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ["bands_agent_thoughts", "bands_limits", "bands_list_pools", "bands_pool_score", "bands_pool_snapshot", "bands_screen"]);
+    assert.deepEqual(names, ["bands_agent_thoughts", "bands_lessons", "bands_limits", "bands_list_pools", "bands_pool_score", "bands_pool_snapshot", "bands_screen"]);
     const revenueBefore = ((await (await app.request("/api/revenue")).json()) as { totalUsd: number }).totalUsd;
     const scored = await rpc({ jsonrpc: "2.0", id: 41, method: "tools/call", params: { name: "bands_pool_score", arguments: { pool } } }, { "mcp-session-id": sid, ...house });
     assert.equal(scored.status, 200, "a priced tool with the house bearer and no X-PAYMENT");
