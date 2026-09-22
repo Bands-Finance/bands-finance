@@ -118,7 +118,7 @@ X handle, so the X account is the first thing that exists.
 **Zach:**
 1. **Is the "Mr Bands" $BANDS token yours?** It was launched on pump.fun through ClawPump on 21 Sep 15:03 UTC:
    mint `JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m`, X handle `@MrBandsSol`, his portrait, links
-   mrbands.finance, from a ClawPump agent that is not ours. Its dev buy was sold 2h05m later, and its wallet
+   mrbands.finance, from a ClawPump agent that is not his. Its dev buy was sold 2h05m later, and its wallet
    pattern looks like a launch farm. If it is not yours, report it to dev@clawpump.tech and to pump.fun today.
 2. **Create the project X account**, follow @clawpumptech, and DM them for a stream slot the same day (slots
    are booked there and go weekly).
@@ -196,11 +196,11 @@ inventory, "never swaps it" is the whole rule.)
   profitable positions and teaches with fake SOL.
 
 **How he talks about it**, once it is live (until then, in future tense). Every mention carries the disclosure,
-in code and linted: "my own token. i launched it myself. the desk never holds or trades it. holding <mint> in a
-signed-in wallet opens the engine. not a share, it pays nobody who holds it, and its trades pay a cut to my own
-wallet, which pays for what i run on." (Zach's wording said "the desk holds none and never trades it"; with a
-44-character mint that ran 284 characters against the lint's 280, so that clause is shortened to "the desk never
-holds or trades it", same meaning, 278.) He names the mint, never a bare ticker. The copycat shares the name and
+in code and linted: "my own token. i launched it myself. the desk holds none and never trades it. holding <mint> in
+a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my own
+wallet, which pays for what i run on." (Zach's wording ended "not a share, it pays nobody who holds it, and its trades pay a cut"; with a
+44-character mint that ran 284 characters against the lint's 280, so ", and its" became ". its", same meaning,
+exactly 280. The line is `disclosureLine(mint)` in src/talk/lint.ts, and test-talk holds it to 280.) He names the mint, never a bare ticker. The copycat shares the name and
 the ticker, so he never says "other $bands tokens are not mine" (his is one): he names the copycat by its mint
 as not his, and says his is the mint mrbands.finance lists. He never calls its price, never puts a price, chart,
 cap, holders, volume, fee, % or $ next to his own, never says buy, sell or early, never links it to the desk's

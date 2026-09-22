@@ -704,10 +704,10 @@ test("ask exit: the stop reads an ask band against its chain's basis", () => {
 });
 
 // ---- H1: the desk never swaps its own token or the copycat's, and never seats a pool that holds either ----
-const HOUSE = "MRBANDSm1ntXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump";
+const HOUSE = "BANDSm1ntXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump";
 const COPYCAT = "JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m";
 const h1 = { house: [HOUSE], copycat: COPYCAT_MINTS };
-const housePool: PoolSnapshot = { ...snapshot, address: "housepool", label: "MRBANDS/SOL", tokenX: { ...snapshot.tokenX, mint: HOUSE, symbol: "MRBANDS" }, baseToken: { ...snapshot.baseToken, mint: HOUSE, symbol: "MRBANDS" } };
+const housePool: PoolSnapshot = { ...snapshot, address: "housepool", label: "BANDS/SOL", tokenX: { ...snapshot.tokenX, mint: HOUSE, symbol: "BANDS" }, baseToken: { ...snapshot.baseToken, mint: HOUSE, symbol: "MRBANDS" } };
 
 test("H1: the house mint is TOKEN_MINT plus PAIR_HOUSE_MINTS, de-duplicated; empty until the token exists; the copycat is on the list", () => {
   assert.deepEqual(houseMintsOf({}), []);
@@ -719,7 +719,7 @@ test("H1: the house mint is TOKEN_MINT plus PAIR_HOUSE_MINTS, de-duplicated; emp
 test("H1: any swap leg with the house mint in or out is refused, and the copycat's too; other legs pass", () => {
   assert.match(houseSwapViolation("So11111111111111111111111111111111111111112", HOUSE, h1)!, /output is the house mint .*never swaps its own token/);
   assert.match(houseSwapViolation(HOUSE, "So11111111111111111111111111111111111111112", h1)!, /input is the house mint/);
-  assert.match(houseSwapViolation(COPYCAT, "So11111111111111111111111111111111111111112", h1)!, /copycat token: .*not ours/);
+  assert.match(houseSwapViolation(COPYCAT, "So11111111111111111111111111111111111111112", h1)!, /copycat token: .*not his/);
   assert.match(houseSwapViolation("So11111111111111111111111111111111111111112", COPYCAT, { house: [], copycat: COPYCAT_MINTS })!, /copycat/, "the copycat is refused before our token exists");
   assert.equal(houseSwapViolation("ansem", "So11111111111111111111111111111111111111112", h1), null);
   assert.equal(housePoolViolation({ address: "p", mints: ["ansem", "So11111111111111111111111111111111111111112"] }, h1), null);
@@ -729,7 +729,7 @@ test("H1: no band in the house token's pool, SOL_ONLY or a straddle with an acqu
   const plain = evaluate(open(), ctx({ snapshot: housePool, untouchable: h1 }), limits);
   assert.equal(plain.allowed, false);
   assert.equal(plain.decision.action, "HOLD");
-  assert.ok(plain.violations.some((x) => /house token: MRBANDS\/SOL \(housepool\) holds the house mint/.test(x)), plain.violations.join("; "));
+  assert.ok(plain.violations.some((x) => /house token: BANDS\/SOL \(housepool\) holds the house mint/.test(x)), plain.violations.join("; "));
   const withAcquire = evaluate(open({ side: "BOTH", amountSol: 0.2, amountToken: 10, acquireToken: 10, binsBelowActive: 5, binsAboveActive: 5 }), ctx({ snapshot: housePool, untouchable: h1 }), limits);
   assert.ok(withAcquire.violations.some((x) => x.startsWith("house token:")), withAcquire.violations.join("; "));
   // the house mint on the quote side of a pool is caught as well
@@ -745,7 +745,7 @@ test("H1: the copycat's pool is never seated either", () => {
   const copyPool: PoolSnapshot = { ...snapshot, address: "copypool", label: "BANDS/SOL", tokenX: { ...snapshot.tokenX, mint: COPYCAT }, baseToken: { ...snapshot.baseToken, mint: COPYCAT } };
   const v = evaluate(open(), ctx({ snapshot: copyPool, untouchable: { house: [], copycat: COPYCAT_MINTS } }), limits);
   assert.equal(v.allowed, false);
-  assert.ok(v.violations.some((x) => /copycat token: BANDS\/SOL \(copypool\) .*not ours/.test(x)), v.violations.join("; "));
+  assert.ok(v.violations.some((x) => /copycat token: BANDS\/SOL \(copypool\) .*not his/.test(x)), v.violations.join("; "));
 });
 
 test("H1: the guard reads TOKEN_MINT from the environment when the context names no list; exits are not held by it", () => {

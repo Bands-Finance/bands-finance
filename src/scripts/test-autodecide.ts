@@ -371,7 +371,7 @@ async function main(): Promise<void> {
     const d = proposals.proposalDecision(p);
     assert.equal(d.headline, `Outside proposal ${p.id} from ${p.proposerId.slice(0, 10)}, approved by desk rule small-open.`);
     assert.ok(d.headline.length <= 90);
-    assert.equal(proposals.proposalDecision({ ...p, decidedBy: "operator" }).headline.endsWith("approved by the operator."), true);
+    assert.equal(proposals.proposalDecision({ ...p, decidedBy: "operator" }).headline.endsWith("approved by the approval key."), true);
     const outputs = [
       d,
       proposals.proposalNote(p),

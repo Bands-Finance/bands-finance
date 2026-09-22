@@ -51,7 +51,7 @@ const MODE_SENTENCE: Record<Status["mode"], string> = {
   paper: "This is paper trading: real pools at live prices, a pretend wallet, nothing sent to Solana.",
   "dry-run": "This is a rehearsal: real pools, and a wallet that builds every transaction and sends none.",
   live: "This is his own wallet on Solana; every move below links to its transaction.",
-  demo: "This is a scripted demo, written to show how he decides; no wallet, no money.",
+  demo: "This is a scripted demo, written to show how he proposes and the guards decide; no wallet, no money.",
 };
 
 export function narrativeOf(o: { record: AgentRecord | null; status: Status; agentName: string; now: number; flow?: FlowTotals | null; bandsOpen?: number; atWorkSol?: number }): Narrative {

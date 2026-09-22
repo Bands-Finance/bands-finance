@@ -8,15 +8,15 @@
  *            creator fees go to for good (key; pays nothing)
  *   launch   the whole self-funded flow: quote -> send the SOL from the paying wallet -> complete -> print
  *            the mint as TOKEN_MINT. Refused unless DRY_RUN=false AND --confirm AND the key exists AND the
- *            paying wallet is the treasury pinned by TOKEN_PAYER_EXPECTED (never the desk wallet). The token
- *            is $MRBANDS, the Clawrena entry (docs/token.md).
+ *            paying wallet is his operating wallet, pinned by TOKEN_PAYER_EXPECTED (never the desk wallet). The token
+ *            is $BANDS, the Clawrena entry (docs/token.md).
  *
- * The payer is WALLET_SECRET_KEY, and for the launch that is the treasury keypair, not the desk's. With
+ * The payer is WALLET_SECRET_KEY, and for the launch that is his operating wallet's keypair, not the desk's. With
  * TOKEN_PAYER_EXPECTED set, this command checks the key against it INSTEAD of EXPECTED_WALLET; nothing else
  * does, so the desk's own check is untouched.
  *
  * PAIR_HOUSE_MINTS stays unset through 8 Oct by decision (docs/sprint.md): it would seat and market-make the
- * house token. The desk never touches $MRBANDS (H1, src/risk/house.ts), which reads TOKEN_MINT.
+ * house token. The desk never touches $BANDS (H1, src/risk/house.ts), which reads TOKEN_MINT.
  */
 import { Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { config } from "../config";
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     const agentId = need(cmd);
     const token = tokenSpec();
     const connection = new Connection(config.rpcUrl, "confirmed");
-    // the payer: the treasury keypair, pinned by TOKEN_PAYER_EXPECTED for this command only (the desk keeps EXPECTED_WALLET)
+    // the payer: his operating wallet's keypair, pinned by TOKEN_PAYER_EXPECTED for this command only (the desk keeps EXPECTED_WALLET)
     const payerExpected = payerExpectedOf();
     const wallet = Wallet.fromConfig(connection, payerExpected ? { address: payerExpected, name: "TOKEN_PAYER_EXPECTED" } : undefined);
     const req: LaunchRequest = { agentId, agentName: config.agentName, walletAddress: wallet.keypair.publicKey.toBase58(), token };
@@ -83,8 +83,8 @@ async function main(): Promise<void> {
     console.log(`${token.name} (${token.symbol}) by ${config.agentName}, agent ${agentId}, pair ${isSolPair(token.pumpPair) ? "SOL" : token.pumpPair}, dev buy ${token.devBuySol} SOL, buybackBps 0`);
     console.log(`  payer ${payer}${wallet.ephemeral ? " (EPHEMERAL: no WALLET_SECRET_KEY set)" : ""}`);
     console.log(`  creator fees go to ${payer} for good`);
-    if (deskWallet && payer === deskWallet) console.log(`  WARNING: ${payer} is the desk wallet (EXPECTED_WALLET). The launch will refuse it: pay from the treasury keypair.`);
-    if (!payerExpected) console.log("  WARNING: TOKEN_PAYER_EXPECTED is not set. The launch will refuse until it names the treasury address.");
+    if (deskWallet && payer === deskWallet) console.log(`  WARNING: ${payer} is the desk wallet (EXPECTED_WALLET). The launch will refuse it: pay from his operating wallet's keypair.`);
+    if (!payerExpected) console.log("  WARNING: TOKEN_PAYER_EXPECTED is not set. The launch will refuse until it names his operating wallet's address.");
     else if (payer !== payerExpected) console.log(`  WARNING: the key derives to ${payer}, but TOKEN_PAYER_EXPECTED is ${payerExpected}. Wrong key: the launch will refuse it.`);
     if (token.devBuySol !== 0) console.log(`  WARNING: TOKEN_DEV_BUY_SOL is ${token.devBuySol}. The decision of 22 Sep is no dev buy (0): the launch will refuse it.`);
     if (!isSolPair(token.pumpPair)) console.log(`  WARNING: TOKEN_PUMP_PAIR is ${token.pumpPair}. The decision of 22 Sep is the SOL pair: the launch will refuse it.`);

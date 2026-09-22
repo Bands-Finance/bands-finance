@@ -6,7 +6,7 @@ import { useEffect } from "react";
  *   --scroll-y        current scrollY, unitless (CSS multiplies by px)
  *   --scroll-progress 0..1 through the whole document
  * All consumers are pure CSS (transform/opacity), so the page stays on the
- * compositor — no layout work per frame.
+ * compositor: no layout work per frame.
  */
 export function useScrollFx() {
   useEffect(() => {

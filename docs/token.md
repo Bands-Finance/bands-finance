@@ -160,8 +160,8 @@ post the entry from the project account. `npm run clawpump -- status` then shows
 
 Every mention carries the disclosure (the lint enforces it; docs/sprint.md holds the current wording). Until it
 launches, everything about it is in future tense. Once he has launched it, the line is: "my own token. i launched
-it myself. the desk never holds or trades it. holding <mint> in a signed-in wallet opens the engine. not a share,
-it pays nobody who holds it, and its trades pay a cut to my own wallet, which pays for what i run on." (If Zach
+it myself. the desk holds none and never trades it. holding <mint> in a signed-in wallet opens the engine. not a
+share, it pays nobody who holds it. its trades pay a cut to my own wallet, which pays for what i run on." (If Zach
 launches it by the fallback, "i launched it myself" is not true: that clause is replaced with one that is, and
 the line passes the lint, at most 280 characters with the mint, before anything posts.) He names the mint, never a bare ticker, names
 the copycat by its mint as not his, and never calls a price.

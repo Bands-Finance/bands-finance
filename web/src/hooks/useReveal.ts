@@ -3,14 +3,14 @@ import { useCallback, useRef } from "react";
 /**
  * Marks a section revealed once it scrolls into view: adds `is-visible` to the
  * element, and CSS (styles/motion.css) staggers the children in. Reveals once
- * and disconnects — content never re-hides on scroll-up. Without
+ * and disconnects: content never re-hides on scroll-up. Without
  * IntersectionObserver support everything is visible immediately.
  *
  * Returns a CALLBACK ref (not a RefObject) on purpose: the observer attaches
  * the moment the node mounts, whichever render that happens on. A plain
  * useEffect + RefObject wired the observer on the parent's first mount, so a
  * section that renders LATER (e.g. a data-gated section that returns null until
- * its fetch resolves) never got observed and stayed stuck at opacity:0 — an
+ * its fetch resolves) never got observed and stayed stuck at opacity:0, an
  * invisible block of reserved space. The callback ref fixes that class of bug.
  */
 export function useReveal<T extends HTMLElement>(threshold = 0.12) {
