@@ -386,9 +386,9 @@ async function main() {
     assert.equal(n.headline, "Mr Bands is down 35 SOL since Monday.");
     assert.deepEqual(n.story, [
       "He has earned 22.7 SOL in fees over 2 days.",
-      "Tuesday cost 30.4 SOL: his bands earned 17.2 in fees and lost 47.6 to the price moving through them.",
-      "Today he has banked 2.1 SOL of fees and the book is up 0.25.",
-      "This is paper trading: real pools at live prices, a pretend wallet, nothing sent to Solana.",
+      "Tuesday cost 30.4 SOL: 17.2 earned in fees, 47.6 lost to the price.",
+      "Today he banked 2.1 SOL of fees and the book is up 0.25.",
+      "This is paper trading: real pools, live prices, a pretend wallet.",
     ]);
     const flat = narrativeOf({ record: { ...(rec as object), net: 0.01 } as never, status: status as never, agentName: "Mr Bands", now });
     assert.equal(flat.headline, "Mr Bands is about flat since Monday.");
@@ -398,9 +398,9 @@ async function main() {
     assert.equal(live.headline, "Mr Bands is down 0.19 SOL today.");
     assert.deepEqual(live.story, [
       "He has 14.9 SOL at work in 3 bands.",
-      "He has earned 0.0031 SOL in fees since he started, still sitting in the bands.",
-      "In the last hour his 3 pools paid 0.15 SOL in fees to the people making a market there; he is one of them.",
-      "This is his own wallet on Solana; every move below links to its transaction.",
+      "He has earned 0.0031 SOL in fees since he started, still in the bands.",
+      "In the last hour his 3 pools paid 0.15 SOL in fees to their market makers.",
+      "This is his own wallet on Solana. Every move links to its transaction.",
     ]);
     assert.deepEqual([num(0.0031), num(0.15), num(0.0001)], ["0.0031", "0.15", "0.0001"]);
     const none = narrativeOf({ record: null, status: { ...status, mode: "live" } as never, agentName: "Mr Bands", now });

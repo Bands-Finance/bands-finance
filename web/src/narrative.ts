@@ -48,10 +48,10 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const upDown = (x: number, flatBelow = 0.05) => (x >= flatBelow ? "up" : x <= -flatBelow ? "down" : "flat");
 
 const MODE_SENTENCE: Record<Status["mode"], string> = {
-  paper: "This is paper trading: real pools at live prices, a pretend wallet, nothing sent to Solana.",
-  "dry-run": "This is a rehearsal: real pools, and a wallet that builds every transaction and sends none.",
-  live: "This is his own wallet on Solana; every move below links to its transaction.",
-  demo: "This is a scripted demo, written to show how he proposes and the guards decide; no wallet, no money.",
+  paper: "This is paper trading: real pools, live prices, a pretend wallet.",
+  "dry-run": "This is a rehearsal: real pools, a wallet that sends nothing.",
+  live: "This is his own wallet on Solana. Every move links to its transaction.",
+  demo: "This is a scripted demo: no wallet, no money.",
 };
 
 export function narrativeOf(o: { record: AgentRecord | null; status: Status; agentName: string; now: number; flow?: FlowTotals | null; bandsOpen?: number; atWorkSol?: number }): Narrative {
@@ -68,7 +68,7 @@ export function narrativeOf(o: { record: AgentRecord | null; status: Status; age
   if (bands > 0 && atWork > 0) story.push(`He has ${num(atWork)} SOL at work in ${bands} band${bands === 1 ? "" : "s"}.`);
   if (fees >= 0.0005) {
     const span = elapsedDays < 1.5 ? "since he started" : `over ${Math.round(elapsedDays)} days`;
-    const where = record.feesRealized < 0.0005 && record.feesUnclaimed >= 0.0005 ? ", still sitting in the bands" : "";
+    const where = record.feesRealized < 0.0005 && record.feesUnclaimed >= 0.0005 ? ", still in the bands" : "";
     story.push(`He has earned ${num(fees)} SOL in fees ${span}${where}.`);
   } else {
     story.push("He has not earned a fee yet.");
@@ -78,7 +78,7 @@ export function narrativeOf(o: { record: AgentRecord | null; status: Status; age
   // is left out: the scout applies today's band to the whole hour, which overstates it after a re-lay.
   if (o.flow && o.flow.fees60mSol > 0) {
     const f = o.flow;
-    story.push(`In the last hour his ${f.pools === 1 ? "pool" : `${f.pools} pools`} paid ${num(f.fees60mSol)} SOL in fees to the people making a market there; he is one of them.`);
+    story.push(`In the last hour his ${f.pools === 1 ? "pool" : `${f.pools} pools`} paid ${num(f.fees60mSol)} SOL in fees to their market makers.`);
   }
 
 
@@ -91,7 +91,7 @@ export function narrativeOf(o: { record: AgentRecord | null; status: Status; age
     const when = cap(dayWord(worst.date, now));
     story.push(
       lost > 0.5
-        ? `${when} cost ${num(-change(worst))} SOL: his bands earned ${num(worst.fees)} in fees and lost ${num(lost)} to the price moving through them.`
+        ? `${when} cost ${num(-change(worst))} SOL: ${num(worst.fees)} earned in fees, ${num(lost)} lost to the price.`
         : `${when} cost ${num(-change(worst))} SOL.`,
     );
   }
@@ -99,9 +99,9 @@ export function narrativeOf(o: { record: AgentRecord | null; status: Status; age
     const c = change(today);
     const d = upDown(c);
     if (today.fees >= 0.005 || d !== "flat") {
-      story.push(`Today he has banked ${num(today.fees)} SOL of fees and the book is ${d === "flat" ? "about where it opened" : `${d} ${num(c)}`}.`);
+      story.push(`Today he banked ${num(today.fees)} SOL of fees and the book is ${d === "flat" ? "about where it opened" : `${d} ${num(c)}`}.`);
     } else {
-      story.push("Today has been quiet: nothing claimed, the book about where it opened.");
+      story.push("Today is quiet: nothing claimed, the book about where it opened.");
     }
   }
   story.push(MODE_SENTENCE[status.mode]);
