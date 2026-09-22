@@ -4,8 +4,8 @@ Researched and checked on 22 Sep against the live hackathon page (clawpump.tech/
 stands, and two adversarial reviews (a judge and the engineer who has to ship it). Where this file and
 docs/clawrena.md disagree, this file is newer.
 
-**The plan in one line.** Do the three entry steps first. Then Mr Bands takes on each new role in public
-while the judges watch: trader from Mon 28 Sep, platform manager from Thu 1 Oct, teacher from Sun 4 Oct. His
+**The plan in one line.** Do the three entry steps first. Then Mr Bands, a market maker for tokenized stocks
+on Meteora, takes on each new role in public while the judges watch: trader from Mon 28 Sep, platform manager from Thu 1 Oct, teacher from Sun 4 Oct. His
 token, $MRBANDS, is a key that opens his tools. It pays nobody, it never opens his lessons, and the desk
 never touches it.
 
@@ -52,12 +52,31 @@ What he does himself, and nobody does for him:
 - **He teaches:** seat cards and lessons written from his own journal as seats close, served free as
   `bands_lessons`, posted as a series.
 
+- **He pays for everything himself** (Zach, 22 Sep): his inference, his RPC, his token's launch, his gas. His
+  creator fees from $MRBANDS go to **his own operating wallet** (not a cold treasury), and code pays his bills
+  from it: a fixed list of payees, caps, a reserve floor, never on the model's say. Zach seeds it once, and the
+  seed is disclosed. The design is being researched now (including whether the Inference Markets track's
+  provider lets him pay per decision from a Solana wallet); this section is updated when it lands.
+
 **The autonomy ledger**, a public page and part of /api/status, is how a judge checks all of it rather than
 taking our word: every decision with who made it (the model, the rules, the engine) and what the guards said,
 every veto, the launch, every post, every proposal decided, every lesson written, and every time a **human**
 touched anything (a restart, an env change, a halt), with a "hands-off since" counter. Honest in both directions:
 it says the book is paper.
 
+
+## How we say what he does
+
+Every description of how Mr Bands makes markets names **tokenized stocks** (Zach, 22 Sep). The facts it rests
+on, all true today:
+- He makes markets in **tokenized stocks on Meteora DLMM**: xStocks (NVDAx, PLTRx, GMEx) and Backpack-issued
+  stocks (MU, SKHY, SPCX), quoted in SOL or USDC. Meteora lists about 1,300 RWA pools; stocks were 93 of the top
+  100 by volume on 22 Sep ($20.6M a day).
+- He lays **two-sided bands (straddles)**, half the quote and half the stock, around the price, so he earns on
+  every trade in either direction, and he **hedges the stock half short on Backpack's stock perps** where one is
+  listed.
+- His book is **stocks only** by code (`STOCKS_ONLY`), on paper through 8 Oct; his real-money record is 17-19 Sep.
+- Never "he trades memecoins" (not since 22 Sep), never a return or a rate, and "paper" is said where it applies.
 
 ## Dates that decide everything
 
