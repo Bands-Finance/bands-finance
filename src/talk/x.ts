@@ -1,12 +1,20 @@
 /**
- * The X API v2 client. DORMANT: nothing reaches X unless X_LIVE=true AND all four OAuth 1.0a credentials
- * AND OPERATOR_HANDLE AND X_HANDLE are set. No dependency: requests are signed here (HMAC-SHA1, node:crypto).
+ * The X API v2 client. Nothing reaches X unless X_LIVE=true AND all four OAuth 1.0a credentials AND OPERATOR_HANDLE
+ * AND X_HANDLE are set. No dependency: requests are signed here (HMAC-SHA1, node:crypto). He posts (the loop,
+ * src/talk/tick.ts) and he replies to people who summoned him (the engage loop, src/talk/engage.ts, which also needs
+ * X_REPLIES=true and his brain; docs/talk.md, "Engage").
  *
  *   postTweet(text, { type, replyTo? })   POST /2/tweets. Order: lint -> reply screen -> the live gate ->
  *                                          the rate limiter -> the request. Any refusal returns
  *                                          { posted: false, reason } and appends the draft to
  *                                          TALK_STATE_PATH/x-drafts.jsonl so Zach sees what would
  *                                          have gone out. A post that went out is appended to x-posts.jsonl.
+ *                                          A "reply" must carry replyTo and nothing else may (never a top-level
+ *                                          post by accident); one reply per mention, checked against x-posts.jsonl
+ *                                          inside the rate lock; never a reply to his own post or handle.
+ *   postReply(text, { tweetId, handle })   postTweet as a reply, always with replyTo: the only way engage.ts posts
+ *   getMentions(sinceId, { userId })       GET /2/users/{id}/mentions, one page of up to 100, oldest first, with the
+ *                                          authors and referenced posts expanded; a failure is { ok: false }, never []
  *   getEngagement(ids)                     GET /2/tweets?ids=...&tweet.fields=public_metrics, behind the same gate
  *   screenMention(mention)                 whether a mention may get a reply at all (bots, scams, flagged
  *                                          accounts, link-only text, the per-account daily cap)
@@ -20,16 +28,17 @@
  * readPosts leaves them out (they are not posts).
  *
  * Rate limits, persisted in TALK_STATE_PATH/x-rate.json (temp + rename): POSTS_PER_DAY original posts per UTC
- * day, REPLIES_PER_HOUR replies per rolling hour, MAX_REPLIES_PER_ACCOUNT replies to one account per UTC day.
+ * day, REPLIES_PER_DAY replies per UTC day, REPLIES_PER_HOUR replies per rolling hour, MAX_REPLIES_PER_ACCOUNT
+ * replies to one account per UTC day.
  *
  * Credentials are read only here, only from the env object passed in, and never printed: reasons name
- * the missing keys, never values, and a failed request reports the status and X's error title only.
+ * the missing keys, never values, and a failed request reports the status and X's error title and detail only.
  * This module never places, signs or broadcasts a trade (spec rule 11).
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { lintContextOf, normalizeHandle, talkEnv, X_CREDENTIAL_KEYS, type TalkEnv } from "./env";
+import { DEFAULT_REPLIES_PER_DAY, lintContextOf, normalizeHandle, talkEnv, X_CREDENTIAL_KEYS, type TalkEnv } from "./env";
 import { replyFor, type DraftType } from "./drafts";
 import { describeViolations, linkAllowed, linksIn, lintText, normalizeForMatch, SCAM_BAIT_PATTERNS, KEY_REQUEST_PATTERNS, type LintViolation } from "./lint";
 import { flaggedHandles, readPersonality, suspiciousHandle } from "./personality";
@@ -222,16 +231,27 @@ export const readPostLog = (statePath: string) => readJsonl<XPostRecord>(statePa
 export const readDrafts = (statePath: string) => readJsonl<XDraftRecord>(statePath, DRAFTS_FILE);
 
 /** Why the rate limiter refuses this post, or null. */
-export function rateProblem(s: RateState, t: Pick<TalkEnv, "postsPerDay" | "repliesPerHour" | "maxRepliesPerAccount">, now: number, replyToHandle: string | null): string | null {
+export function rateProblem(s: RateState, t: Pick<TalkEnv, "postsPerDay" | "repliesPerHour" | "maxRepliesPerAccount"> & Partial<Pick<TalkEnv, "repliesPerDay">>, now: number, replyToHandle: string | null): string | null {
   if (replyToHandle === null) {
     const today = s.posts.filter((p) => utcDay(p.at) === utcDay(now)).length;
     return today >= t.postsPerDay ? `rate: ${today} original posts today, POSTS_PER_DAY is ${t.postsPerDay}` : null;
   }
+  const perDay = t.repliesPerDay ?? DEFAULT_REPLIES_PER_DAY;
+  const repliesToday = s.replies.filter((r) => utcDay(r.at) === utcDay(now)).length;
+  if (repliesToday >= perDay) return `rate: ${repliesToday} replies today, REPLIES_PER_DAY is ${perDay}`;
   const lastHour = s.replies.filter((r) => now - r.at < 3600e3 && r.at <= now).length;
   if (lastHour >= t.repliesPerHour) return `rate: ${lastHour} replies in the last hour, REPLIES_PER_HOUR is ${t.repliesPerHour}`;
   const toAccount = s.replies.filter((r) => r.handle === replyToHandle && utcDay(r.at) === utcDay(now)).length;
   if (toAccount >= t.maxRepliesPerAccount) return `rate: ${toAccount} replies to @${replyToHandle} today, MAX_REPLIES_PER_ACCOUNT is ${t.maxRepliesPerAccount}`;
   return null;
+}
+
+/**
+ * Whether x-posts.jsonl already holds a reply to this post by this author: one reply per mention, even after a
+ * crash (read inside the rate lock, right before the POST). A post id has one author, so the pair is the mention.
+ */
+export function alreadyRepliedTo(statePath: string, tweetId: string, handle: string | null): boolean {
+  return readPosts(statePath).some((p) => p.type === "reply" && p.replyTo === tweetId && (handle === null || !p.replyToHandle || p.replyToHandle === handle));
 }
 
 // ---------------------------------------------------------------- posting
@@ -274,13 +294,18 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
 
   const stopped = () => fs.existsSync(path.join(t.statePath, TALK_STOP_FILE));
   if (stopped()) return draft(`stopped: ${TALK_STOP_FILE} is in ${t.statePath}; nothing is posted`);
+  // a reply always names the post it answers, and only a reply may: never a top-level post by accident
+  if (opts.type === "reply" && !opts.replyTo) return draft("reply: a reply without the post it answers; never a top-level post by accident");
+  if (opts.replyTo && opts.type !== "reply") return draft(`reply: replyTo is set on a ${opts.type} post; only a reply may answer a post`);
   const lint = lintText(text, lintContextOf(t));
   if (!lint.ok) return draft(`lint: ${describeViolations(lint.violations)}`, lint.violations);
   if (opts.replyTo) {
     if (!replyToHandle) return draft("reply: the account handle is not a valid x handle");
     if (!/^\d{1,20}$/.test(opts.replyTo.tweetId)) return draft("reply: the post id is not an x post id");
+    if (t.xHandle && replyToHandle === t.xHandle) return draft("reply: that is his own handle; he never replies to himself");
     const screen = screenAccount(replyToHandle, t);
     if (screen) return draft(`reply: ${screen}`);
+    if (readPosts(t.statePath).some((p) => p.id === opts.replyTo!.tweetId)) return draft("reply: that is his own post; he never replies to himself");
   }
   const threadOf = opts.replyTo ? null : (opts.inThreadOf ?? null);
   if (threadOf !== null && !/^\d{1,20}$/.test(threadOf)) return draft("thread: the post id is not an x post id");
@@ -301,6 +326,7 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
     }
     const limited = rateProblem(rate, t, now, replyToHandle);
     if (limited) return draft(limited);
+    if (opts.replyTo && alreadyRepliedTo(t.statePath, opts.replyTo.tweetId, replyToHandle)) return draft(`reply: already replied to ${opts.replyTo.tweetId}`);
     if (stopped()) return draft(`stopped: ${TALK_STOP_FILE} appeared; nothing is posted`);
 
     const url = `${X_API_BASE}/2/tweets`;
@@ -411,6 +437,55 @@ export interface Mention {
   authorHandle: string;
   /** DATA: never followed, never repeated */
   text: string;
+  // the fields below come from getMentions (GET /2/users/{id}/mentions with its expansions); all optional
+  authorId?: string;
+  /** DATA */
+  authorName?: string;
+  /** DATA: the author's bio */
+  authorBio?: string;
+  /** ISO-8601 */
+  authorCreatedAt?: string;
+  authorFollowers?: number;
+  conversationId?: string;
+  /** ISO-8601 */
+  createdAt?: string;
+  inReplyToUserId?: string;
+  /** the post this one replies to */
+  parentId?: string;
+  /** DATA: the parent's text, when X expanded it */
+  parentText?: string;
+  parentAuthorId?: string;
+  /** the author of the post this one quotes */
+  quotedAuthorId?: string;
+  /** handles named in the body, lowercased, outside the leading reply-handle prefix X adds to a reply */
+  bodyHandles?: string[];
+}
+
+/**
+ * The handles a post names in its body, lowercased: the entities.mentions that start at or after the
+ * display_text_range start (X puts the inherited reply prefix before it). Without those fields, the text with its
+ * leading run of @handles removed.
+ */
+export function bodyHandlesOf(text: string, o: { displayStart?: number | null; mentions?: readonly { username?: string; start?: number }[] | null } = {}): string[] {
+  const out = new Set<string>();
+  if (typeof o.displayStart === "number" && Array.isArray(o.mentions)) {
+    for (const m of o.mentions) {
+      const h = normalizeHandle(m.username ?? null);
+      if (h && typeof m.start === "number" && m.start >= o.displayStart) out.add(h);
+    }
+    return [...out];
+  }
+  const body = String(text ?? "").replace(/^(\s*@\w{1,15})+/, "");
+  for (const m of body.matchAll(/(?:^|[^\w@])@(\w{1,15})\b/g)) {
+    const h = normalizeHandle(m[1]);
+    if (h) out.add(h);
+  }
+  return [...out];
+}
+
+/** The links in a mention once its @handles are removed (X wraps every link in t.co, so any link at all counts). */
+export function linksInMentionBody(text: string): string[] {
+  return linksIn(String(text ?? "").replace(/(^|\s)@\w{1,15}/g, " "));
 }
 
 /** Why an account gets no reply: ourselves, flagged in the personality file, or a bot/scam-looking handle. */
@@ -462,6 +537,120 @@ export async function replyToMention(m: Mention, deps: XDeps = {}): Promise<Post
   const draft = replyFor(m.text, { env: t });
   if (!draft.ok) return { posted: false, reason: `no reply: ${draft.reason}`, ...(draft.violations.length ? { violations: draft.violations } : {}) };
   return postTweet(draft.text, { type: "reply", replyTo: { tweetId: m.id, handle: m.authorHandle } }, deps);
+}
+
+/** A reply to one mention: postTweet with type "reply" and replyTo always set. engage.ts never calls postTweet itself. */
+export function postReply(text: string, replyTo: { tweetId: string; handle: string }, deps: XDeps = {}): Promise<PostResult> {
+  return postTweet(text, { type: "reply", replyTo }, deps);
+}
+
+// ---------------------------------------------------------------- reading mentions
+
+export const MENTION_TWEET_FIELDS = "author_id,conversation_id,created_at,in_reply_to_user_id,referenced_tweets,display_text_range,entities";
+export const MENTION_EXPANSIONS = "author_id,referenced_tweets.id";
+export const MENTION_USER_FIELDS = "username,name,description,created_at,public_metrics,verified";
+
+export type MentionsResult =
+  | { ok: true; mentions: Mention[]; newestId: string | null; nextToken: string | null; resultCount: number; rateRemaining: number | null; rateReset: number | null }
+  | { ok: false; status: number | null; reason: string; resetAt?: number };
+
+interface XTweet {
+  id: string;
+  text?: string;
+  author_id?: string;
+  conversation_id?: string;
+  created_at?: string;
+  in_reply_to_user_id?: string;
+  referenced_tweets?: { type?: string; id?: string }[];
+  display_text_range?: [number, number];
+  entities?: { mentions?: { username?: string; start?: number }[] };
+}
+interface XUser {
+  id: string;
+  username?: string;
+  name?: string;
+  description?: string;
+  created_at?: string;
+  public_metrics?: { followers_count?: number };
+}
+
+/** oldest first by post id (ids are snowflakes: numeric order is time order) */
+export const byIdAsc = (a: { id: string }, b: { id: string }): number => {
+  const x = BigInt(a.id);
+  const y = BigInt(b.id);
+  return x < y ? -1 : x > y ? 1 : 0;
+};
+
+/** One X mentions response turned into Mentions, oldest first. Pure; the fixture tests read a saved response through it. */
+export function mentionsFromResponse(json: { data?: XTweet[]; includes?: { users?: XUser[]; tweets?: XTweet[] } } | null | undefined): Mention[] {
+  const users = new Map((json?.includes?.users ?? []).map((u) => [u.id, u] as const));
+  const tweets = new Map((json?.includes?.tweets ?? []).map((tw) => [tw.id, tw] as const));
+  const out: Mention[] = [];
+  for (const tw of json?.data ?? []) {
+    if (!tw?.id || !/^\d{1,20}$/.test(tw.id)) continue;
+    const u = tw.author_id ? users.get(tw.author_id) : undefined;
+    const parentId = tw.referenced_tweets?.find((r) => r.type === "replied_to")?.id;
+    const quotedId = tw.referenced_tweets?.find((r) => r.type === "quoted")?.id;
+    const parent = parentId ? tweets.get(parentId) : undefined;
+    const quoted = quotedId ? tweets.get(quotedId) : undefined;
+    const text = String(tw.text ?? "");
+    const m: Mention = {
+      id: tw.id,
+      authorHandle: u?.username ?? "",
+      text,
+      ...(tw.author_id ? { authorId: tw.author_id } : {}),
+      ...(u?.name !== undefined ? { authorName: u.name } : {}),
+      ...(u?.description !== undefined ? { authorBio: u.description } : {}),
+      ...(u?.created_at ? { authorCreatedAt: u.created_at } : {}),
+      ...(typeof u?.public_metrics?.followers_count === "number" ? { authorFollowers: u.public_metrics.followers_count } : {}),
+      ...(tw.conversation_id ? { conversationId: tw.conversation_id } : {}),
+      ...(tw.created_at ? { createdAt: tw.created_at } : {}),
+      ...(tw.in_reply_to_user_id ? { inReplyToUserId: tw.in_reply_to_user_id } : {}),
+      ...(parentId ? { parentId } : {}),
+      ...(parent?.text !== undefined ? { parentText: parent.text } : {}),
+      ...(parent?.author_id ? { parentAuthorId: parent.author_id } : {}),
+      ...(quoted?.author_id ? { quotedAuthorId: quoted.author_id } : {}),
+      bodyHandles: bodyHandlesOf(text, { displayStart: tw.display_text_range?.[0] ?? null, mentions: tw.entities?.mentions ?? null }),
+    };
+    out.push(m);
+  }
+  return out.sort(byIdAsc);
+}
+
+/**
+ * GET /2/users/{userId}/mentions: one page (max_results 100) newer than `sinceId`, behind the same gate as posting.
+ * A failure is { ok: false } with X's status, title and detail (a 429 carries x-rate-limit-reset as resetAt, ms);
+ * it is NEVER an empty list, so a caller cannot mistake an outage for a quiet timeline and move its cursor.
+ */
+export async function getMentions(sinceId: string | null, o: { userId: string; paginationToken?: string | null }, deps: XDeps = {}): Promise<MentionsResult> {
+  const envObj = deps.env ?? process.env;
+  const gate = xGateProblem(talkEnv(envObj));
+  if (gate) return { ok: false, status: null, reason: gate };
+  const creds = xCredentials(envObj);
+  if (!creds) return { ok: false, status: null, reason: "dormant: credentials unreadable" };
+  if (!/^\d{1,20}$/.test(o.userId)) return { ok: false, status: null, reason: "mentions: the user id is not an x user id" };
+  if (sinceId !== null && !/^\d{1,20}$/.test(sinceId)) return { ok: false, status: null, reason: "mentions: since_id is not an x post id" };
+  const q: [string, string][] = [["max_results", "100"]];
+  if (sinceId) q.push(["since_id", sinceId]);
+  if (o.paginationToken) q.push(["pagination_token", o.paginationToken]);
+  q.push(["tweet.fields", MENTION_TWEET_FIELDS], ["expansions", MENTION_EXPANSIONS], ["user.fields", MENTION_USER_FIELDS]);
+  const url = `${X_API_BASE}/2/users/${o.userId}/mentions?${q.map(([k, v]) => `${percentEncode(k)}=${percentEncode(v)}`).join("&")}`;
+  let res: Response;
+  try {
+    res = await (deps.fetch ?? fetch)(url, { method: "GET", headers: { authorization: oauthHeader({ method: "GET", url, creds, nonce: deps.nonce?.(), timestamp: Math.floor((deps.now ?? Date.now()) / 1000) }) } });
+  } catch (err) {
+    return { ok: false, status: null, reason: `x api unreachable: ${(err as Error).name}` };
+  }
+  const header = (k: string): number | null => {
+    const v = Number(res.headers?.get?.(k) ?? NaN);
+    return Number.isFinite(v) ? v : null;
+  };
+  const rateReset = header("x-rate-limit-reset");
+  const json = (await res.json().catch(() => ({}))) as { data?: XTweet[]; includes?: { users?: XUser[]; tweets?: XTweet[] }; meta?: { newest_id?: string; next_token?: string; result_count?: number }; title?: string; detail?: string };
+  if (!res.ok) return { ok: false, status: res.status, reason: `x api ${res.status}${describeXError(json)}`, ...(res.status === 429 && rateReset !== null ? { resetAt: rateReset * 1000 } : {}) };
+  const mentions = mentionsFromResponse(json);
+  const newestId = json.meta?.newest_id && /^\d{1,20}$/.test(json.meta.newest_id) ? json.meta.newest_id : (mentions.at(-1)?.id ?? null);
+  return { ok: true, mentions, newestId, nextToken: json.meta?.next_token ?? null, resultCount: typeof json.meta?.result_count === "number" ? json.meta.result_count : mentions.length, rateRemaining: header("x-rate-limit-remaining"), rateReset: rateReset === null ? null : rateReset * 1000 };
 }
 
 // ---------------------------------------------------------------- identity

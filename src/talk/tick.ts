@@ -22,7 +22,7 @@
  *     so a pool named "$SCAM @someone" can never make him tag an account or cashtag a token; vetOutgoing also
  *     refuses any @, # or $ in a loop post
  *   - links only to LOOP_LINK_HOSTS (mrbands.finance, solscan.io, app.meteora.ag)
- *   - NO replies and no reading mentions: nothing here calls replyToMention, screenMention or reads mentions
+ *   - the tick reads no mentions and posts no replies: replies are the engage loop's (src/talk/engage.ts, its own job)
  *   - a TALK_STOP file in TALK_STATE_PATH stops the tick before anything, and again right before posting (and
  *     postTweet itself refuses while it is there)
  *   - live, the access token must be X_HANDLE's (confirmIdentity, once per token); a transient X failure is retried
