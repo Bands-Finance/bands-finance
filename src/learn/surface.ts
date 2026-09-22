@@ -69,8 +69,10 @@ export interface LearnedChange {
   at: number;
   mode: LearnMode;
   knob: LearnKnob;
-  /** the lane or the pool the knob belongs to */
-  lane: string;
+  /** the lane the knob belongs to, on a calibration row */
+  lane?: string;
+  /** the pool the knob belongs to, on a pool-penalty row */
+  pool?: string;
   label?: string;
   from: number;
   to: number;

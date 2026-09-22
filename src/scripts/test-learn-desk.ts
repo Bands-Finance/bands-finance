@@ -54,7 +54,7 @@ const lesson = (over: Partial<LessonLike> = {}): LessonLike => ({
   realizedYieldPctPerDay: 10,
   predictedYieldPct: null,
   entryYieldPct: 25,
-  entryFactor: FEE_SHARE_DEFAULT,
+  entryYieldFactor: FEE_SHARE_DEFAULT,
   ...over,
 });
 
@@ -200,7 +200,7 @@ async function main() {
   await test("effectiveMaxPositionSol with a pool penalty is <= without, and the human cap is never raised", () => {
     const maxPositionSol = 44;
     const sizeMultiplier = 0.5; // the engine's own bench/regime multiple
-    const state = applyChange(emptyLearning("paper", T0), { at: T0, mode: "paper", knob: "poolPenalty", pool: POOL, label: "baton/SOL", from: 1, to: 0.5, why: "w", n: 4, windowH: 48 }, learnEnv({} as NodeJS.ProcessEnv), 45);
+    const state = applyChange(emptyLearning("paper", T0), { at: T0, mode: "paper", knob: "pool-penalty", pool: POOL, label: "baton/SOL", from: 1, to: 0.5, why: "w", n: 4, windowH: 48 }, learnEnv({} as NodeJS.ProcessEnv), 45);
     const without = maxPositionSol * sizeMultiplier * Math.min(1, penaltyFor(null, POOL));
     const with_ = maxPositionSol * sizeMultiplier * Math.min(1, penaltyFor(state, POOL));
     assert.ok(with_ <= without, `${with_} must be <= ${without}`);
@@ -212,14 +212,14 @@ async function main() {
 
   await test("the sit-out with a penalty is >= the configured minimum, never shorter", () => {
     const reentryMin = 45;
-    const state = applyChange(emptyLearning("paper", T0), { at: T0, mode: "paper", knob: "poolPenalty", pool: POOL, label: "baton/SOL", from: 1, to: 0.5, why: "w", n: 4, windowH: 48 }, learnEnv({} as NodeJS.ProcessEnv), reentryMin);
+    const state = applyChange(emptyLearning("paper", T0), { at: T0, mode: "paper", knob: "pool-penalty", pool: POOL, label: "baton/SOL", from: 1, to: 0.5, why: "w", n: 4, windowH: 48 }, learnEnv({} as NodeJS.ProcessEnv), reentryMin);
     const learned = sitOutMinFor(state, POOL);
     assert.ok(learned >= reentryMin, `${learned} min must be at least the configured ${reentryMin}`);
     const at = (mins: number, pool: string) => sittingOut(T0 - mins * 60_000, { reentryMin: Math.max(reentryMin, sitOutMinFor(state, pool)) }, T0);
     assert.equal(at(60, POOL), true, "an hour after it was given up the penalised pool is still sitting out");
     assert.equal(at(60, "OtherPool"), false, "a pool nothing was learned about keeps the configured 45 min");
     // and the cap holds: LEARN_SITOUT_MAX_MULTIPLE times the configured minimum, never a bench
-    const worst = applyChange(emptyLearning("paper", T0), { at: T0, mode: "paper", knob: "poolPenalty", pool: POOL, label: "baton/SOL", from: 0.5, to: 0.25, why: "w", n: 4, windowH: 48 }, learnEnv({} as NodeJS.ProcessEnv), reentryMin);
+    const worst = applyChange(emptyLearning("paper", T0), { at: T0, mode: "paper", knob: "pool-penalty", pool: POOL, label: "baton/SOL", from: 0.5, to: 0.25, why: "w", n: 4, windowH: 48 }, learnEnv({} as NodeJS.ProcessEnv), reentryMin);
     assert.ok(sitOutMinFor(worst, POOL) <= 4 * reentryMin, "the worst rung still lets the pool back");
     assert.ok(penaltyFor(worst, POOL) >= 0.25, "and still leaves it a quarter of a seat: benching is the engine's job, not a learner's");
   });
@@ -239,7 +239,7 @@ async function main() {
   await test("BOUNDED STEP: 20 seats at 0.4 of forecast argue for 0.20 of face, and one cycle moves 0.5 to 0.45 and no further", () => {
     const env = learnEnv({} as NodeJS.ProcessEnv);
     // realised 10%/day against a 25%/day forecast taken at 0.5 of face: 0.5 x 0.4 = 0.20 of face
-    const rows = Array.from({ length: 20 }, (_, i) => lesson({ at: T0 - (i + 1) * HOUR, realizedYieldPctPerDay: 10, entryYieldPct: 25, entryFactor: 0.5 }));
+    const rows = Array.from({ length: 20 }, (_, i) => lesson({ at: T0 - (i + 1) * HOUR, realizedYieldPctPerDay: 10, entryYieldPct: 25, entryYieldFactor: 0.5 }));
     const r = calibrationReading(rows, "memecoin", "paper", env, T0);
     near(r.ratio!, 0.2, 1e-9, "the decayed median of realised over forecast, times the share of face it carried");
     assert.equal(r.target, 0.2);
@@ -256,7 +256,7 @@ async function main() {
 
   await test("MINIMUM GAP: a second step inside LEARN_MIN_GAP_H is refused however loud the evidence", () => {
     const env = learnEnv({} as NodeJS.ProcessEnv);
-    const rows = Array.from({ length: 20 }, (_, i) => lesson({ at: T0 - (i + 1) * HOUR, realizedYieldPctPerDay: 2, entryYieldPct: 25, entryFactor: 0.5 }));
+    const rows = Array.from({ length: 20 }, (_, i) => lesson({ at: T0 - (i + 1) * HOUR, realizedYieldPctPerDay: 2, entryYieldPct: 25, entryYieldFactor: 0.5 }));
     const r = calibrationReading(rows, "memecoin", "paper", env, T0);
     let state = emptyLearning("paper", T0);
     const first = calibrationChange(r, state, env, T0, "paper")!;
@@ -272,8 +272,8 @@ async function main() {
     const stale = Array.from({ length: 30 }, (_, i) => lesson({ at: T0 - (200 + i) * HOUR }));
     assert.equal(calibrationReading(stale, "memecoin", "paper", env, T0).n, 0, "past LEARN_CAL_WINDOW_H nothing is read at all");
     // 20 old seats that did well and 20 fresh ones that did badly: the weighted median sits with the fresh ones
-    const old_ = Array.from({ length: 20 }, (_, i) => lesson({ at: T0 - (150 + i) * HOUR, realizedYieldPctPerDay: 25, entryYieldPct: 25, entryFactor: 0.5 }));
-    const fresh = Array.from({ length: 20 }, (_, i) => lesson({ at: T0 - (i + 1) * HOUR, realizedYieldPctPerDay: 5, entryYieldPct: 25, entryFactor: 0.5 }));
+    const old_ = Array.from({ length: 20 }, (_, i) => lesson({ at: T0 - (150 + i) * HOUR, realizedYieldPctPerDay: 25, entryYieldPct: 25, entryYieldFactor: 0.5 }));
+    const fresh = Array.from({ length: 20 }, (_, i) => lesson({ at: T0 - (i + 1) * HOUR, realizedYieldPctPerDay: 5, entryYieldPct: 25, entryYieldFactor: 0.5 }));
     const r = calibrationReading([...old_, ...fresh], "memecoin", "paper", env, T0);
     assert.ok(r.ratio! < 0.3, `the fresh evidence wins: ${r.ratio}`);
     near(weightedMedian([{ v: 1, w: 1 }, { v: 9, w: 0.001 }])!, 1, 1e-12, "the weighted median ignores a featherweight outlier");
@@ -296,7 +296,7 @@ async function main() {
   await test("THE SEAT CHECK'S FORECAST counts too, at its own footing: it takes the pool's face pace whole, so its factor is 1", () => {
     const env = learnEnv({} as NodeJS.ProcessEnv);
     // realised 4 against a seat check that said 10: 1.0 x 0.4 = 0.40 of face, the 17-19 Sep number
-    const rows = Array.from({ length: 20 }, (_, i) => lesson({ at: T0 - (i + 1) * HOUR, mode: "live", realizedYieldPctPerDay: 4, predictedYieldPct: 10, entryYieldPct: null, entryFactor: null }));
+    const rows = Array.from({ length: 20 }, (_, i) => lesson({ at: T0 - (i + 1) * HOUR, mode: "live", realizedYieldPctPerDay: 4, predictedYieldPct: 10, entryYieldPct: null, entryYieldFactor: null }));
     const r = calibrationReading(rows, "memecoin", "live", env, T0);
     near(r.ratio!, 0.4, 1e-9);
     assert.equal(r.target, 0.4);

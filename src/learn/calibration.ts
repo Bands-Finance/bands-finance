@@ -204,19 +204,18 @@ export function calibrationStep(i: CalibrationStepInput): CalibrationDecision {
   const to = r2(clamp(current + Math.sign(gap) * Math.min(env.step, Math.abs(gap)), env.min, env.max));
   if (to === r2(current)) return { change: null, held: `${cal.lane}: already at the ${gap > 0 ? "ceiling" : "floor"}` };
   return {
-    change: { at: now, mode: i.mode, knob: "yieldFactor", lane: cal.lane, from: r2(current), to, why: `${cal.why}. ${gap < 0 ? "Marking the forecast down" : "Letting it back up"} one step, ${r2(current)} -> ${to}`, n: cal.n, windowH: cal.windowH },
+    change: { at: now, mode: i.mode, knob: "calibration", lane: cal.lane, from: r2(current), to, why: `${cal.why}. ${gap < 0 ? "Marking the forecast down" : "Letting it back up"} one step, ${r2(current)} -> ${to}`, n: cal.n, windowH: cal.windowH },
     held: null,
   };
 }
 
-/**
- * PURE. The policy env with the learned haircut on it. The name is `yieldFactor`; the shipped code's
- * literal is the default and the ceiling, so an env without a calibration behaves exactly as today.
+/*
+ * There was an applyCalibration() here that put the learned haircut on a policy env field called
+ * `yieldFactor`. The desk has no such field: policyEnv() in src/agent/policy.ts carries the haircut
+ * as feeShare[lane] and puts it there itself, from the journalled state. A helper that looks as if it
+ * applies a learned number but is wired to nothing is worse than no helper, so it is gone, and
+ * policyEnv is the one place a learned factor reaches a decision.
  */
-export function applyCalibration<T extends { yieldFactor?: number }>(env: T, factor: number | null | undefined, bounds: Pick<CalEnv, "min" | "max">): T {
-  if (typeof factor !== "number" || !Number.isFinite(factor)) return env;
-  return { ...env, yieldFactor: clamp(factor, bounds.min, bounds.max) };
-}
 
 /* ---------- the ratio he updates, rather than a sentence in a doc ---------- */
 

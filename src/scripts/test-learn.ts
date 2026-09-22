@@ -18,9 +18,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LedgerRow } from "../engine/ledger";
-import { applyCalibration, calEnv, calibrationFrom, calibrationStep, ewma, forecastRatio, PACE_SEED_1719_SEP, type Lane } from "../learn/calibration";
+import { calEnv, calibrationFrom, calibrationStep, ewma, forecastRatio, PACE_SEED_1719_SEP, type Lane } from "../learn/calibration";
 import { calibrationFrozen, freezeLine, freezeState, isFrozenValue, learningFrozen, poolsFrozen } from "../learn/freeze";
-import { appendChange, applyTuning, endReasonOf, forecastOf, LEARNING_FILE, LEARNING_LOG, LESSONS_FILE, lessonLine, lessonOf, modeOf, quoteDriftOf, readChanges, readLearning, readLessons, writeLearning, tuneEnv, tuneFromLessons, type BandMeta, type LearningChange, type Lesson } from "../learn/lessons";
+import { appendLearningChange, applyTuning, endReasonOf, forecastOf, LEARNING_FILE, LEARNING_LOG, LESSONS_FILE, lessonLine, lessonOf, modeOf, quoteDriftOf, readLearningChanges, readLearning, readLessons, writeLearning, tuneEnv, tuneFromLessons, type BandMeta, type LearningChange, type Lesson } from "../learn/lessons";
 import { downExit, endSideOf, endSideTally, poolMemoryEnv, poolPenalty } from "../learn/poolMemory";
 import { clearLearnedCache, learnedLines, learnedView } from "../learn/view";
 import { kindOf, missingBands, reachBins, splitReason } from "./lessons-recompute";
@@ -298,13 +298,13 @@ async function runLearners(): Promise<void> {
     const cal = calibrationFrom(poor, env, NOW, "live").memecoin;
     assert.ok(cal.combined < 0.3, `the seats argue for ${cal.combined}`);
     const first = calibrationStep({ current: 0.5, cal, env, last: null, now: NOW, mode: "live" });
-    assert.deepEqual([first.change!.knob, first.change!.lane, first.change!.from, first.change!.to], ["yieldFactor", "memecoin", 0.5, 0.45], "one step of 0.05, not the whole way");
+    assert.deepEqual([first.change!.knob, first.change!.lane, first.change!.from, first.change!.to], ["calibration", "memecoin", 0.5, 0.45], "one step of 0.05, not the whole way");
     assert.equal(first.change!.mode, "live");
     assert.equal(first.change!.n, 25);
     assert.match(first.change!.why, /25 closed memecoin seats on the live book sat in range 40%/);
     assert.match(first.change!.why, /Marking the forecast down one step, 0.5 -> 0.45/);
     // the gap
-    const inGap: LearningChange = { at: NOW - 60 * 60_000, mode: "live", knob: "yieldFactor", lane: "memecoin", from: 0.5, to: 0.45, why: "", n: 25, windowH: 168 };
+    const inGap: LearningChange = { at: NOW - 60 * 60_000, mode: "live", knob: "calibration", lane: "memecoin", from: 0.5, to: 0.45, why: "", n: 25, windowH: 168 };
     assert.equal(calibrationStep({ current: 0.45, cal, env, last: inGap, now: NOW, mode: "live" }).change, null, "an hour after the last step, inside the six-hour gap");
     assert.match(calibrationStep({ current: 0.45, cal, env, last: inGap, now: NOW, mode: "live" }).held!, /min of the 360 min gap left/);
     assert.ok(calibrationStep({ current: 0.45, cal, env, last: { ...inGap, at: NOW - 7 * H }, now: NOW, mode: "live" }).change, "after the gap it may move again");
@@ -355,17 +355,6 @@ async function runLearners(): Promise<void> {
       if (before && !after) refusedMore++;
     }
     assert.ok(refusedMore > 0, "and on this evidence it does refuse some it would have taken");
-  });
-
-  await test("applyCalibration: the learned factor rides on the policy env inside its bounds; nothing without one", () => {
-    const base: { yieldFactor?: number; other: number } = { other: 1 };
-    const env = calEnv({});
-    assert.deepEqual(applyCalibration(base, null, env), base);
-    assert.deepEqual(applyCalibration(base, undefined, env), base);
-    assert.equal(applyCalibration(base, 0.3, env).yieldFactor, 0.3);
-    assert.equal(applyCalibration(base, 9, env).yieldFactor, 0.5, "bounded at the shipped ceiling");
-    assert.equal(applyCalibration(base, 0, env).yieldFactor, 0.1, "and at the floor");
-    assert.equal(applyCalibration(base, Number.NaN, env).yieldFactor, undefined);
   });
 
   console.log("\nthe pool memory");
@@ -433,20 +422,20 @@ async function runLearners(): Promise<void> {
     const dir = tmpDir();
     const log = path.join(dir, LEARNING_LOG);
     const state = path.join(dir, LEARNING_FILE);
-    assert.deepEqual(readChanges(log), [], "no journal yet is not an error");
+    assert.deepEqual(readLearningChanges(log), [], "no journal yet is not an error");
     assert.equal(readLearning(state, "paper"), null);
-    const c: LearningChange = { at: NOW, mode: "paper", knob: "yieldFactor", lane: "memecoin", from: 0.5, to: 0.45, why: "21 closed memecoin seats sat in range 40% of their lives", n: 21, windowH: 168 };
-    appendChange(log, c);
-    appendChange(log, { ...c, at: NOW + H, from: 0.45, to: 0.4 });
+    const c: LearningChange = { at: NOW, mode: "paper", knob: "calibration", lane: "memecoin", from: 0.5, to: 0.45, why: "21 closed memecoin seats sat in range 40% of their lives", n: 21, windowH: 168 };
+    appendLearningChange(log, c);
+    appendLearningChange(log, { ...c, at: NOW + H, from: 0.45, to: 0.4 });
     fs.appendFileSync(log, "not json\n");
-    const back = readChanges(log);
+    const back = readLearningChanges(log);
     assert.equal(back.length, 2, "a torn line is skipped, the rest still read");
     assert.deepEqual(back[0], c);
-    assert.equal(readChanges(log, NOW + 1).length, 1);
-    writeLearning(state, { mode: "paper", at: NOW, lanes: { memecoin: { inRangeFactor: 0.4, paceFactor: 0.33, combined: 0.13, n: 21, at: NOW, why: c.why } }, history: back });
-    assert.equal(readLearning(state, "paper")!.lanes.memecoin.combined, 0.13);
+    assert.equal(readLearningChanges(log, NOW + 1).length, 1, "and an as-of read sees only what had happened by then");
+    writeLearning(state, { mode: "paper", updatedAt: NOW, calibration: { memecoin: { lane: "memecoin", factor: 0.13, n: 21, at: NOW, why: c.why } }, pools: {} });
+    assert.equal(readLearning(state, "paper")!.calibration.memecoin!.factor, 0.13, "the desk's own reader is the only one, so the page cannot read a shape the desk never writes");
     assert.equal(readLearning(state, "live"), null, "the live desk does not read the paper desk's factor");
-    assert.equal(readLearning(state)!.mode, "paper", "a reader that names no mode sees it, and the mode is on the row to say whose it is");
+    assert.equal(readLearning(state, "paper")!.mode, "paper", "the mode is on the file to say whose numbers these are");
     assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp")).length, 0, "the write is atomic: no temp file left behind");
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -486,8 +475,9 @@ async function runLearners(): Promise<void> {
     assert.equal(v.lessonsTotal, 25);
     const meme = v.lanes.find((l) => l.lane === "memecoin")!;
     assert.equal(meme.inForce, 0.5, "nothing has been applied yet, so the shipped number is what is in force");
-    assert.ok(meme.target < 0.5, "and the seats already argue for less");
-    assert.equal(meme.paceSource, "seed");
+    assert.ok(meme.target !== null && meme.target < 0.5, "and the seats already argue for less");
+    assert.equal(meme.evidence!.paceSource, "seed", "the in-range second opinion borrows the 17-19 Sep pace and says so");
+    assert.ok(meme.evidence!.combined < 0.5);
     assert.equal(v.changes.length, 0);
     assert.equal(v.pool!.seats.length, 5, "the last five closes of the pool asked for");
     assert.equal(v.frozen.all, false);

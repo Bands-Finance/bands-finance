@@ -39,12 +39,33 @@ stay that way. Structurally, not by convention:
 - Freezing is always the conservative direction: the frozen state is the shipped default, which is the
   loosest any learner may ever be.
 
+## Who learns, who reads, who decides
+
+Three packages landed together and the merge settled one question each time two of them answered it:
+
+| The one thing | Where it lives | Who else may hold a copy |
+|---|---|---|
+| The learner that **acts** | `src/desk/learning.ts`, run once a cycle from `src/index.ts` | nobody |
+| The state and the journal | `src/desk/learning.ts` writes and reads `DATA_DIR/learning.json` and `learning.jsonl` | `src/learn/lessons.ts` re-exports those readers; it holds no second copy |
+| The freeze table | `src/learn/freeze.ts` | `src/desk/learning.ts` and `src/status.ts` both delegate to it |
+| The shape the public reads | `src/learn/surface.ts` (types), built once by `readLearnedView` in `src/status.ts` | the four surfaces render it and do no arithmetic |
+| The shape `npm run learning` reads | `src/learn/view.ts`, the engine view | it reads the desk's state through the desk's own reader |
+
+**Two models of the same question, and only one of them moves a knob.** `src/desk/learning.ts` scores a
+lane by the decayed median of what its seats realised against the forecast he wrote down at the open.
+`src/learn/calibration.ts` scores it by in-range share times captured pace, which the backfilled seats can
+answer because they carry an in-range share and no forecast. The desk's is the one that acts. The other is
+printed beside it, labelled **second opinion, not acted on**, and no surface may print it as the target.
+The reason is the pace seed: on a paper book the pace half is borrowed from the 17-19 Sep real-money run,
+and a borrowed number may inform him, not decide for him.
+
 ## The knobs
 
 ### 1. The forecast calibration (`src/learn/calibration.ts`)
 
 **What it moves.** The in-range haircut in `seatEarnings`: the 0.5 in "halved because a band earns only
-while price is inside it". Ships as `yieldFactor` on the policy env.
+while price is inside it". It reaches a decision as `feeShare[lane]` on the policy env, put there by
+`policyEnv` in `src/agent/policy.ts` from the journalled state, and nowhere else.
 
 **Why this knob and not band width.** Over the 17-19 Sep real-money run the forecast came in at a median
 **0.39** of what the seats realised, too high on **48 of 52** priced seats. Band width separates nothing
@@ -143,9 +164,11 @@ may be dropped or softened.
    the model. These knobs are his **rulebook's**, not his model's, and the page says so.
 2. **Paper fees are modelled.** A paper seat's fees come out of the same formula as the forecast
    (`src/paper/mark.ts` `accrueFees`: pool pace x share x 0.5). A paper pace factor would score the
-   screen against itself and read 1.0 by construction. So on a paper desk the pace half is the seed
+   screen against itself and read 1.0 by construction. So in the second opinion the pace half is the seed
    measured on the 17-19 Sep real-money run (`LEARN_PACE_SEED`, default 0.33) and never moves; only the
-   in-range half learns, because where the price went is a fact the paper book did not invent.
+   in-range half reads anything, because where the price went is a fact the paper book did not invent.
+   The learner that acts does not use either half: it waits for a seat he priced at the open and then
+   scored at the close, which is why the paper book moves nothing today. See caveat 8.
 3. **The pace seed is a memecoin figure.** The real-money run held no stock seat, so the stock lane
    borrows it until a live stock seat closes. It is a haircut either way: borrowing it can only refuse
    seats, never take one.
@@ -164,6 +187,14 @@ may be dropped or softened.
    price was 48 bins ABOVE the band when the stop fired. The learners key on the end side and on the
    yield ratio. The drift is decomposed onto the lesson and shown, never learned from.
 
+8. **The paper book has nothing to score yet, and says so.** Not one of the 21 paper lessons on disk
+   carries a forecast, and the 67 the backfill reconstructs cannot carry one either: `entryYieldPct` was
+   not kept at the open until this sprint. So on the paper book the calibration prints "0 of the 20 seats
+   it needs" and the shipped 0.5 stands, backfill or no backfill. That is fixed by trading, not by code:
+   `src/index.ts` now writes the open's forecast onto the band, so the very next paper seat that closes
+   is scoreable. The backfill still earns its keep, because the pool memory reads end sides and the 67
+   hold every priced-out and stopped seat the book has.
+
 ## Checking it yourself
 
 ```
@@ -171,6 +202,8 @@ npm run learning                                   both books, every number reco
 npm run learning -- --pool <address>               that pool's memory and its last five closes
 npm run learning -- --at 2026-09-15T18:00Z         as of that moment, not now
 npm run test:learn                                 every decision function, plus a pass over the real books
+npm run test:learn-desk                            the learner that acts, and one real cycle on a copy of the book
+npm run test:learn-surface                         what the four public surfaces print, and what they never print
 DATA_DIR=data-live npm run lessons:recompute -- --backfill    what the backfill would write
 ```
 

@@ -100,7 +100,7 @@ export function poolPenalty(lessons: readonly Lesson[], pool: string, mode: stri
 export const penaltyChange = (p: PoolPenalty, mode: string, from: number, now: number, windowH: number) => ({
   at: now,
   mode,
-  knob: "poolPenalty" as const,
+  knob: "pool-penalty" as const,
   pool: p.pool,
   from,
   to: p.sizeMultiple,

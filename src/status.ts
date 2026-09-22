@@ -349,7 +349,7 @@ export function readLearnedView(opts: LearnedViewOptions): LearnedView {
 
   // the calibration, per lane: the newest journalled value in force, and the sample it rests on
   const lanes = new Set<string>(["memecoin", "stock"]);
-  for (const c of changes) if (c.knob === "calibration") lanes.add(c.lane);
+  for (const c of changes) if (c.knob === "calibration" && c.lane) lanes.add(c.lane);
   const factors: LearnedFactor[] = [];
   for (const lane of lanes) {
     const laneLessons = lessons.filter((r) => (r.kind ?? "memecoin") === lane);
@@ -376,13 +376,15 @@ export function readLearnedView(opts: LearnedViewOptions): LearnedView {
   // a pool penalty exists only where one was journalled: a pool nobody learned about trades at full size
   const seenPools = new Set<string>();
   for (const c of changes) {
-    if (c.knob !== "pool-penalty" || seenPools.has(c.lane)) continue;
-    seenPools.add(c.lane);
-    const poolLessons = lessons.filter((r) => r.pool === c.lane);
+    // the desk journals a pool's row under `pool`; `lane` is the older spelling and still read
+    const addr = c.pool ?? c.lane;
+    if (c.knob !== "pool-penalty" || !addr || seenPools.has(addr)) continue;
+    seenPools.add(addr);
+    const poolLessons = lessons.filter((r) => r.pool === addr);
     factors.push({
       knob: "pool-penalty",
-      lane: c.lane,
-      label: c.label ?? poolLessons[poolLessons.length - 1]?.label ?? c.lane.slice(0, 6),
+      lane: addr,
+      label: c.label ?? poolLessons[poolLessons.length - 1]?.label ?? addr.slice(0, 6),
       factor: c.to,
       defaultFactor: DEFAULT_POOL_PENALTY,
       n: poolLessons.length,

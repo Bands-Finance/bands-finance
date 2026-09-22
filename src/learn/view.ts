@@ -12,7 +12,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { calEnv, calibrationFrom, forecastRatio, LANES, type ForecastRatio, type Lane, type LaneCalibration } from "./calibration";
 import { freezeLine, freezeState, type FreezeState } from "./freeze";
-import { LEARNING_FILE, LEARNING_LOG, LESSONS_FILE, readChanges, readLearning, readLessons, type LearningChange, type Lesson } from "./lessons";
+import { LESSONS_FILE, readLessons, type Lesson } from "./lessons";
+import { LANES as DESK_LANES, LEARNING_FILE, LEARNING_LOG, calibrationReading, factorFor, learnEnv, readLearning, readLearningChanges, type Lane as DeskLane, type LearningChange } from "../desk/learning";
 import { endSideTally, poolMemoryEnv, poolPenalty, type EndSideRow, type PoolPenalty } from "./poolMemory";
 
 /** One closed seat as the casebook shows it: the facts, never the money on its own. */
@@ -36,20 +37,26 @@ export interface SeatCard {
 }
 
 export interface LearnedLane {
-  lane: Lane;
-  /** the factor in force on the desk right now */
+  lane: DeskLane;
+  /** the factor in force on the desk right now, read off DATA_DIR/learning.json */
   inForce: number;
-  /** what the seats argue for; equal to inForce once the steps have caught up */
-  target: number;
-  inRangeFactor: number;
-  paceFactor: number;
-  paceSource: "seed" | "live";
+  /**
+   * What the desk's own learner (src/desk/learning.ts) will step toward, and the ONLY target any
+   * surface prints: the decayed median of realised over forecast. Null while its sample is short,
+   * when the shipped default stands.
+   */
+  target: number | null;
+  /** how many scoreable seats bought that target */
   n: number;
-  /** true while n is under the minimum: the shipped default is in force and the page says so */
-  weak: boolean;
-  asOf: number | null;
-  windowH: number;
+  /** the desk learner's sentence, printed verbatim */
   why: string;
+  windowH: number;
+  /**
+   * THE SECOND OPINION, evidence only: the in-range half of the same question, which the backfilled
+   * paper seats can answer even though they carry no forecast. Nothing on the desk moves on it, and a
+   * surface that prints it says so.
+   */
+  evidence: { inRangeFactor: number; paceFactor: number; paceSource: "seed" | "live"; combined: number; n: number; weak: boolean; asOf: number | null; why: string } | null;
   lastChange: LearningChange | null;
 }
 
@@ -118,13 +125,11 @@ function load(dataDir: string, mode: string, now: number): Cached {
   const key = `${dataDir}|${mode}`;
   if (cache && cache.key === key && now - cache.at < 30_000) return cache;
   const lessons = readLessons(path.join(dataDir, LESSONS_FILE));
-  const changes = readChanges(path.join(dataDir, LEARNING_LOG));
+  const changes = readLearningChanges(path.join(dataDir, LEARNING_LOG));
+  // the desk is the only writer of learning.json, so the desk's own reader is what says what is in force
   const state = readLearning(path.join(dataDir, LEARNING_FILE), mode);
   const inForce: Record<string, number> = {};
-  for (const lane of LANES) {
-    const v = state?.lanes?.[lane]?.combined;
-    if (typeof v === "number" && Number.isFinite(v)) inForce[lane] = v;
-  }
+  for (const lane of DESK_LANES) inForce[lane] = factorFor(state, lane);
   cache = { key, at: now, lessons, changes, inForce };
   return cache;
 }
@@ -140,21 +145,19 @@ export function learnedView(dataDir: string, mode: string, pool?: string, env: N
   const cal = calibrationFrom(lessons, ce, now, mode);
   // the whole view is an AS-OF read: nothing that closed after `now` votes anywhere in it
   const mine = lessons.filter((l) => (l.mode ?? "live") === mode && !l.ask && l.at <= now);
-  const lanes: LearnedLane[] = LANES.map((lane) => {
-    const c: LaneCalibration = cal[lane];
-    const last = [...changes].filter((x) => x.knob === "yieldFactor" && x.lane === lane && x.mode === mode && x.at <= now).sort((a, b) => b.at - a.at)[0] ?? null;
+  const le = learnEnv(env);
+  const lanes: LearnedLane[] = DESK_LANES.map((lane) => {
+    const reading = calibrationReading(mine, lane, mode, le, now);
+    const c: LaneCalibration | undefined = (cal as Partial<Record<string, LaneCalibration>>)[lane];
+    const last = [...changes].filter((x) => x.knob === "calibration" && x.lane === lane && x.mode === mode && x.at <= now).sort((a, b) => b.at - a.at)[0] ?? null;
     return {
       lane,
       inForce: inForce[lane] ?? ce.base,
-      target: c.weak ? ce.base : c.combined,
-      inRangeFactor: c.inRangeFactor,
-      paceFactor: c.paceFactor,
-      paceSource: c.paceSource,
-      n: c.n,
-      weak: c.weak,
-      asOf: c.asOf,
-      windowH: c.windowH,
-      why: c.why,
+      target: reading.target,
+      n: reading.n,
+      why: reading.why,
+      windowH: reading.windowH,
+      evidence: c ? { inRangeFactor: c.inRangeFactor, paceFactor: c.paceFactor, paceSource: c.paceSource, combined: c.combined, n: c.n, weak: c.weak, asOf: c.asOf, why: c.why } : null,
       lastChange: last,
     };
   });
@@ -193,10 +196,10 @@ export function learnedLines(v: LearnedView): string[] {
   out.push(`${v.mode} book, ${v.lessonsTotal} closed seats on record. ${v.frozenLine}.`);
   out.push(v.ratio.line);
   for (const l of v.lanes) {
-    out.push(
-      `  ${l.lane.padEnd(9)} factor in force ${l.inForce.toFixed(2)}${l.weak ? " (the shipped default)" : ""}, the seats argue for ${l.target.toFixed(2)} (in range ${l.inRangeFactor.toFixed(2)} x pace ${l.paceFactor.toFixed(2)}${l.paceSource === "seed" ? ", seed" : ""}), n=${l.n}${l.weak ? " WEAK" : ""}`,
-    );
+    out.push(`  ${l.lane.padEnd(9)} factor in force ${l.inForce.toFixed(2)}${l.target === null ? " (the shipped default)" : ""}, the desk is stepping toward ${l.target === null ? "nothing yet" : l.target.toFixed(2)}, n=${l.n}${l.target === null ? " WEAK" : ""}`);
     out.push(`             ${l.why}`);
+    const e = l.evidence;
+    if (e) out.push(`             second opinion, not acted on: in range ${e.inRangeFactor.toFixed(2)} x pace ${e.paceFactor.toFixed(2)}${e.paceSource === "seed" ? ", seed" : ""} = ${e.combined.toFixed(2)}, n=${e.n}${e.weak ? " WEAK" : ""}`);
   }
   for (const s of v.endSides) out.push(`  ended ${s.side.padEnd(6)} n=${String(s.n).padStart(3)}  net ${s.net >= 0 ? "+" : ""}${s.net.toFixed(3)} SOL ex-drift, ${s.winners} winner${s.winners === 1 ? "" : "s"}, fees ${s.feesSol.toFixed(3)} SOL`);
   if (v.changes.length === 0) out.push("  no change has been made yet: every one of them would appear here with its evidence");

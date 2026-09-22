@@ -44,7 +44,7 @@ export interface BandMeta {
    */
   entryYieldPct?: number | null;
   /** where that forecast's fee pace came from: the scout's 4h or 60m window, or the venue's 24h figure */
-  entrySource?: "flow-4h" | "flow-60m" | "24h" | null;
+  entrySource?: "policy" | "flow-4h" | "flow-60m" | "24h" | null;
   /** minutes of pool flow the scout had read when the forecast was made; null on a 24h figure */
   entryCoveredMin?: number | null;
   /** the share of the band's depth the seat took at the open, percent */
@@ -99,7 +99,7 @@ export interface Lesson {
   predictedYieldPct: number | null;
   /** the forecast the desk decided on at the open, carried from the meta: the learners' training label */
   entryYieldPct?: number | null;
-  entrySource?: "flow-4h" | "flow-60m" | "24h" | null;
+  entrySource?: "policy" | "flow-4h" | "flow-60m" | "24h" | null;
   entryCoveredMin?: number | null;
   entrySharePct?: number | null;
   entryYieldFactor?: number | null;
@@ -418,88 +418,11 @@ export function readTuningCached(file: string, now = Date.now()): Tuning | null 
 /* ---------- the learning journal ---------- */
 
 /**
- * THE JOURNAL. Nothing he learns changes without one of these rows, and `why` is the sentence the site,
- * the API and `npm run learning` print verbatim. A knob that moved without a row is a bug.
+ * THE JOURNAL lives in src/desk/learning.ts, which is the desk's own learner and the ONLY writer of
+ * DATA_DIR/learning.json and DATA_DIR/learning.jsonl. This file used to carry a second copy of the
+ * state shape and its reader; two spellings of one file is how a surface ends up printing a number
+ * nothing on the desk is acting on, so the copy is gone. Read the journal through
+ * readLearning / readLearningChanges / factorFor in src/desk/learning.ts, and write it through
+ * writeLearning / appendLearningChange there.
  */
-export interface LearningChange {
-  at: number;
-  /** the desk that learned it: "live", "paper", "dry-run" */
-  mode: string;
-  knob: "inRangeFactor" | "paceFactor" | "yieldFactor" | "poolPenalty";
-  /** the lane the change is for ("memecoin" | "stock"), when the knob has lanes */
-  lane?: string;
-  /** the pool the change is for, when the knob is a pool's */
-  pool?: string;
-  from: number;
-  to: number;
-  /** the evidence, in his own words, with the numbers in it */
-  why: string;
-  /** how many closed seats voted */
-  n: number;
-  /** the window those seats came from, hours */
-  windowH: number;
-}
-
-/** What the learners have in force on this desk. Mode-stamped: a reader refuses another desk's file. */
-export interface LearningState {
-  /** the desk that wrote it */
-  mode: string;
-  at: number;
-  /** per lane: the factor in force and what bought it */
-  lanes: Record<string, { inRangeFactor: number; paceFactor: number; combined: number; n: number; at: number; why: string }>;
-  history: LearningChange[];
-}
-
-export const LEARNING_LOG = "learning.jsonl";
-export const LEARNING_FILE = "learning.json";
-
-/** One row per change, appended. Best effort: the journal must never break a trading path. */
-export function appendChange(file: string, change: LearningChange): void {
-  fs.appendFileSync(file, JSON.stringify(change) + "\n");
-}
-
-export function readChanges(file: string, sinceMs = 0): LearningChange[] {
-  try {
-    return fs
-      .readFileSync(file, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((l) => {
-        try {
-          return JSON.parse(l) as LearningChange;
-        } catch {
-          return null;
-        }
-      })
-      .filter((c): c is LearningChange => !!c && typeof c.at === "number" && c.at >= sinceMs);
-  } catch {
-    return [];
-  }
-}
-
-/** The learned state, or null when there is none OR when it was written by another desk. */
-export function readLearning(file: string, mode?: string): LearningState | null {
-  try {
-    const s = JSON.parse(fs.readFileSync(file, "utf8")) as LearningState;
-    if (!s || typeof s !== "object" || !s.lanes || typeof s.lanes !== "object") return null;
-    if (mode !== undefined && modeOf(s) !== mode) return null;
-    return { ...s, history: Array.isArray(s.history) ? s.history : [] };
-  } catch {
-    return null;
-  }
-}
-
-/** Atomic, like writeTuning: a half-written file must never be read as a factor. */
-export function writeLearning(file: string, s: LearningState): void {
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(s, null, 2));
-  fs.renameSync(tmp, file);
-}
-
-/** The learned state, re-read at most every 30 s: the desk asks for it many times a cycle. */
-let learnCache: { file: string; mode: string; at: number; s: LearningState | null } | null = null;
-export function readLearningCached(file: string, mode: string, now = Date.now()): LearningState | null {
-  if (learnCache && learnCache.file === file && learnCache.mode === mode && now - learnCache.at < 30_000) return learnCache.s;
-  learnCache = { file, mode, at: now, s: readLearning(file, mode) };
-  return learnCache.s;
-}
+export { LEARNING_FILE, LEARNING_LOG, appendLearningChange, readLearning, readLearningCached, readLearningChanges, writeLearning, type LearningChange, type LearningState } from "../desk/learning";

@@ -1801,7 +1801,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
           entrySource: meta.entrySource ?? null,
           entryCoveredMin: meta.entryCoveredMin ?? null,
           entrySharePct: meta.entrySharePct ?? null,
-          entryFactor: meta.entryFactor ?? null,
+          entryYieldFactor: meta.entryYieldFactor ?? null,
         });
         console.log(`${tag} ${lessonLine(lesson)}`);
       } catch (err) {
@@ -1835,7 +1835,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
       ...(() => {
         const f = entryForecastOf(o.address);
         return f
-          ? { entryYieldPct: Math.round(f.yieldPctPerDay * 100) / 100, entrySource: "policy", entryCoveredMin: screen?.flow?.coveredMin ?? null, entrySharePct: Math.round(f.sharePct * 100) / 100, entryFactor: f.feeShare }
+          ? { entryYieldPct: Math.round(f.yieldPctPerDay * 100) / 100, entrySource: "policy", entryCoveredMin: screen?.flow?.coveredMin ?? null, entrySharePct: Math.round(f.sharePct * 100) / 100, entryYieldFactor: f.feeShare }
           : {};
       })(),
       ...(isAskExit(verdict.decision) ? { ask: true } : {}),

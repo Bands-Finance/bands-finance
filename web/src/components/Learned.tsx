@@ -43,7 +43,10 @@ export interface LearnedChange {
   at: number;
   mode: string;
   knob: "calibration" | "pool-penalty";
-  lane: string;
+  /** the lane, on a calibration row */
+  lane?: string;
+  /** the pool, on a pool-penalty row */
+  pool?: string;
   label?: string;
   from: number;
   to: number;
@@ -190,10 +193,10 @@ export function Learned({ view }: LearnedProps = {}) {
         ) : (
           <ol className="learned__rows">
             {v.changes.map((c) => (
-              <li className="learned__row" key={`${c.at}:${c.knob}:${c.lane}`}>
+              <li className="learned__row" key={`${c.at}:${c.knob}:${c.lane ?? c.pool}`}>
                 <span className="learned__when">{day(c.at)}</span>
                 <span className="learned__what">
-                  {KNOB_WORDS[c.knob] ?? c.knob} <span className="learned__lane">{c.label ?? c.lane}</span> {x(c.from)} → {x(c.to)}
+                  {KNOB_WORDS[c.knob] ?? c.knob} <span className="learned__lane">{c.label ?? c.lane ?? c.pool?.slice(0, 6)}</span> {x(c.from)} → {x(c.to)}
                 </span>
                 <span className="learned__why">{c.why}</span>
                 <span className="learned__n">

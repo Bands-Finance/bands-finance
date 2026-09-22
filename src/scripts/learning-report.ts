@@ -16,7 +16,7 @@
  * code recomputed; now it is a number with an n beside it that moves when the book moves.
  */
 import path from "node:path";
-import { calEnv } from "../learn/calibration";
+import { FEE_SHARE_DEFAULT, PENALTY_RUNGS, learnEnv } from "../desk/learning";
 import { LESSONS_FILE, readLessons, type Lesson } from "../learn/lessons";
 import { clearLearnedCache, learnedLines, learnedView } from "../learn/view";
 
@@ -64,7 +64,10 @@ for (const dir of books) {
   }
 }
 
-const ce = calEnv(process.env);
-console.log(`\nA change needs ${ce.minSample} closed seats in the lane, moves at most ${ce.step} and waits ${Math.round(ce.minGapMs / 60_000)} min between steps.`);
-console.log(`The factor is clamped to [${ce.min}, ${ce.max}]: the shipped ${ce.base} is the ceiling, so calibration only ever refuses more seats.`);
+// the bounds printed here are the DESK's own (src/desk/learning.ts), because those are the ones that
+// bind: a report that quoted a second set of numbers would be quoting a learner nothing runs
+const le = learnEnv(process.env);
+console.log(`\nA change needs ${le.calMinN} closed seats in the lane, moves at most ${le.calStep} and waits ${Math.round(le.minGapMs / 60_000)} min between steps.`);
+console.log(`The factor is clamped to [${le.calMin}, ${le.calMax}]: the shipped ${FEE_SHARE_DEFAULT} is the ceiling, so calibration only ever refuses more seats.`);
+console.log(`A pool's seat multiple steps one rung at a time down to ${PENALTY_RUNGS[PENALTY_RUNGS.length - 1]} and never above 1, and no learner may touch a risk limit.`);
 if (printed === 0) console.log("Nothing to report: no book on this machine has a closed seat yet.");

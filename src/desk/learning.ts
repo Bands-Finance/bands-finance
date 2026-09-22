@@ -46,6 +46,7 @@
  * imports in src/index.ts and src/agent/policy.ts at them: the signatures below are the agreed ones.
  */
 import fs from "node:fs";
+import { calibrationFrozen, poolsFrozen } from "../learn/freeze";
 
 export type Lane = "memecoin" | "stock" | "other";
 export const LANES: readonly Lane[] = ["memecoin", "stock", "other"];
@@ -109,19 +110,18 @@ export function learnEnv(env: NodeJS.ProcessEnv = process.env): LearnEnv {
 }
 
 /**
- * PURE. The freeze switch, spelled exactly once. Frozen only on the literal "true", trimmed and
- * lower-cased: unset, "", "1", "yes", "on", "TRUE " with a space are handled by that same rule, so
- * "TRUE" freezes and "1" does not. A switch that half-works is worse than no switch.
+ * The freeze switch is spelled exactly once, in src/learn/freeze.ts: frozen only on the literal
+ * "true", trimmed and lower-cased, so "TRUE" freezes and "1", "yes" and "on" do not. The desk, the
+ * API, the site and the MCP tool all read that one table, which is why they can never disagree about
+ * whether he is learning. This re-exports it rather than restating it.
  */
-export const learningFrozen = (env: NodeJS.ProcessEnv = process.env): boolean => (env.LEARN_FROZEN ?? "").trim().toLowerCase() === "true";
+export { learningFrozen } from "../learn/freeze";
 
 export type Knob = "calibration" | "pools";
 
 /** PURE. The per-knob freeze, on top of the desk-wide one, by the same literal-"true" rule. */
 export function knobFrozen(env: NodeJS.ProcessEnv, knob: Knob): boolean {
-  if (learningFrozen(env)) return true;
-  const v = knob === "calibration" ? env.LEARN_FROZEN_CALIBRATION : env.LEARN_FROZEN_POOLS;
-  return (v ?? "").trim().toLowerCase() === "true";
+  return knob === "calibration" ? calibrationFrozen(env) : poolsFrozen(env);
 }
 
 /* ---------- state ---------- */
@@ -158,7 +158,7 @@ export interface LearningState {
 export interface LearningChange {
   at: number;
   mode: string;
-  knob: "calibration" | "poolPenalty";
+  knob: "calibration" | "pool-penalty";
   lane?: Lane;
   pool?: string;
   label?: string;
@@ -206,7 +206,7 @@ export interface LessonLike {
   /** what the desk forecast AT THE OPEN, when it recorded one (src/index.ts) */
   entryYieldPct?: number | null;
   /** the share of face that forecast already carried; absent means the seat check's, which takes face whole */
-  entryFactor?: number | null;
+  entryYieldFactor?: number | null;
   ask?: boolean;
 }
 
@@ -215,7 +215,7 @@ const laneOfKind = (kind: string): Lane => (kind === "stock" ? "stock" : kind ==
 /** PURE. The forecast a lesson is scored against, and the share of face it already carried. */
 export function forecastOf(l: LessonLike): { forecast: number; factor: number } | null {
   const entry = typeof l.entryYieldPct === "number" && l.entryYieldPct > 0 ? l.entryYieldPct : null;
-  if (entry !== null) return { forecast: entry, factor: typeof l.entryFactor === "number" && l.entryFactor > 0 ? l.entryFactor : FEE_SHARE_DEFAULT };
+  if (entry !== null) return { forecast: entry, factor: typeof l.entryYieldFactor === "number" && l.entryYieldFactor > 0 ? l.entryYieldFactor : FEE_SHARE_DEFAULT };
   // the seat check's reading (src/screener/seatYield.ts) takes the pool's fee pace whole: factor 1
   const seen = typeof l.predictedYieldPct === "number" && l.predictedYieldPct > 0 ? l.predictedYieldPct : null;
   return seen === null ? null : { forecast: seen, factor: 1 };
@@ -350,7 +350,7 @@ export function poolPenaltyChanges(lessons: readonly LessonLike[], mode: string,
     out.push({
       at: now,
       mode,
-      knob: "poolPenalty",
+      knob: "pool-penalty",
       pool,
       label,
       from,
@@ -370,7 +370,7 @@ export function applyChange(state: LearningState, c: LearningChange, env: LearnE
   if (c.knob === "calibration" && c.lane) {
     return { ...state, calibration: { ...state.calibration, [c.lane]: { lane: c.lane, factor: c.to, n: c.n, at: c.at, why: c.why } }, updatedAt: c.at };
   }
-  if (c.knob === "poolPenalty" && c.pool) {
+  if (c.knob === "pool-penalty" && c.pool) {
     const rung = PENALTY_RUNGS.findIndex((r) => Math.abs(r - c.to) < 1e-9);
     const multiple = Math.min(env.sitOutMaxMultiple, 1 + Math.max(0, rung));
     return { ...state, pools: { ...state.pools, [c.pool]: { pool: c.pool, label: c.label ?? c.pool, penalty: c.to, sitOutMin: Math.round(Math.max(0, reentryMin) * multiple), n: c.n, at: c.at, why: c.why } }, updatedAt: c.at };
@@ -410,9 +410,25 @@ export function appendLearningChange(file: string, c: LearningChange): void {
   fs.appendFileSync(file, JSON.stringify(c) + "\n");
 }
 
-export function readLearningChanges(file: string): LearningChange[] {
+/**
+ * The journal back. A torn line is SKIPPED, not fatal: an append cut off by a restart must never cost
+ * him the rest of his public record, and this is the only reader the surfaces have. `sinceMs` narrows
+ * it to the changes after a moment, for an as-of read.
+ */
+export function readLearningChanges(file: string, sinceMs = 0): LearningChange[] {
   try {
-    return fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as LearningChange);
+    return fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return JSON.parse(l) as LearningChange;
+        } catch {
+          return null;
+        }
+      })
+      .filter((c): c is LearningChange => !!c && typeof c.at === "number" && c.at >= sinceMs);
   } catch {
     return [];
   }
@@ -443,33 +459,4 @@ export function learnFiles(dataDir: string, mode: string, env: NodeJS.ProcessEnv
   const override = (env.LEARN_FILE ?? "").trim();
   const dir = dataDir.replace(/\/+$/, "");
   return { state: override || `${dir}/${LEARNING_FILE}`, log: `${dir}/${LEARNING_LOG}`, mode };
-}
-
-/* ---------- what the desk writes down at the open ---------- */
-
-/**
- * The forecast the desk decided on, carried onto the band's meta and from there onto the lesson.
- * Declared here as an augmentation because src/learn/lessons.ts belongs to learn-core; when its own
- * fields land, delete this block (the names and types are the agreed ones).
- */
-declare module "../learn/lessons" {
-  interface BandMeta {
-    /** what the desk forecast this seat would earn when it decided to take it, percent a day */
-    entryYieldPct?: number | null;
-    /** where that forecast came from: the policy's own estimate at the open, or the seat check */
-    entrySource?: string | null;
-    /** minutes of the flow scout's reading behind it; null when the scout had not read the pool */
-    entryCoveredMin?: number | null;
-    /** the share of the band the seat would take, percent */
-    entrySharePct?: number | null;
-    /** the share of the pool's face fee pace that forecast was taken at */
-    entryFactor?: number | null;
-  }
-  interface Lesson {
-    entryYieldPct?: number | null;
-    entrySource?: string | null;
-    entryCoveredMin?: number | null;
-    entrySharePct?: number | null;
-    entryFactor?: number | null;
-  }
 }
