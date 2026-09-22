@@ -97,14 +97,22 @@ export const REPLY_TEMPLATES = {
 
 export type ReplyTemplate = keyof typeof REPLY_TEMPLATES;
 
+/** every fixed line: the loop's vetReply compares a model reply only against his earlier model replies */
+export const TEMPLATE_TEXTS: readonly string[] = Object.values(REPLY_TEMPLATES);
+
 const HOUSE_CASHTAG_RE = /(^|[^\w])\$(bands|mrbands)\b/;
 const COPYCAT_ASK_RE = /\b(your|ur) (coin|token) on (pump|clawpump)\b|\bis (this|that) (your|ur) (coin|token|ca|mint)\b/;
 const OWN_TOKEN_RE =
-  /\b(your|ur) (own )?(token|coin|mint|ticker|ca)\b|\bca\b|\bcontract( address)?\b|\b(do|will|did) (you|u) (have|launch|drop|make)( a| an| your)? (own )?(token|coin)\b|\bis there (a|an) (token|coin)\b|\bmr ?bands (token|coin)\b/;
+  /\b(your|ur) (own )?(token|coin|mint|ticker|ca)\b|\bca\b|\bcontract( address)?\b|\b(do|will|did) (you|u) (have|launch|drop|make)( a| an| your)? (own )?(token|coin)\b|\bis there (a|an) (token|coin)\b|\b(mr ?)?bands (token|coin)\b|\b(token|coin)\b.*\byours\b|\byours\b.*\b(token|coin)\b/;
 const HOW_MUCH_RE =
   /\bhow much (can|could|do|does|will|would|did) (i|you|we|u|it|this|lp|lping) (make|earn|pay)\b|\bwhat('s| is| are)( the| your)? (yield|returns?)\b|\bhow much (money|profit)\b/;
+/**
+ * A price or buy-and-sell question: a buy or sell word with a token or asset beside it, "should i buy", a price call
+ * or a yield figure. A bare "entry" or "sell" in an LP question ("how do you pick an entry range for a pool") is not
+ * one: it goes to the model, whose reply is still vetted for token topics, advice and pitch.
+ */
 const PRICE_RE =
-  /\bshould (i|we|u) (buy|ape|sell|get|hold)\b|\b(buy|buying|sell|selling|price|prices|priced)\b|\bwen moon\b|\bmoon(ing)?\b|\bprice (target|prediction)\b|\b(apy|apr)\b|\bentry\b|\bmcap\b|\bmarket cap\b|\bundervalued\b|\bpump(ing|s)?\b|\bnfa\b|\bape\b/;
+  /\b(should|when|wen|do|would|can|shall) (i|we|u) (buy|ape|sell|get in|hold|exit|dump|take profit)\b|\b(buy|buying|bought|sell|selling|sold|dump|dumping|ape|aping)\b[^.?!]{0,30}\b(tokens?|coins?|bags?|sol|bands|it|this|that|now|here|more)\b|\b(buy|sell) (it|this|that|now|here)\b|\bprice (target|prediction|call|going)\b|\bwhat('s| is) the price\b|\bprice of\b|\bwen moon\b|\bmoon(ing)?\b|\b(apy|apr)\b|\bentry (point|price)\b|\bmcap\b|\bmarket cap\b|\bundervalued\b|\bpump(ing|s)?\b|\bnfa\b|\bape\b|^\W*(buy|sell)\W*$/;
 const BOT_ASK_RE = /\bare (you|u) (a |an )?(bot|ai|robot|automated|agent)\b|\bis this (a |an )?(bot|ai)\b|\b(you|u) (a |an )?(bot|robot)\b/;
 const HUMAN_ASK_RE = /\bare (you|u) (a |an )?(real|human|person|sentient)\b|\bis this (a |an )?(real person|human)\b|\bis (there|this) a (real )?human\b/;
 
@@ -117,7 +125,10 @@ const skipT = (why: string): ReplyDraft => ({ kind: "skip", why, source: "templa
  * reply at all), then the copycat, his own token, how much, price, and what he is.
  */
 export function fixedAnswer(input: ReplyInput, env: NodeJS.ProcessEnv = process.env): ReplyDraft | null {
-  const raw = input.text ?? "";
+  // another account's parent is read with the mention: an instruction or a token or price question placed there is
+  // the same as one in the mention (his own parent is his words, and is not)
+  const parent = !input.parentIsMine && typeof input.parentText === "string" ? input.parentText : "";
+  const raw = parent ? `${input.text ?? ""}\n${parent}` : (input.text ?? "");
   const norm = normalizeForMatch(raw);
   if (INJECTION_RE.test(norm)) return skipT("the mention reads like an instruction");
   const tokenLive = (env.TOKEN_MINT ?? "").trim() !== "";

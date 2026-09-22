@@ -510,6 +510,62 @@ async function ensureMcp(gw: Gateway, agentId: string, houseToken: string, targe
   return notes;
 }
 
+/**
+ * The gateway tools no caller of his needs, denied on his agent for every principal. Each is granted to "any" by
+ * the gateway (apps/agent/src/tools/*), so a turn under the admin bearer can call it, and a mention quoted to him
+ * (src/talk/replyBrain.ts) is a stranger's text: web_fetch could carry his sessions or memory out to a URL in it.
+ * The talk loop voids any turn that called a tool outside bands_* (parseReply), but only after the tool ran; this
+ * stops it from running. The desk and the talk loop need only his bands_* tools. Exact names, so the owner-granted
+ * memory writes the gateway's own introspection uses stay as they are.
+ */
+export const DENIED_TOOLS: readonly string[] = [
+  "web_fetch",
+  "web_search",
+  "session_list",
+  "session_read",
+  "session_summary",
+  "fetch_full_history",
+  "memory_get",
+  "memory_list",
+  "memory_recall",
+  "doc_read",
+  "attachment_list",
+  "attachment_fetch",
+  "attachment_upload",
+  "attachment_send",
+  "schedule_list",
+  "schedule_runs",
+  "identity_link_request",
+  "identity_link_confirm",
+];
+
+export interface ToolPolicyRow {
+  resourceType: "tool";
+  resourceKey: string;
+  effect: "deny";
+  grants: { type: "any" }[];
+  scope: Record<string, never>;
+}
+
+/** The policy rows provisioning writes: one deny for every principal per denied tool. PURE. */
+export function toolPolicyRows(): ToolPolicyRow[] {
+  return DENIED_TOOLS.map((resourceKey) => ({ resourceType: "tool", resourceKey, effect: "deny", grants: [{ type: "any" }], scope: {} }));
+}
+
+/** Writes the deny rows the agent lacks; returns the tools newly denied. */
+export async function ensureToolPolicy(gw: Pick<Gateway, "get" | "post">, agentId: string): Promise<string[]> {
+  const a = encodeURIComponent(agentId);
+  const existing = await gw.get<{ resourceType?: string; resourceKey?: string; effect?: string; grants?: unknown[] }[]>(`/api/agents/${a}/policies?resourceType=tool`);
+  const denied = new Set((existing ?? []).filter((r) => r.resourceType === "tool" && r.effect === "deny" && Array.isArray(r.grants) && r.grants.some((g) => (g as { type?: string })?.type === "any")).map((r) => r.resourceKey));
+  const written: string[] = [];
+  for (const row of toolPolicyRows()) {
+    if (denied.has(row.resourceKey)) continue;
+    await gw.post(`/api/agents/${a}/policies`, row);
+    written.push(row.resourceKey);
+  }
+  return written;
+}
+
 async function runnerState(gw: Gateway, agentId: string): Promise<"running" | "stopped"> {
   const h = await gw.get<{ status: "running" | "stopped" }>(`/api/agents/${encodeURIComponent(agentId)}/health`);
   return h.status;
@@ -536,10 +592,12 @@ async function provision(settings: OpenHermitSettings, opts: ProvisionOptions): 
   console.log(`  instructions: identity ${rows.identity.length} chars, soul ${rows.soul.length}, rules ${rows.rules.length}; ${changed.length ? `${changed.join(", ")} written` : "unchanged"} (limits: ${riskLimits.maxPositionSol} SOL a band, ${riskLimits.maxTotalExposureSol} SOL exposure)`);
 
   for (const n of await ensureMcp(gw, settings.agentId, houseToken, opts.mcp, opts.mcpUrl)) console.log(`  mcp: ${n}`);
+  const policyWritten = await ensureToolPolicy(gw, settings.agentId);
+  console.log(`  tools: ${DENIED_TOOLS.length} denied to every caller (web, sessions, memory reads, docs, attachments); ${policyWritten.length ? `${policyWritten.length} written` : "unchanged"}`);
 
   // a runner already in memory is restarted so new instructions and config are read; otherwise he is hydrated now
   const before = await runnerState(gw, settings.agentId);
-  const action = before === "running" ? (modelChanged || changed.length ? "restart" : null) : "start";
+  const action = before === "running" ? (modelChanged || changed.length || policyWritten.length ? "restart" : null) : "start";
   if (action) {
     try {
       await gw.post(`/api/agents/${encodeURIComponent(settings.agentId)}/manage/${action}`);

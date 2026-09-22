@@ -103,7 +103,8 @@ export interface XDeps {
   nonce?: () => string;
 }
 
-export type PostResult = { posted: true; id: string } | { posted: false; reason: string; violations?: LintViolation[] };
+/** a refused post; a 429 from X carries its x-rate-limit-reset as resetAt (ms), so a caller can wait for it */
+export type PostResult = { posted: true; id: string } | { posted: false; reason: string; violations?: LintViolation[]; resetAt?: number };
 
 // ---------------------------------------------------------------- OAuth 1.0a
 
@@ -349,7 +350,11 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
       /* not json */
     }
     // X's `detail` beside its title, never the request: a 402 reads "credits depleted" in one grep of the drafts
-    if (!res.ok || !json.data?.id) return draft(`x api ${res.status}${describeXError(json)}`);
+    if (!res.ok || !json.data?.id) {
+      const refused = draft(`x api ${res.status}${describeXError(json)}`);
+      const reset = Number(res.headers?.get?.("x-rate-limit-reset") ?? NaN);
+      return res.status === 429 && Number.isFinite(reset) && reset > 0 && !refused.posted ? { ...refused, resetAt: reset * 1000 } : refused;
+    }
     const id = String(json.data.id);
     if (replyToHandle) rate.replies.push({ at: now, id, handle: replyToHandle });
     else rate.posts.push({ at: now, id });
@@ -622,7 +627,7 @@ export function mentionsFromResponse(json: { data?: XTweet[]; includes?: { users
  * A failure is { ok: false } with X's status, title and detail (a 429 carries x-rate-limit-reset as resetAt, ms);
  * it is NEVER an empty list, so a caller cannot mistake an outage for a quiet timeline and move its cursor.
  */
-export async function getMentions(sinceId: string | null, o: { userId: string; paginationToken?: string | null }, deps: XDeps = {}): Promise<MentionsResult> {
+export async function getMentions(sinceId: string | null, o: { userId: string; paginationToken?: string | null; maxResults?: number }, deps: XDeps = {}): Promise<MentionsResult> {
   const envObj = deps.env ?? process.env;
   const gate = xGateProblem(talkEnv(envObj));
   if (gate) return { ok: false, status: null, reason: gate };
@@ -630,7 +635,9 @@ export async function getMentions(sinceId: string | null, o: { userId: string; p
   if (!creds) return { ok: false, status: null, reason: "dormant: credentials unreadable" };
   if (!/^\d{1,20}$/.test(o.userId)) return { ok: false, status: null, reason: "mentions: the user id is not an x user id" };
   if (sinceId !== null && !/^\d{1,20}$/.test(sinceId)) return { ok: false, status: null, reason: "mentions: since_id is not an x post id" };
-  const q: [string, string][] = [["max_results", "100"]];
+  // X takes 5 to 100; the engage loop asks for less when its day's read budget is nearly spent
+  const max = Math.min(100, Math.max(5, Math.floor(Number.isFinite(o.maxResults) ? (o.maxResults as number) : 100)));
+  const q: [string, string][] = [["max_results", String(max)]];
   if (sinceId) q.push(["since_id", sinceId]);
   if (o.paginationToken) q.push(["pagination_token", o.paginationToken]);
   q.push(["tweet.fields", MENTION_TWEET_FIELDS], ["expansions", MENTION_EXPANSIONS], ["user.fields", MENTION_USER_FIELDS]);

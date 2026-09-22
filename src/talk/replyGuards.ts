@@ -46,6 +46,8 @@ export interface VetContext {
   tokenMint: string | null;
   /** the lint's context (operator handle, house symbols and mints) */
   lint?: LintContext;
+  /** the fixed lines (REPLY_TEMPLATES): a model reply is compared only against his earlier model replies */
+  templateTexts?: readonly string[];
 }
 
 export interface VetRefusal {
@@ -72,12 +74,40 @@ const EXTRA_MARKERS: readonly { re: RegExp; label: string }[] = [
 export const NARRATION_RE =
   /i'?ll skip|skipping|skip this|no reply|not replying|i'?ll pass|nothing (useful )?to add|falls under|i should (keep|reply|say)|the reply|this (post|tweet|mention|reply) (is|reads|looks)|reads as|no pitch|draft|as an ai language model/;
 
-/** token topics are template-only: a model never talks about a token, a mint or a launch */
-export const TOKEN_TOPIC_RE = /\b(tokens?|mints?|ticker|ca|contract( address)?|pump(fun)?|airdrops?|presale|mcap|market cap|holders?|early)\b/;
+/**
+ * token topics are template-only: a model never talks about a token, a coin, a mint or a launch, and never claims
+ * one ("the coin is mine", "i launched it", "i work for the team behind it": the copycat is not his)
+ */
+export const TOKEN_TOPIC_RE =
+  /\b(tokens?|coins?|memecoins?|mints?|minted|ticker|ca|contract( address)?|pump(fun)?|clawpump|launch(ed|es|ing)?|deploy(ed|s|ing)?|airdrops?|presale|mcap|market cap|holders?|early|mine|devs?|i (made|created|own|run|work for)|(the )?team behind)\b/;
 /** pitching: he never sells the engine or asks anyone to act */
 export const PITCH_RE = /\b(sign up|signup|check (it |this |me )?out|join|try the engine|dm me|dms)\b/;
-/** his book: any of these needs the word "paper" beside it */
-export const BOOK_RE = /\b(my book|the book|positions?|seats?|fees?|net|pnl|p&l|sol|range|(open|opened|opening|close|closed|closing) (a |the |my )?bands?|bands? (opened|closed))\b/;
+/** his book: any of these needs the word "paper" beside it ("my bands printed today" is his book too) */
+export const BOOK_RE =
+  /\b(my book|the book|my bands?|positions?|seats?|fees?|net|pnl|p&l|sol|range|made money|up big|printed|profits?|(open|opened|opening|close|closed|closing) (a |the |my )?bands?|bands? (opened|closed))\b/;
+
+/**
+ * What a model reply may never say, whatever the lint allows: the lint was written for fixed lines, and a model
+ * finds the words it has no pattern for. Each one refuses (silence is safe); none applies to a template.
+ */
+export const MODEL_NEVER: readonly { re: RegExp; rule: string }[] = [
+  // telling anyone to act, or saying what he would do with a position
+  { rule: "advice", re: /\b(i'?d|i would|i will|i'?ll|you could|just|time to) (hold|exit|sell|buy|accumulate|load|ape|short|long|get out|get in|jump in|double down|go all in)\b|\b(get out|go all in|all in|double down|jump in|get in|accumulate|hodl|exit here|exit now|short (it|this|that)|long (it|this|that)|(go|going|went) (long|short))\b/ },
+  // price direction
+  { rule: "price-direction", re: /\b(goes?|going|will go|heads?|heading|going to go) (up|down|higher|lower)\b|\bfrom here\b|\b(higher|lower) (soon|next)\b|\bprinting\b|\bpump(s|ing|ed)?\b|\bdump(s|ing|ed)?\b/ },
+  // profit, his or anyone's, paper or not
+  { rule: "profit", re: /\b(made|make|making|makes) money\b|\bup big\b|\bprint(ed|s)\b|\bprofit(s|able)?\b|\bwin(s|ning|ner|ners)?\b|\b(it|strategy|this|that) works\b|\bin the green\b|\bgains?\b/ },
+  // dunks
+  { rule: "dunk", re: /\b(cope|coping|stay poor|touch grass|skill issue|ratio(ed)?|nobody cares|cry(ing)?|cried|seethe|mald(ing)?|ngmi|bozo|clown(s|ing)?|l take|imagine (thinking|being))\b/ },
+  // politics
+  { rule: "politics", re: /\b(palestin\w*|israel\w*|gaza|zion\w*|hamas|idf|ukrain\w*|russia\w*|putin|zelensk\w*|netanyahu|china|taiwan|iran\w*|elections?|vote|voting|left wing|right wing|leftists?|rightists?|politic\w*|immigra\w*|abortion|genocide|war)\b/ },
+];
+
+/** a whole reply that is a non-answer: "n/a", "none", "pass", "no response needed" */
+export const NON_ANSWER_RE = /^\W*(n\/?a|none|nothing|pass|null|undefined|empty|skip(ped)?|ok(ay)?|no (response|comment|answer|reply)( (needed|required|necessary))?)\W*$/;
+/** talk about the prompt, the loop or the model behind him */
+export const META_RE =
+  /\b(as instructed|i was told|i'?ve been told|i'?m told|my (prompt|instructions|rules|guidelines|guards|system prompt)|opus|claude|anthropic|openai|gpt|openhermit|openrouter|the (talk )?loop|language model|llm|here is my (reply|answer|response))\b/;
 const BASE58_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
 const HANDLE_RE = /@(\w{1,15})/g;
 const CASHTAG_RE = /\$([a-z][a-z0-9_]{0,19})\b/gi;
@@ -119,13 +149,17 @@ export function vetReply(text: string, ctx: VetContext): VetRefusal | null {
   const marker = markersIn(raw);
   if (marker) return refuse("markers", marker);
   for (const { re, label } of EXTRA_MARKERS) if (re.test(raw)) return refuse("markers", label);
-  // 3. narration, anywhere
+  // 3. narration, anywhere; a non-answer or talk about the prompt and the model, whole
   const norm = normalizeForMatch(raw);
   const narr = norm.match(NARRATION_RE);
   if (narr) return refuse("narration", `"${narr[0]}"`);
-  // 4. no @, # or $; no link of any kind (a link costs $0.20 and no reply needs one)
-  if (/^\s*@/.test(raw)) return refuse("tag", "starts with @");
-  const sym = raw.match(/[@#$]/);
+  if (NON_ANSWER_RE.test(norm)) return refuse("narration", `a non-answer ("${norm.slice(0, 40)}")`);
+  const meta = norm.match(META_RE);
+  if (meta) return refuse("narration", `talks about the prompt or the model ("${meta[0]}")`);
+  // 4. no @, # or $ (nor their fullwidth and small-form look-alikes, which x also reads as tags); no link of any
+  // kind (a link costs $0.20 and no reply needs one)
+  if (/^\s*[@＠﹫]/.test(raw)) return refuse("tag", "starts with @");
+  const sym = raw.match(/[@#$＠＃＄﹫﹟﹩]/);
   if (sym) return refuse("tag", `"${sym[0]}" in a reply`);
   const links = linksIn(raw);
   if (links.length) return refuse("link", `a link: ${links[0]}`);
@@ -165,14 +199,26 @@ export function vetReply(text: string, ctx: VetContext): VetRefusal | null {
     for (const n of raw.match(/\d+(?:[.,]\d+)*/g) ?? []) if (!allowed.has(n)) return refuse("number", `"${n}" is not in the facts`);
     const pitch = norm.match(PITCH_RE);
     if (pitch) return refuse("pitch", `"${pitch[0]}"`);
+    for (const { re, rule } of MODEL_NEVER) {
+      const hit = norm.match(re);
+      if (hit) return refuse(rule, `"${hit[0]}": a model reply never says this`);
+    }
   }
   // 11. his book is paper, and says so
   const book = norm.match(BOOK_RE);
   if (book && !/\bpaper\b/.test(norm)) return refuse("paper", `talks about the book ("${book[0]}") without "paper"`);
-  // 12. never the same answer twice
-  const recent = ctx.recentReplies.slice(-RECENT_REPLIES).map((r, i) => (typeof r === "string" ? { at: i, text: r } : r));
-  const similar = tooSimilar(raw, recent, REPLY_SIMILARITY_MAX);
-  if (similar) return refuse("similar", `${similar.score.toFixed(2)} overlap with "${similar.hit.text.slice(0, 60)}"`);
+  // 12. a model never gives the same answer twice. A fixed line is meant to repeat (the copycat denial most of all):
+  // it is held by the per-account and per-conversation caps instead, and the fixed lines are not what a model
+  // reply is compared against
+  if (ctx.source === "model") {
+    const fixed = new Set((ctx.templateTexts ?? []).map((x) => x.trim()));
+    const recent = ctx.recentReplies
+      .map((r, i) => (typeof r === "string" ? { at: i, text: r } : r))
+      .filter((r) => !fixed.has(r.text.trim()))
+      .slice(-RECENT_REPLIES);
+    const similar = tooSimilar(raw, recent, REPLY_SIMILARITY_MAX);
+    if (similar) return refuse("similar", `${similar.score.toFixed(2)} overlap with "${similar.hit.text.slice(0, 60)}"`);
+  }
   return null;
 }
 
