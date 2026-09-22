@@ -21,18 +21,88 @@ and 293 transactions, while the book went from 19.79 to 19.71 SOL, all cash: -0.
 
 **He proposes. The guards decide. The wallet refuses to broadcast in dry-run.**
 
-## Layout
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph SOL["Solana"]
+    POOLS["Meteora DLMM pools"]
+    SWAPS["Swap events"]
+  end
+  subgraph DESK["His desk: one cycle every 5 minutes"]
+    SCREEN["Screener + hot watch<br/>rank the pools"]
+    FLOW["Flow scout<br/>fees in his own bins"]
+    OBS["Observation<br/>pool, book, flow, clock"]
+    ENGINE["Engine<br/>stops, breakers, fee claims"]
+    DECIDE["Decide<br/>code answers routine holds"]
+    GUARDS["Risk guards<br/>hard limits in code"]
+    EXEC["Executor<br/>paper book or chain"]
+    JOURNAL["Journal + ledger"]
+    LEARN["Learning<br/>calibration, lessons"]
+  end
+  subgraph OH["OpenHermit: the agentic runtime"]
+    AGENT["Mr Bands' agent<br/>model, memory, tools"]
+  end
+  subgraph XV["On X"]
+    VOICE["Builder voice<br/>moments, facts, post guards"]
+    REPLY["Replies<br/>fixed answers, reply guards"]
+  end
+  subgraph BF["bands.finance"]
+    API["API + MCP tools<br/>for other agents"]
+    SITES["Sites"]
+  end
+  POOLS --> SCREEN --> OBS
+  SWAPS --> FLOW --> OBS
+  OBS --> ENGINE --> DECIDE
+  DECIDE -- "the real calls" --> AGENT
+  AGENT -- "a proposal" --> DECIDE
+  DECIDE --> GUARDS --> EXEC --> JOURNAL --> LEARN
+  LEARN -. "tighter, never looser" .-> DECIDE
+  AGENT -. "reads his desk" .-> API
+  JOURNAL --> VOICE
+  AGENT --> VOICE
+  AGENT --> REPLY
+  JOURNAL --> SITES
+```
+
+**One cycle.** The screener ranks every Meteora DLMM pool and the hot watch flags what is moving; the flow scout
+reads each swap in his pools from Meteora's own events, so he knows what his bins actually earned. Each held or
+candidate pool becomes an observation. The engine acts first on what must not wait (a stop, a breaker, a fee
+claim). Then a decision: code answers the routine holds, and the real calls go to his agent on OpenHermit, which
+keeps his memory between sessions and reads his desk through its own tools. Whatever he proposes, the risk guards
+decide: size, exposure, gas reserve, stop-loss, daily caps, the kill switch. The executor runs what is allowed, on
+the paper book today, and every decision lands in the journal and the ledger. The learners read his closed bands
+back and may only tighten, never loosen a limit.
+
+**He proposes. The guards decide.** The model never touches a key: it returns a proposal, and code checks it.
+
+**His voice.** Every post starts in code: a moment worth telling, a block of checked facts, then his agent words it
+and the post guards decide (true numbers only, paper labelled, no advice, no hype). His build log is drawn from the
+commits in this repository. Replies go through the same kind of guards, with fixed answers for the risky topics.
+
+**The platform.** bands.finance serves his screener, pool reads and guards to other agents over an API and MCP
+tools, and his sites show his record.
 
 ```
 src/
-  index.ts        scheduler: observe -> propose -> guard -> execute -> journal
-  config.ts       .env loading, typed config, risk limits
-  executor.ts     builds/simulates/sends transactions for an allowed verdict
-  agent/          Mr Bands: persona (system prompt), decision schema, LLM call, observation formatting
-  tools/          dlmm.ts (pool + positions + tx builders), wallet.ts (keys, balances, send), lpagent.ts (analytics)
-  risk/           limits.ts, guards.ts (pure checks), state.ts (daily counters, entry values, kill switch)
-  journal/        decisions.jsonl + latest.json + feed.md under data/
-  scripts/        read-pool.ts (milestone 1)
+  index.ts      the cycle: screen, observe, engine, decide, guard, execute, journal, learn, publish
+  server.ts     the API (bands.finance), with the platform routes and the MCP server
+  executor.ts   builds, simulates and sends transactions for an allowed decision
+  config.ts     typed config and risk limits
+  agent/        his persona, the decision schema, the model screen, OpenHermit and the desk policy
+  risk/         the guards: pure checks, limits, state, the kill switch
+  engine/       what runs before any decision: stops, breakers, fee claims, exits, the fast watch
+  paper/        the paper book: virtual wallet and bands marked against live pools
+  screener/     ranking every pool: fees, depth, age, flags, seat yield
+  scouts/       the flow scout: swaps and fees from Meteora's events
+  hot/          the hot watch: what is moving in the last hour
+  learn/ desk/  the learners: forecast calibration, pool memory, lessons
+  talk/         his voice on X: moments, facts, post guards, replies, the build log
+  platform/     accounts, credits, proposals, x402 payments, MCP tools for other agents
+  venues/ tools/ basis/  venue adapters, Meteora and Jupiter clients, stock basis vs perps
+  journal/ publish/      the decision journal, and the snapshots his sites read
+web/            the sites (mrbands.finance, bands.finance)
+skills/         the skill other agents use to work with his tools
 ```
 
 ## Venues
