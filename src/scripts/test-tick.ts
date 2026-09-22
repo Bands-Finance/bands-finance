@@ -42,7 +42,9 @@ const NOW = Date.parse("2026-09-22T15:00:00.000Z");
 const FAKE_CREDS = { X_API_KEY: "ck-test", X_API_SECRET: "cs-test-secret", X_ACCESS_TOKEN: "at-test", X_ACCESS_SECRET: "as-test-secret" };
 
 async function main(): Promise<void> {
-  const tick = await import("../talk/tick.js");
+  const tickModule = await import("../talk/tick.js");
+  // the loop's tests read the templates in tick.ts: the craft hook (src/talk/craft.ts, its own tests) is pinned off
+  const tick = { ...tickModule, runTick: (o: Parameters<typeof tickModule.runTick>[0]) => tickModule.runTick({ shape: null, ...o }) };
   const lock = await import("../talk/lock.js");
   const x = await import("../talk/x.js");
   const lint = await import("../talk/lint.js");
@@ -152,7 +154,7 @@ async function main(): Promise<void> {
 
   // ------------------------------------------------------------ a run of ticks
   console.log("a run of ticks");
-  await test("priority: close, close, strap change, milestone, daily numbers, lesson; then the cap of 6 holds; every draft passes the lint and says paper", async () => {
+  await test("priority: the daily numbers (past their hour), close, close, strap change, milestone, lesson; then the cap of 6 holds; every draft passes the lint and says paper", async () => {
     const data = makeData();
     const st = dir("state");
     seedState(st, { lastStrap: "red", milestoneN: 0 });
@@ -166,9 +168,10 @@ async function main(): Promise<void> {
       assert.deepEqual(tick.vetOutgoing(r.pick!.text, { paper: true, env: { operatorHandle: null, houseSymbols: ["bands"], houseMints: [] } }), []);
       assert.ok(!/[@#$]/.test(r.pick!.text));
     }
-    assert.deepEqual(seen.map((s) => s.split(":")[0]), ["close", "close", "strap", "milestone", "daily", "lesson"]);
-    assert.equal(seen[0], "close:close:paper-A-2", "the older close first");
-    assert.equal(seen[1], "close:close:paper-B-1");
+    // the daily outranks the event kinds from TALK_DAILY_HOUR_UTC until it has gone (NOW is 15:00 UTC)
+    assert.deepEqual(seen.map((s) => s.split(":")[0]), ["daily", "close", "close", "strap", "milestone", "lesson"]);
+    assert.equal(seen[1], "close:close:paper-A-2", "the older close first");
+    assert.equal(seen[2], "close:close:paper-B-1");
     const r7 = await tick.runTick({ env, paperDesk: true, now: NOW + 6 * MIN });
     assert.equal(r7.status, "idle", "the re-laid open is covered by its close; the stale open is old news");
     const posts = readJ(path.join(st, "x-posts.jsonl"));
@@ -315,6 +318,7 @@ async function main(): Promise<void> {
       return new Response(JSON.stringify({ data: { id: "1" } }), { status: 201 });
     }) as typeof fetch;
     const env = envOf(data, st, { X_LIVE: "true", ...FAKE_CREDS, OPERATOR_HANDLE: "zach", X_HANDLE: "mrbands" });
+    seedState(st, { lastDailyDay: "2026-09-22" }); // the daily has gone: the close is first
     const r = await tick.runTick({ env, paperDesk: true, now: NOW, fetch: fetchFake });
     assert.equal(r.status, "refused-lint");
     assert.ok(r.violations!.some((v) => v.rule === "price-call"));
@@ -405,7 +409,7 @@ async function main(): Promise<void> {
     assert.deepEqual(Object.keys(bodies[0].body as object), ["text"]);
     const posts = x.readPosts(st);
     assert.equal(posts.length, 1);
-    assert.equal(posts[0].key, "close:paper-A-2");
+    assert.equal(posts[0].key, "daily:2026-09-22", "past 14 UTC the daily goes first");
     assert.equal(x.readRate(st).posts.length, 1);
     assert.equal(meCalls, 1, "the token's account is checked before the first live post");
   });
@@ -531,7 +535,8 @@ async function main(): Promise<void> {
     const hrs = picks.map((p) => `${new Date(p.at).toISOString().slice(11, 16)} ${p.kind}`).join(", ");
     assert.equal(picks.length, 6, hrs);
     for (let i = 1; i < picks.length; i++) assert.ok(picks[i].at - picks[i - 1].at >= 90 * MIN, `gap: ${hrs}`);
-    for (const p of picks) assert.ok(picks.filter((q) => q.at <= p.at && p.at - q.at < 6 * HOUR).length <= 2, `2 per 6h: ${hrs}`);
+    // the daily numbers pass the rolling window (the fixed card at the fixed clock); everything else keeps to 2 per 6h
+    for (const p of picks.filter((q) => q.kind !== "daily")) assert.ok(picks.filter((q) => q.kind !== "daily" && q.at <= p.at && p.at - q.at < 6 * HOUR).length <= 2, `2 per 6h: ${hrs}`);
     assert.ok(picks.filter((p) => new Date(p.at).getUTCHours() < 12).length <= 2, `night: ${hrs}`);
     assert.ok(picks.some((p) => p.kind === "daily"), `the daily goes: ${hrs}`);
     assert.ok(picks.filter((p) => new Date(p.at).getUTCHours() >= 12).length >= 4, `most in the US day: ${hrs}`);
@@ -596,7 +601,8 @@ async function main(): Promise<void> {
     assert.equal(readJ(path.join(st, "x-drafts.jsonl"))[0].retry, true);
     assert.ok(!tick.loopLogOf(st, NOW).seen.has(r.pick!.key));
     const after = tick.readTickState(st);
-    assert.deepEqual({ ...after, lastTickAt: null, confirmedHandle: null, confirmedTokenHash: null }, { ...before, lastTickAt: null, confirmedHandle: null, confirmedTokenHash: null });
+    assert.deepEqual({ ...after, lastTickAt: null, confirmedHandle: null, confirmedTokenHash: null, transientFails: 0 }, { ...before, lastTickAt: null, confirmedHandle: null, confirmedTokenHash: null, transientFails: 0 });
+    assert.equal(after.transientFails, 1, "the backoff counter (src/talk/guards.ts) counts the 503");
     status = 201;
     const again = await tick.runTick({ env, paperDesk: true, now: NOW + MIN, fetch: fetchFake });
     assert.equal(again.status, "posted");

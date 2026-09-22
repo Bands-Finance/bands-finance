@@ -250,6 +250,13 @@ export interface PostOptions {
   key?: string;
 }
 
+/** ": <title>; <detail>" from an X error body (title 80, detail 200 characters), or "" when it carries neither. */
+export function describeXError(json: { title?: unknown; detail?: unknown } | null | undefined): string {
+  const title = json?.title ? String(json.title).slice(0, 80) : "";
+  const detail = json?.detail ? String(json.detail).replace(/\s+/g, " ").slice(0, 200) : "";
+  return `${title ? `: ${title}` : ""}${detail ? `${title ? ";" : ":"} ${detail}` : ""}`;
+}
+
 export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {}): Promise<PostResult> {
   const envObj = deps.env ?? process.env;
   const t = talkEnv(envObj);
@@ -315,7 +322,8 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
     } catch {
       /* not json */
     }
-    if (!res.ok || !json.data?.id) return draft(`x api ${res.status}${json.title ? `: ${String(json.title).slice(0, 80)}` : ""}`);
+    // X's `detail` beside its title, never the request: a 402 reads "credits depleted" in one grep of the drafts
+    if (!res.ok || !json.data?.id) return draft(`x api ${res.status}${describeXError(json)}`);
     const id = String(json.data.id);
     if (replyToHandle) rate.replies.push({ at: now, id, handle: replyToHandle });
     else rate.posts.push({ at: now, id });
@@ -348,8 +356,8 @@ export async function verifyCredentials(deps: XDeps = {}): Promise<VerifyResult>
   } catch (err) {
     return { ok: false, reason: `x api unreachable: ${(err as Error).name}` };
   }
-  const json = (await res.json().catch(() => ({}))) as { data?: { username?: string }; title?: string };
-  if (!res.ok) return { ok: false, reason: `x api ${res.status}${json.title ? `: ${String(json.title).slice(0, 80)}` : ""}` };
+  const json = (await res.json().catch(() => ({}))) as { data?: { username?: string }; title?: string; detail?: string };
+  if (!res.ok) return { ok: false, reason: `x api ${res.status}${describeXError(json)}` };
   const username = normalizeHandle(json.data?.username ?? null);
   if (!username) return { ok: false, reason: "x api answered without a valid username" };
   return { ok: true, username, matchesXHandle: t.xHandle ? t.xHandle === username : null };
