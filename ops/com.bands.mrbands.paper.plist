@@ -66,7 +66,7 @@
     <key>PAIR_STOCK_PINNED_TICKERS</key><string>NVDA</string>
     <key>SWAP_DEXES</key><string>Meteora DLMM</string>
     <key>SERVE_PORT</key><string>3100</string>
-    <!-- Outside proposals approved by the desk's own rules (src/platform/autoDecide.ts), no operator in the loop:
+    <!-- Outside proposals approved by the desk's own rules (src/platform/autoDecide.ts), no human in the loop:
          a small SOL-only open from a signed-in wallet (or an mcp:b: id on AUTO_APPROVE_PROPOSERS), never a claimed name
          and never a close, asked of the desk policy before it is approved, within a
          daily and exposure budget; the desk policy and every guard still decide. Paper only: a live book also needs

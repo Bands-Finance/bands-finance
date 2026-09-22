@@ -5,8 +5,9 @@ yours, in order, and each one is checked by `npm run preflight`.
 
 ## What "live" means here
 
-One process on one machine holds one hot wallet's key and runs the loop every 5 minutes. The model
-proposes; the guards and the engine decide; the wallet signs. The kill switch is a file named `STOP`
+One process on one machine holds one hot wallet's key and runs the loop every 5 minutes. He proposes
+(from his rulebook, the desk policy, or from his model once it is switched on); the guards and the engine
+decide; the wallet signs. The kill switch is a file named `STOP`
 in the project root: it blocks every new band the moment it exists. The engine's own breakers halt
 opens after a losing day and flatten the book after a drawdown; you clear those with
 `npx tsx src/scripts/engine.ts clear-standdown`.
@@ -16,9 +17,10 @@ opens after a losing day and flatten the book after a drawdown; you clear those 
 1. **The wallet.** A dedicated hot wallet whose only job is this desk. Its secret lives in `.env`
    as `WALLET_SECRET_KEY` (never committed) and its address is pinned in `EXPECTED_WALLET` so a wrong
    key cannot trade. Import the same secret into Backpack or Phantom if you want to watch it.
-2. **The model.** `ANTHROPIC_API_KEY` in `.env`. Without it every cycle is a hold and nothing is ever
-   opened. The loop has never run with a real model decision yet; the first day should stay in dry-run
-   so you can read what it proposes before anything is signed.
+2. **The model.** `ANTHROPIC_API_KEY` in `.env` (or his agent on the gateway, docs/openhermit.md). Without
+   one the desk policy, his rulebook, makes every proposal. The live loop has never run with a model
+   proposal yet (the 17-19 Sep run was all rulebook); the first day of one should stay in dry-run so you
+   can read what it proposes before anything is signed.
 3. **The RPC.** `RPC_URL` pointing at a dedicated endpoint (Helius). The public endpoint rate-limits
    the screener and the executor; a 429 in the wrong place is a missed exit.
 4. **The limits.** `MAX_TOTAL_EXPOSURE_SOL` is the most the desk may have in bands; `MAX_POSITION_SOL`

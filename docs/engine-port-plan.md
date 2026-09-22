@@ -8,11 +8,12 @@ Meridian ("Merd") ran 33 days live on Robinhood Chain: $997 in, $3,002 profit, $
 Nothing in Meridian's house money path is an LLM decision. Every mint, re-center, collect, exit, sizing and
 venue choice is deterministic code (`lpGuard.ts`, `pilotGuard.ts`, `memeGuard.ts`, `dumpWatch.ts`,
 `lpAllocator.ts`). The LLM narrates the desk, advises users, and writes posts. Outside agents may only
-propose; the operator decides; the desk executes through its own guards.
+propose; the holder of the approval key decides; the desk executes through its own guards.
 
-Mr Bands keeps "the LLM proposes, the guards decide" for entries, and adopts Meridian's rule for everything
-that protects money: exits, collects, breakers and sizing multipliers are code, and they run before the LLM
-is asked (engine directives). The LLM chooses only among what the verdicts allow.
+Mr Bands keeps "he proposes, the guards decide" for entries, and adopts Meridian's rule for everything
+that protects money: exits, collects, breakers and sizing multipliers are code, and they run before he
+is asked (engine directives). His proposal, from his rulebook or his model, chooses only among what the
+verdicts allow.
 
 ## Phase 1 (in progress, `src/engine/`)
 
@@ -20,7 +21,7 @@ Attribution ledger (`data/ledger.jsonl`, cash-boundary rows, exact vs marked nev
 stops (0.8-1.0 x STOP_LOSS_PCT, persisted at open), anti-churn on out-of-range bands, knife (30-min drop),
 bench ladder per pool (stops in 6h: x1, x0.5, x0.25, benched at 3), board regime multiplier (median 24h
 move), circuit breaker (daily loss >= max(0.05 SOL, 15% working): 4h halt, then 6h), portfolio breaker
-(3 confirming marks of >= max(0.15 SOL, 15%) drawdown: flatten + 12h stand-down, operator clears),
+(3 confirming marks of >= max(0.15 SOL, 15%) drawdown: flatten + 12h stand-down, cleared by hand),
 collect policy (>= 0.005 SOL or 2h pending above 0.001, 30/day), treasury skim (dormant; 75% of fee gain
 above a float target), liveness watchdog + `engine.lock` (one process holds the key), EXPECTED_WALLET.
 
