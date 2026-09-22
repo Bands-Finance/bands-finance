@@ -44,7 +44,7 @@ const IDEAS: Idea[] = [
         <T t="Thin: under about $20k of money in the pool. A few trades can move it a long way.">thin</T>,{" "}
         <T t="Brand new: under 24 hours old. No track record, and most new pools die within the day.">brand new</T>,{" "}
         <T t="Wild: the price swung hard in the last day, which is when a narrow band gets left behind.">wild</T>, or{" "}
-        <T t="One-sided: almost all the money sits on one side of the price, so trades in one direction find nothing to trade against.">one-sided</T>. He works only a few at a time: the guards cap how many.
+        <T t="One-sided: almost all the money sits on one side of the price, so trades in one direction find nothing to trade against.">one-sided</T>. He works only a few at a time: the guards cap how many. Tokenized stocks are one part of his book, not all of it: up to 3 of his 6 paper seats go to stocks such as NVDAx, PLTRx or MU, where he lays both sides of the price and hedges the stock half short on Backpack's stock perps where one is listed. The rest go to the pools he ranks best.
       </>
     ),
   },
@@ -63,7 +63,7 @@ const IDEAS: Idea[] = [
     title: "Most of the time he does nothing.",
     body: (
       <>
-        Every 5 minutes he looks at the pool, his bands and his wallet, and writes one decision: open a band, close one, claim fees, move one, or hold. Hold is the default. Moving costs{" "}
+        Every 5 minutes he looks at the pool, his bands and his wallet, and proposes one move: open a band, close one, claim fees, move one, or hold. Today his proposals come from his own rulebook; his model takes over as it is switched on. Hold is the default. Moving costs{" "}
         <T t="Rent: a small SOL deposit Solana holds while a band's account exists. It comes back when the band is closed; the transaction fees around it do not.">rent</T> and{" "}
         <T t="Slippage: the gap between the price you expected and the price you actually got, because your own trade moved it.">slippage</T>, so churn loses money.
       </>
@@ -76,7 +76,7 @@ const IDEAS: Idea[] = [
     body: (
       <>
         A band is not a savings account. When the price falls through a band of SOL, every bin it crosses swaps that SOL for the token, so the band ends up holding the token that is falling. When the price climbs through a band of the token, it sells the token on the way up and misses the rise. Either way the band is worth less than the same money left sitting in the wallet. That gap is{" "}
-        <T t="Impermanent loss: what a band gives up against simply holding. It can shrink if the price comes back; once the band is closed, it is permanent.">impermanent loss</T>. The fees can be smaller than it, and on his own real-money run they were: he claimed fees and the book still finished down. And a band the price has left earns nothing at all until the price comes back or he moves it.
+        <T t="Impermanent loss: what a band gives up against simply holding. It can shrink if the price comes back; once the band is closed, it is permanent.">impermanent loss</T>. The fees can be smaller than it, and on his own real-money run they were: he claimed 7.91 SOL of fees (3.27 of it paid in tokens, valued when claimed) and the book still went from 19.79 to 19.71 SOL. And a band the price has left earns nothing at all until the price comes back or he moves it.
       </>
     ),
   },
@@ -86,7 +86,7 @@ const IDEAS: Idea[] = [
     wide: true,
     body: (
       <>
-        Mr Bands is an AI. Around him sits plain code that cannot be argued with: a cap per band, a cap on total money out, a{" "}
+        Mr Bands proposes; the guards decide. Around him sits plain code that cannot be argued with: a cap per band, a cap on total money out, a{" "}
         <T t="Gas reserve: SOL kept back in the wallet so there is always enough to pay for transactions.">gas reserve</T>, a{" "}
         <T t="Stop-loss: a line below what went in. When a band's value, fees aside, falls through it, the guards close the band, whatever he proposed.">stop-loss</T> that forces a band closed once it is down past its line (drawn at random a little under 15% for each band, and tighter for some, so nobody can aim at it; the price can gap past the line between checks, and once it did: one band closed 15.4% down), a daily action cap, a{" "}
         <T t="Cooldown: a minimum wait between one action and the next.">cooldown</T>. When his proposal breaks a rule it is vetoed and he holds. When a band is bleeding, the guards close it whether he likes it or not. Both are printed in the journal.
@@ -96,7 +96,7 @@ const IDEAS: Idea[] = [
 ];
 
 /**
- * "Learn" — the plain-language explainer for people who came to understand
+ * "Learn": the plain-language explainer for people who came to understand
  * Mr Bands, not to read a table. Six ideas, then two doors: the ranked pools
  * and the journal where the ideas play out.
  */

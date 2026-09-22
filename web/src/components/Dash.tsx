@@ -248,7 +248,8 @@ export function DashFooter({ agentName }: { agentName: string }) {
         <div className="dash-foot__text">
           <p className="dash-foot__motto engrave">Liquidity in between</p>
           <p className="dash-foot__legal">
-            {agentName} is experimental software and trades a wallet of his own. Nothing here is advice, and nothing on this page
+            {agentName} is experimental software and trades on paper now; his live desk, a wallet of his own, is stopped. Zach, his
+            architect and advisor, holds his keys and the legal responsibility. Nothing here is advice, and nothing on this page
             can touch your money. Every move above is published as it happened, including the ones that lost.
           </p>
           <nav className="dash-foot__links engrave" aria-label="Footer">

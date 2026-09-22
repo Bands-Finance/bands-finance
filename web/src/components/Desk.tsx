@@ -9,7 +9,7 @@ import "./AgentTerminal.css";
  * The desk: Mr Bands' decision journal rendered as a live terminal, ported from
  * Meridian's AgentTerminal. Every block is one real journal entry (or a run of
  * identical holds folded into one), oldest first like a scrollback. A read-only
- * guest console at the bottom answers a handful of commands from props alone —
+ * guest console at the bottom answers a handful of commands from props alone:
  * no network, nothing the visitor types leaves the page.
  */
 
@@ -79,8 +79,8 @@ interface ConsoleEntry {
 
 const START_LINES = [
   "1. He reads the pool: price, the bins around it, his wallet, his open bands.",
-  "2. He writes one decision: open, close, claim fees, move, or hold.",
-  "3. The guards check it in plain code.",
+  "2. He proposes one move: open, close, claim fees, move, or hold. Today it comes from his own rulebook.",
+  "3. The guards decide, in plain code.",
   "4. If they say yes, the wallet builds, simulates and (when live) sends the transaction.",
   "5. All of it lands in this journal. Type 'guards', 'bands', 'pools', 'last' or 'help'.",
 ];
@@ -260,7 +260,7 @@ function DeskInner({ entries, status, limits, screen, agentName, id }: DeskProps
 
         <div className="term__body" ref={bodyRef}>
           <p className="term__boot">
-            {agentId} v0.1 · strategy: concentrated-liquidity <Gloss term="band">bands</Gloss> · venue: Meteora DLMM (Solana) · decides every 5 min per pool · screens every pool every 30 min · mode:{" "}
+            {agentId} v0.1 · strategy: concentrated-liquidity <Gloss term="band">bands</Gloss> · venue: Meteora DLMM (Solana) · proposes every 5 min per pool · screens every pool every 30 min · mode:{" "}
             {status.mode === "dry-run" ? <Gloss term="dryRun">{status.short}</Gloss> : status.mode === "paper" ? <Gloss term="paper">{status.short}</Gloss> : demo ? <Gloss term="demo">{status.short}</Gloss> : status.short}
           </p>
 

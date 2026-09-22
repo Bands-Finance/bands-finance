@@ -103,7 +103,7 @@ export function Record({ record, solPriceUsd, status, agentName, compact = false
       <div className="pnl__num">
         <span className="pnl__label">
           Net result, wallet and bands
-          {simulated && <> · <span className="term" title={simGloss}>simulated</span></>}
+          {simulated && <> · <span className="term" title={simGloss}>{status.mode === "paper" ? "paper" : "simulated"}</span></>}
         </span>
         <span className={`pnl__value ${up ? "pnl__value--up" : "pnl__value--down"}`}>
           {signedSol(record.net)}

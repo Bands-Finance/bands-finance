@@ -212,7 +212,7 @@ export function useEngine(token: string | null) {
     if (!plan?.ok) return;
     setPhase("preparing");
     setPhaseDetail("handing the transaction to your wallet…");
-    await runSteps(plan.steps, "band open · Mr Bands' math is working for you");
+    await runSteps(plan.steps, "band open · your wallet, Mr Bands' math, his guards");
   }, [plan, runSteps]);
 
   const prepareAndRun = useCallback(

@@ -68,9 +68,8 @@ export function narrativeOf(o: { record: AgentRecord | null; status: Status; age
   if (bands > 0 && atWork > 0) story.push(`He has ${num(atWork)} SOL at work in ${bands} band${bands === 1 ? "" : "s"}.`);
   if (fees >= 0.0005) {
     const span = elapsedDays < 1.5 ? "since he started" : `over ${Math.round(elapsedDays)} days`;
-    const pace = elapsedDays >= 2 ? `, about ${num(fees / elapsedDays)} a day` : "";
     const where = record.feesRealized < 0.0005 && record.feesUnclaimed >= 0.0005 ? ", still sitting in the bands" : "";
-    story.push(`He has earned ${num(fees)} SOL in fees ${span}${pace}${where}.`);
+    story.push(`He has earned ${num(fees)} SOL in fees ${span}${where}.`);
   } else {
     story.push("He has not earned a fee yet.");
   }

@@ -105,7 +105,7 @@ export function PoolsHead({ screen, maxActivePools }: PoolsHeadProps) {
           <T t={VENUE_GLOSS["meteora-dlmm"]}>Meteora DLMM</T> pool straight from Solana, pulls every{" "}
           <T t={VENUE_GLOSS["raydium-clmm"]}>Raydium CLMM</T> and <T t={VENUE_GLOSS["orca-whirlpool"]}>Orca Whirlpool</T> from their public APIs, keeps the ones that traded in the last day, and scores them all the same way: fees earned per dollar of{" "}
           <T t="Liquidity is the money sitting in a pool, ready to be traded against.">liquidity</T> first, marked down for being thin, new, wild, or one-sided. One board, so he can see where the money is, including the{" "}
-          <T t="Tokenized stocks: tokens backed one-to-one by a listed share (NVDAx, TSLAx, SPYx), issued by xStocks or Backpack Securities and traded in ordinary pools.">tokenized stocks</T>. He works the top of the Meteora rows and nothing else.
+          <T t="Tokenized stocks: tokens backed one-to-one by a listed share (NVDAx, TSLAx, SPYx), issued by xStocks or Backpack Securities and traded in ordinary pools.">tokenized stocks</T>. He works the top of the Meteora rows and nothing else, on paper today: stocks take up to 3 of his 6 seats, and the rest go to the best-ranked pools.
         </p>
       </div>
 

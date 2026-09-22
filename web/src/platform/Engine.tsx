@@ -130,7 +130,7 @@ function EnginePanel({ screen, limits, token }: EngineProps) {
   } else if (e.access && !e.access.hasAccess) {
     gate = (
       <Empty>
-        {e.access.detail} The operator opens it with <code>ENGINE_ALLOWLIST</code> or <code>ENGINE_OPEN=true</code> on the API host.
+        {e.access.detail} It opens with <code>ENGINE_ALLOWLIST</code> or <code>ENGINE_OPEN=true</code> on the API host.
       </Empty>
     );
   } else if (!e.access) {

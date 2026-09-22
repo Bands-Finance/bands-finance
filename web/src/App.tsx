@@ -36,7 +36,7 @@ function routeFromHash(h: string): Route {
 }
 
 const TITLES: Record<Route, string> = {
-  home: "bands.finance · Mr Bands, an agent that makes markets on Solana",
+  home: "bands.finance · Mr Bands, an agent that makes markets on Meteora",
   pools: "Every pool on the chain, ranked · bands.finance",
   learn: "How it works · bands.finance",
   agents: "Agents · bands.finance",
@@ -126,7 +126,7 @@ export default function App() {
       {route === "pools" && (
         <main className="app__tabview">
           <HotNow />
-          <PoolsHead screen={screen} maxActivePools={3} />
+          <PoolsHead screen={screen} maxActivePools={6} />
           <Pools screen={screen} status={poolStatus} now={now} />
         </main>
       )}

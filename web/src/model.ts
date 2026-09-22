@@ -56,13 +56,13 @@ export function sideWords(side: string, quote: QuoteView): string {
   return quote.symbol === "SOL" ? w : w.replace(/^SOL\b/, quote.symbol);
 }
 export const GLOSS = {
-  band: "A band is a slice of price Mr Bands puts SOL into. Every trade that crosses it pays him a fee.",
+  band: "A band is a slice of price Mr Bands puts liquidity into: SOL, or in a tokenized stock's pool both the quote and the stock. Every trade that crosses it pays him a fee.",
   inRange: "In range means the current price is inside the band, so it is earning right now.",
   bin: "Pools on Meteora cut price into small steps called bins. A band is a run of bins.",
   dryRun: "Dry run: he decides exactly as he would live, the wallet builds and simulates the transaction, and nothing is broadcast.",
   paper: "Paper trading: real pools, real prices, a pretend wallet. Every band, fee and hedge below is marked against the live market, and no transaction is ever sent.",
   demo: "Demo data: a seeded five-hour example of how he decides, not a real run.",
-  guards: "Plain code around the AI: caps, a stop-loss, a cooldown. It can veto him or pull him out, and it prints why.",
+  guards: "Plain code around whatever proposes his moves: caps, a stop-loss, a cooldown. It decides: it can veto him or pull him out, and it prints why.",
 };
 
 /* ---------- verdicts ---------- */

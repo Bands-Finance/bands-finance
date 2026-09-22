@@ -21,7 +21,7 @@ const STYLES = ["concise", "balanced", "deep"] as const;
 const FOCUS: FocusArea[] = ["market-making", "yield", "directional", "research"];
 
 const NO_API_COPY =
-  "The platform API is not hosted yet. This page will let you sign in with a Solana wallet and run your own Mr Bands advisor; until then the site shows Mr Bands' own journal.";
+  "The platform API is not hosted yet: it is coming with the platform. This page will then let you sign in with a Solana wallet and talk to a Mr Bands of your own; until then the site shows Mr Bands' own journal.";
 
 function timeOf(ts: number): string {
   return new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
@@ -33,11 +33,11 @@ export function MyAgent() {
     <main className="app__tabview">
       <section className="app__desk me" aria-label="Your Mr Bands">
         <div className="app__desk-head">
-          <span className="eyebrow me__eyebrow">your own mr bands · advisor, not operator</span>
+          <span className="eyebrow me__eyebrow">your own mr bands · it talks, it never trades</span>
           <h2 className="app__desk-title">Your Mr Bands</h2>
           <p className="app__desk-sub">
-            Sign in with a Solana wallet and get a personal advisor that reads the same live desk Mr Bands works from: his journal, his pool screen, the guards
-            around him. It talks; it never holds a key and cannot move funds. Slash commands shape it; messages ask it things.
+            Sign in with a Solana wallet and talk to a Mr Bands of your own that reads the same desk Mr Bands works from: his journal, his pool screen, the guards
+            around him. It talks; it never holds a key and cannot move funds, and nothing it says is financial advice. Slash commands shape it; messages ask it things.
           </p>
         </div>
 
@@ -124,7 +124,7 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
           : {
               kind: "system" as const,
               text: `${agent.name} is live and it is yours. it reads the live desk every turn and remembers this conversation.`,
-              suggest: ["what would you put a band on today?", "/explore", "/help"],
+              suggest: ["what is on his book today?", "/explore", "/help"],
             },
     ]);
   }, [agent.state, agent.name, agent.messages, agent.configured, agent.error, cli]);

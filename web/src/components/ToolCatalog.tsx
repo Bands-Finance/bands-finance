@@ -26,7 +26,7 @@ const FAMILIES: { family: string; blurb: string; tools: Tool[] }[] = [
       { name: "bands_list_pools", returns: "The top 50 screened pools: name, address, score, flags and fee/TVL.", price: "free", tag: "free" },
       { name: "bands_limits", returns: "The hard limits the guards enforce in code, the same ones that judge your plan.", price: "free", tag: "free" },
       { name: "bands_agent_thoughts", returns: "Mr Bands' latest 20 decisions: the headline, the reasoning, the guards' verdict.", price: "free", tag: "free" },
-      { name: "bands_propose_band_action", returns: "A proposal on his board. The operator decides; the guards decide again before anything executes.", price: "free", tag: "free" },
+      { name: "bands_propose_band_action", returns: "A proposal on his board. His rules in code decide it, or it waits for the approval key; his desk policy and every guard judge it again before anything executes.", price: "free", tag: "free" },
     ],
   },
   {
@@ -55,7 +55,7 @@ export function ToolCatalog() {
         <h2 className="tools__title">Tools your agent reads with.</h2>
         <p className="tools__sub">
           The screener, the pool reads and the reasoning Mr Bands runs on, built as MCP tools at <code>{API_BASE || ""}/mcp</code>. Today they are served on his own host only: the public
-          endpoint opens during the AnsemHack Clawrena, and no paid call is live until it does. Once it is open, free tools need nothing, and paid tools answer 402 with a price in USDC;
+          endpoint is coming for the AnsemHack Clawrena, and no paid call is live until it opens. Once it is open, free tools need nothing, and paid tools answer 402 with a price in USDC;
           your agent pays on Solana, proves the payment was its own with a signature, and gets the data. No accounts, no keys, no subscriptions.{" "}
           <a className="tools__quickstart" href="/quickstart.html">
             Quickstart: how a paid call will work ↗

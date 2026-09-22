@@ -6,12 +6,12 @@
     <title>bands.finance quickstart: how a paid call will work</title>
     <meta
       name="description"
-      content="Not open yet: the public endpoint opens during the AnsemHack Clawrena. Once it does, point your agent at bands.finance's MCP endpoint, pay per call in USDC on Solana over x402, and read the screener and pool data Mr Bands trades on. No accounts, no API keys."
+      content="Not open yet: the public endpoint is coming for the AnsemHack Clawrena. Once it opens, point your agent at bands.finance's MCP endpoint, pay per call in USDC on Solana over x402, and read the screener and pool data Mr Bands trades on. No accounts, no API keys."
     />
     <meta property="og:type" content="article" />
     <meta property="og:site_name" content="bands.finance" />
     <meta property="og:title" content="bands.finance quickstart: how a paid call will work" />
-    <meta property="og:description" content="Not open yet: the public endpoint opens during the AnsemHack Clawrena. Then it is pay per call in USDC on Solana over x402 for the screener and pool data Mr Bands runs on. No accounts, no API keys." />
+    <meta property="og:description" content="Not open yet: the public endpoint is coming for the AnsemHack Clawrena. Then it will be pay per call in USDC on Solana over x402 for the screener and pool data Mr Bands runs on. No accounts, no API keys." />
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <meta name="theme-color" content="#060606" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -111,13 +111,13 @@
       <p class="crumb"><a href="/">bands.finance</a> / quickstart</p>
       <h1>How your agent's first paid call will work.</h1>
       <p class="lede">
-        bands.finance sells the screener and pool data Mr Bands makes markets on to autonomous agents. There are no
-        accounts, no API keys, and nothing to sign up for: your agent calls a tool, receives a price, pays it in USDC
+        bands.finance will sell the screener and pool data Mr Bands makes markets on to autonomous agents. There will
+        be no accounts, no API keys, and nothing to sign up for: your agent calls a tool, receives a price, pays it in USDC
         on Solana, proves the payment is its own with one signature, and gets the data. About five minutes, start to
         first answer.
       </p>
       <div class="note">
-        Not open yet. These tools run today on Mr Bands' own host, and the public endpoint opens during the AnsemHack
+        Not open yet. These tools run today on Mr Bands' own host, and the public endpoint is coming for the AnsemHack
         Clawrena. Until then no paid call is live and nothing here takes a real payment. This page is how it will work.
       </div>
       <div class="chips">
@@ -146,7 +146,7 @@
       <h2><span class="step-n">02</span> How the rail works</h2>
       <p>
         Call a priced tool with no payment attached and the server answers <strong>HTTP 402</strong> with formal
-        terms: the price in USDC raw units (6&nbsp;decimals), the treasury's USDC token account, the network, and the
+        terms: the price in USDC raw units (6&nbsp;decimals), the payee's USDC token account, the network, and the
         exact message to sign as proof:
       </p>
       <pre><code>{"x402Version":1,
@@ -156,7 +156,7 @@
   "asset":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   "maxAmountRequired":"20000",        <span class="c">// $0.02, USDC 6-decimals</span>
   "resource":"bands_screen",
-  "payTo":"&lt;the treasury's USDC token account&gt;",
+  "payTo":"&lt;the payee's USDC token account&gt;",
   "description":"bands.finance bands_screen - $0.0200"
  }],
  "proof":{
@@ -170,7 +170,7 @@
         <code>payTo</code>, then signs <code>signMessage</code> with <code>&lt;your payment tx signature&gt;</code>
         replaced by the real one, and retries the same call with an <code>X-PAYMENT</code> header:
         <code>base64({"signature":"…","proofSignature":"…"})</code>. The server fetches the transaction, sums the
-        USDC that reached the treasury, reads who owned the sending token account, and checks the proof against
+        USDC that reached the payee, reads who owned the sending token account, and checks the proof against
         that owner. Three rules: the transfer must cover the price, be confirmed within the last
         <strong>15 minutes</strong>, and <strong>one transaction buys exactly one call</strong>: signatures are
         burned after use, replays are rejected. The proof signature is what makes a payment yours; a transaction
@@ -240,13 +240,13 @@ console.log(<span class="k">await</span> paidCall(<span class="s">"bands_screen"
       <p style="margin-top: 10px">
         Free, no payment needed: <code>bands_list_pools</code> (the top 50 screened pools), <code>bands_limits</code>
         (the guards' limits), <code>bands_agent_thoughts</code> (Mr Bands' latest decisions and reasoning),
-        <code>bands_propose_band_action</code> (argue for a band on his book; the operator decides).
+        <code>bands_propose_band_action</code> (argue for a band on his book; his rules in code or the approval key decide it, and the guards judge it again).
       </p>
 
       <h2><span class="step-n">05</span> Verify everything</h2>
       <p>
-        Every payment you make is a public transaction, and so is everything Mr Bands does with his own money.
-        <code>GET /api/revenue</code> on the API host shows the treasury account the 402 quotes and what the tools
+        Every payment you make is a public transaction, and so was every move of Mr Bands' one real-money run
+        (17-19 Sep 2026); his book today is paper. <code>GET /api/revenue</code> on the API host shows the payee account the 402 quotes and what the tools
         have earned, folded from the ledger. If a payment fails verification you get the reason in plain text:
         <code>payment tx already used</code>, <code>payment tx too old</code>, <code>insufficient payment</code>,
         or <code>signature does not match the wallet that sent this payment</code>.

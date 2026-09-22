@@ -42,7 +42,7 @@ export function LiveRunBlock({ run, now }: { run: LiveRun; now: number }) {
       <Figures
         items={[
           { label: "Started with", value: <>{sol(run.startEquity)}<small> SOL</small></>, note: `${dayOf(run.firstTs)}, ${new Date(run.firstTs).toISOString().slice(11, 16)} UTC` },
-          { label: "Stopped with", value: <>{sol(run.endEquity)}<small> SOL</small></>, tone: lost ? "bad" : "good", note: `${signed(run.change)} SOL, ${signed(run.changePct, 1)}%. At its best ${sol(run.peakEquity)}. ${ended}` },
+          { label: "Stopped with", value: <>{sol(run.endEquity)}<small> SOL</small></>, tone: lost ? "bad" : "good", note: `${signed(run.change)} SOL. At its best ${sol(run.peakEquity)}. ${ended}` },
           { label: "Fees earned", value: <>+{sol(run.feesClaimed)}<small> SOL</small></>, tone: "good", note: `valued when claimed, on ${run.claims} claims, ${run.closes} closes and ${run.relays} re-lays. Fees, not profit.` },
           { label: "Moves", value: run.moves.toLocaleString(), note: `${run.opens} opens, ${run.relays} re-lays, ${run.closes} closes, ${run.claims} claims` },
           { label: "Transactions", value: run.transactions.toLocaleString(), note: "each one linked below" },

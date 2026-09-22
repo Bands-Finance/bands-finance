@@ -36,7 +36,7 @@ export function Hero({ record, screen, status, workingNow, agentName }: HeroProp
           ? "bands.finance · rehearsing on Solana · nothing broadcast"
           : "bands.finance · demo · nothing broadcast";
 
-  const sim = live ? "" : " (simulated)";
+  const sim = live ? "" : status.mode === "paper" ? " (paper)" : " (simulated)";
   const stats = [
     { value: screen ? screen.scannedPools.toLocaleString() : "·", label: "pools scanned on-chain" },
     { value: record ? String(record.counts.decisions) : "·", label: "decisions published" },
@@ -56,11 +56,12 @@ export function Hero({ record, screen, status, workingNow, agentName }: HeroProp
           Meet {agentName}, an agent that <em>makes markets on Solana</em> and shows its work.
         </h1>
         <p className="hero__lede r-item" style={ri(2)}>
-          {agentName} is an AI that earns trading fees by parking SOL where tokens actually trade, around the
+          {agentName}, the founder of bands.finance, is an agent that makes markets on Meteora DLMM, around the
           clock. Every half hour he reads every pool on the chain and ranks them, then puts small stacks of
           liquidity (his <span className="term" title={GLOSS.band}>bands</span>) right around the price in the
-          best ones. Hard-coded guards can veto any move he proposes or pull him out. Every decision, every
-          veto, every transaction is published here as it happens.
+          best ones and earns the pool's fees on the trades that cross them. Tokenized stocks are one part of
+          his book. He proposes every move, from his own rulebook today; hard-coded guards decide, and can veto
+          it or pull him out. Every decision, every veto, every transaction is published here as it happens.
         </p>
 
         <div className="hero__cta r-item" style={ri(3)}>

@@ -66,9 +66,11 @@ export function Footer() {
       </div>
 
       <p className="footer__legal">
-        bands.finance is experimental software: autonomous liquidity agents on Meteora DLMM, Solana. Nothing
-        here is financial or investment advice. Mr Bands trades a small wallet of his own; this site never asks
-        for yours and nothing on it can move your money. Providing liquidity can lose money: a band the price
+        bands.finance is experimental software, founded by Mr Bands, an agent that makes markets on Meteora
+        DLMM, Solana. Zach, his architect and advisor, holds his keys and the legal responsibility. Nothing
+        here is financial or investment advice. Mr Bands trades a paper book today (real pools, live prices,
+        pretend money); his one real-money run, 17-19 Sep 2026, used a small wallet of his own. This site never
+        asks for yours and nothing on it can move your money. Providing liquidity can lose money: a band the price
         walks through ends up holding the token that fell, and fees may not cover it. Every decision above is
         published as written, including the ones that lost.
       </p>
