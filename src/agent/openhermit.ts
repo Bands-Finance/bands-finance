@@ -181,7 +181,11 @@ export function extractDecision(
   return { error: firstError ?? (sawObject ? "no decision in the reply" : "no JSON object in the reply") };
 }
 
-function balancedEnd(s: string, start: number): number {
+/**
+ * The index of the "}" that closes the "{" at `start`, walking strings so a brace inside one does not
+ * count; -1 when the object never closes. Exported for the talk loop's reply contract (src/talk/replyBrain.ts).
+ */
+export function balancedEnd(s: string, start: number): number {
   let depth = 0;
   let inString = false;
   for (let i = start; i < s.length; i++) {

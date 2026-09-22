@@ -21,6 +21,7 @@
  *   TOKEN_MINT               the house token's mint, his own $BANDS once launched (with PAIR_HOUSE_MINTS, which stays
  *                            unset through 8 Oct; both read through src/risk/house.ts; default none)
  *   POSTS_PER_DAY            {{POSTS_PER_DAY}} original posts per UTC day (default 8)
+ *   REPLIES_PER_DAY          replies per UTC day (default 40; about $0.40 a day at X's reply price)
  *   REPLIES_PER_HOUR         {{REPLIES_PER_HOUR}} replies per rolling hour (default 10)
  *   MAX_REPLIES_PER_ACCOUNT  {{MAX_REPLIES_PER_ACCOUNT}} replies to one account per UTC day (default 3)
  *   MAX_BIT_USES_PER_WEEK    {{MAX_BIT_USES_PER_WEEK}} uses of one bit in a trailing 7 days (default 3)
@@ -28,6 +29,15 @@
  *   DATA_DIR                 where the journal, paper book and ledger are read (default "data")
  *   CYCLE_INTERVAL_SEC       the loop's cycle; data older than 3 cycles is stale (default 300)
  *   X_LIVE                   only the literal "true" lets anything reach X
+ *   X_REPLIES                only the literal "true" (with X_LIVE and his brain) lets the engage loop reply
+ *                            (src/talk/engage.ts); anything else leaves it off and spending nothing
+ *   ENGAGE_READS_PER_DAY     mention posts read per UTC day, counted from X's result_count (default 300)
+ *   ENGAGE_MODEL_CALLS_PER_DAY  model runs per UTC day (default 60): each ask of his brain is two, the reply turn and
+ *                            the gateway's idle introspection; templates make none
+ *   ENGAGE_HOLLOW_PER_DAY    hollow mentions ("nice innovation") that may reach the brain per UTC day (default 10)
+ *   ENGAGE_MAX_AGE_HOURS     a mention older than this is stale and gets no reply (default 6)
+ *   ENGAGE_REPLIES_PER_PASS  reply POSTs one engage pass may try, whatever X answers (default 3)
+ *   ENGAGE_DENY_HANDLES      handles the engage loop never answers, besides clawpumptech (comma list)
  *   X_API_KEY / X_API_SECRET / X_ACCESS_TOKEN / X_ACCESS_SECRET
  *                            OAuth 1.0a user context for POST /2/tweets. Never logged: TalkEnv only says
  *                            which are missing; the values are read by xCredentials() inside src/talk/x.ts.
@@ -46,6 +56,12 @@ export const DEFAULT_STRAP_EDGE_PCT = 15;
 export const DEFAULT_STRAP_STACKED_HOURS = 6;
 export const DEFAULT_POSTS_PER_DAY = 8;
 export const DEFAULT_REPLIES_PER_HOUR = 10;
+export const DEFAULT_REPLIES_PER_DAY = 40;
+export const DEFAULT_ENGAGE_READS_PER_DAY = 300;
+export const DEFAULT_ENGAGE_MODEL_CALLS_PER_DAY = 60;
+export const DEFAULT_ENGAGE_HOLLOW_PER_DAY = 10;
+export const DEFAULT_ENGAGE_MAX_AGE_HOURS = 6;
+export const DEFAULT_ENGAGE_REPLIES_PER_PASS = 3;
 export const DEFAULT_MAX_REPLIES_PER_ACCOUNT = 3;
 export const DEFAULT_MAX_BIT_USES_PER_WEEK = 3;
 export const DEFAULT_FEE_MILESTONE_SOL = 1;
@@ -72,6 +88,7 @@ export interface TalkEnv {
   houseMints: string[];
   postsPerDay: number;
   repliesPerHour: number;
+  repliesPerDay: number;
   maxRepliesPerAccount: number;
   maxBitUsesPerWeek: number;
   /** absolute */
@@ -80,6 +97,15 @@ export interface TalkEnv {
   dataDir: string;
   cycleIntervalSec: number;
   xLive: boolean;
+  /** X_REPLIES === "true": the engage loop may reply (it also needs xLive and his brain) */
+  xReplies: boolean;
+  engageReadsPerDay: number;
+  engageModelCallsPerDay: number;
+  engageHollowPerDay: number;
+  engageMaxAgeHours: number;
+  engageRepliesPerPass: number;
+  /** ENGAGE_DENY_HANDLES, lowercased without "@" */
+  engageDenyHandles: string[];
   /** names of the X credentials that are unset (never their values) */
   missingXCredentials: string[];
   /** a handle that was set but is not a valid X handle, and similar */
@@ -142,12 +168,20 @@ export function talkEnv(env: NodeJS.ProcessEnv = process.env, cwd: string = proc
     houseMints: houseMintsOf(env),
     postsPerDay: Math.floor(num(env, "POSTS_PER_DAY", DEFAULT_POSTS_PER_DAY)),
     repliesPerHour: Math.floor(num(env, "REPLIES_PER_HOUR", DEFAULT_REPLIES_PER_HOUR)),
+    repliesPerDay: Math.floor(num(env, "REPLIES_PER_DAY", DEFAULT_REPLIES_PER_DAY)),
     maxRepliesPerAccount: Math.floor(num(env, "MAX_REPLIES_PER_ACCOUNT", DEFAULT_MAX_REPLIES_PER_ACCOUNT)),
     maxBitUsesPerWeek: Math.floor(num(env, "MAX_BIT_USES_PER_WEEK", DEFAULT_MAX_BIT_USES_PER_WEEK)),
     statePath: path.resolve(cwd, val(env, "TALK_STATE_PATH") ?? val(env, "DATA_DIR") ?? "data"),
     dataDir,
     cycleIntervalSec: num(env, "CYCLE_INTERVAL_SEC", DEFAULT_CYCLE_INTERVAL_SEC, 1),
     xLive: env.X_LIVE === "true",
+    xReplies: env.X_REPLIES === "true",
+    engageReadsPerDay: Math.floor(num(env, "ENGAGE_READS_PER_DAY", DEFAULT_ENGAGE_READS_PER_DAY)),
+    engageModelCallsPerDay: Math.floor(num(env, "ENGAGE_MODEL_CALLS_PER_DAY", DEFAULT_ENGAGE_MODEL_CALLS_PER_DAY)),
+    engageHollowPerDay: Math.floor(num(env, "ENGAGE_HOLLOW_PER_DAY", DEFAULT_ENGAGE_HOLLOW_PER_DAY)),
+    engageMaxAgeHours: num(env, "ENGAGE_MAX_AGE_HOURS", DEFAULT_ENGAGE_MAX_AGE_HOURS, 1e-9),
+    engageRepliesPerPass: Math.floor(num(env, "ENGAGE_REPLIES_PER_PASS", DEFAULT_ENGAGE_REPLIES_PER_PASS)),
+    engageDenyHandles: list(env.ENGAGE_DENY_HANDLES).map((h) => normalizeHandle(h)).filter((h): h is string => !!h),
     missingXCredentials: X_CREDENTIAL_KEYS.filter((k) => val(env, k) === undefined),
     problems,
   };

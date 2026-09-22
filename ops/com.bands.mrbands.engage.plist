@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mr Bands' engage loop: every 120 seconds one pass of src/talk/engage.ts reads the posts that mention @MrBandsSol
+  and answers the ones that summoned him (a reply to his post, a post naming him in its body, a quote of his post).
+  His brain (his OpenHermit agent) drafts a reply or skips; code decides whether anything is posted: the screen, the
+  contract, vetReply, then postTweet's lint, gate and limiter. It is separate from the 15-minute posting tick and
+  never takes tick.lock. It never trades and nothing in it reaches the desk or a wallet.
+
+  DORMANT until ALL of these hold, and while dormant it spends $0 (no X read, no model call, one status line an hour
+  in data-talk/engage.log):
+    - X_REPLIES=true in .env (the literal "true"; it lives in .env, never in this file), and X_LIVE=true
+    - OPENHERMIT_TOKEN in .env is the gateway's real admin token (not empty, not a placeholder) and the gateway
+      authorizes it
+    - no data-talk/TALK_STOP and no data-talk/ENGAGE_STOP
+  Before X_REPLIES=true: model-drafted replies need X's prior approval (help.x.com/forms/platform, and the app's use
+  case at console.x.com). Until X approves, turning replies on is a risk taken knowingly.
+
+  Install:  cp ops/com.bands.mrbands.engage.plist ~/Library/LaunchAgents/
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bands.mrbands.engage.plist
+  Status:   npx tsx src/scripts/talk.ts engage status   (free: no network)
+  Stop:     touch data-talk/ENGAGE_STOP   (replies only; posts go on)
+            touch data-talk/TALK_STOP     (posts and replies)
+            remove X_REPLIES from .env, or launchctl bootout gui/$(id -u)/com.bands.mrbands.engage
+  A bad reply escaped: touch data-talk/TALK_STOP, delete the reply by hand on X. He never defends a leak in public.
+  After 3 "not mentioned" 403s in a row, or a gateway that refused the token: talk engage resume, once fixed.
+  Watch:    tail -f data-talk/engage.log   ·   every mention's outcome: data-talk/x-mentions.jsonl
+  Try it offline: npx tsx src/scripts/talk.ts engage preview <saved mentions response.json> [--no-model]
+
+  Caps (env keys in .env; defaults in src/talk/env.ts): REPLIES_PER_DAY 40, REPLIES_PER_HOUR 10,
+  MAX_REPLIES_PER_ACCOUNT 3, ENGAGE_REPLIES_PER_PASS 3 (reply POSTs tried), ENGAGE_READS_PER_DAY 300,
+  ENGAGE_MODEL_CALLS_PER_DAY 60 (model runs: 2 an ask, the turn and the gateway's idle introspection),
+  ENGAGE_HOLLOW_PER_DAY 10, ENGAGE_MAX_AGE_HOURS 6; one fixed line at most 5 times a day. A poll that returns
+  nothing is not billed.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.bands.mrbands.engage</string>
+  <key>WorkingDirectory</key><string>/Users/zach/Bands.Finance/mr-bands</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/npx</string>
+    <string>tsx</string>
+    <string>src/scripts/talk.ts</string>
+    <string>engage</string>
+  </array>
+  <key>StartInterval</key><integer>120</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-talk/engage.log</string>
+  <key>StandardErrorPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-talk/engage.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string>
+    <key>DATA_DIR</key><string>data-live</string>
+    <key>TALK_STATE_PATH</key><string>data-talk</string>
+    <key>TALK_VENUES</key><string>meteora dlmm</string>
+  </dict>
+</dict>
+</plist>

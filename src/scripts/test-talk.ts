@@ -159,6 +159,14 @@ async function main(): Promise<void> {
     fails("guar\u200Banteed", "invisible");
     fails("   ", "empty");
   });
+  await test("invisible: every format character, the blank fillers and a stray variation selector fail; an emoji's own selector passes", () => {
+    // the bidi isolates U+2066 to U+2069 (docs/talk.md says direction controls fail), the Arabic letter mark, the
+    // Mongolian vowel separator, a tag character, the combining grapheme joiner, the Hangul filler, the braille blank
+    for (const c of ["\u2066", "\u2069", "\u061C", "\u180E", "\u{E0041}", "\u034F", "\u3164", "\u2800", "\uFFA0"]) fails(`gm fr${c}iend, the vetoes are public`, "invisible");
+    fails("gm friend\uFE0F, the vetoes are public", "invisible");
+    passes("strap check: green \u2764\uFE0F");
+    passes("strap check: green \u2600\uFE0F");
+  });
   await test("cashtags: any cashtag but the house token fails", () => {
     fails("$sol chopping all morning", "cashtag");
   });
