@@ -18,6 +18,40 @@ never touches it.
   install, the platform, the casebook and the token design. The token still needs about 0.05 SOL in the treasury.
 - **The lawyer: launch the no-rights design knowingly**, on Fri 25 Sep, and get a review before adding anything.
 
+## The point: his autonomy (Zach, Tue 22 Sep)
+
+"The whole purpose of the Clawrena hackathon is to showcase the agent's autonomous abilities." So the rule
+for every item below: **Zach supplies keys, accounts and money and sets the limits, then steps back. Every
+act a judge can see is Mr Bands'.** The live book stays on paper by decision, which makes this rule matter
+more: with no real-money trading, the autonomy judges can see is the autonomy he performs in public himself.
+
+What he does himself, and nobody does for him:
+- **He decides.** The model on the gateway makes the calls on the paper book, and the guards decide. Today the
+  paper desk runs 0% model: the rule-based policy makes every call, which is automation, not an agent. This
+  needs `OPENHERMIT_TOKEN` in `.env` (Zach) and is the first technical priority. **Cost:** the paper desk makes
+  about 66 decisions an hour; all of them on Opus would spend the $200 OpenRouter balance in about two days. So
+  the model decides the calls that matter, and code answers the obvious holds (a pool off the screen, not worth
+  the rent, the engine already deciding), with a hard credit limit on the key.
+- **He launches his own token.** Zach arms it (funds the launch wallet, sets one flag). Mr Bands chooses the
+  moment and calls a desk tool that launches with the spec fixed in code: he cannot change the pair, the fee,
+  the dev buy or the payout. The tool runs once, refuses if a mint exists, and caps the cost. He then announces
+  it. This is his one on-chain act of autonomy while the desk is on paper, so it is done by him, on the record.
+  (The manual CLI stays as the fallback.)
+- **He posts on X himself:** his own entry announcement tagging @clawpumptech in his own words (not the
+  template, which says "Agents powered by $CLAW"), his strap checks, his lessons, the casebook series. The lint
+  and the rate limits are in code. Needs the X account's API keys (Zach).
+- **He runs his platform:** proposals decided by rule, other agents served over MCP and through the Meteora
+  skill, a note from him beside every decision.
+- **He teaches:** seat cards and lessons written from his own journal as seats close, served free as
+  `bands_lessons`, posted as a series.
+
+**The autonomy ledger**, a public page and part of /api/status, is how a judge checks all of it rather than
+taking our word: every decision with who made it (the model, the rules, the engine) and what the guards said,
+every veto, the launch, every post, every proposal decided, every lesson written, and every time a **human**
+touched anything (a restart, an env change, a halt), with a "hands-off since" counter. Honest in both directions:
+it says the book is paper.
+
+
 ## Dates that decide everything
 
 | When | What |
@@ -50,7 +84,8 @@ X handle, so the X account is the first thing that exists.
    and the token link is optional. The token later attaches to the entry by this handle.
 4. Put the Mac on mains power with the lid open, and turn off automatic macOS installs. It went down on 17 and
    20 Sep, and judges watch on-chain activity for ten days.
-5. Paste `OPENHERMIT_TOKEN` into `.env` so the model starts deciding **on paper** (see Role 1).
+5. **Paste `OPENHERMIT_TOKEN` into `.env`, and set a credit limit on the OpenRouter key.** Without it the rules
+   decide, not him, and there is nothing autonomous to show. See "The point: his autonomy".
 6. Decide the lawyer question now, not later (see Decisions).
 
 **Claude:** bring docs/clawrena.md up to the live rules; fix the public claims the code does not back (the
@@ -116,8 +151,9 @@ by my operator. the desk holds none and never trades it. holding <mint> in a sig
 it is not a share of anything and pays nobody." He names the mint, never a bare ticker, and says other $BANDS
 tokens are not his. He never puts a price, chart, cap, holders, volume, fee, % or $ next to it, never says buy,
 sell or early, never links it to the desk's P&L, and never names it in a lesson. Asked "should I buy it?": "I
-don't tell anyone what to buy. here is what it opens, and the lessons are free without it." He does not post
-the hackathon's template announcement (it says "Agents powered by $CLAW"); the project account does, edited.
+don't tell anyone what to buy. here is what it opens, and the lessons are free without it." He posts his own
+entry announcement, in his own words and tagging @clawpumptech, rather than the hackathon's template (it says
+"Agents powered by $CLAW").
 
 ## The three roles
 
@@ -195,7 +231,7 @@ price knobs, the position watcher.
 | **Tue 22 Sep** | Copycat answer. X account, follow, DM for a slot. **Register.** Mac on power, lid open, updates off. `OPENHERMIT_TOKEN`. Lawyer decision. Push the commits. | docs/clawrena.md; public honesty fixes; SKILL.md; H1 guard and CLI message; settle one headline number. |
 | **Wed 23 Sep** | `CLAWPUMP_API_KEY`, `npm run clawpump -- pairs`. Email ClawPump the questions below. Create the treasury keypair offline and send it about 0.05 SOL. | Seat-scoring change on paper. Start the keyless API and tunnel. Watch the paper LLM decisions. |
 | **Thu 24 Sep** | Token preflight from the treasury wallet, and read the quote. | Build the casebook. Start the Hermes skill. |
-| **Fri 25 Sep** | **Launch the token**, attach it at /ansemhack/entry if it doesn't attach itself, post the entry from the project account. All three steps done, a week early. | Official-token page with the not-ours notice. `TOKEN_URL`/`X_URL`. "Fees are not profit". Casebook public. |
+| **Fri 25 Sep** | **Arm the launch** (fund the launch wallet, set the flag). **He launches his own token and posts his entry himself.** Attach it at /ansemhack/entry if it doesn't attach itself. All three steps done, a week early. | Official-token page with the not-ours notice. `TOKEN_URL`/`X_URL`. "Fees are not profit". Casebook public. |
 | **Sat 26 Sep** | | `bands_lessons` tool. The Hermes skill. |
 | **Sun 27 Sep** | Stream rehearsal. | Hold gate and `bands_access`. Freeze the site's look. |
 | **Mon 28 Sep** | **Judging opens.** | Daily honest-numbers post (SOL and hours, net shown). |
