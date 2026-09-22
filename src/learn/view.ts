@@ -106,7 +106,9 @@ export function caveatsFor(mode: string, llmShare: number): string[] {
     llmShare > 0
       ? `${Math.round(llmShare)}% of his calls came from his model; these knobs are his rulebook's either way.`
       : "His model is not switched on yet: every proposal on this desk comes from his rulebook, and these knobs are the rulebook's, not the model's.",
-    mode === "live" ? "Real money." : `This is the ${mode} book. The fees on it are modelled by the same formula as the forecast, so only the in-range half of the calibration is learned here; the pace half is the 17-19 Sep real-money figure, frozen while the book is paper.`,
+    mode === "live"
+      ? "Real money."
+      : `This is the ${mode} book. Its fees are modelled by the same formula as the forecast, so the calibration moves only on a seat he priced at the open and then scored at the close, and the in-range reading beside it is a second opinion the desk does not act on.`,
     "Learning may never raise or loosen a limit. MAX_POSITION_SOL, the exposure caps, the stop-loss, the daily caps, the kill switch, the breakers and H1 are human-set, and no learner writes them.",
   ];
 }
