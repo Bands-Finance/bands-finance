@@ -10,6 +10,7 @@
  *   paperRoutes(app)   GET /api/paper -> { enabled, env, book, summary }; the integrator mounts it in src/server.ts
  */
 import type { Hono } from "hono";
+import { readLedgerRows } from "../engine/ledger";
 import { config } from "../config";
 import { readRecent } from "../journal";
 import { loadPaperBook } from "./book";
@@ -100,7 +101,7 @@ export function paperRoutes(app: Hono): void {
     const book = loadPaperBook();
     const enabled = paperEnabled(process.env, config.dryRun);
     if (!book) return c.json({ enabled, env: paperEnv(), error: "no paper book yet; run the loop with PAPER_SOL=100 under DRY_RUN" }, 404);
-    return c.json({ enabled, env: paperEnv(), book, summary: paperSummary(book, readRecent(5000)), generatedAt: new Date().toISOString() });
+    return c.json({ enabled, env: paperEnv(), book, summary: paperSummary(book, readRecent(5000), Date.now(), readLedgerRows()), generatedAt: new Date().toISOString() });
   });
 }
 export { binWalkImpactPct, MAX_WALK_BINS, type ImpactInput } from "./impact";

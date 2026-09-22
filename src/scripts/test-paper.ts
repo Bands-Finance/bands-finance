@@ -318,6 +318,22 @@ async function main(): Promise<void> {
     near(sHit.amountOut, sPlain.amountOut * 0.97, 1e-9);
     assert.ok(sHit.impactSol > 0);
   });
+  await test("the report names the SOL/USD move: USDC flows since the start re-priced at today's SOL price, and the identity closes", () => {
+    const usd = paper.emptyBook(1, 1000, T0);
+    usd.solPriceUsd = 125;
+    const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const ledger = [
+      { ts: T0 - 60e3, quoteMint: USDC, quoteDelta: 500, solDelta: 5 }, // before the book started: not counted
+      { ts: T0 + 60e3, quoteMint: USDC, quoteDelta: 100, solDelta: 1 }, // 100 USDC booked at 1 SOL ($100 SOL), worth 0.8 SOL at $125
+      { ts: T0 + 120e3, quoteMint: "So11111111111111111111111111111111111111112", quoteDelta: 2, solDelta: 2 }, // a SOL flow: no SOL/USD move
+    ];
+    const sum = paper.paperSummary(usd, [], T0 + 3600e3, ledger);
+    near(sum.equity.valuationSol ?? NaN, 100 / 125 - 1, 1e-12, "re-priced at today's SOL price");
+    const explained = sum.realizedSol + sum.markedSol + sum.equity.hedgeSol - sum.rentLockedSol - sum.rentSpentSol - sum.swapCostSol - sum.txFeesSol;
+    near(sum.equity.vsStartSol, explained + (sum.equity.valuationSol ?? 0) + sum.equity.otherSol, 1e-12, "the identity closes");
+    assert.equal(paper.paperSummary(usd, [], T0 + 3600e3).equity.valuationSol, null, "no ledger: no valuation term");
+    assert.match(paper.renderPaperReport(sum), /SOL\/USD valuation/);
+  });
   await test("claim: the accrued fees move to the wallet, the band's fees zero, feesClaimedSol tallies", () => {
     paper.markPool(book, s260, { now: T0 + 1800e3, fees: null, solPriceUsd: 100 });
     const b = band();

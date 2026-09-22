@@ -22,6 +22,8 @@ import { tickerOfXstock } from "../tools/backpack";
 import { bookEquitySol } from "./mark";
 import { paperHedgeByPool, paperHedgeEquityUsd } from "./hedge";
 import type { PaperBook } from "./book";
+import type { LedgerRow } from "../engine/ledger";
+import { USDC_MINT } from "../tools/dlmm";
 
 export interface DecisionTally {
   entries: number;
@@ -204,14 +206,32 @@ export interface PaperSummary {
   stocks: PaperStockLine[];
   /** the pools the paper desk made (the pair lane) */
   pairs: PaperPairLine[];
-  equity: { sol: number; usd: number | null; vsStartSol: number; vsStartPct: number; vsStartUsd: number | null; bandsSol: number; tokensSol: number; usdcSol: number; hedgeSol: number };
+  equity: {
+    sol: number;
+    usd: number | null;
+    vsStartSol: number;
+    vsStartPct: number;
+    vsStartUsd: number | null;
+    bandsSol: number;
+    tokensSol: number;
+    usdcSol: number;
+    hedgeSol: number;
+    /**
+     * The SOL/USD move on the USDC side: every USDC flow since the start, re-priced at today's SOL price, less the
+     * SOL it was booked at when it happened (realized counts it at the old price, equity at today's). Null without
+     * the ledger. It is not trading: it is SOL's own move against the dollar.
+     */
+    valuationSol: number | null;
+    /** what the named terms still leave unexplained (small; the identity prints it so it always closes) */
+    otherSol: number;
+  };
   tally: DecisionTally;
 }
 
 /** The stock ticker a paper band's base symbol refers to: "SPYx" -> "SPY", a Backpack-issued "NKE" -> "NKE". */
 export const tickerOfSymbol = (symbol: string): string => tickerOfXstock(symbol) ?? symbol.replace(/\.US$/, "");
 
-export function paperSummary(book: PaperBook, entries: readonly JournalEntry[], now = Date.now()): PaperSummary {
+export function paperSummary(book: PaperBook, entries: readonly JournalEntry[], now = Date.now(), ledger?: readonly Pick<LedgerRow, "ts" | "quoteMint" | "quoteDelta" | "solDelta">[]): PaperSummary {
   const eq = bookEquitySol(book);
   const solPrice = book.solPriceUsd && book.solPriceUsd > 0 ? book.solPriceUsd : null;
   const usdcInSol = solPrice ? 1 / solPrice : 0;
@@ -316,6 +336,12 @@ export function paperSummary(book: PaperBook, entries: readonly JournalEntry[], 
   });
 
   const startUsd = usdFirst ? book.startSol * solPrice! + book.startUsdc : toUsd(startEquity);
+  const explainedSol = realizedSol + markedSol + eq.hedgeSol - book.rentLockedSol - book.rentSpentSol - swapCostSol - (book.txFeesSol ?? 0);
+  const bookStart = Date.parse(book.startedAt);
+  const valuationSol =
+    ledger && solPrice
+      ? ledger.filter((r) => r.ts >= bookStart && r.quoteMint === USDC_MINT).reduce((t, r) => t + (r.quoteDelta ?? 0) / solPrice - r.solDelta, 0)
+      : null;
   return {
     startedAt: book.startedAt,
     ageHours: Math.max(0, (now - Date.parse(book.startedAt)) / 3600e3),
@@ -388,6 +414,8 @@ export function paperSummary(book: PaperBook, entries: readonly JournalEntry[], 
       tokensSol: eq.tokensSol,
       usdcSol: eq.usdcSol,
       hedgeSol: eq.hedgeSol,
+      valuationSol,
+      otherSol: eq.equitySol - startEquity - explainedSol - (valuationSol ?? 0),
     },
     tally: decisionTally(entries, book.startedAt),
   };
@@ -414,8 +442,8 @@ export function renderPaperReport(s: PaperSummary): string {
   const tokens = s.wallet.tokens.length ? s.wallet.tokens.map((t) => `${t.units.toFixed(4)} ${t.symbol} (${money(t.valueSol)})`).join(", ") : "no tokens";
   out.push(`wallet now   ${solFmt(s.wallet.sol)} + ${s.wallet.usdc.toFixed(2)} USDC + ${tokens}`);
   out.push(`equity now   ${money(s.equity.sol)} = wallet ${money(s.wallet.sol)} + USDC ${money(s.equity.usdcSol)} + tokens ${money(s.equity.tokensSol)} + bands ${money(s.equity.bandsSol)} (incl. ${money(s.feesUnclaimedSol, 6)} unclaimed fees) + hedge ${moneySigned(s.equity.hedgeSol)}`);
-  out.push(`vs start     ${moneySigned(s.equity.vsStartSol)} (${signed(s.equity.vsStartPct, 2)}%)  = realized ${moneySigned(s.realizedSol)} + marked ${moneySigned(s.markedSol)} (bands ${moneySigned(s.markedBandsSol)}, wallet tokens ${moneySigned(s.markedTokensSol)}) + hedge ${moneySigned(s.equity.hedgeSol)} - rent locked ${money(s.rentLockedSol)} - rent spent ${money(s.rentSpentSol)} - swap cost ${money(s.swapCostSol, 6)} - tx fees ${money(s.txFeesSol, 6)}`);
-  out.push(`identity     ${signed(s.equity.vsStartSol, 6)} SOL = ${signed(s.realizedSol, 6)} + ${signed(s.markedSol, 6)} + ${signed(s.equity.hedgeSol, 6)} - ${s.rentLockedSol.toFixed(6)} - ${s.rentSpentSol.toFixed(6)} - ${s.swapCostSol.toFixed(6)} - ${s.txFeesSol.toFixed(6)} (SOL: realized + marked + hedge - rent locked - rent spent - swap cost - tx fees)`);
+  out.push(`vs start     ${moneySigned(s.equity.vsStartSol)} (${signed(s.equity.vsStartPct, 2)}%)  = realized ${moneySigned(s.realizedSol)} + marked ${moneySigned(s.markedSol)} (bands ${moneySigned(s.markedBandsSol)}, wallet tokens ${moneySigned(s.markedTokensSol)}) + hedge ${moneySigned(s.equity.hedgeSol)} - rent locked ${money(s.rentLockedSol)} - rent spent ${money(s.rentSpentSol)} - swap cost ${money(s.swapCostSol, 6)} - tx fees ${money(s.txFeesSol, 6)}${s.equity.valuationSol !== null ? ` + SOL/USD valuation ${moneySigned(s.equity.valuationSol)}` : ""} + other ${moneySigned(s.equity.otherSol)}`);
+  out.push(`identity     ${signed(s.equity.vsStartSol, 6)} SOL = ${signed(s.realizedSol, 6)} + ${signed(s.markedSol, 6)} + ${signed(s.equity.hedgeSol, 6)} - ${s.rentLockedSol.toFixed(6)} - ${s.rentSpentSol.toFixed(6)} - ${s.swapCostSol.toFixed(6)} - ${s.txFeesSol.toFixed(6)} + ${signed(s.equity.valuationSol ?? 0, 6)} + ${signed(s.equity.otherSol, 6)} (SOL: realized + marked + hedge - rent locked - rent spent - swap cost - tx fees + SOL/USD valuation${s.equity.valuationSol === null ? " (no ledger: 0)" : ""} + other)`);
   out.push(`fees         claimed ${money(s.feesClaimedSol, 6)} | realized incl. closes ${money(s.feesRealizedSol, 6)} | unclaimed ${money(s.feesUnclaimedSol, 6)} | close slippage ${money(s.slippagePaidSol, 6)} | swap fees ${money(s.swapCostSol, 6)}`);
   out.push(`rent         ${money(s.rentLockedSol)} locked in ${s.bands.length} band(s), refunded on close | ${money(s.rentSpentSol)} spent on bin arrays (CLMM: tick arrays and protocol positions), not refunded`);
   out.push("");

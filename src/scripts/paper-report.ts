@@ -5,6 +5,7 @@
  *   npm run paper:report -- --json   the summary as JSON
  */
 import { config } from "../config";
+import { readLedgerRows } from "../engine/ledger";
 import { readRecent } from "../journal";
 import { loadPaperBook, paperBookFile, paperSummary, renderPaperReport } from "../paper";
 
@@ -14,7 +15,7 @@ function main(): void {
     console.log(`no paper book at ${paperBookFile()} (DATA_DIR=${config.dataDir}). Start one with: PAPER_SOL=100 DATA_DIR=${config.dataDir} npm run once`);
     process.exit(1);
   }
-  const summary = paperSummary(book, readRecent(5000));
+  const summary = paperSummary(book, readRecent(5000), Date.now(), readLedgerRows());
   if (process.argv.includes("--json")) {
     console.log(JSON.stringify(summary, null, 2));
     return;
