@@ -142,7 +142,7 @@ export default function DashboardApp() {
         // and the fee figure the second sentence carried is the holds, dish and made chapters' own.
         body: <>{[narrative.story[0], ...(narrative.story.length > 1 ? [narrative.story[narrative.story.length - 1]] : [])].filter(Boolean).map((s, i) => <p key={i}>{s}</p>)}</>,
         // the wallet is proof only when the desk is live; otherwise the proof is the code
-        links: [{ href: "#lays", label: "How he works" }, live && walletAddress ? { href: `https://solscan.io/account/${walletAddress}`, label: "His wallet", external: true } : { href: "https://github.com/louz514/bands-finance", label: "The code", external: true }],
+        links: [{ href: "#lays", label: "How he works" }, live && walletAddress ? { href: `https://solscan.io/account/${walletAddress}`, label: "His wallet", external: true } : { href: "https://github.com/Bands-Finance/bands-finance", label: "The code", external: true }],
       },
       {
         id: "lays", station: "rows", side: "left", frame: { x: 0.2, y: 0.08 }, eyebrow: "The band", line1: "He lays SOL", line2: "under the price.",
@@ -215,7 +215,7 @@ export default function DashboardApp() {
           { href: `${PLATFORM_URL}/#/learn`, label: "His tools", external: true },
           ...(TOKEN_URL ? [{ href: TOKEN_URL, label: "$BANDS on ClawPump", external: true }] : []),
           ...(X_URL ? [{ href: X_URL, label: "Follow him on X", external: true }] : []),
-          { href: "https://github.com/louz514/bands-finance", label: "The code", external: true },
+          { href: "https://github.com/Bands-Finance/bands-finance", label: "The code", external: true },
         ],
       },
       {

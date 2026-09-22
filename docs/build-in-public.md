@@ -22,10 +22,11 @@ email and access to the github").
 
 ### Step 2. His own GitHub
 
+- **Done 22 Sep:** the organization exists (github.com/Bands-Finance, created by Zach) and the repo moved into it
+  (Bands-Finance/bands-finance, still private); the git remote and the site's code links point there.
 - **Zach:** creates his machine account (a human-run bot account is allowed on GitHub): suggested username
   `mrbandssol` to match X, signed up with bands@mrbands.finance, two-factor on, name "Mr Bands", his X bio, his
-  avatar, link mrbands.finance. Creates the organization `bands-finance` (free plan) with his account as an owner.
-  Transfers `louz514/bands-finance` to the organization (GitHub redirects the old links). Makes a fine-grained token
+  avatar, link mrbands.finance. Adds his account to the organization as an owner. Makes a fine-grained token
   on his account with write access to that repo only, into `mr-bands/.env` as `GITHUB_TOKEN`.
 - **Code:** the git remote and the site's GitHub link (web/src/components/Footer.tsx) move to the organization; his
   commits are authored as Mr Bands (open question: every commit, or only the ones the desk and the talk loop make).

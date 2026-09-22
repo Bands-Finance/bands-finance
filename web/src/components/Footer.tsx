@@ -10,7 +10,7 @@ import "./Footer.css";
 const LINKS: { label: string; href: string; title?: string; external?: boolean }[] = [
   { label: "Journal", href: "/api/feed.md", title: "Every decision, as Markdown" },
   { label: "API", href: "/api/journal", title: "The journal as JSON" },
-  { label: "GitHub", href: "https://github.com/louz514/bands-finance", external: true },
+  { label: "GitHub", href: "https://github.com/Bands-Finance/bands-finance", external: true },
   { label: "Meteora", href: "https://app.meteora.ag", external: true },
 ];
 

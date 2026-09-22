@@ -264,7 +264,7 @@ export function DashFooter({ agentName }: { agentName: string }) {
             <a href={PLATFORM_URL} target="_blank" rel="noreferrer">bands.finance</a>
             <a href={`${PLATFORM_URL}/#/learn`} target="_blank" rel="noreferrer">How it works</a>
             <a href="https://app.meteora.ag" target="_blank" rel="noreferrer">Meteora</a>
-            <a href="https://github.com/louz514/bands-finance" target="_blank" rel="noreferrer">The code</a>
+            <a href="https://github.com/Bands-Finance/bands-finance" target="_blank" rel="noreferrer">The code</a>
           </nav>
           <button type="button" className="dash-foot__motion engrave" aria-pressed={!motion} disabled={system} onClick={() => setMotionPaused(motion)}>
             {system ? "Reduced motion" : motion ? "Pause motion" : "Resume motion"} <span aria-hidden="true">{motion ? "Ⅱ" : "▷"}</span>
