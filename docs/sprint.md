@@ -4,10 +4,19 @@ Researched and checked on 22 Sep against the live hackathon page (clawpump.tech/
 stands, and two adversarial reviews (a judge and the engineer who has to ship it). Where this file and
 docs/clawrena.md disagree, this file is newer.
 
-**The plan in one line.** Do the three entry steps first and put real SOL back on Meteora this week. Then
-Mr Bands takes on each new role in public while the judges watch: trader from Mon 28 Sep, platform manager
-from Thu 1 Oct, teacher from Sun 4 Oct. His token is a key that opens his tools. It pays nobody, it never
-opens his lessons, and the desk never touches it.
+**The plan in one line.** Do the three entry steps first. Then Mr Bands takes on each new role in public
+while the judges watch: trader from Mon 28 Sep, platform manager from Thu 1 Oct, teacher from Sun 4 Oct. His
+token, $MRBANDS, is a key that opens his tools. It pays nobody, it never opens his lessons, and the desk
+never touches it.
+
+**Decided by Zach, Tue 22 Sep.**
+- The copycat "Mr Bands" $BANDS (`JAARLU...pJ6m`, `@MrBandsSol`) is **not ours**: report it, and register first.
+- The token: **$MRBANDS**, SOL pair, no dev buy, `buybackBps` 0, self-funded from a new cold treasury keypair.
+- **No live money.** The live desk stays halted through 8 Oct. The scored trader record is the frozen 17-19 Sep
+  real-money run. The paper desk keeps trading in public, labelled paper, and the model decides there. The
+  weight of the entry moves to the builder half of the track and to Overall: the Meteora skill other agents
+  install, the platform, the casebook and the token design. The token still needs about 0.05 SOL in the treasury.
+- **The lawyer: launch the no-rights design knowingly**, on Fri 25 Sep, and get a review before adding anything.
 
 ## Dates that decide everything
 
@@ -55,16 +64,16 @@ Build in this order. Each rung is a valid, honest entry on its own.
 1. X account and registration. Free. **Tue 22 Sep.**
 2. Token launched, attached to the entry, entry posted tagging @clawpumptech. About 0.05 SOL. **By Fri 25 Sep.**
 3. The honest record on the site: "fees are not profit" and the real-money casebook. No SOL needed.
-4. The live desk trading again. About 5 SOL.
-5. The model deciding on the live book.
-6. The platform reachable, and the Meteora skill installable by other agents.
+4. The Meteora skill installable by other agents, and an outside agent using it.
+5. The platform reachable: a stranger's wallet signs in and plans a band it signs itself.
+6. The model deciding on the paper desk, in public, labelled paper.
 
-With no SOL at all, the entry is rungs 1 to 3: the frozen 17-19 Sep run plus the casebook, and the pitch
-drops the line "the LLM proposes".
+(Decided 22 Sep: no live money, so the old rungs "the live desk trading again" and "the model deciding on the
+live book" are off. The pitch never says the model trades real money. It may say the model proposes on paper.)
 
 ## The token
 
-**Shape.** ClawPump, **SOL pair, no dev buy, `buybackBps` 0**, a distinct ticker (for example `MRBANDS`;
+**Shape.** ClawPump, **SOL pair, no dev buy, `buybackBps` 0**, the ticker **`MRBANDS`** (decided;
 `BANDS` is taken by the copycat and by "Blue Bands"). Launched **self-funded from a new cold treasury keypair**,
 so the payer, and therefore the permanent creator-fee beneficiary, is that treasury and never the hot desk
 wallet. That is the existing CLI with `WALLET_SECRET_KEY` set to the treasury key: no new code, no untested
@@ -116,28 +125,26 @@ Everything is published the day it passes its tests. The dated role changes are 
 announcements, not a hold-back: a judge who looks on 28 Sep should already find the casebook.
 
 ### Role 1: the trader. On display from Mon 28 Sep.
-The trader criteria score a live record. Paper counts for none of it.
+Decided: no live money. So the scored record is what already happened, told straight, and the trader keeps
+working in public on paper.
 
-- **Live desk back by Thu 24 Sep** on about 5 SOL. Zach funds it and clears `KILL_SWITCH` in ops/live.env. Set
-  `MAX_TOTAL_EXPOSURE_SOL` to about 4 (it says 15 today, three times the book), `GAS_RESERVE_SOL` to about
-  0.5, and `MAX_ACTIVE_POOLS=2`: an ANSEM-SOL seat plus one screener seat. Relaunch on the **policy**, with the
-  code unchanged.
-- **The model decides, proven on paper first.** `OPENHERMIT_TOKEN` goes on paper on Tue 22 Sep. After 24-48 h with
-  a non-zero LLM share and rationales that pass the lint, switch the live `DECIDER` (around Sat 26 Sep). There
-  is no spend cap in the code, so put a hard credit limit **on the OpenRouter key itself**. Rollback trigger: if
-  vetoes spike or cost overruns, set `DECIDER=policy` again.
-- **The lessons of the real run, in code, on paper first.** The yield forecast came in at a median 0.40 of
-  what was realised (too high 48 times in 52). Seats that ended above the band made +4.31 SOL, and narrow ones
-  that went through the bottom lost 2.74. Haircut the forecast and prefer the width that survived. Ship it on
-  paper on Wed 23 Sep; it goes live only after clean paper cycles. Never on the relaunch day.
-- **An ANSEM-SOL seat** in the existing $1.24M pool, sized by the guards, worked on stream. Ask ClawPump whether
-  it counts toward the $ANSEM bonus before claiming it. Or pitch the new part concretely: an agent that
-  market-makes ANSEM under published guards, every veto on-chain.
-- **"Fees are not profit"** on mrbands.finance: fees claimed against a book that finished down, from the equity
-  series only.
+- **The real-money record, frozen and honest.** 17-19 Sep: 329 signed transactions, 0 errors, 0 guard
+  violations, every decision journalled. Fees claimed against a book that finished down. "Fees are not profit"
+  on mrbands.finance, from the equity series only (see "One headline number").
+- **The paper desk, trading in public**, clearly labelled paper: it already runs alone (straddles, breakers that
+  survive a blind pool, the kill switch scoped per desk, the rule-based proposal approver).
+- **The model decides on paper.** `OPENHERMIT_TOKEN` goes into `.env` on Tue 22 Sep, with a hard credit limit on
+  the OpenRouter key itself (there is no spend cap in the code). Success is a non-zero LLM share on
+  /api/status and rationales that pass the lint. Rollback: `DECIDER=policy`. The pitch says "the model proposes,
+  the guards decide" about the paper book only.
+- **The lessons of the real run, in code, on paper.** The yield forecast came in at a median 0.40 of what was
+  realised (too high 48 times in 52). Seats that ended above the band made +4.31 SOL, and narrow ones that went
+  through the bottom lost 2.74. Haircut the forecast and prefer the width that survived, and show the paper
+  desk doing it.
+- The live desk stays halted (`KILL_SWITCH=true` and data-mainnet/STOP) through 8 Oct.
 
-Done when: signed live activity on each of Fri 25, Sat 26 and Sun 27 Sep, and a non-zero LLM share on live
-in /api/status.
+Done when: "fees are not profit" is live from one sourced number, the paper desk shows a non-zero LLM share,
+and the seat-scoring change is running on paper.
 
 ### Role 2: the platform manager. Announced Thu 1 Oct.
 Mr Bands runs bands.finance the way the desk runs trades: code decides who gets in and what gets approved,
@@ -186,10 +193,10 @@ price knobs, the position watcher.
 | Day | Zach (keys, money, accounts: first thing each morning) | Claude |
 |---|---|---|
 | **Tue 22 Sep** | Copycat answer. X account, follow, DM for a slot. **Register.** Mac on power, lid open, updates off. `OPENHERMIT_TOKEN`. Lawyer decision. Push the commits. | docs/clawrena.md; public honesty fixes; SKILL.md; H1 guard and CLI message; settle one headline number. |
-| **Wed 23 Sep** | `CLAWPUMP_API_KEY`, `npm run clawpump -- pairs`. Email ClawPump the questions below. Treasury keypair. Ticker. Fund the desk (about 5 SOL) and the treasury (about 0.05 SOL). | Seat-scoring change on paper. Start the keyless API and tunnel. Watch the paper LLM decisions. |
-| **Thu 24 Sep** | Token preflight and quote. **Clear `KILL_SWITCH`: the live desk trades again** (on the policy). | Watch the first live cycles. Build the casebook. |
+| **Wed 23 Sep** | `CLAWPUMP_API_KEY`, `npm run clawpump -- pairs`. Email ClawPump the questions below. Create the treasury keypair offline and send it about 0.05 SOL. | Seat-scoring change on paper. Start the keyless API and tunnel. Watch the paper LLM decisions. |
+| **Thu 24 Sep** | Token preflight from the treasury wallet, and read the quote. | Build the casebook. Start the Hermes skill. |
 | **Fri 25 Sep** | **Launch the token**, attach it at /ansemhack/entry if it doesn't attach itself, post the entry from the project account. All three steps done, a week early. | Official-token page with the not-ours notice. `TOKEN_URL`/`X_URL`. "Fees are not profit". Casebook public. |
-| **Sat 26 Sep** | Say go on the model for live, if paper passed. | Live `DECIDER=openhermit`. `bands_lessons` tool. The Hermes skill. |
+| **Sat 26 Sep** | | `bands_lessons` tool. The Hermes skill. |
 | **Sun 27 Sep** | Stream rehearsal. | Hold gate and `bands_access`. Freeze the site's look. |
 | **Mon 28 Sep** | **Judging opens.** | Daily honest-numbers post (SOL and hours, net shown). |
 | **Tue 29 to Wed 30 Sep** | Review the token-page wording. | Outside-agent skill demo. End to end on the public tunnel: sign in, access, plan, sign. |
@@ -232,19 +239,14 @@ The sources disagree, and a judge who adds them up will notice:
 Until it is reconciled, public figures come from the equity series and nothing else, and the casebook prints
 the gap if it can't be closed.
 
-## Decisions for Zach
+## Decisions (Zach, Tue 22 Sep)
 
-1. **The copycat token and @MrBandsSol: yours or not?** If not, report both today and publish a not-ours notice
-   once our mint exists.
-2. **The token shape:** SOL pair, no dev buy, self-funded from a new treasury keypair, a distinct ticker.
-   Recommendation: yes to all four.
-3. **The live book:** about 5 SOL by Wed 23 Sep, and the go on Thu 24 Sep. Size it as money you can lose all of.
-   There is no scored trader record without it.
-4. **The model on live**, after 24-48 h proven on paper, with a hard credit limit on the OpenRouter key.
-   Otherwise the pitch drops "the LLM proposes".
-5. **The lawyer:** a review of US-person status and the token-page wording does not fit before Fri 25 Sep.
-   Either launch the no-rights design without one, knowingly, or wait for one and move the launch to Sun 27 Sep
-   at the latest. Decide now.
+1. **The copycat token and @MrBandsSol: not ours.** Report both to ClawPump and pump.fun today, register first,
+   and publish a not-ours notice once our mint exists.
+2. **The token: $MRBANDS**, SOL pair, no dev buy, `buybackBps` 0, self-funded from a new treasury keypair.
+3. **No live money.** The live desk stays halted through 8 Oct; the trader record is the frozen 17-19 Sep run.
+4. **The model decides on paper only**, with a hard credit limit on the OpenRouter key.
+5. **The lawyer: launch the no-rights design knowingly** on Fri 25 Sep; a review before anything is added.
 
 ## Ask ClawPump (Wed 23 Sep, dev@clawpump.tech and @clawpumptech)
 
@@ -260,8 +262,9 @@ the gap if it can't be closed.
 - **A missed entry step voids the entry.** All three are done by Fri 25 Sep and rechecked on Thu 1 Oct.
 - **The laptop during judging.** Mains power, lid open, updates off. The public API is keyless, so the site
   survives a desk outage.
-- **The live book loses money on camera.** A small book, the lessons in the scoring, wider bands, and the loss
-  shown at the same size as the wins. It is the honest story, never hidden.
+- **A thin trader record.** No live money means the scored record is 39 hours from 17-19 Sep, and "on-chain
+  volume during the run" is whatever others do with the token and the skill. Lean on risk control, the
+  honesty of the record, and builders onboarded. Say plainly that the desk is on paper and why.
 - **The copycat confuses judges and buyers.** A distinct ticker, the mint first everywhere, a not-ours page,
   reports filed, a gate that reads only the official mint.
 - **A regulatory reading as an investment contract.** No economic rights, no dev buy, no buyback, disclosure in
