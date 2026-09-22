@@ -29,13 +29,13 @@ const CONSOLE_KEEP = 20;
 
 const GLYPH: Record<Verdict, string> = { placed: "✓", simulated: "◐", failed: "✕", blocked: "⊘", override: "⚠", hold: "○" };
 
-type Dot = "live" | "paper" | "rehearsal" | "demo" | "standby";
+type Dot = "live" | "rehearsal" | "demo" | "standby";
 
 /** The status light in the chrome: what the reader can expect from the feed right now. */
 function dotOf(status: Status): Dot {
   if (status.mode === "demo") return "demo";
   if (status.ageMs === null || status.ageMs > STALE_MS) return "standby";
-  return status.mode === "live" ? "live" : status.mode === "paper" ? "paper" : "rehearsal";
+  return status.mode === "live" ? "live" : "rehearsal";
 }
 
 function timeOf(ts: string): string {
@@ -81,7 +81,7 @@ const START_LINES = [
   "1. He reads the pool.",
   "2. He proposes one move: open, close, claim, move, or hold.",
   "3. The guards decide.",
-  "4. A yes runs, on paper or live.",
+  "4. A yes runs.",
   "5. It lands in this journal.",
 ];
 
@@ -189,6 +189,7 @@ function DeskInner({ entries, status, limits, screen, agentName, id }: DeskProps
   const agentId = stable[0]?.agent?.id ?? "mr-bands";
   const dot = dotOf(status);
   const demo = status.mode === "demo";
+  const idle = status.mode === "none";
 
   // Autoscroll like a real terminal: follow the tail only when the reader is
   // already AT the tail. Yanking someone out of the scrollback on every feed
@@ -237,9 +238,9 @@ function DeskInner({ entries, status, limits, screen, agentName, id }: DeskProps
   return (
     <section id={id ?? "desk"} className="app__desk reveal" ref={reveal} aria-label={`${agentName} at work`}>
       <div className="app__desk-head">
-        <h2 className="app__desk-title">Watch {agentName} work</h2>
+        <h2 className="app__desk-title">{idle ? `${agentName}${agentName.endsWith("s") ? "'" : "'s"} desk` : `Watch ${agentName} work`}</h2>
         <p className="app__desk-sub">
-          His journal. Type <code>start</code> below.
+          {idle ? "No book open, so the journal is empty. " : "His journal. "}Type <code>start</code> below.
         </p>
       </div>
 
@@ -259,13 +260,13 @@ function DeskInner({ entries, status, limits, screen, agentName, id }: DeskProps
 
         <div className="term__body" ref={bodyRef}>
           <p className="term__boot">
-            {agentId} v0.1 · <Gloss term="band">bands</Gloss> on Meteora DLMM · every 5 min per pool · mode:{" "}
-            {status.mode === "dry-run" ? <Gloss term="dryRun">{status.short}</Gloss> : status.mode === "paper" ? <Gloss term="paper">{status.short}</Gloss> : demo ? <Gloss term="demo">{status.short}</Gloss> : status.short}
+            {agentId} v0.1 · <Gloss term="band">bands</Gloss> on Meteora DLMM{idle ? "" : " · every 5 min per pool"} · mode:{" "}
+            {status.mode === "dry-run" ? <Gloss term="dryRun">{status.short}</Gloss> : demo ? <Gloss term="demo">{status.short}</Gloss> : status.short}
           </p>
 
           {blocks.length === 0 && (
             <p className="term__line term__line--dim">
-              // quiet · {agentName} speaks every 5 minutes · most cycles are a hold
+              {idle ? "// no book open · nothing in the journal" : `// quiet · ${agentName} speaks every 5 minutes · most cycles are a hold`}
             </p>
           )}
 

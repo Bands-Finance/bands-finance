@@ -21,7 +21,7 @@ import "./Dash.css";
  * rule and a plate number. Every figure is the Record's or the summary's, restated; nothing is computed here.
  */
 
-const MODE_WORD: Record<Status["mode"], string> = { live: "live on Solana", paper: "paper", "dry-run": "rehearsal", demo: "demo" };
+const MODE_WORD: Record<Status["mode"], string> = { live: "live on Solana", none: "no book open", "dry-run": "rehearsal", demo: "demo" };
 
 /* ---------- the nav ---------- */
 
@@ -130,6 +130,16 @@ const MICRO = "EVERY MOVE PUBLISHED · LIQUIDITY IN BETWEEN · ";
 /** The statement's lines: the same figures wherever the page prints them. */
 export function statementRows({ record, summary, solPriceUsd, status, now, stamp }: Pick<DashNoteProps, "record" | "summary" | "solPriceUsd" | "status" | "now" | "stamp">): { label: string; value: ReactNode }[] {
   const fees = record ? record.feesRealized + record.feesUnclaimed : null;
+  // no book open: the statement is blank and says so, line by line, rather than print dots where a book would be
+  if (!record && status.mode === "none") {
+    return [
+      { label: "The book", value: "none open" },
+      { label: "At work", value: "nothing" },
+      { label: "Bands", value: "none open" },
+      { label: "Last decision", value: "none on this book" },
+      ...(stampWord(stamp, now) ? [{ label: "This page", value: stampWord(stamp, now)! }] : []),
+    ];
+  }
   return [
     { label: "The book", value: record ? <>{num(record.equityNow)} SOL{usd(record.equityNow, solPriceUsd) ? <span className="dash-ledger__aside"> ≈ {usd(record.equityNow, solPriceUsd)}</span> : null}</> : "·" },
     { label: "At work", value: record ? `${num(record.atWork)} SOL` : "·" },

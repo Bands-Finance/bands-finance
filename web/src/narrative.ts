@@ -48,15 +48,25 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const upDown = (x: number, flatBelow = 0.05) => (x >= flatBelow ? "up" : x <= -flatBelow ? "down" : "flat");
 
 const MODE_SENTENCE: Record<Status["mode"], string> = {
-  paper: "This is paper: real pools, a pretend wallet.",
+  none: "He has no money at work right now.",
   "dry-run": "This is a rehearsal: real pools, a wallet that sends nothing.",
   live: "This is his own wallet on Solana.",
   demo: "This is a scripted demo: no wallet, no money.",
 };
 
-export function narrativeOf(o: { record: AgentRecord | null; status: Status; agentName: string; now: number; flow?: FlowTotals | null; bandsOpen?: number; atWorkSol?: number }): Narrative {
+/**
+ * No book open (statusOf "none": the snapshot publishes an empty journal): the headline says so and the story
+ * points at his real-money run, the only record the site shows. runDays is the run's days ("17 to 19 Sep",
+ * liveRun.ts runDays), absent until the frozen run has loaded or when the host has none.
+ */
+export function noBookNarrative(runDays?: string | null): Narrative {
+  return { headline: "No book open right now.", story: [runDays ? `His real-money run, ${runDays}, is below.` : MODE_SENTENCE.none] };
+}
+
+export function narrativeOf(o: { record: AgentRecord | null; status: Status; agentName: string; now: number; flow?: FlowTotals | null; bandsOpen?: number; atWorkSol?: number; loading?: boolean; runDays?: string | null }): Narrative {
   const { record, status, agentName, now } = o;
-  if (!record) return { headline: "Reading the journal.", story: [MODE_SENTENCE[status.mode]] };
+  if (!record && status.mode === "none" && !o.loading) return noBookNarrative(o.runDays);
+  if (!record) return { headline: "Reading the journal.", story: [] };
   const dir = upDown(record.net);
   const headline = dir === "flat" ? `${agentName} is about flat ${sinceWord(record.startTs, now)}.` : `${agentName} is ${dir} ${num(record.net)} SOL ${sinceWord(record.startTs, now)}.`;
 

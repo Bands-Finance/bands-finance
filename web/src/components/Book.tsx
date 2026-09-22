@@ -20,7 +20,7 @@ export interface BookProps {
 const PULSE: Record<Status["mode"], { word: string; cls: string; gloss: string | undefined }> = {
   live: { word: "live", cls: "", gloss: undefined },
   "dry-run": { word: "rehearsal", cls: "livepos__pulse--rehearsal", gloss: GLOSS.dryRun },
-  paper: { word: "paper", cls: "livepos__pulse--rehearsal", gloss: GLOSS.paper },
+  none: { word: "no book open", cls: "livepos__pulse--rehearsal", gloss: undefined },
   demo: { word: "demo", cls: "livepos__pulse--demo", gloss: GLOSS.demo },
 };
 
@@ -59,7 +59,9 @@ export function Book({ book, status, agentName, compact = false }: BookProps) {
         // every <span className="term" title={GLOSS.band}>band</span> {agentName} holds, from the newest cycle in the journal
       </p>}
 
-      {bands.length === 0 ? (
+      {bands.length === 0 && status.mode === "none" ? (
+        <p className="livepos__flat">No book open right now, so no band is on it.</p>
+      ) : bands.length === 0 ? (
         <p className="livepos__flat">
           Flat. {agentName} opens a band only when the fees are worth the risk.
           {book.lastExit ? ` Last exit: ${ACTION_PAST[book.lastExit.action]} ${ago(book.lastExit.ts, now)}, “${book.lastExit.headline}”.` : ""}

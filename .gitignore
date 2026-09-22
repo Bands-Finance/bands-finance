@@ -32,3 +32,9 @@ data-talk/
 
 # Blender backup saves
 *.blend1
+
+# the site's book snapshots: written by `npm run web:snapshot` before every deploy (src/publish/snapshot.ts),
+# never committed, so no desk's book (and never a paper one) rides into git
+web/public/journal.json
+web/public/equity.json
+web/public/learned.json

@@ -13,6 +13,7 @@ import { BandBlock, ClosingBlock, MadeBlock, StatementList, bandLabels, bandStat
 import { liveRunBeat, useLiveRun } from "./stage/LiveRun";
 import { useMotion } from "./motion";
 import { PLATFORM_URL, TOKEN_URL, X_URL } from "./site";
+import { dayOf, runDays } from "./liveRun";
 import "lenis/dist/lenis.css";
 
 /** The desk shows the band the price is inside first: that is where the crossing can be seen. */
@@ -46,9 +47,12 @@ export default function DashboardApp() {
   const flowTotals = useMemo(() => flowTotalsOf(flows), [flows]);
   const agentName = selected?.name ?? "Mr Bands";
   const walletAddress = agentEntries[0]?.wallet.address ?? null;
+  // no book open (the snapshot publishes an empty journal): every "now" chapter says so and points at the real-money run
+  const idle = status.mode === "none";
+  const runSpan = liveRun ? runDays(liveRun.firstTs, liveRun.lastTs) : null;
   const narrative = useMemo(
-    () => narrativeOf({ record, status, agentName, now, flow: flowTotals, bandsOpen: selected?.bandsOpen ?? 0, atWorkSol: record?.atWork }),
-    [record, status, agentName, now, flowTotals, selected],
+    () => narrativeOf({ record, status, agentName, now, flow: flowTotals, bandsOpen: selected?.bandsOpen ?? 0, atWorkSol: record?.atWork, loading: entries === null, runDays: runSpan }),
+    [record, status, agentName, now, flowTotals, selected, entries, runSpan],
   );
 
   // the bands in the order the desk lays them out: the first two get a tray each
@@ -76,7 +80,11 @@ export default function DashboardApp() {
   const beats = useMemo<Beat[]>(() => {
     const m = narrative.headline.match(/^(.*?\bis (?:up|down|about flat))\s+(.*)$/);
     const words = narrative.headline.split(" ");
-    const [h1, h2] = m ? [m[1], m[2]] : [words.slice(0, Math.ceil(words.length / 2)).join(" "), words.slice(Math.ceil(words.length / 2)).join(" ")];
+    const [h1, h2] = m
+      ? [m[1], m[2]]
+      : idle && !record
+        ? ["No book open", "right now."]
+        : [words.slice(0, Math.ceil(words.length / 2)).join(" "), words.slice(Math.ceil(words.length / 2)).join(" ")];
     const first = bands[0] ?? null;
     const bins = bands.reduce((n, b) => n + b.widthBins, 0);
     const nBands = bands.length;
@@ -105,11 +113,18 @@ export default function DashboardApp() {
           } satisfies Beat;
         })
       : [
-          {
-            id: "holds", station: "vault", side: "right", eyebrow: "What he holds", line1: "Nothing,", line2: "this minute.",
-            body: <><p>No band is open. He lays one only when the fees are worth the risk.</p>{book.lastExit && <p>His last exit: “{book.lastExit.headline}”</p>}</>,
-            figure: record ? { value: `${num(record.equityNow)} SOL`, label: "waiting in his wallet" } : null,
-          } satisfies Beat,
+          idle
+            ? ({
+                // no book open: nothing is held and no wallet is waiting; the real-money run's end is the last word on his bands
+                id: "holds", station: "vault", side: "right", eyebrow: "What he holds", line1: "Nothing,", line2: "right now.",
+                body: <><p>No band is open.</p>{liveRun && <p>His real-money run ended {liveRun.settled ? "all cash " : ""}on {dayOf(liveRun.lastTs)}.</p>}</>,
+                figure: null,
+              } satisfies Beat)
+            : ({
+                id: "holds", station: "vault", side: "right", eyebrow: "What he holds", line1: "Nothing,", line2: "this minute.",
+                body: <><p>No band is open. He lays one only when the fees are worth the risk.</p>{book.lastExit && <p>His last exit: “{book.lastExit.headline}”</p>}</>,
+                figure: record ? { value: `${num(record.equityNow)} SOL`, label: "in hand, not at work" } : null,
+              } satisfies Beat),
         ];
 
     const chapters: Beat[] = [
@@ -121,18 +136,18 @@ export default function DashboardApp() {
         // the first line says what he is before any number does
         eyebrow: `${new Date(now).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })} · Market maker on Meteora, Solana`,
         line1: h1, line2: h2,
-        // the story's first sentence, then the one that says what kind of run this is (paper or live; always the story's
+        // the story's first sentence, then the one that says what kind of run this is (no book, rehearsal or live; always the story's
         // last sentence, narrative.ts), so a stranger learns whether the money is real in the first window. Two paragraphs,
         // not three: the words' column must end above the desk's foreground on a wide window and above the man on a phone,
         // and the fee figure the second sentence carried is the holds, dish and made chapters' own.
-        body: <>{[narrative.story[0], ...(narrative.story.length > 1 ? [narrative.story[narrative.story.length - 1]] : [])].map((s, i) => <p key={i}>{s}</p>)}</>,
-        // the wallet is proof only when the desk is live; a paper run's proof is the code
+        body: <>{[narrative.story[0], ...(narrative.story.length > 1 ? [narrative.story[narrative.story.length - 1]] : [])].filter(Boolean).map((s, i) => <p key={i}>{s}</p>)}</>,
+        // the wallet is proof only when the desk is live; otherwise the proof is the code
         links: [{ href: "#lays", label: "How he works" }, live && walletAddress ? { href: `https://solscan.io/account/${walletAddress}`, label: "His wallet", external: true } : { href: "https://github.com/louz514/bands-finance", label: "The code", external: true }],
       },
       {
         id: "lays", station: "rows", side: "left", frame: { x: 0.2, y: 0.08 }, eyebrow: "The band", line1: "He lays SOL", line2: "under the price.",
         body: nBands ? <><p>A band is a row of price bins with his SOL laid in each. Tokenized stocks are one part of his book.</p></> : <><p>A band is a row of price bins with his SOL laid in each. Tokenized stocks are one part of his book.</p><p>He holds none.</p></>,
-        figure: record ? (nBands ? { value: `${num(record.atWork)} SOL`, label: `at work in ${nBands} band${nBands === 1 ? "" : "s"}, ${bins} bins` } : { value: `${num(record.equityNow)} SOL`, label: "waiting in his wallet" }) : null,
+        figure: record ? (nBands ? { value: `${num(record.atWork)} SOL`, label: `at work in ${nBands} band${nBands === 1 ? "" : "s"}, ${bins} bins` } : { value: `${num(record.equityNow)} SOL`, label: "in hand, not at work" }) : null,
       },
       // the sheets come straight after the band they describe: lay, hold, cross, paid. It also keeps the camera on the
       // tray side of the desk (rows -> row0 -> row1) before the long walk round to the cursor and the dish.
@@ -157,15 +172,25 @@ export default function DashboardApp() {
             id: "made", station: "chart", side: "left", wide: true, eyebrow: "What he made", line1: "He has earned", line2: record.feesRealized < 0.0005 ? `${num(feesAll)} SOL, unclaimed.` : `${num(feesAll)} SOL in fees.`,
             content: <MadeBlock record={record} solPriceUsd={solPriceUsd} now={now} chart={chart} />,
           } satisfies Beat]
-        : []),
+        : idle
+          ? [{
+              // no book open: nothing to count now, so the chapter says so and names what the real-money run claimed
+              id: "made", station: "chart", side: "left", eyebrow: "What he made", line1: "No book,", line2: "nothing to count.",
+              body: liveRun ? <><p>His real-money run claimed {liveRun.feesClaimed.toFixed(2)} SOL of fees.</p><p>Its ledger is below.</p></> : <><p>No book is open, so there is nothing to count.</p></>,
+            } satisfies Beat]
+          : []),
       {
         id: "relay", station: "plan", side: "right", frame: { x: -0.2, y: 0.02 }, eyebrow: "The re-lay", line1: "Price walks away.", line2: "He lays it again.",
         body: <><p>A band the price has left earns nothing. He lays it again.</p></>,
-        figure: moved === 0 ? { value: "0", label: "bands moved yet" } : { value: `${moved}`, label: `band${moved === 1 ? "" : "s"} moved so far` },
+        figure: idle
+          ? liveRun ? { value: `${liveRun.relays}`, label: `band${liveRun.relays === 1 ? "" : "s"} moved in his real-money run` } : null
+          : moved === 0 ? { value: "0", label: "bands moved yet" } : { value: `${moved}`, label: `band${moved === 1 ? "" : "s"} moved so far` },
       },
       {
         id: "record", station: "ledger", side: "left", wide: true, eyebrow: "The record", line1: "Every move", line2: "is on the record.",
-        body: <><p>He proposes, the guards decide. Every figure here is from his journal.</p></>,
+        body: idle
+          ? <><p>No book is open, so this statement is blank.</p>{liveRun && <p>His real-money record is the next chapter.</p>}</>
+          : <><p>He proposes, the guards decide. Every figure here is from his journal.</p></>,
         content: <StatementList rows={statementRows({ record, summary: selected, solPriceUsd, status, now, stamp })} />,
         links: live && walletAddress ? [{ href: `https://solscan.io/account/${walletAddress}`, label: "His wallet on Solscan", external: true }] : undefined,
       },
@@ -203,7 +228,7 @@ export default function DashboardApp() {
     // so the count never skips. A chapter added later (the live run, after "The record") is numbered by its place.
     let k = 0;
     return chapters.map((b) => (b.id === "hero" || b.id === "house" ? b : { ...b, eyebrow: `${roman(k++)} · ${b.eyebrow}` }));
-  }, [narrative, bands, book, record, actions, flows, flowTotals, feesAll, chart, walletAddress, solPriceUsd, selected, status, stamp, agentName, now, liveRun, didIsTheRun]);
+  }, [narrative, bands, book, record, actions, flows, flowTotals, feesAll, chart, walletAddress, solPriceUsd, selected, status, stamp, agentName, now, liveRun, didIsTheRun, idle]);
 
   // SMOOTH SCROLL: only smoothing, never steering; off with reduced motion or the footer's switch, and never on touch
   const motion = useMotion();

@@ -24,6 +24,7 @@ import { WalletProviders } from "./platform/WalletProviders";
 import { MePage } from "./platform/MePage";
 import { ToolCatalog } from "./components/ToolCatalog";
 import { HotNow } from "./components/HotNow";
+import { useLiveRun } from "./hooks/useLiveRun";
 
 export type Route = "home" | "pools" | "learn" | "agents" | "me";
 
@@ -66,6 +67,8 @@ export default function App() {
   const { entries, screen, limits, equity, error, now, embedded } = useJournalFeed();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [poolAddr, setPoolAddr] = useState<string | null>(null);
+  // his real-money run (web/public/live-run.json): while no book is open it is the record every empty panel points at
+  const liveRun = useLiveRun();
 
   const agents = useMemo(() => (entries ? groupAgents(entries) : []), [entries]);
   const selected = agents.find((a) => a.id === selectedId) ?? agents[0] ?? null;
@@ -101,7 +104,7 @@ export default function App() {
   const deskStack = (id: string) => (
     <>
       <Desk id={id} entries={agentEntries} status={status} limits={limits} screen={screen} agentName={agentName} />
-      {record && <Record record={record} solPriceUsd={screen?.solPriceUsd ?? null} status={status} agentName={agentName} />}
+      {(record || status.mode === "none") && <Record record={record} solPriceUsd={screen?.solPriceUsd ?? null} status={status} agentName={agentName} run={liveRun} />}
       <Book book={book} status={status} agentName={agentName} />
       {madePairs.length > 0 && <MadePairs pairs={madePairs} status={status} agentName={agentName} />}
       <Guards limits={limits} record={record} />
@@ -115,8 +118,8 @@ export default function App() {
 
       {route === "home" && (
         <>
-          <Hero record={record} screen={screen} status={status} workingNow={workingNow} agentName={agentName} />
-          {entries && <ModeBanner status={status} />}
+          <Hero record={record} screen={screen} status={status} workingNow={workingNow} agentName={agentName} run={liveRun} />
+          {entries && <ModeBanner status={status} run={liveRun} />}
           {error && !entries && <div className="error">Could not load the journal: <code>{error}</code>.</div>}
           <HotNow />
           {entries && deskStack("desk")}
@@ -152,7 +155,7 @@ export default function App() {
               </div>
             </div>
           )}
-          {entries && <ModeBanner status={status} />}
+          {entries && <ModeBanner status={status} run={liveRun} />}
           {entries && selected && deskStack("agent-desk")}
           {selected && poolView && (
             <section className="app__desk" aria-label="What he sees">

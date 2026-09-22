@@ -60,7 +60,6 @@ export const GLOSS = {
   inRange: "In range: the price is inside the band, so it is earning.",
   bin: "Meteora cuts price into small steps called bins. A band is a run of bins.",
   dryRun: "Dry run: every transaction is built and none is sent.",
-  paper: "Paper: real pools, a pretend wallet. Nothing is sent.",
   demo: "Demo: a seeded example of how he proposes and the guards decide, not a real run.",
   guards: "The guards: plain code that can veto him or pull him out, and prints why.",
 };
@@ -624,7 +623,7 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
 
 /* ---------- status: one honest sentence ---------- */
 
-export type Mode = "demo" | "paper" | "dry-run" | "live";
+export type Mode = "demo" | "none" | "dry-run" | "live";
 
 export interface Status {
   mode: Mode;
@@ -635,22 +634,32 @@ export interface Status {
   short: string;
 }
 
+/**
+ * A practice decision: the paper desk's book (real pools, no wallet). The sites show only his real-money
+ * record (Zach, 22 Sep), so a practice entry never reaches a page: the feed drops it (realEntries) and a
+ * journal of them reads as no book at all (statusOf "none").
+ */
+export const isPractice = (e: JournalEntry): boolean => e.mode === "paper" || e.execution?.mode === "paper";
+/** The journal with every practice entry dropped. */
+export const realEntries = (entries: JournalEntry[]): JournalEntry[] => (entries.some(isPractice) ? entries.filter((e) => !isPractice(e)) : entries);
+/** The equity history with every practice point dropped. */
+export const realPoints = (points: EquityHistoryPoint[]): EquityHistoryPoint[] => points.filter((p) => p.mode !== "paper");
+
+/** What the page says when no book is open: the snapshot publishes an empty journal (SNAPSHOT_BOOK=none). */
+export const NO_BOOK = { short: "no book open", sentence: "No book open right now." } as const;
+
 export function statusOf(newestFirst: JournalEntry[], now: number, demo: boolean): Status {
-  const latest = newestFirst[0];
+  // a practice journal is not his book: the page shows it as no book open
+  const book = demo ? newestFirst : realEntries(newestFirst);
+  const latest = book[0];
   const lastTs = latest ? new Date(latest.ts).getTime() : null;
   const ageMs = lastTs ? now - lastTs : null;
-  // A paper run says so: the decisions and the marks are real, the wallet is not. A hold carries
-  // execution mode "none", so look back through the newest entries for the run's kind rather than
-  // flipping to "dry run" every time the newest decision is a hold.
-  const paper = !demo && (latest?.mode === "paper" || newestFirst.slice(0, 40).some((e) => e.execution?.mode === "paper"));
-  const mode: Mode = demo ? "demo" : paper ? "paper" : latest?.mode === "live" ? "live" : "dry-run";
+  if (!demo && !latest) return { mode: "none", lastTs: null, ageMs: null, short: NO_BOOK.short, sentence: NO_BOOK.sentence };
+  const mode: Mode = demo ? "demo" : latest?.mode === "live" ? "live" : "dry-run";
   const ago = ageMs === null ? "" : ageMs < 90e3 ? "a minute ago" : ageMs < 3600e3 ? `${Math.round(ageMs / 60e3)} min ago` : ageMs < 86400e3 ? `${Math.round(ageMs / 3600e3)} h ago` : `${Math.round(ageMs / 86400e3)} d ago`;
-  const span = latest && newestFirst.length ? (() => { const first = new Date(newestFirst[newestFirst.length - 1].ts).getTime(); const h = (lastTs! - first) / 3600e3; return h < 48 ? `${Math.round(h)} hours` : `${Math.round(h / 24)} days`; })() : "";
+  const span = latest && book.length ? (() => { const first = new Date(book[book.length - 1].ts).getTime(); const h = (lastTs! - first) / 3600e3; return h < 48 ? `${Math.round(h)} hours` : `${Math.round(h / 24)} days`; })() : "";
   if (mode === "demo") {
     return { mode, lastTs, ageMs, short: "demo", sentence: `A scripted demo: ${span} of simulated decisions in ${latest?.pool.label ?? "one pool"}. No wallet, no money.` };
-  }
-  if (mode === "paper") {
-    return { mode, lastTs, ageMs, short: "paper", sentence: `Paper: real pools, a pretend wallet. Last decision ${ago}.` };
   }
   if (mode === "dry-run") {
     return { mode, lastTs, ageMs, short: "dry run", sentence: `Rehearsal: a real pool, a wallet that sends nothing. Last decision ${ago}.` };
