@@ -29,18 +29,17 @@ export function Hero({ record, screen, status, workingNow, agentName }: HeroProp
 
   const eyebrow =
     status.mode === "live"
-      ? "bands.finance · live on Solana · Meteora DLMM"
+      ? "bands.finance · live · Meteora DLMM"
       : status.mode === "paper"
-        ? "bands.finance · paper trading real pools · nothing broadcast"
+        ? "bands.finance · paper trading · nothing broadcast"
         : status.mode === "dry-run"
-          ? "bands.finance · rehearsing on Solana · nothing broadcast"
+          ? "bands.finance · rehearsal · nothing broadcast"
           : "bands.finance · demo · nothing broadcast";
 
-  const sim = live ? "" : status.mode === "paper" ? " (paper)" : " (simulated)";
   const stats = [
-    { value: screen ? screen.scannedPools.toLocaleString() : "·", label: "pools scanned on-chain" },
+    { value: screen ? screen.scannedPools.toLocaleString() : "·", label: "pools scanned" },
     { value: record ? String(record.counts.decisions) : "·", label: "decisions published" },
-    { value: record ? (record.feesRealized + record.feesUnclaimed).toFixed(4) : "·", label: `SOL fees earned${sim}` },
+    { value: record ? (record.feesRealized + record.feesUnclaimed).toFixed(4) : "·", label: "SOL fees earned" },
   ];
 
   return (
@@ -53,15 +52,11 @@ export function Hero({ record, screen, status, workingNow, agentName }: HeroProp
           {eyebrow}
         </span>
         <h1 className="hero__title r-item" style={ri(1)}>
-          Meet {agentName}, an agent that <em>makes markets on Solana</em> and shows its work.
+          {agentName} <em>makes markets on Solana</em> and shows his work.
         </h1>
         <p className="hero__lede r-item" style={ri(2)}>
-          {agentName}, the founder of bands.finance, is an agent that makes markets on Meteora DLMM, around the
-          clock. Every half hour he reads every pool on the chain and ranks them, then puts small stacks of
-          liquidity (his <span className="term" title={GLOSS.band}>bands</span>) right around the price in the
-          best ones and earns the pool's fees on the trades that cross them. Tokenized stocks are one part of
-          his book. He proposes every move, from his own rulebook today; hard-coded guards decide, and can veto
-          it or pull him out. Every decision, every veto, every transaction is published here as it happens.
+          He lays <span className="term" title={GLOSS.band}>bands</span> of SOL in the best pools on Meteora DLMM and earns the fees on
+          trades that cross them. He proposes, the guards decide, and every decision is published here.
         </p>
 
         <div className="hero__cta r-item" style={ri(3)}>

@@ -20,9 +20,9 @@ type Side = PlanRequest["side"];
 type Strategy = PlanRequest["strategy"];
 
 const SIDE_WORDS: Record<Side, string> = {
-  SOL_ONLY: "SOL only, at and below the current price (buys the token as price falls)",
-  TOKEN_ONLY: "token only, at and above the current price (sells into strength)",
-  BOTH: "both sides, straddling the current price",
+  SOL_ONLY: "SOL only, below the price (buys the token as it falls)",
+  TOKEN_ONLY: "token only, above the price (sells as it rises)",
+  BOTH: "both sides of the price",
 };
 
 const STRATEGY_WORDS: Record<Strategy, string> = {
@@ -114,7 +114,7 @@ function EnginePanel({ screen, limits, token }: EngineProps) {
   if (e.apiAvailable === false) {
     gate = (
       <Empty>
-        This copy of the site has no API behind it, so the engine cannot answer here. It runs where Mr Bands runs: <code>npm run serve</code> next to the loop, or point <code>VITE_API_URL</code> at that host.
+        No API behind this copy. Set <code>VITE_API_URL</code>.
       </Empty>
     );
   } else if (e.apiAvailable === null) {
@@ -122,15 +122,15 @@ function EnginePanel({ screen, limits, token }: EngineProps) {
   } else if (!e.walletAddress) {
     gate = (
       <Empty>
-        Connect a wallet (top right) to run the engine on it. The page never sees your key; it only hands transactions to the wallet to sign. <ConnectHere />
+        Connect a wallet (top right). The page never sees your key. <ConnectHere />
       </Empty>
     );
   } else if (!token) {
-    gate = <Empty>Sign in with that wallet to get a session. The sign-in signature links nothing and moves nothing.</Empty>;
+    gate = <Empty>Sign in with that wallet. The signature moves nothing.</Empty>;
   } else if (e.access && !e.access.hasAccess) {
     gate = (
       <Empty>
-        {e.access.detail} It opens with <code>ENGINE_ALLOWLIST</code> or <code>ENGINE_OPEN=true</code> on the API host.
+        {e.access.detail}
       </Empty>
     );
   } else if (!e.access) {
@@ -143,8 +143,7 @@ function EnginePanel({ screen, limits, token }: EngineProps) {
         <span className="eyebrow">Engine skill</span>
         <h2 className="engine__title">Run Mr Bands' bands on your own wallet.</h2>
         <p className="engine__sub">
-          The same band math and the same guards, for your capital. Ask the guards about a band; if they allow it, sign the transaction they built. bands.finance never touches your funds: it returns an unsigned
-          transaction and you sign it.
+          His band math and his guards, on your capital. You sign; bands.finance never touches your funds.
         </p>
       </div>
 
@@ -217,7 +216,7 @@ function EnginePanel({ screen, limits, token }: EngineProps) {
               </label>
               <p className="engine__limits">
                 {limits
-                  ? `The guards allow at most ${limits.maxPositionSol} SOL per band, ${limits.maxBinWidth} bins wide, and keep ${limits.gasReserveSol} SOL in your wallet for fees and rent. This band: ${width} bin${width === 1 ? "" : "s"}${chosen && chosen.binStep ? ` · ${((width * chosen.binStep) / 100).toFixed(2)}% of price` : ""}.`
+                  ? `Guards: at most ${limits.maxPositionSol} SOL, ${limits.maxBinWidth} bins, ${limits.gasReserveSol} SOL kept for fees. This band: ${width} bin${width === 1 ? "" : "s"}${chosen && chosen.binStep ? ` · ${((width * chosen.binStep) / 100).toFixed(2)}% of price` : ""}.`
                   : "The guards' limits load from /api/limits."}
               </p>
               <button type="submit" className="engine__btn engine__btn--primary" disabled={!chosenPool || e.planning || busy}>
@@ -226,8 +225,8 @@ function EnginePanel({ screen, limits, token }: EngineProps) {
             </form>
 
             <div className="engine__verdict">
-              {!e.plan && !e.planning && <p className="engine__idle">The verdict shows here. Nothing is built until the guards allow it, and nothing moves until you sign.</p>}
-              {e.planning && <p className="engine__idle">reading the pool, your balances and your bands…</p>}
+              {!e.plan && !e.planning && <p className="engine__idle">The verdict shows here. Nothing moves until you sign.</p>}
+              {e.planning && <p className="engine__idle">reading the pool and your wallet…</p>}
               {e.plan && !e.plan.ok && (
                 <>
                   <p className="engine__no">Guards said no.</p>

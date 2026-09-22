@@ -156,7 +156,7 @@ export function useMyAgent(token: string | null) {
             } else if (event === "done") {
               if (typeof ev.credits === "number") setCredits(ev.credits);
             } else if (event === "error") {
-              failed = ev.error || "your mr bands could not respond just now";
+              failed = ev.error || "your mr bands could not respond";
               if (typeof ev.credits === "number") setCredits(ev.credits);
             }
           }

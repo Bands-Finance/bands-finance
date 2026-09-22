@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { AgentRecord, BandCard, FeePoint, PoolFlow } from "../model";
 import { ago, duration, fmtPrice } from "../format";
 import { num } from "../narrative";
-import { PLATFORM_URL, X_URL } from "../site";
+import { PLATFORM_URL } from "../site";
 import { motionSystemReduced, setMotionPaused, useMotion } from "../motion";
 
 /**
@@ -53,15 +53,13 @@ export function BandBlock({ band: b, flow, now }: { band: BandCard; flow?: PoolF
       <Figures
         items={[
           { label: "Fees earned", value: <>{b.fees < 0.00005 ? "0" : `+${num(b.fees)}`}<small> SOL</small></>, tone: b.fees > 0 ? "good" : undefined },
-          { label: "Worth now", value: <>{num(b.worthNow)}<small> SOL</small></>, note: b.putIn !== null ? `he put in ${num(b.putIn)}` : undefined },
-          ...(move !== null ? [{ label: "From the market", value: <>{signed(move)}<small> SOL</small></>, tone: (move >= 0 ? "good" : "bad") as "good" | "bad", note: "what price did to it, fees aside" }] : []),
+          { label: "Worth now", value: <>{num(b.worthNow)}<small> SOL</small></>, note: b.putIn !== null ? `put in ${num(b.putIn)}` : undefined },
+          ...(move !== null ? [{ label: "From the market", value: <>{signed(move)}<small> SOL</small></>, tone: (move >= 0 ? "good" : "bad") as "good" | "bad", note: "price alone, fees aside" }] : []),
         ]}
       />
       {f && (
-        <p className="chap__p" title="Read from the chain by the flow scout, from the pool's own account">
-          In the last hour this pool paid {num(f.fees60mQuote)} {f.quoteSymbol} in fees to everyone making a market in it
-          {f.feesPerDayQuote60m !== null ? <>, a pace of {num(f.feesPerDayQuote60m)} {f.quoteSymbol} a day</> : null}
-          {f.fees15mQuote > 0 ? <>. {num(f.fees15mQuote)} {f.quoteSymbol} of it came in the last fifteen minutes.</> : <>. The last fifteen minutes were quiet.</>}
+        <p className="chap__p" title="Read from the pool's own account on chain">
+          In the last hour this pool paid {num(f.fees60mQuote)} {f.quoteSymbol} in fees to its market makers.
           <span className="chap__age"> Read {age === 0 ? "just now" : `${age} min ago`}.</span>
         </p>
       )}
@@ -137,14 +135,13 @@ export function MadeBlock({ record, solPriceUsd, now, chart }: { record: AgentRe
         items={[
           { label: "Claimed", value: <>{`+${num(record.feesRealized)}`}<small> SOL</small></>, tone: "good", note: usd(record.feesRealized, solPriceUsd) ? `about ${usd(record.feesRealized, solPriceUsd)}` : undefined },
           { label: "Waiting in his bands", value: <>{num(record.feesUnclaimed)}<small> SOL</small></>, note: "earned, not yet claimed" },
-          { label: "Claims", value: record.feePoints.length.toLocaleString(), note: last ? `the last one ${ago(last.t, now)}` : undefined },
+          { label: "Claims", value: record.feePoints.length.toLocaleString(), note: last ? `last ${ago(last.t, now)}` : undefined },
         ]}
       />
-      {/* the abacus only means something once a claim has put a coin on it; before that, say why it is bare */}
       <p className="chap__p">
         {chart.coins.some((c) => c > 0)
-          ? `On the desk, each column of coins is one ${chart.bucket} of claims and each coin is ${chart.unit} SOL. The newest ${chart.bucket} stands at the right.`
-          : "No claim yet, so the abacus on the desk is empty; the fees sit in his bands until he collects them."}
+          ? `On the desk each column of coins is one ${chart.bucket} of claims, each coin ${chart.unit} SOL.`
+          : "No claim yet; the abacus is empty."}
       </p>
       {days.length > 0 && (
         <div className="chap__scroll">
@@ -210,16 +207,11 @@ export function ClosingBlock({ agentName, walletAddress }: { agentName: string; 
       {/* the close stands at the man himself on the desk (station "him"), so no printed portrait beside the words */}
       <div className="close__row">
         <p className="chap__p close__legal">
-          {/* walletAddress is set only while the desk is live (DashboardApp.tsx): otherwise he is on paper and says so */}
-          {agentName}, the founder of bands.finance, is experimental software.{" "}
-          {walletAddress ? "He trades a wallet of his own." : "He trades on paper now; his live desk, a wallet of his own, is stopped."} Zach, his architect and advisor, holds
-          his keys and the legal responsibility.{X_URL ? " On X, his automated-account label names Zach's account as its manager." : ""} Nothing here is advice, and
-          nothing on this page can touch your money. Every move above is published as it happened, including the ones that lost.
+          {agentName} is experimental software. Nothing here is advice, and nothing on this page can touch your money.
         </p>
       </div>
       {/* the words pin to the window's centre while the camera walks round him, so the close stays short: the ask is the
-          chapter before this one (the "hire" beat, DashboardApp.tsx) and this row only points at where to go. No "rent him" link:
-          nothing is for rent until the public platform opens */}
+          chapter before this one (the "hire" beat, DashboardApp.tsx) and this row only points at where to go */}
       <nav className="close__links engrave" aria-label="Footer">
         {walletAddress && <a href={`https://solscan.io/account/${walletAddress}`} target="_blank" rel="noreferrer">His wallet</a>}
         <a href={PLATFORM_URL} target="_blank" rel="noreferrer">bands.finance</a>

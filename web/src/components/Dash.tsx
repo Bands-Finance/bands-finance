@@ -21,7 +21,7 @@ import "./Dash.css";
  * rule and a plate number. Every figure is the Record's or the summary's, restated; nothing is computed here.
  */
 
-const MODE_WORD: Record<Status["mode"], string> = { live: "live on Solana", paper: "paper trading", "dry-run": "rehearsal", demo: "demo" };
+const MODE_WORD: Record<Status["mode"], string> = { live: "live on Solana", paper: "paper", "dry-run": "rehearsal", demo: "demo" };
 
 /* ---------- the nav ---------- */
 
@@ -114,7 +114,7 @@ const stampWord = (stamp: DataStamp | undefined, now: number): string | null => 
   if (!stamp || stamp.source === "embedded") return null;
   const age = stamp.generatedAt ? ago(stamp.generatedAt, now) : null;
   if (stamp.source === "live") return age ? `live, written ${age}` : "live";
-  if (stamp.source === "api") return age ? `the desk's own server, ${age}` : "the desk's own server";
+  if (stamp.source === "api") return age ? `his server, ${age}` : "his server";
   return age ? `a snapshot from ${age}` : "a snapshot";
 };
 
@@ -125,7 +125,7 @@ const usd = (sol: number, px: number | null): string | null => {
 };
 const dateWord = (t: number) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 const longDate = (t: number) => new Date(t).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-const MICRO = "EVERY MOVE PUBLISHED AS IT HAPPENED · INCLUDING THE ONES THAT LOST · LIQUIDITY IN BETWEEN · ";
+const MICRO = "EVERY MOVE PUBLISHED · LIQUIDITY IN BETWEEN · ";
 
 /** The statement's lines: the same figures wherever the page prints them. */
 export function statementRows({ record, summary, solPriceUsd, status, now, stamp }: Pick<DashNoteProps, "record" | "summary" | "solPriceUsd" | "status" | "now" | "stamp">): { label: string; value: ReactNode }[] {
@@ -136,7 +136,7 @@ export function statementRows({ record, summary, solPriceUsd, status, now, stamp
     { label: "Fees earned", value: fees !== null ? `${num(fees)} SOL` : "·" },
     { label: "Started with", value: record ? `${num(record.startEquity)} SOL, ${dateWord(record.startTs)}` : "·" },
     { label: "Bands", value: summary ? `${summary.bandsOpen} open, ${summary.bandsInRange} in range` : "·" },
-    { label: "Decisions", value: record ? `${record.counts.decisions.toLocaleString()}, ${record.counts.holds.toLocaleString()} of them holds` : "·" },
+    { label: "Decisions", value: record ? `${record.counts.decisions.toLocaleString()}, ${record.counts.holds.toLocaleString()} holds` : "·" },
     { label: "Last decision", value: status.lastTs ? ago(status.lastTs, now) : "none yet" },
     ...(stampWord(stamp, now) ? [{ label: "This page", value: stampWord(stamp, now)! }] : []),
   ];
@@ -248,9 +248,7 @@ export function DashFooter({ agentName }: { agentName: string }) {
         <div className="dash-foot__text">
           <p className="dash-foot__motto engrave">Liquidity in between</p>
           <p className="dash-foot__legal">
-            {agentName} is experimental software and trades on paper now; his live desk, a wallet of his own, is stopped. Zach, his
-            architect and advisor, holds his keys and the legal responsibility. Nothing here is advice, and nothing on this page
-            can touch your money. Every move above is published as it happened, including the ones that lost.
+            {agentName} is experimental software. Nothing here is advice, and nothing on this page can touch your money.
           </p>
           <nav className="dash-foot__links engrave" aria-label="Footer">
             <a href={PLATFORM_URL} target="_blank" rel="noreferrer">bands.finance</a>
