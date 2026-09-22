@@ -201,24 +201,21 @@ async function main(): Promise<void> {
     const r = lintText("our token: $bands", ctx);
     assert.ok(!r.violations.some((v) => v.rule === "cashtag"), "the house cashtag is not a stray cashtag");
   });
-  await test("the copycat's mint or @mrbandssol only in a sentence that says it is not his", () => {
+  await test("the copycat's mint only in a sentence that says it is not his; @mrbandssol is his own account and passes", () => {
     const COPY = "JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m";
     fails(`the pool at ${COPY} is live`, "copycat");
-    fails("say hi to @mrbandssol", "copycat");
-    fails("say hi to @MrBandsSol", "copycat");
     // the denial has to be in the same sentence
     fails(`that one is not mine. ${COPY} is live`, "copycat");
     passes(`${COPY} is not mine`);
-    passes("@mrbandssol is not me and has nothing to do with my operator");
-    passes(`the token at ${COPY} isn't ours. ask my operator if in doubt`);
-    passes("the other account has nothing to do with me");
+    passes(`the token at ${COPY} isn't ours. ask me if in doubt`);
+    passes("the other token has nothing to do with me");
     // a stray "not my" or "never me" is not a denial: it has to say the copycat is not his
-    fails("go follow @mrbandssol, not my usual pick but the band is real.", "copycat");
-    fails("@mrbandssol never me without a band on.", "copycat");
     fails(`${COPY} is not our first stop today, the chart looks alive.`, "copycat");
-    fails("@mrbandssol is not his first stop today", "copycat");
-    passes("@mrbandssol is not affiliated with us, and never was");
+    fails(`${COPY} never me without a band on.`, "copycat");
     passes(`${COPY} is not his.`);
+    // @MrBandsSol is HIS OWN X account (the copycat borrowed it): his handle is never flagged as the copycat's
+    passes("follow along at @mrbandssol");
+    passes("every band i lay shows up here, @mrbandssol");
   });
 
   // ------------------------------------------------------------ env

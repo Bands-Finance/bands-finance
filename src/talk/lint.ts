@@ -10,8 +10,9 @@
  *
  * The house token is $MRBANDS (docs/sprint.md): its symbols, its mint (TOKEN_MINT) and, always, a bare "$bands" in
  * any case, since a reader cannot tell ours from the copycat's by the ticker. Any of them needs the disclosure and
- * may never sit next to price, chart, cap, holders, volume, fee, value, a % or a $. The copycat's mint and its X
- * handle (@MrBandsSol) may only appear in a sentence that says it is not his.
+ * may never sit next to price, chart, cap, holders, volume, fee, value, a % or a $. The copycat's mint may only
+ * appear in a sentence that says it is not his. @MrBandsSol is HIS OWN X account (Zach, 22 Sep): the copycat's
+ * metadata links it to look genuine, which is exactly why his own handle is never treated as the copycat's.
  *
  * Matching runs on a normalized copy (lowercase, curly quotes straightened, hyphens and underscores
  * read as spaces, whitespace collapsed), so "Risk-Free" and "risk   free" both fail. The lowercase,
@@ -204,8 +205,12 @@ export const HOUSE_PRICE_PATTERNS: readonly Pat[] = [
 /** Cashtags that always name the house token, whatever TALK_HOUSE_SYMBOLS says: $mrbands, and a bare $bands. */
 export const HOUSE_CASHTAGS: readonly string[] = ["mrbands", "bands"];
 
-/** The copycat's X handle, lowercased without "@" (its mint is COPYCAT_MINTS, src/risk/house.ts). */
-export const COPYCAT_HANDLES: readonly string[] = ["mrbandssol"];
+/**
+ * X handles that belong to a copycat, lowercased without "@" (the copycat's mint is COPYCAT_MINTS, src/risk/house.ts).
+ * Empty: the copycat "Mr Bands" $BANDS links @MrBandsSol, but that is Mr Bands' own account, borrowed by the
+ * copycat to look real. Never list his own handle here.
+ */
+export const COPYCAT_HANDLES: readonly string[] = [];
 
 /**
  * A sentence that says the copycat is not his: "not mine", "is not ours", "is not me", "not affiliated",

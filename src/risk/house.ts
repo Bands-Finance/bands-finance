@@ -14,7 +14,11 @@
  * With no house pool seated and no house token held, "never swaps it" is the whole rule.
  */
 
-/** The copycat "Mr Bands" $BANDS (X @MrBandsSol). Not ours: launched through a ClawPump agent that is not his. */
+/**
+ * The copycat "Mr Bands" $BANDS. Not ours: launched through a ClawPump agent that is not his. Its metadata links
+ * mrbands.finance and @MrBandsSol, which are HIS OWN site and X account, borrowed to look genuine; only the mint
+ * tells the two apart.
+ */
 export const COPYCAT_MINTS: readonly string[] = ["JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m"];
 
 const mintList = (raw: string | undefined): string[] => (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
