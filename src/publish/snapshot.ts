@@ -4,10 +4,13 @@
  * from the website please"), so which book lands in journal.json and equity.json is a knob, SNAPSHOT_BOOK:
  *
  *   none   journal.json {entries: []} and equity.json {points: []}: no book is open on the sites. The
- *          default whenever DATA_DIR is a paper book (PAPER_SOL under DRY_RUN), so the paper desk that
- *          redeploys every 30 minutes can never ship its trades.
+ *          DEFAULT, for every shell: the paper desk that redeploys every 30 minutes and a hand-run
+ *          web:deploy / dash:deploy alike, so neither can ship the paper book or a finished run as "now".
  *   real   the real-money book: decisions.jsonl and equity.jsonl from REAL_DATA_DIR (default data-mainnet).
- *          The default for any desk that is not a paper book.
+ *          Only when set explicitly (ops/live.env sets it for the live desk), and only while that book is
+ *          current: when its newest decision is older than REAL_BOOK_MAX_AGE_MS (the sites' 2 h live-feed
+ *          window, web/src/api.ts) the desk is not trading and the snapshot writes none instead. The settled
+ *          run of 17-19 Sep is the record chapter (web/public/live-run.json), never a current book.
  *   paper  the old behaviour: DATA_DIR's own journal and equity, whatever book it is. Only by hand.
  *
  * limits.json is always written: the real desk's limits (ops/live.env over this process's) under none and
@@ -20,21 +23,23 @@ import path from "node:path";
 import { riskLimits as processLimits } from "../config";
 import type { RiskLimits } from "../risk/limits";
 import { readEquity, readRecent, tailLines, type EquityPoint, type JournalEntry } from "../journal";
-import { paperEnabled } from "../paper/env";
 import { readLearnedView } from "../status";
 import type { LearnedView } from "../learn/surface";
 
 export type SnapshotBook = "none" | "real" | "paper";
 export const SNAPSHOT_BOOKS: readonly SnapshotBook[] = ["none", "real", "paper"];
 
-/** PURE. The book to snapshot: SNAPSHOT_BOOK when it names one, else none on a paper book and real otherwise. */
-export function snapshotBook(env: NodeJS.ProcessEnv, dryRun: boolean): SnapshotBook {
+/** A real book whose newest decision is older than this is not being traded: the sites' live-feed window (web/src/api.ts). */
+export const REAL_BOOK_MAX_AGE_MS = 2 * 3_600_000;
+
+/** PURE. The book to snapshot: SNAPSHOT_BOOK when it names one, else none. Never real or paper by default. */
+export function snapshotBook(env: NodeJS.ProcessEnv): SnapshotBook {
   const raw = (env.SNAPSHOT_BOOK ?? "").trim().toLowerCase();
   if (raw) {
     if (!(SNAPSHOT_BOOKS as readonly string[]).includes(raw)) throw new Error(`SNAPSHOT_BOOK=${raw}: must be one of ${SNAPSHOT_BOOKS.join(", ")}`);
     return raw as SnapshotBook;
   }
-  return paperEnabled(env, dryRun) ? "none" : "real";
+  return "none";
 }
 
 /** PURE. KEY=VALUE lines of an env file (comments and blanks skipped, surrounding quotes dropped). */
@@ -100,7 +105,10 @@ export interface SnapshotOptions {
 }
 
 export interface SnapshotResult {
+  /** the book actually written: none when a real book was asked for but is stale */
   book: SnapshotBook;
+  /** set when SNAPSHOT_BOOK=real fell back to none: the real book's newest decision time, or "empty" */
+  staleReal?: string;
   entries: number;
   points: number;
   newest: string | null;
@@ -131,9 +139,20 @@ export function writeSnapshot(o: SnapshotOptions): SnapshotResult {
   if (o.book === "paper") {
     entries = readRecent(600);
     points = readEquity(20_000);
-  } else if (o.book === "real") {
+  }
+  let book = o.book;
+  let staleReal: string | undefined;
+  if (o.book === "real") {
     entries = readJsonlFile<JournalEntry>(path.join(o.realDir, "decisions.jsonl"), 600).reverse();
     points = readJsonlFile<EquityPoint>(path.join(o.realDir, "equity.jsonl"), 20_000);
+    // A finished run is the record, not "now": a real book with no decision in the last 2 h ships as none.
+    const newestTs = Date.parse((entries[0] as { ts?: string } | undefined)?.ts ?? "");
+    if (!Number.isFinite(newestTs) || (o.now ?? Date.now()) - newestTs > REAL_BOOK_MAX_AGE_MS) {
+      staleReal = Number.isFinite(newestTs) ? new Date(newestTs).toISOString() : "empty";
+      entries = [];
+      points = [];
+      book = "none";
+    }
   }
   put("journal.json", JSON.stringify({ entries, generatedAt }));
   put("equity.json", JSON.stringify({ points, generatedAt }));
@@ -150,5 +169,5 @@ export function writeSnapshot(o: SnapshotOptions): SnapshotResult {
   put("learned.json", JSON.stringify(learned));
 
   const newest = entries[0] as { mode?: string; ts?: string } | undefined;
-  return { book: o.book, entries: entries.length, points: points.length, newest: newest ? `${newest.mode} ${newest.ts}` : null, limits, learned, wrote };
+  return { book, staleReal, entries: entries.length, points: points.length, newest: newest ? `${newest.mode} ${newest.ts}` : null, limits, learned, wrote };
 }

@@ -62,7 +62,7 @@
     <!-- The sites show only his real-money record (Zach, 22 Sep: "can we clean all the paper trading data from the
          website please"). This desk still redeploys them, but its snapshot writes NO book: journal.json and
          equity.json go out empty, learned.json is read from the real seats in data-mainnet, and the screener and
-         the hot watch (market data) ship as before (src/publish/snapshot.ts). none is also the default on a paper
+         the hot watch (market data) ship as before (src/publish/snapshot.ts). none is also the default everywhere;
          book; it is spelled out here so nobody flips it by accident. Never set it to paper on this desk. -->
     <key>SNAPSHOT_BOOK</key><string>none</string>
     <key>HEDGE_MIN_REBALANCE_USD</key><string>5</string>
