@@ -32,7 +32,7 @@ import { basisRoutes } from "./basis";
 import { hotRoutes } from "./hot";
 import { paperRoutes } from "./paper";
 import { platformRoutes } from "./platform/routes";
-import { deciderOf } from "./agent/decide";
+import { deciderOf, modelBudget } from "./agent/decide";
 import { openHermitAvailable } from "./agent/openhermit";
 import { loadEngineState } from "./engine/breakers";
 import { readLock } from "./engine/watchdog";
@@ -88,6 +88,8 @@ export function statusReport(now = Date.now()): Record<string, unknown> {
     decider: deciderOf(),
     openhermitTokenPresent: openHermitAvailable(),
     decisionsLastHour: hour,
+    // the day's model calls against MODEL_CALLS_PER_DAY (src/agent/decide.ts), read from DATA_DIR/model-budget.json
+    modelCallsToday: modelBudget(now),
     learning: learningReport(now),
     ...snap,
     // the registry is empty in a server started alone: then the lock answers
