@@ -9,7 +9,9 @@
  *   - openers rotate per kind by sha256(seed) mod 3, so a close does not begin "closed my band on" every time;
  *     a close carries its UTC clock time
  *   - a losing close and the lesson say the mechanism and what the rule did, only from the journal (proposed,
- *     directive, bins out); absent means the line is left out, never invented
+ *     directive, bins out, llm.source); absent means the line is left out, never invented. On a directive cycle
+ *     (stop, flatten, expire, rotate) the model is not called and the journal's proposal is the engine's own
+ *     decision, so no proposal of his is claimed there; a desk-policy close is said as his own rule's
  *   - the daily and the close put the figure beside his own days on the same book (recent: DayFigure[]),
  *     never a rate, another account or "on pace for"
  *   - the daily is a fixed card at the fixed clock with a "day N" counter, two orderings by UTC-day parity, a red
@@ -51,10 +53,12 @@ export interface CraftFacts {
   /** the last 7 UTC days before today, oldest first (the daily also carries its own copy); today's day is ignored */
   recent?: DayFigure[];
   event?: BandEvent & {
-    /** the action proposed on the journal entry whose execution.closed is this band ("HOLD", "CLOSE_POSITION") */
+    /** the action proposed on the journal entry whose execution.closed is this band ("HOLD", "CLOSE_POSITION"); null on a directive cycle (the engine's own decision is not his proposal) */
     proposed?: string | null;
     /** the engine directive that acted on that entry ("STOP", "FLATTEN", "EXPIRE", "ROTATE") */
     directive?: string | null;
+    /** who answered that cycle (the journal's llm.source: "llm", "policy", "engine", "proposal", "fallback") */
+    source?: string | null;
     /** bins outside the band at the close: positive above, negative below; 0 or null when unknown or inside */
     binsOut?: number | null;
     /** bands open on the book after this event */
@@ -70,11 +74,11 @@ export interface CraftFacts {
     recent: DayFigure[];
   };
   milestone?: MilestoneFacts & {
-    /** the day with the most fees since firstAt, and the most recent day with rows */
+    /** the completed day with the most fees since firstAt, and the most recent completed day; today's partial day is neither */
     bestDay: DayFigure | null;
     lastDay: DayFigure | null;
   };
-  lesson?: Lesson & { proposed?: string | null; directive?: string | null };
+  lesson?: Lesson & { proposed?: string | null; directive?: string | null; source?: string | null };
   stack?: StackFigures;
 }
 
@@ -194,35 +198,49 @@ function priorDays(recent: readonly DayFigure[] | undefined, now: number): DayFi
   return (recent ?? []).filter((d) => d && typeof d.day === "string" && d.day < today && finite(d.feesSol) && finite(d.netSol)).sort((a, b) => (a.day < b.day ? -1 : 1));
 }
 
-/** What the rule did, as the actor, from the engine directive on the journal entry that closed the band. */
-function ruleActed(directive: string | null | undefined): string | null {
+/**
+ * What the rule did, as the actor, from the engine directive on the journal entry that closed the band. Only the
+ * four directives that close a band; anything else (COLLECT, or a word the journal never wrote) is null, never
+ * "the collect directive closed it". The close and the lesson say it in different words.
+ */
+const RULE_ACTED: Record<string, { close: string; lesson: string }> = {
+  stop: { close: "the stop closed it", lesson: "the stop pulled the seat" },
+  flatten: { close: "the flatten closed it", lesson: "the flatten pulled the seat" },
+  expire: { close: "its time ran out and the clock closed it", lesson: "the clock ran out on the seat" },
+  rotate: { close: "the rotation closed it for a pool ranked higher", lesson: "the rotation moved the seat to a pool ranked higher" },
+};
+function ruleActed(directive: string | null | undefined, form: "close" | "lesson"): string | null {
   const d = plainWord(directive);
-  if (!d) return null;
-  if (d === "stop") return "the stop closed it";
-  if (d === "flatten") return "the flatten closed it";
-  if (d === "expire") return "its time ran out and the clock closed it";
-  if (d === "rotate") return "the rotation closed it for a pool ranked higher";
-  return `the ${d} directive closed it`;
+  return d ? (RULE_ACTED[d]?.[form] ?? null) : null;
 }
 
-/** What he had proposed on that entry, in his words. */
-function proposedWord(proposed: string | null | undefined): string | null {
-  const p = plainWord(proposed);
-  if (!p) return null;
-  const map: Record<string, string> = { hold: "hold", "close position": "the close", rebalance: "the re-centre", "open position": "an open", "claim fees": "a claim" };
-  return map[p] ?? p;
+/** What he had proposed, as a verb ("over my proposal to hold") and, for the moves that close a band, as a noun ("the close"). */
+const PROPOSED_VERB: Record<string, string> = { hold: "hold", "close position": "close", rebalance: "re-centre", "open position": "open", "claim fees": "claim" };
+const PROPOSED_NOUN: Record<string, string> = { "close position": "the close", rebalance: "the re-centre" };
+
+export interface MechanismFacts {
+  proposed?: string | null;
+  directive?: string | null;
+  source?: string | null;
 }
 
 /**
- * One sentence on the mechanism and the rule, or null when the journal gave nothing. Never invented. The close
- * and the lesson say it in different words, so the two posts about one seat never share a line.
+ * One sentence on the mechanism and the rule, or null when the journal gave nothing. Never invented: on a directive
+ * cycle the model is not called and the journal's proposal is the engine's own decision (llm.source "engine"), so
+ * no proposal is claimed; an approved outside proposal ("proposal") is not his either; the desk policy ("policy") is
+ * his own rule and is said so. The close and the lesson say it in different words, so the two posts about one seat
+ * never share a line.
  */
-function mechanismLine(proposed: string | null | undefined, directive: string | null | undefined, form: "close" | "lesson"): string | null {
-  const acted = ruleActed(directive);
-  const mine = proposedWord(proposed);
-  if (acted) return form === "close" ? `${mine ? `i had proposed ${mine}; ` : ""}${acted}.` : `${acted}${mine ? `, over my proposed ${mine}` : ""}.`;
-  if (mine === "the close" || mine === "the re-centre") return form === "close" ? `i proposed ${mine} myself; the guards allowed it.` : `${mine} was my own proposal, and the guards let it through.`;
-  return null;
+export function mechanismLine(f: MechanismFacts, form: "close" | "lesson"): string | null {
+  const src = plainWord(f.source);
+  const own = src === "engine" || src === "proposal" ? null : plainWord(f.proposed);
+  const verb = own ? (PROPOSED_VERB[own] ?? own) : null;
+  const acted = ruleActed(f.directive, form);
+  if (acted) return form === "close" ? `${verb ? `i had proposed to ${verb}; ` : ""}${acted}.` : `${acted}${verb ? `, over my proposal to ${verb}` : ""}.`;
+  const noun = own ? (PROPOSED_NOUN[own] ?? null) : null;
+  if (!noun) return null;
+  if (src === "policy") return form === "close" ? `my own rule proposed ${noun}; the guards allowed it.` : `${noun} came from my own rule, and the guards let it through.`;
+  return form === "close" ? `i proposed ${noun} myself; the guards allowed it.` : `${noun} was my own proposal, and the guards let it through.`;
 }
 
 /** The same fold for a close's and a lesson's ending, in his words, the rule as the actor. */
@@ -266,7 +284,7 @@ export function closeShape(f: CraftFacts): string | null {
         : e.outsideAtClose === false
           ? "price was still inside the band at the close."
           : null;
-  const rule = loss ? mechanismLine(e.proposed, e.directive, "close") : null;
+  const rule = loss ? mechanismLine(e, "close") : null;
   const days = priorDays(f.recent, f.now);
   let compare: string | null = null;
   if (days.length >= 2) {
@@ -410,7 +428,7 @@ export function lessonShape(f: CraftFacts): string | null {
   const openers = [`one seat, closed: ${label}, ${held} in it${inRange}.`, `${label}, ${held} in the seat${inRange}, closed ${shortDate(l.closedAt)}.`, `a closed seat, read back: ${label}, ${held}${inRange}.`];
   const money = `fees ${sol4(l.feesSol)} sol, net ${signedSol(l.netSol)} sol${l.netSol < 0 ? ", a loss," : ""} after rent and swaps.`;
   const left = finite(l.tokensLeftSol) && Math.abs(l.tokensLeftSol) >= 0.00005 ? `${sol4(l.tokensLeftSol)} sol of that still in tokens, not sold.` : null;
-  const rule = mechanismLine(l.proposed, l.directive, "lesson") ?? ENDINGS[l.endReason] ?? ENDINGS.close;
+  const rule = mechanismLine(l, "lesson") ?? ENDINGS[l.endReason] ?? ENDINGS.close;
   return fit([openers[pick(f.seed, 3)], money, rule], left ? [left] : [], f);
 }
 
@@ -441,18 +459,35 @@ export function dailyShape(f: CraftFacts): string | null {
   const compare = parts.length ? parts.join(", ") : null;
 
   const zero = d.opened === 0 && g.closedBands === 0 && fees === "0.0000";
-  if (zero) {
-    const lead = red ? `${head}${tag}, net ${net} sol on the day: ` : `${head}${tag}: `;
-    return `${lead}0.0000 sol in fees${compare ? `, ${compare}` : ""}, nothing opened or closed${book ? `, ${book}` : ""}.`;
-  }
   const even = new Date(f.now).getUTCDate() % 2 === 0;
-  if (red) {
-    const lead = `${head}${tag}, net ${net} sol on the day.`;
-    if (even) return [lead, `fees ${fees} sol${compare ? `, ${compare}` : ""}. ${moves}.`, ...(book ? [`${book}.`] : [])].join("\n");
-    return [lead, ...(book ? [book] : []), `moves: ${moves}`, `fees realized ${fees} sol${compare ? `, ${compare}` : ""}`, `net realized ${net} sol after losses, rent, swaps and network fees`].join("\n");
+  /** the odd shape's fee line: with its comparison, or with its window (never the stack's bare "fees realized N sol" line) */
+  const feeLine = (compare: string | null) => `fees realized ${fees} sol${compare ? `, ${compare}` : " on the day"}`;
+  /** the card with or without its two droppable parts: the comparison clause and the book line */
+  const card = (compare: string | null, book: string | null): string => {
+    if (zero) {
+      const lead = red ? `${head}${tag}, net ${net} sol on the day: ` : `${head}${tag}: `;
+      return `${lead}0.0000 sol in fees${compare ? `, ${compare}` : ""}, nothing opened or closed${book ? `, ${book}` : ""}.`;
+    }
+    if (red) {
+      const lead = `${head}${tag}, net ${net} sol on the day.`;
+      if (even) return [lead, `fees ${fees} sol${compare ? `, ${compare}` : ""}. ${moves}.`, ...(book ? [`${book}.`] : [])].join("\n");
+      return [lead, ...(book ? [book] : []), `moves: ${moves}`, feeLine(compare), `net realized ${net} sol after losses, rent, swaps and network fees`].join("\n");
+    }
+    if (even) return [`${head}${tag}, ${g.window}: fees ${fees} sol${compare ? `, ${compare}` : ""}; net ${net} sol after losses, rent, swaps and network fees.`, `${moves}.`, ...(book ? [`${book}.`] : [])].join("\n");
+    return [`${head}${tag}, ${g.window}:`, ...(book ? [book] : []), `moves: ${moves}`, feeLine(compare), `net realized ${net} sol after losses, rent, swaps and network fees`].join("\n");
+  };
+  // the figures, the loss line, the moves and "paper" always; the comparison goes first when the card runs over 280
+  // (the odd shape with both parts of the comparison ran 285 to 311 and the day's card was refused), the book line second
+  const variants: [string | null, string | null][] = [
+    [compare, book],
+    [null, book],
+    [null, null],
+  ];
+  for (const [c, b] of variants) {
+    const text = card(c, b);
+    if (weightedLength(text) <= MAX_POST_CHARS) return text;
   }
-  if (even) return [`${head}${tag}, ${g.window}: fees ${fees} sol${compare ? `, ${compare}` : ""}; net ${net} sol after losses, rent, swaps and network fees.`, `${moves}.`, ...(book ? [`${book}.`] : [])].join("\n");
-  return [`${head}${tag}, ${g.window}:`, ...(book ? [book] : []), `moves: ${moves}`, `fees realized ${fees} sol${compare ? `, ${compare}` : ""}`, `net realized ${net} sol after losses, rent, swaps and network fees`].join("\n");
+  return card(null, null);
 }
 
 // ---------------------------------------------------------------- stack

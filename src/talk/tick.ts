@@ -30,12 +30,16 @@
  *     share, the daily's kept slot; the day's event slots (guards.ts eventCaps): close, open, strap and milestone share
  *     TALK_EVENT_POSTS_PER_DAY, opens and straps have their own share, one pool at most two a day, a losing close
  *     exempt (a loss is never the thing that stays quiet)
- *   - repeats (guards.ts): an open, strap, milestone or lesson that overlaps a post of the last 7 days, or a milestone
- *     or lesson restating a 4-decimal figure a milestone post of the last 24h carried, is a note, not a post; its key
- *     stays unspent and the next candidate goes; a close is always said, the daily and the stack repeat by design
- *   - the daily numbers outrank the event kinds from their hour until they have gone (the fixed card at the fixed clock)
+ *   - repeats (guards.ts): a milestone that overlaps a post of the last 7 days, or a milestone or lesson restating a
+ *     4-decimal figure a milestone or lesson post of the last 24h carried, is a note, not a post; its key stays
+ *     unspent and the next candidate goes. An open, a strap or a lesson is never a word-overlap repeat: they are
+ *     templated claims about different seats and states (two straddles in two pools share 0.85 to 0.93 of their
+ *     words by construction), and the key dedupe, the day's caps and the strap cooldown ration them; a close is
+ *     always said, the daily and the stack repeat by design
  *   - craft (src/talk/craft.ts shapePost, through PlanOptions.shape): the text of every candidate is reshaped from
- *     the same facts; null means the template here; every shaped text still goes through paperize and vetOutgoing
+ *     the same facts; null, a throw or a text over 280 means the template here; every shaped text still goes
+ *     through paperize and vetOutgoing
+ *   - the daily numbers outrank the event kinds from their hour until they have gone (the fixed card at the fixed clock)
  *   - backoff (guards.ts): after 3 transient X refusals in a row the tick does not call X for TALK_RETRY_BACKOFF_MIN
  *     (60) minutes, doubling to 360, kept in tick-state.json; one line per hold, no draft row per held tick
  *   - a close's figures are the band's whole life (bandlife.ts); labels with blocked words read "a pool" (wordguard.ts)
@@ -87,8 +91,9 @@ export const DEFAULT_DAILY_HOUR_UTC = 14;
  *   - the once-a-day posts open in the US day: the lesson from TALK_LESSON_HOUR_UTC (18), the Monday stack from
  *     TALK_STACK_HOUR_UTC (15), a fee milestone from TALK_DAY_START_UTC (12); the daily from TALK_DAILY_HOUR_UTC (14)
  *   - an event post (close, open, strap, milestone) waits the gap plus TALK_GAP_JITTER_MIN (45) minutes at most,
- *     the exact number fixed by its key (guards.ts jitterMin), so the 15-minute tick over a flat floor does not
- *     print the same 90-105 minute gap every time; the daily, the lesson and the stack keep the plain gap
+ *     the exact number fixed by its key (guards.ts jitterMin; a strap's by the time its change was first seen, since
+ *     its key carries the tick), so the 15-minute tick over a flat floor does not print the same 90-105 minute gap
+ *     every time; the daily, the lesson and the stack keep the plain gap
  *   - the event kinds share TALK_EVENT_POSTS_PER_DAY (4) of the day's slots, opens TALK_OPEN_POSTS_PER_DAY (2) of
  *     those, straps STRAP_POSTS_PER_DAY (2), one pool POOL_EVENT_POSTS_PER_DAY (2); a losing close passes the
  *     event and pool caps
@@ -471,14 +476,17 @@ export function loopLogOf(statePath: string, now: number): LoopLog {
  * tail does not hold that cycle; a line built on these is omitted then, never invented.
  */
 export interface CloseContext {
+  /** his proposal on that cycle; null on a directive cycle, where the model is not called and the journal's proposal is the engine's own decision */
   proposed: string | null;
   decided: string | null;
   directive: string | null;
+  /** who answered that cycle (the journal's llm.source: "llm", "policy", "engine", "proposal", "fallback"); the craft words a policy close as his own rule's */
+  source: string | null;
   /** the position's binsFromRange at the close: 0 in range, negative below, positive above */
   binsOut: number | null;
 }
 
-export const NO_CLOSE_CONTEXT: CloseContext = { proposed: null, decided: null, directive: null, binsOut: null };
+export const NO_CLOSE_CONTEXT: CloseContext = { proposed: null, decided: null, directive: null, source: null, binsOut: null };
 
 /** The craft hook (src/talk/craft.ts shapePost): the shaped text for a candidate, or null to keep the template. */
 export type ShapePost = typeof shapePost;
@@ -518,6 +526,8 @@ export interface Candidate {
   pool?: string | null;
   /** a close that lost: passes the event and pool caps */
   loss?: boolean;
+  /** the key the gap jitter is seeded on when it must differ from `key`: a strap's key carries the tick, and a jitter rolled again every tick is no jitter */
+  jitterKey?: string;
 }
 
 export interface TickPlan {
@@ -578,35 +588,48 @@ export function planTick(f: TickFacts, st: TickState, log: LoopLog, o: PlanOptio
   for (const e of f.events) if (e.kind === "close" && e.relaidKey && seen.has(e.key)) seen.add(e.relaidKey);
   const cands: Candidate[] = [];
   const common = { now, source: f.source, paper: f.paper, recent: f.recent };
-  /** the craft hook's text for a candidate, or the template; a hook that throws is a note and the template goes */
+  /**
+   * The craft hook's text for a candidate, or the template; a hook that throws, or a text over 280 with the paper
+   * line counted (a refused text spends the key and a fixed card is lost for the day), is a note and the template goes.
+   */
   const shaped = (kind: TickKind, key: string, template: string, facts: Omit<CraftFacts, keyof typeof common | "seed">): string => {
     if (!o.shape) return template;
     try {
-      return o.shape(kind, { ...common, seed: key, ...facts }) ?? template;
+      const text = o.shape(kind, { ...common, seed: key, ...facts }) ?? template;
+      const len = loopLength(paperize(text, f.paper));
+      if (len > MAX_POST_CHARS) {
+        notes.push(`craft: ${kind} ${key} ran ${len} characters, over ${MAX_POST_CHARS}; the template goes`);
+        return template;
+      }
+      return text;
     } catch (err) {
       notes.push(`craft: ${kind} ${key} fell back to the template (${(err as Error).message.slice(0, 80)})`);
       return template;
     }
   };
-  const add = (kind: TickKind, key: string, at: number, type: XPostType, text: string, extra: Pick<Candidate, "pool" | "loss"> = {}) => cands.push({ kind, key, at, type, text: paperize(text, f.paper), ...extra });
+  const add = (kind: TickKind, key: string, at: number, type: XPostType, text: string, extra: Pick<Candidate, "pool" | "loss" | "jitterKey"> = {}) => cands.push({ kind, key, at, type, text: paperize(text, f.paper), ...extra });
   const closeContext = (address: string): CloseContext => f.closes[address] ?? NO_CLOSE_CONTEXT;
   const force = o.force ?? null;
   const poolByKey = new Map(f.events.map((e) => [e.key, e.pool] as const));
   const recentTexts = log.recentTexts ?? [];
   /**
-   * Why a candidate repeats a recent post (guards.ts): word overlap with any loop text of the last 7 days, or, for a
-   * milestone or a lesson, a 4-decimal figure a loop post of the last 24h carried. A candidate is never compared with
-   * its own key's earlier record, and a milestone never with an earlier milestone (a new round level in the same
-   * form is a new fact, not a reworded claim). Figures restated by design do not count: the daily and the stack
-   * carry window totals (on a young book the same as a milestone's), and a lesson's figures are its own seat's, the
-   * ones its close said (bandlife.ts keeps the two equal).
+   * Why a candidate repeats a recent post (guards.ts): for a milestone, word overlap with a loop text of the last 7
+   * days (never with an earlier milestone: a new round level in the same form is a new fact, not a reworded claim);
+   * for a milestone or a lesson, a 4-decimal figure a milestone or lesson post of the last 24h carried (a lesson
+   * repeating the milestone's net is the case it is for). A candidate is never compared with its own key's earlier
+   * record. Not compared, by design: an open, a strap or a lesson against the loop's other texts (templated claims
+   * about different seats and states share most of their words whatever the pool; the key dedupe, the day's caps
+   * and the strap cooldown ration them), and any figure against a close, an open or a strap (a fee figure two seats
+   * share is a coincidence, not a talking point twice; the lesson's figures are its own close's by bandlife.ts).
    */
-  const repeatReason = (kind: TickKind, key: string, text: string, seat: string | null = null): string | null => {
-    const others = recentTexts.filter((r) => r.key !== key && !(kind === "milestone" && r.type === "milestone"));
-    const sim = tooSimilar(text, others);
-    if (sim) return `repeat: ${kind} ${key} has ${sim.score.toFixed(2)} overlap with the ${sim.hit.type ?? "post"} of ${shortDate(sim.hit.at)}; the key stays unspent`;
+  const repeatReason = (kind: TickKind, key: string, text: string): string | null => {
+    const others = recentTexts.filter((r) => r.key !== key);
+    if (kind === "milestone") {
+      const sim = tooSimilar(text, others.filter((r) => r.type !== "milestone"));
+      if (sim) return `repeat: ${kind} ${key} has ${sim.score.toFixed(2)} overlap with the ${sim.hit.type ?? "post"} of ${shortDate(sim.hit.at)}; the key stays unspent`;
+    }
     if (kind === "milestone" || kind === "lesson") {
-      const day = others.filter((r) => now - r.at <= DAY && r.type !== "daily" && r.type !== "stack" && !(seat && r.key === `close:${seat}`));
+      const day = others.filter((r) => now - r.at <= DAY && (r.type === "milestone" || r.type === "lesson"));
       const stat = repeatedStat(text, day);
       if (stat) return `repeat: ${kind} ${key} restates ${stat.stat} from the ${stat.hit.type ?? "post"} of ${shortDate(stat.hit.at)}; the key stays unspent`;
     }
@@ -631,8 +654,10 @@ export function planTick(f: TickFacts, st: TickState, log: LoopLog, o: PlanOptio
       const key = `strap:${st.lastStrap ?? "none"}>${f.strap.state}:${Math.floor(now / (15 * MIN))}`;
       const d = strapCheck(f.strap, { source: f.source, now, env: f.env });
       if (d.ok) {
-        // a change that waited behind other posts keeps the time it was first seen (strapChangedAt)
-        add("strap", key, now, d.type, shaped("strap", key, d.text, { strap: { ...f.strap, sinceMs: now - (st.strapChangedAt ?? now) } }));
+        // a change that waited behind other posts keeps the time it was first seen (strapChangedAt); the jitter is
+        // seeded on that time, not on the key's tick slot, so a waiting strap's wait is the same on every tick
+        const changedAt = st.strapChangedAt ?? now;
+        add("strap", key, now, d.type, shaped("strap", key, d.text, { strap: { ...f.strap, sinceMs: now - changedAt } }), { jitterKey: `strap:${st.lastStrap ?? "none"}>${f.strap.state}:${changedAt}` });
         if (!force) next.lastStrap = st.lastStrap;
       } else notes.push(`strap: ${d.reason}${d.violations.length ? ` (${d.violations.map((v) => v.rule).join(", ")})` : ""}`);
     }
@@ -642,9 +667,10 @@ export function planTick(f: TickFacts, st: TickState, log: LoopLog, o: PlanOptio
     if (st.milestoneN === null || f.milestone.n < st.milestoneN) next.milestoneN = f.milestone.n;
     else if (f.milestone.n > st.milestoneN && hour >= dayStartUtc) {
       const key = `milestone:${f.source}:${+(f.milestone.n * f.milestone.step).toFixed(4)}`;
+      // completed days only: today's partial day is neither the best day nor the most recent one
       const past = f.days.filter((d) => d.day < today);
-      const bestDay = f.days.length ? f.days.reduce((b, d) => (d.feesSol > b.feesSol ? d : b)) : null;
-      const lastDay = past.length ? past[past.length - 1] : (f.days[f.days.length - 1] ?? null);
+      const bestDay = past.length ? past.reduce((b, d) => (d.feesSol > b.feesSol ? d : b)) : null;
+      const lastDay = past.length ? past[past.length - 1] : null;
       add("milestone", key, now, "milestone", shaped("milestone", key, milestoneText(f.milestone, f.source), { milestone: { ...f.milestone, bestDay, lastDay } }));
     }
   }
@@ -669,7 +695,7 @@ export function planTick(f: TickFacts, st: TickState, log: LoopLog, o: PlanOptio
     for (const l of recent) {
       const key = `lesson:${l.position}`;
       const text = paperize(shaped("lesson", key, lessonFromSeat(l, f.source), { lesson: { ...l, ...closeContext(l.position) } }), f.paper);
-      const why = force ? null : repeatReason("lesson", key, text, l.position);
+      const why = force ? null : repeatReason("lesson", key, text);
       if (why) {
         notes.push(why);
         continue;
@@ -691,17 +717,16 @@ export function planTick(f: TickFacts, st: TickState, log: LoopLog, o: PlanOptio
     }
   }
 
-  // a strap change dropped as a repeat or by a cap is one story already told: the memory moves on
+  // a strap change dropped by a cap is one story already told: the memory moves on
   let strapDropped = false;
   if (!force) {
-    // repeats: a note, not a draft row, and the key stays unspent; a close is always said, the daily and the stack repeat by design
+    // repeats: a note, not a draft row, and the key stays unspent; only the milestone (see repeatReason)
     for (let i = cands.length - 1; i >= 0; i--) {
       const c = cands[i];
-      if (c.kind !== "open" && c.kind !== "strap" && c.kind !== "milestone") continue;
+      if (c.kind !== "milestone") continue;
       const why = repeatReason(c.kind, c.key, c.text);
       if (!why) continue;
       notes.push(why);
-      if (c.kind === "strap") strapDropped = true;
       cands.splice(i, 1);
     }
   }
@@ -767,7 +792,7 @@ export function spacingHold(cands: readonly Candidate[], st: TickState, log: Loo
   let pool = [...cands];
   if (gapMin > 0 && last !== null) {
     const since = now - last;
-    const waitOf = (c: Candidate) => gapMin + (isEventKind(c.kind) ? jitterMin(c.key, jitter) : 0);
+    const waitOf = (c: Candidate) => gapMin + (isEventKind(c.kind) ? jitterMin(c.jitterKey ?? c.key, jitter) : 0);
     const held = pool.filter((c) => since < waitOf(c) * MIN);
     if (held.length === pool.length) {
       const c = held[0];
@@ -826,14 +851,20 @@ export function dayFiguresOf(rows: readonly LedgerRow[], source: TalkSource, sin
 /** Day N of a run: UTC days from the day of its first row to the day of `now`, the first day being 1. */
 export const dayNumberOf = (firstAt: number, now: number): number => Math.floor((Date.parse(utcDay(now)) - Date.parse(utcDay(firstAt))) / DAY) + 1;
 
-/** The closing cycle's journal context by band address: what was proposed, decided and directed, and where price sat. */
+/**
+ * The closing cycle's journal context by band address: what was proposed, decided and directed, who answered, and
+ * where price sat. On a directive cycle (src/index.ts: `engineDecideResult` stands in for the model) the entry's
+ * proposal is the engine's own CLOSE_POSITION with llm.source "engine", so `proposed` is null there: the loop never
+ * says "i had proposed the close" about a close it did not propose.
+ */
 export function closeContextsOf(entries: readonly JournalEntry[]): Record<string, CloseContext> {
   const out: Record<string, CloseContext> = {};
   for (const e of entries) {
     const closed = e.execution?.ok ? e.execution.closed : undefined;
     if (!closed) continue;
     const pos = e.positions.find((p) => p.address === closed);
-    out[closed] = { proposed: e.proposal?.action ?? null, decided: e.decision?.action ?? null, directive: e.engine?.directive ?? null, binsOut: typeof pos?.binsFromRange === "number" ? pos.binsFromRange : null };
+    const source = e.llm?.source ?? null;
+    out[closed] = { proposed: source === "engine" ? null : (e.proposal?.action ?? null), decided: e.decision?.action ?? null, directive: e.engine?.directive ?? null, source, binsOut: typeof pos?.binsFromRange === "number" ? pos.binsFromRange : null };
   }
   return out;
 }

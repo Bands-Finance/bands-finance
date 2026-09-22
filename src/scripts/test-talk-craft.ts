@@ -1,11 +1,14 @@
 /**
  * The craft's tests (src/talk/craft.ts).   npx tsx src/scripts/test-talk-craft.ts
- * Every shape for every kind over synthetic facts passes vetOutgoing; event posts sit in 140-280 weighted
- * characters; the loss-with-fees-and-tokens lesson fits 280; every figure in the text is in the facts and the
- * key figures of the facts are in the text; "paper" is on every post; the openers rotate; no fixed line repeats
- * across two kinds; the red daily states the loss first; the zero-move daily is one line; a losing close names
- * the mechanism and the rule only when the journal gave them; the milestone carries its no-claim; no link; none
- * of Merd's sentences; null for facts it does not shape.
+ * Every shape for every kind over synthetic facts passes vetOutgoing; every event post carries a figure and fits
+ * 280 (no floor: a short factual post is not designed out); the loss-with-fees-and-tokens lesson fits 280; the
+ * odd-parity daily on an extreme day with a yesterday row fits 280 (the comparison goes first, the book line
+ * second, the figures never); every figure in the text is in the facts and the key figures of the facts are in the
+ * text; "paper" is on every post; the openers rotate; no fixed line repeats across two kinds; the red daily states
+ * the loss first; the zero-move daily is one line; a losing close names the mechanism and the rule only when the
+ * journal gave them, and never claims a proposal on a directive cycle (the journal's proposal is the engine's own
+ * then); a desk-policy close is his own rule's; the milestone carries its no-claim; no link; none of Merd's
+ * sentences; null for facts it does not shape.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -63,11 +66,13 @@ async function main(): Promise<void> {
     { day: "2026-09-20", feesSol: 0.7, netSol: 0.3, closed: 5 },
     { day: "2026-09-21", feesSol: 0.0412, netSol: 0.01, closed: 2 },
   ];
+  /** the same week shifted a day, so 22 sep is yesterday for ODD_NOW: both parts of the comparison render on the odd shape */
+  const recentY: DayFigure[] = recent.map((d) => ({ ...d, day: `2026-09-${Number(d.day.slice(-2)) + 1}` }));
   const lossClose = (seed: string, extra: Partial<NonNullable<CraftFacts["event"]>> = {}): CraftFacts => ({
     ...base,
     seed,
     recent,
-    event: { kind: "close", key: seed, at: NOW, pool: "P", label: "nvdax/usdc", netSol: -0.0412, feesSol: 0.0087, holdSec: 5.2 * 3600, outsideAtClose: true, binsOut: 14, proposed: "HOLD", directive: "STOP", openBands: 4, ...extra },
+    event: { kind: "close", key: seed, at: NOW, pool: "P", label: "nvdax/usdc", netSol: -0.0412, feesSol: 0.0087, holdSec: 5.2 * 3600, outsideAtClose: true, binsOut: 14, proposed: null, directive: "STOP", source: "engine", openBands: 4, ...extra },
   });
   const winClose = (seed: string): CraftFacts => ({ ...base, seed, recent, event: { kind: "close", key: seed, at: NOW, pool: "P", label: "pltrx/sol", netSol: 0.9534, feesSol: 1.071, holdSec: 538 * 60, outsideAtClose: false, openBands: 5 } });
   const open = (seed: string, extra: Partial<NonNullable<CraftFacts["event"]>> = {}): CraftFacts => ({ ...base, seed, event: { kind: "open", key: seed, at: NOW, pool: "P", label: "nvdax/usdc", side: "BOTH", binsBelow: 6, binsAbove: 6, seatSol: 10.8059, openBands: 5, ...extra } });
@@ -83,9 +88,9 @@ async function main(): Promise<void> {
   };
   const milestone: CraftFacts = { ...base, seed: "milestone:paper:40", milestone: { n: 4, step: 10, firstAt: Date.parse("2026-09-14T22:42:00Z"), netSol: 12.3456, bestDay: { day: "2026-09-18", feesSol: 4.1234, netSol: 2, closed: 4 }, lastDay: { day: "2026-09-21", feesSol: 0.0412, netSol: 0.01, closed: 2 } } };
   const seat = { at: NOW, mode: "paper", pool: "P", label: "SKHY/USDC", position: "paper-x", kind: "stock" as const, openedAt: NOW - 219 * MIN, closedAt: NOW, minutes: 219, seatSol: 41.38, bins: 5, binStep: 80, coverPct: 1.6, travelBins60m: null, inRangePct: 95.1, endReason: "stop" as const, feesSol: 0.019793, netSol: -0.091526, tokensLeftSol: 0.0063, predictedYieldPct: null, realizedYieldPctPerDay: 0.31, headline: "x" };
-  const lesson = (seed: string, extra: Partial<NonNullable<CraftFacts["lesson"]>> = {}): CraftFacts => ({ ...base, seed, lesson: { ...seat, proposed: "HOLD", directive: "STOP", ...extra } });
+  const lesson = (seed: string, extra: Partial<NonNullable<CraftFacts["lesson"]>> = {}): CraftFacts => ({ ...base, seed, lesson: { ...seat, proposed: null, directive: "STOP", source: "engine", ...extra } });
   const figures = (o: Partial<import("../talk/strap.js").StackFigures> = {}) => ({ source: "paper" as const, window: "last 24h", since: NOW - DAY, until: NOW, feesRealizedSol: 0.0087, claimsSol: 0, claims: 0, closeFeeLegsSol: 0, closedBands: 3, closedUp: 2, closedDown: 1, closedNetSol: 0.1, worstCloseSol: -0.0412, rentSol: -0.001, swapSol: -0.01, txFeesSol: -0.0001, netRealizedSol: -0.0301, days: 1, redDays: 1, firstRowAt: NOW, lastRowAt: NOW, open: null, ...o });
-  const daily = (o: { now?: number; fig?: Partial<import("../talk/strap.js").StackFigures>; opened?: number; dayN?: number | null } = {}): CraftFacts => ({ ...base, now: o.now ?? NOW, seed: `daily:${new Date(o.now ?? NOW).toISOString().slice(0, 10)}`, daily: { figures: figures(o.fig), opened: o.opened ?? 2, bookSol: 312.3456, openBands: 4, dayN: o.dayN === undefined ? 8 : o.dayN, recent } });
+  const daily = (o: { now?: number; fig?: Partial<import("../talk/strap.js").StackFigures>; opened?: number; dayN?: number | null; recent?: DayFigure[]; source?: "paper" | "dry-run" } = {}): CraftFacts => ({ ...base, source: o.source ?? "paper", now: o.now ?? NOW, seed: `daily:${new Date(o.now ?? NOW).toISOString().slice(0, 10)}`, daily: { figures: figures({ ...(o.source ? { source: o.source } : {}), ...o.fig }), opened: o.opened ?? 2, bookSol: 312.3456, openBands: 4, dayN: o.dayN === undefined ? 8 : o.dayN, recent: o.recent ?? recent } });
   const stack: CraftFacts = { ...base, seed: "stack:2026-09-21", stack: { ...figures({ window: "last 7d", days: 7, redDays: 2, closedBands: 21, closedUp: 15, closedDown: 6, feesRealizedSol: 3.2, netRealizedSol: 1.5, closedNetSol: 1.6 }), open: { feesUnclaimedSol: 0.12, markedBandsSol: 0.3, bands: 5, asOf: NOW } } };
 
   const must = (kind: Parameters<typeof shapePost>[0], f: CraftFacts): string => {
@@ -112,6 +117,9 @@ async function main(): Promise<void> {
     ["daily", daily({ now: ODD_NOW, fig: { netRealizedSol: 0.42, feesRealizedSol: 0.9 } })],
     ["daily", daily({ fig: { netRealizedSol: 0, feesRealizedSol: 0, closedBands: 0, closedUp: 0, closedDown: 0, worstCloseSol: null }, opened: 0 })],
     ["daily", daily({ dayN: null })],
+    ["daily", daily({ now: ODD_NOW, recent: recentY })],
+    ["daily", daily({ now: ODD_NOW, recent: recentY, fig: { netRealizedSol: 0.42, feesRealizedSol: 0.9 } })],
+    ["daily", daily({ now: ODD_NOW, recent: recentY, source: "dry-run" })],
     ["stack", stack],
   ];
 
@@ -129,14 +137,16 @@ async function main(): Promise<void> {
     }
   });
 
-  test("event posts (close, open, strap, milestone) run 140 to 280 weighted characters; the flat strap is the one short shape", () => {
+  test("every event post (close, open, strap, milestone) carries a figure and fits 280; there is no floor (a number is what held Merd's reach, not length)", () => {
     for (const [kind, f] of everything) {
       if (!["close", "open", "strap", "milestone"].includes(kind)) continue;
       const t = must(kind, f);
       const n = weightedLength(t);
-      if (kind === "strap" && f.strap?.state === "flat") assert.ok(n < 140 && n <= MAX_POST_CHARS, `flat strap ${n}`);
-      else assert.ok(n >= 140 && n <= MAX_POST_CHARS, `${kind} ${f.seed} is ${n} chars:\n${t}`);
+      assert.ok(n <= MAX_POST_CHARS, `${kind} ${f.seed} is ${n} chars:\n${t}`);
+      assert.match(t, /\d/, `${kind} ${f.seed} carries no figure:\n${t}`);
     }
+    // the shortest shape, the flat strap, is a fact with a number in it and well under the limit
+    assert.ok(weightedLength(must("strap", straps.flat)) < 140);
   });
 
   test("event posts are two to four lines plus the paper line; the daily and the stack are ledger cards", () => {
@@ -192,7 +202,10 @@ async function main(): Promise<void> {
     }
   });
 
-  test("figures are 4-decimal sol, signed on net, never -0.0000, never a rate, a percent on a band or a usd figure", () => {
+  test("figures are 4-decimal sol, signed on net, never -0.0000, never a rate, a return or a usd figure; the lesson's in-range share is a count of checks, and the persona says so", () => {
+    const persona = fs.readFileSync(path.resolve(process.cwd(), "src/agent/persona.ts"), "utf8");
+    assert.ok(!persona.includes("a percent on a band"), "the persona line contradicted the lesson's in-range share");
+    assert.ok(persona.includes("a count of checks, not a rate"));
     assert.equal(signedSol(-0.00001), "0.0000");
     assert.equal(sol4(-0.00001), "0.0000");
     assert.equal(signedSol(0.0915), "+0.0915");
@@ -275,21 +288,53 @@ async function main(): Promise<void> {
   test("a losing close names the mechanism (bins out) and what the rule did, only from the journal; absent means omitted, never invented", () => {
     const full = must("close", lossClose("close:a"));
     assert.match(full, /price sat 14 bins above the band at the close\./);
-    assert.match(full, /i had proposed hold; the stop closed it\./);
-    const noJournal = must("close", lossClose("close:a", { proposed: null, directive: null, binsOut: null }));
+    assert.match(full, /^the stop closed it\.$/m);
+    assert.ok(!/proposed/.test(full), full);
+    const noJournal = must("close", lossClose("close:a", { proposed: null, directive: null, source: null, binsOut: null }));
     assert.ok(!/proposed|stop closed|the rule/.test(noJournal), noJournal);
     assert.match(noJournal, /price was outside the band at the close\./);
-    const noProposal = must("close", lossClose("close:a", { proposed: null, directive: "STOP" }));
-    assert.match(noProposal, /^the stop closed it\.$/m);
-    assert.ok(!/proposed/.test(noProposal));
     const below = must("close", lossClose("close:a", { binsOut: -3 }));
     assert.match(below, /3 bins below the band/);
     // a win does not get the rule line even when the journal has one
-    const win = must("close", { ...winClose("close:d"), event: { ...winClose("close:d").event!, proposed: "HOLD", directive: "STOP" } });
-    assert.ok(!/proposed/.test(win));
-    // the journal's words are data: sanitized to plain lowercase letters
-    const odd = must("close", lossClose("close:a", { proposed: "HOLD @someone #x", directive: "STOP $BANDS" }));
+    const win = must("close", { ...winClose("close:d"), event: { ...winClose("close:d").event!, proposed: "CLOSE_POSITION", directive: "STOP", source: "engine" } });
+    assert.ok(!/proposed|stop closed/.test(win));
+    // the journal's words are data: sanitized to plain lowercase letters, and a directive word the journal never writes is no closer
+    const odd = must("close", lossClose("close:a", { proposed: "HOLD @someone #x", directive: "STOP $BANDS", source: "llm" }));
     assert.deepEqual(vet(odd), []);
+    assert.ok(!/closed it|@|#|\$/.test(odd), odd);
+    assert.match(must("close", lossClose("close:a", { proposed: "HOLD @someone #x", directive: "STOP", source: "llm" })), /i had proposed to hold someone x; the stop closed it\./);
+  });
+
+  test("the mechanism line never claims a proposal he did not make: the desk's STOP cycle (the engine's own CLOSE_POSITION, llm.source engine) says only what the rule did; a policy close is his own rule's; COLLECT never closes a band", () => {
+    // the entry the desk writes on a STOP cycle, before closeContextsOf nulls the proposal, and after
+    for (const proposed of ["CLOSE_POSITION", null]) {
+      const t = must("close", lossClose("close:engine", { proposed, directive: "STOP", source: "engine" }));
+      assert.match(t, /^the stop closed it\.$/m);
+      assert.ok(!/proposed|my own rule|myself/.test(t), t);
+    }
+    for (const [directive, line] of [["FLATTEN", "the flatten closed it."], ["EXPIRE", "its time ran out and the clock closed it."], ["ROTATE", "the rotation closed it for a pool ranked higher."]]) {
+      const t = must("close", lossClose("close:engine", { proposed: "CLOSE_POSITION", directive, source: "engine" }));
+      assert.ok(t.split("\n").includes(line), `${directive}: ${t}`);
+    }
+    // the desk policy's close, no directive: his own rule, said so
+    const policy = must("close", lossClose("close:policy", { proposed: "CLOSE_POSITION", directive: null, source: "policy" }));
+    assert.match(policy, /^my own rule proposed the close; the guards allowed it\.$/m);
+    const recentre = must("close", lossClose("close:policy", { proposed: "REBALANCE", directive: null, source: "policy" }));
+    assert.match(recentre, /^my own rule proposed the re-centre; the guards allowed it\.$/m);
+    // the model's own close
+    const mine = must("close", lossClose("close:llm", { proposed: "CLOSE_POSITION", directive: null, source: "llm" }));
+    assert.match(mine, /^i proposed the close myself; the guards allowed it\.$/m);
+    // a directive that does not close a band is never the closer; the proposal line still stands on its own
+    const collect = must("close", lossClose("close:collect", { proposed: "CLOSE_POSITION", directive: "COLLECT", source: "policy" }));
+    assert.ok(!/collect/.test(collect), collect);
+    assert.match(collect, /my own rule proposed the close; the guards allowed it\./);
+    // an approved outside proposal is not his: no line
+    const outside = must("close", lossClose("close:outside", { proposed: "CLOSE_POSITION", directive: null, source: "proposal" }));
+    assert.ok(!/proposed|the guards/.test(outside), outside);
+    // a HOLD of his overridden by a stop cannot come from the desk's journal (a directive replaces the call), but the line is grammatical
+    const hold = must("close", lossClose("close:hold", { proposed: "HOLD", directive: "STOP", source: "llm" }));
+    assert.match(hold, /^i had proposed to hold; the stop closed it\.$/m);
+    assert.deepEqual(vet(policy).concat(vet(mine), vet(collect), vet(hold)), []);
   });
 
   test("the close's comparison is only to his own days on the same book, in sol, and only when it stands out", () => {
@@ -354,8 +399,19 @@ async function main(): Promise<void> {
     assert.match(t, /in range 95% of checks/);
     assert.match(t, /fees 0\.0198 sol, net -0\.0915 sol, a loss, after rent and swaps\./);
     assert.match(t, /0\.0063 sol of that still in tokens, not sold\./);
-    assert.match(t, /the stop closed it, over my proposed hold\./);
+    assert.match(t, /^the stop pulled the seat\.$/m);
+    assert.ok(!/proposed|proposal/.test(t), t);
     assert.ok(!/fees are not profit|logged like the wins|not every seat is|taught me/.test(t), t);
+    // the lesson's rule line in every form: grammatical, and never the close's line for the same seat
+    assert.match(must("lesson", lesson("lesson:hold", { proposed: "HOLD", directive: "STOP", source: "llm" })), /^the stop pulled the seat, over my proposal to hold\.$/m);
+    assert.match(must("lesson", lesson("lesson:policy", { proposed: "CLOSE_POSITION", directive: null, source: "policy", endReason: "idle" })), /^the close came from my own rule, and the guards let it through\.$/m);
+    assert.match(must("lesson", lesson("lesson:llm", { proposed: "REBALANCE", directive: null, source: "llm", endReason: "through-band" })), /^the re-centre was my own proposal, and the guards let it through\.$/m);
+    assert.match(must("lesson", lesson("lesson:rotate", { proposed: "CLOSE_POSITION", directive: "ROTATE", source: "engine", endReason: "rotated" })), /^the rotation moved the seat to a pool ranked higher\.$/m);
+    for (const seed of ["lesson:a", "lesson:policy"]) {
+      const l = must("lesson", lesson(seed, seed === "lesson:policy" ? { proposed: "CLOSE_POSITION", directive: null, source: "policy" } : {}));
+      const c = must("close", lossClose(seed.replace("lesson", "close"), seed === "lesson:policy" ? { proposed: "CLOSE_POSITION", directive: null, source: "policy" } : {}));
+      for (const line of l.split("\n")) if (line !== "paper book.") assert.ok(!c.split("\n").includes(line), `the close and the lesson share "${line}"`);
+    }
     // the tokens line goes first when the post runs long, never the money or the rule
     const long = must("lesson", lesson("lesson:long", { label: "averyveryverylongtoken/anotherlongone", tokensLeftSol: 123456.1234, minutes: 99999 }));
     assert.ok(weightedLength(long) <= MAX_POST_CHARS);
@@ -384,6 +440,33 @@ async function main(): Promise<void> {
     assert.ok(!/thinner|fatter/.test(middle) && /after 0\.0412 yesterday/.test(middle), middle);
     const noDay = must("daily", daily({ dayN: null }));
     assert.match(noDay, /^daily numbers, paper book/);
+  });
+
+  test("the odd daily on an extreme day with a yesterday row fits 280: the comparison goes first, the book line second, the figures never", () => {
+    for (const [name, f] of [
+      ["red thin", daily({ now: ODD_NOW, recent: recentY })],
+      ["green fat", daily({ now: ODD_NOW, recent: recentY, fig: { netRealizedSol: 0.42, feesRealizedSol: 0.9 } })],
+      ["red thin, dry run", daily({ now: ODD_NOW, recent: recentY, source: "dry-run" })],
+    ] as const) {
+      const t = must("daily", f);
+      const n = weightedLength(t);
+      assert.ok(n <= MAX_POST_CHARS, `${name}: ${n} chars\n${t}`);
+      assert.deepEqual(vet(t), [], name);
+      // the figures, the moves and the book line stay; the comparison is what went
+      assert.match(t, /fees realized 0\.(0087|9000) sol/);
+      assert.match(t, /net realized [+-]0\.\d{4} sol after losses, rent, swaps and network fees/);
+      assert.match(t, /moves: 2 opened, 3 closed, 2 up and 1 down, worst -0\.0412 sol/);
+      assert.match(t, /book marked at 312\.3456 sol, 4 bands open/);
+      assert.ok(!/thinner|fatter|yesterday/.test(t), `${name} kept the comparison over 280:\n${t}`);
+    }
+    // a day in the middle of the week keeps its shorter clause, since it fits
+    const middle = must("daily", daily({ now: ODD_NOW, recent: recentY, fig: { netRealizedSol: 0.42, feesRealizedSol: 0.3 } }));
+    assert.ok(weightedLength(middle) <= MAX_POST_CHARS);
+    assert.match(middle, /fees realized 0\.3000 sol, after 0\.0412 yesterday$/m);
+    // and the even shape, dense by design, keeps both parts
+    const even = must("daily", daily({ now: ODD_NOW + DAY, recent: recentY.map((d) => ({ ...d, day: `2026-09-${Number(d.day.slice(-2)) + 1}` })) }));
+    assert.match(even, /thinner than any of the last 7 days, after 0\.0412 yesterday/);
+    assert.ok(weightedLength(even) <= MAX_POST_CHARS);
   });
 
   test("a red daily states the loss first, in the same card", () => {

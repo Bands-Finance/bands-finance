@@ -5,10 +5,16 @@
  *
  *   similarity / tooSimilar   meaningful-word overlap against the loop's own recent texts: a reworded repeat drew
  *                             93 impressions against 2,165, and the same product claim reworded ten times fell from
- *                             579 impressions to 26. Raw text, numbers and labels kept: his posts are templates, so
- *                             masking the numbers would make every two opens identical.
- *   statTokens / repeatedStat the same 4-decimal SOL figure restated in a post of the last 24h (a lesson repeating
- *                             the milestone's net): a reader sees one talking point twice
+ *                             579 impressions to 26. Raw text, numbers and labels kept. tick.ts applies it to the
+ *                             milestone only: an open, a strap or a lesson is a templated claim about a different
+ *                             seat or state, and two of them overlap 0.85 to 1.00 by construction (six straddles in
+ *                             six pools: 12 of 15 pairs over the bar; two green straps three days apart: 1.00), so
+ *                             the filter refused the genuine events it was meant to let through, and masking the
+ *                             figures and labels would make every two identical. The key dedupe, the day's caps and
+ *                             the strap cooldown ration those kinds instead.
+ *   statTokens / repeatedStat the same 4-decimal SOL figure restated in a milestone or lesson post of the last 24h
+ *                             (a lesson repeating the milestone's net): a reader sees one talking point twice. Never
+ *                             against a close, an open or a strap: a fee figure two seats share is a coincidence
  *   markersIn / selfEcho      a draft's own metadata ("**REPLY**", "Reasoning:") on the timeline, and an answer
  *                             returned twice inside one text: 37 of Merd's reply and skip drafts leaked before his
  *                             cleanReply existed. Insurance for the day a model rewrite exists here.
@@ -55,7 +61,7 @@ export function similarity(a: string, b: string): number {
   return shared / Math.min(A.size, B.size);
 }
 
-/** Merd's 0.45 fired on 7 of 174 free-text drafts; templates share more words, so the loop's threshold is higher. */
+/** Merd's 0.45 fired on 7 of 174 free-text drafts; templates share more words, so the loop's threshold is higher (and the milestone is the one kind it filters). */
 export const SIMILARITY_MAX = 0.85;
 
 export interface RecentText {

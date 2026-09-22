@@ -269,12 +269,15 @@ He posts by himself: launchd runs `talk.ts tick` every 15 minutes (`ops/com.band
    | lesson | from `TALK_LESSON_HOUR_UTC` (18), at most once a UTC day: the seat closed in the last 24h with the biggest net either way | `lesson:<band>` |
    | stack | UTC Mondays from `TALK_STACK_HOUR_UTC` (15), once: the 7-day stack update | `stack:<day>` |
 
-3. Picks at most one, in that order (close > open > strap > milestone > daily > lesson > stack), skipping any key
-   posted, drafted or refused in the last 7 days, and nothing once the UTC day holds `POSTS_PER_DAY` loop records
-   (6 for the loop unless the env sets it; the loop passes the same number to the x.ts limiter). Spacing holds
-   everything (status `spaced`) while: the last post went less than `TALK_MIN_GAP_MIN` (90) minutes ago; the last
-   `TALK_WINDOW_HOURS` (6) hours hold `TALK_WINDOW_POSTS` (2); it is before `TALK_DAY_START_UTC` (12, 8am EDT) and
-   the day already holds `TALK_NIGHT_POSTS` (2). The day's last slot is kept for the daily numbers until they go.
+3. Picks at most one by rank: from `TALK_DAILY_HOUR_UTC` until they have gone, the daily numbers first (the fixed
+   card at the fixed clock), then close > open > strap > milestone > lesson > stack; skipping any key posted,
+   drafted or refused in the last 7 days, and nothing once the UTC day holds `POSTS_PER_DAY` loop records (6 for
+   the loop unless the env sets it; the loop passes the same number to the x.ts limiter). Spacing holds a candidate
+   (status `spaced` when it holds them all) while: the last post went less than `TALK_MIN_GAP_MIN` (90) minutes ago,
+   plus the key's jitter for an event kind (the daily takes the plain gap, so a post at 13:50 holds it to 15:20 at
+   the latest); the last `TALK_WINDOW_HOURS` (6) hours hold `TALK_WINDOW_POSTS` (2), which the daily passes and
+   everything else waits for; it is before `TALK_DAY_START_UTC` (12, 8am EDT) and the day already holds
+   `TALK_NIGHT_POSTS` (2). The day's last slot is kept for the daily numbers until they go.
 4. Vets it: no `@`, `#` or `$` at all, links only to mrbands.finance, solscan.io and app.meteora.ag, links counted
    as 23 characters, "paper" in the text while the desk is paper, then the full lint. A text that fails is never
    posted: it goes to `x-drafts.jsonl` with the reason and its key, so it is not tried again. A word from
@@ -321,12 +324,12 @@ now, vetted, ignoring its hour and day gate, and writes, records and posts nothi
 | `TALK_DAILY_HOUR_UTC` | `14` | the daily numbers go from this UTC hour |
 | `TALK_LOOP_MILESTONE_SOL` | `10` | the fee milestone step (the strap's `TALK_FEE_MILESTONE_SOL` stays 1) |
 | `TALK_MIN_GAP_MIN` | `90` | minutes between two loop posts (0: off) |
-| `TALK_WINDOW_POSTS` / `TALK_WINDOW_HOURS` | `2` / `6` | at most this many posts in any rolling window (0: off) |
+| `TALK_WINDOW_POSTS` / `TALK_WINDOW_HOURS` | `2` / `6` | at most this many posts in any rolling window; the daily numbers pass it (the fixed card at the fixed clock), every other kind waits (0: off) |
 | `TALK_DAY_START_UTC` / `TALK_NIGHT_POSTS` | `12` / `2` | before this UTC hour, at most this many posts that day; milestones wait for it |
 | `TALK_LESSON_HOUR_UTC` | `18` | the lesson goes from this UTC hour |
 | `TALK_STACK_HOUR_UTC` | `15` | the Monday stack goes from this UTC hour |
 | `TALK_DAILY_LINK` | off | `true`: the daily ends with mrbands.finance |
-| `TALK_GAP_JITTER_MIN` | `45` | each event candidate (close, open, strap, milestone) waits `TALK_MIN_GAP_MIN` plus sha256(candidate key) mod 46 minutes after the previous loop post, so the gap is deterministic across ticks and restarts and never reads as the tick; the daily, the lesson and the stack use the plain gap, so the jitter never delays the daily past its hour (0: off) |
+| `TALK_GAP_JITTER_MIN` | `45` | each event candidate (close, open, strap, milestone) waits `TALK_MIN_GAP_MIN` plus sha256(candidate key) mod 46 minutes after the previous loop post, so the gap is deterministic across ticks and restarts and never reads as the tick. A strap's key carries its tick slot, so its jitter is seeded on the time the change was first seen instead (`strapChangedAt`): a waiting strap's wait is the same on every tick, not the smallest of successive rolls. The daily, the lesson and the stack use the plain gap, so the jitter never delays the daily past its hour (0: off) |
 | `TALK_EVENT_POSTS_PER_DAY` | `4` | close, open, strap and milestone share this many of the day's `POSTS_PER_DAY` slots; the daily and the lesson keep the rest (the "last slot kept for the daily" rule extended to a reserved pair). A close with a loss is exempt from this cap (a loss is never the thing that stays quiet) but not from `POSTS_PER_DAY` or the daily's kept slot. Counted from `x-posts.jsonl` by record type, dry records included (0: off) |
 | `TALK_OPEN_POSTS_PER_DAY` | `2` | opens per UTC day, inside the event cap; an open not posted is not lost, the daily counts opened bands (0: off) |
 | `TALK_RETRY_BACKOFF_MIN` | `60` | after 3 consecutive retryable X refusals (402, 429, 5xx, unreachable, the rate lock busy) the tick does not call X for this many minutes, doubling each time to a 360-minute cap; `transientFails` and `backoffUntil` live in `tick-state.json` and reset on the next posted or dormant result; one loud log line per backoff and no `x-drafts.jsonl` row per held tick (0: off) |
@@ -336,7 +339,8 @@ removes the commonest churn pair) and at most 2 strap posts a day (`STRAP_POSTS_
 a day is one story, not three). From `TALK_DAILY_HOUR_UTC` until it has gone, the daily takes rank 0 over a close, an
 open, a strap change and a milestone (the min gap still applies); the lesson and the stack keep their rank.
 
-Expected shape of a day under these values: the daily at 14:00 to 14:15 UTC every day, a lesson from 18 UTC when a
+Expected shape of a day under these values: the daily from 14:00 UTC every day, on the first tick the gap allows (a
+post at 13:50 holds it to 15:20; the window never does), a lesson from 18 UTC when a
 seat closed, 2 to 4 event posts spread by the window rule and the jitter, nights capped at 2, 3 to 5 posts on a
 typical day and 6 only on a busy one. Zach's calendar, not code: an X pay-per-use balance check weekly, and the Mac on
 mains with automatic installs off (two of Merd's five zero days were the same machine).
@@ -366,8 +370,12 @@ The verdict, in five lines:
 3. Repetition and machine tells are what killed him: one product claim reworded ten times fell from 579 impressions
    and 22 likes (#74) to 26 and 0 (#286); 78% of his same-day gaps sat within 230 to 250 minutes because the floor
    equalled the tick; his own draft prompt had to lecture against posts landing at 276 to 296 characters and against
-   the closing epigram. Short posts did not earn their place either: under-90-character posts sat at a median of 92
-   impressions against 144 to 218 for longer ones, mood one-liners without a number at 81 with no bookmark.
+   the closing epigram. Length itself shows no effect once the feed's decay is stripped: his under-90-character
+   posts sat at a median of 92 impressions against 147 for longer ones, but they sit later in a feed decaying at
+   Spearman -0.88 between index and impressions, and against their neighbours they read 0.97 to 1.00; split the
+   regime in half and each half says the same. What held reach in a short post was a number in it (1.13, n=7,
+   against 0.92 without, n=27), and the 260 to 330 bucket's 1.31 is six milestones and nine quote posts, the other
+   thirteen at 0.89. So: a figure in every post, and no length floor; a short factual post is not designed out.
 4. Every pipeline failure was mechanical and avoidable: 81 posts and 59 prints lost to a 402 retried every 15 minutes
    for 14 hours, 37 reply and skip drafts leaked onto the timeline with their `**REPLY**` and `Reasoning:` markers,
    and every zero day was credits or the Mac.
@@ -390,12 +398,12 @@ craft reads a file, calls X or bypasses a guard. The rules, each with the Merd e
 
 | rule | what he does | Merd |
 |---|---|---|
-| shape | one act or one position per post, two to four lines, 140 to 280 weighted characters on an event post; the daily and the Monday stack stay ledger cards, a line per fact. The only short shapes carry a fact: the zero-move daily and the flat strap. No mood line: "never fake a state" rules it out, and the record says it would not be read | 260 to 330 characters read 1.31 against 0.82 under 90 (n=28/16); under-90 posts at 92 impressions against 144 to 218; mood one-liners at 81 with no bookmark; #335, the 57-character zero day; his era-C median of two sentences |
+| shape | one act or one position per post, two to four lines, as long as the facts need and never over 280; no length floor. The daily and the Monday stack stay ledger cards, a line per fact. A short shape carries a fact with a figure in it: the zero-move daily, the flat strap, a one-line close. No mood line: "never fake a state" rules it out, and a line without a number is the one short shape the record says was not read | length shows no effect once the feed's decay is stripped (under-90 posts at rel_imps 0.97 against 1.00, each half of the regime alike); a number in a short post 1.13 against 0.92 without; the 260 to 330 bucket's 1.31 is milestones and quote posts (the other 13 at 0.89); mood one-liners at 81 with no bookmark; #335, the 57-character zero day; his era-C median of two sentences |
 | openers | three per kind, chosen by sha256(candidate key) mod 3, so a tick is reproducible and the key still dedupes: a close begins "closed my band on x after 5.2h, 14:07 utc." or "x, closed 14:07 utc after 5.2h." or "5.2h in x and out at 14:07 utc."; an open and the lesson rotate the same way; the daily has two orderings by UTC-day parity. Every close carries its UTC clock time | 23 bare-verb, 21 number-first and 6 clock-time openers in his clean set; posts with HH:MM held 1.10 (n=12) while the feed decayed; the rotation is against the machine tell, not for reach (number-led posts read 0.89 and 1.03) |
-| numbers | every post carries at least one figure with its window, at measured precision (`signedSol` and `sol4`, never "-0.0000", never rounded away), in SOL; never a rate, a percent on a band or a USD conversion. The strap post gains a number: bands in range of total, hours since the change, bins out for red | has_num 1.19 against 0.89 (n=65/46) and 1.06 against 0.92 (n=62/68), with his retweets and bookmarks sitting almost only on numbered posts; his cent-precise figures and "never round a loss away" (`_merd-daily.mts:231`) |
+| numbers | every post carries at least one figure with its window, at measured precision (`signedSol` and `sol4`, never "-0.0000", never rounded away), in SOL; never a rate, a return or a USD conversion (the lesson's "in range 95% of checks" is a count of checks, not a rate, and the persona says so). The strap post gains a number: bands in range of total, hours since the change, bins out for red | has_num 1.19 against 0.89 (n=65/46) and 1.06 against 0.92 (n=62/68), with his retweets and bookmarks sitting almost only on numbered posts; his cent-precise figures and "never round a loss away" (`_merd-daily.mts:231`) |
 | the comparison | the daily and the close put the figure beside his own days on the same book: "fees 0.0087 sol, thinner than any of the last 7 days, after 0.0412 yesterday"; "net +0.9534 sol, more than any whole day of the last 7 netted". Only to his own days, in SOL, never to a rate, an APR, another account or "on pace for" | #225 ("thinnest fee day of the week, after $193.21 the day before"), #191, #357; Merd fed his drafter the last five daily rows for exactly this (`_merd-daily.mts:120-134`) |
-| the miss | a close with a loss names the mechanism, what the rule did, and what he had proposed, in one post with the number: "net -0.0412 sol, a loss; fees 0.0087 sol counted in it. price sat 14 bins above the band at the close. i had proposed hold; the stop closed it." The proposal and the directive come only from the journal entry whose `execution.closed` is the band; absent means the line is left out, never invented | #343 ("not cutting was a decision and it cost more than cutting did"), #92 ("i didn't override it"), #384 ("the 7th was my miss"); reach-neutral (0.90 to 1.06) and required by his rules anyway |
-| the lesson | three parts, no fixed takeaway: what the seat did (label, hours, in-range share), what it cost or paid (fees and net, the unsold tokens as an optional line dropped first when the post runs long), and what the rule did (the end reason as the actor, "the stop closed it, over my proposed hold"). "fees are not profit" is said by juxtaposition (fees x, net y after rent and swaps), not as the sentence. This also fixes a silent drop: the old template rendered 287 characters on a loss with fees and tokens, over the 280 vet, and lost that day's lesson | his three fixed takeaways repeated verbatim weekly; era C has no fixed sign-off outside the automated print card |
+| the miss | a close with a loss names the mechanism, what the rule did, and what he had proposed, in one post with the number: "net -0.0412 sol, a loss; fees 0.0087 sol counted in it. price sat 14 bins above the band at the close. the stop closed it." The proposal, the directive and who answered (`llm.source`) come only from the journal entry whose `execution.closed` is the band; absent means the line is left out, never invented. On a directive cycle (STOP, FLATTEN, EXPIRE, ROTATE) the model is not called and the entry's proposal is the engine's own CLOSE_POSITION, so no proposal of his is claimed: only what the rule did. A desk-policy close is said as his own rule's ("my own rule proposed the close; the guards allowed it."), the model's as his ("i proposed the close myself"); COLLECT never closes a band and is never the closer | #343 ("not cutting was a decision and it cost more than cutting did"), #92 ("i didn't override it"), #384 ("the 7th was my miss"); reach-neutral (0.90 to 1.06) and required by his rules anyway |
+| the lesson | three parts, no fixed takeaway: what the seat did (label, hours, in-range share), what it cost or paid (fees and net, the unsold tokens as an optional line dropped first when the post runs long), and what the rule did (the end reason as the actor, "the stop pulled the seat", never the close's line for the same seat). "fees are not profit" is said by juxtaposition (fees x, net y after rent and swaps), not as the sentence. This also fixes a silent drop: the old template rendered 287 characters on a loss with fees and tokens, over the 280 vet, and lost that day's lesson | his three fixed takeaways repeated verbatim weekly; era C has no fixed sign-off outside the automated print card |
 | endings | land on the fact and stop. An open ends "5 bands open on the paper book", not "i propose, the guards decide"; the stack has no "still stacking"; the milestone is the round level, its window, the best day and the most recent day in SOL, the net over the same stretch, and an explicit no-claim ("nothing about the next 10"). "paper" rotates by seed parity between ", paper book" on the first line and "paper book." as the last line: the meaning is on every post, the position varies | 17% of his era-C posts end on six words or fewer; his prompt bans the closing epigram (`_merd-daily.mts:326-333`); #178 for the milestone shape |
 | the daily | the fixed card at the fixed clock with a "day N" counter of the paper run, two orderings by UTC-day parity (even: one dense line of figures then the book line; odd: a line per fact), a red-day shape that states the loss first ("day 13, paper book, net -0.0301 sol on the day."), and a one-liner when nothing opened or closed and fees round to 0.0000, still with "paper book" and the comparison. Never "a new high", never a "+" on fees as a headline | 5 of 16 prints bookmarked against 0 of 114 other posts; #166 ("small day, boring tape, posted the same way i post the big ones"); #220 and #226, down days in the same form; the three print shapes in `_merd-daily-print.mts:90-107` |
 | links | none in a loop post. A solscan link on a live-book milestone is the one exception, later, not on paper (nothing to verify on chain) | era C: 0 links; a URL costs 13x on pay-per-use |
@@ -405,7 +413,9 @@ position", "a new high", "fees only go up", "small by construction", "the rule c
 for", "still stacking", "i propose, the guards decide".
 
 The tests (`npx tsx src/scripts/test-talk-craft.ts`): every shape for every kind over synthetic facts passes
-`vetOutgoing`; event posts sit in 140 to 280; the loss-with-fees-and-tokens lesson fits 280; every number in a post is
+`vetOutgoing`; every event post carries a figure and fits 280 (no floor); the loss-with-fees-and-tokens lesson fits 280;
+the odd-parity daily on an extreme day with a yesterday row fits 280 (its comparison goes first, the book line second,
+the figures never; before this fit it ran 285 to 311 and the day's card was refused); every number in a post is
 in its facts and the key figures of the facts are in the post; "paper" is on every post; over many seeds each of the
 three openers appears and one seed always gives the same text; no fixed line repeats across two kinds; the red daily
 states the loss first; the zero-move daily is one line; the banned phrases never appear.
@@ -416,11 +426,17 @@ states the loss first; the zero-move daily is one line; the banned phrases never
 
 - `similarity` / `tooSimilar`: meaningful-word overlap over the smaller set, stop words and words of two characters
   or fewer dropped, on the raw text with numbers and labels kept. Threshold 0.85 against the loop's texts of the last
-  7 days. Applied as a candidate filter for open, strap, milestone and lesson only, never a close (a loss is always
-  said) and never the daily or the stack (their form repeats by design). A filtered candidate is a note, not a
-  drafts row and not a consumed key; the next candidate is picked. Merd's reworded repeat drew 93 impressions
-  against 2,165.
-- `repeatedStat`: the same 4-decimal SOL figure in a loop post of the last 24 hours; milestone and lesson only.
+  7 days. Applied as a candidate filter for the milestone only (never against an earlier milestone). Not for an
+  open, a strap or a lesson: those are templated claims about different seats and states, and two of them overlap
+  0.85 to 1.00 by construction (six straddles in six pools: 12 of 15 pairs over the bar; two green straps three days
+  apart: 1.00; two stop-closed losses a day apart: 0.85), so the filter refused the genuine events it was meant to
+  let through and masking the figures and labels would make every two identical. The key dedupe, the day's caps,
+  the per-pool cap and the strap cooldown ration those kinds. Never a close (a loss is always said), never the
+  daily or the stack (their form repeats by design). A filtered candidate is a note, not a drafts row and not a
+  consumed key; the next candidate is picked. Merd's reworded repeat drew 93 impressions against 2,165.
+- `repeatedStat`: the same 4-decimal SOL figure in a milestone or lesson post of the last 24 hours, checked on a
+  milestone or a lesson (a lesson repeating the milestone's net). Never against a close, an open or a strap: a fee
+  figure two seats share is a coincidence, not a talking point twice, and the day's lesson was lost to one.
 - `vetOutgoing` refuses `**`, `reasoning:`, `draft:`, `post:`, `note:` and `skip` as a line or label (`loop-markers`)
   and a sentence that repeats inside one post (`self-echo`): insurance for the day a model rewrite exists. Merd's 37
   leaked drafts got through before his cleaner was written.

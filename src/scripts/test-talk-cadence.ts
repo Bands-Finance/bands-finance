@@ -2,13 +2,17 @@
  * The posting loop's cadence tests (src/talk/guards.ts and what src/talk/tick.ts does with it), each pinned to the
  * Merd incident it comes from. No network: X is a fake fetch; every file lives in a temp dir.
  *   npx tsx src/scripts/test-talk-cadence.ts
- * Covers: the per-key jitter, the daily's rank over a fresh close from its hour, the day's event slots (a 5th event
- * waits while a losing close goes, a 3rd open waits, a 3rd event in one pool waits, a red>green>red strap flip posts
- * twice), the lesson's kept slot, the repeat guards (a near-identical open is a note, a close never is; a lesson
- * restating a milestone figure), draft markers and self-echo in the vet, the backoff after three 402s (60 min, then
- * 120, a posted result resets, no draft row per held tick, X's detail in the reason), the milestone gate at 40 SOL
- * given milestoneN 3, the lesson template's length fallback, the craft hook, the loop log's new fields, the facts
- * the craft hook gets, and the plist's comments.
+ * Covers: the per-key jitter (a waiting strap's wait the same on every tick), the daily's rank over a fresh close
+ * from its hour, the day's event slots (a 5th event waits while a losing close goes, a 3rd open waits, a 3rd event
+ * in one pool waits, a red>green>red strap flip posts twice), the lesson's kept slot, the repeat guards (an open in
+ * another pool, a same-pool re-open, a strap with a different band out and two lessons a day apart all go; the
+ * word overlap filters the milestone only; a lesson restating a milestone figure is filtered, one sharing a fee
+ * figure with another seat's close is not), draft markers and self-echo in the vet, the backoff after three 402s
+ * (60 min, then 120, a posted result resets, no draft row per held tick, X's detail in the reason), the milestone
+ * gate at 40 SOL given milestoneN 3 with today's partial day never its best day, the lesson template's length
+ * fallback, the craft hook (a text over 280 falls back to the template; the daily is never refused on length), the
+ * loop log's new fields, the facts the craft hook gets (a STOP cycle's proposal is the engine's, not his), and the
+ * plist's comments.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -48,6 +52,7 @@ const FAKE_CREDS = { X_API_KEY: "ck-test", X_API_SECRET: "cs-test-secret", X_ACC
 async function main(): Promise<void> {
   const tick = await import("../talk/tick.js");
   const guards = await import("../talk/guards.js");
+  const craft = await import("../talk/craft.js");
   const x = await import("../talk/x.js");
   const { talkEnv } = await import("../talk/env.js");
   const { stackFigures } = await import("../talk/strap.js");
@@ -66,7 +71,7 @@ async function main(): Promise<void> {
 
   // ------------------------------------------------------------ synthetic facts for the pure plan
   const env = talkEnv({ DATA_DIR: tmp, TALK_STATE_PATH: tmp, CYCLE_INTERVAL_SEC: "300" });
-  const strapOf = (state: StrapResult["state"], total = 2): StrapResult => ({ state, total, inRange: state === "red" ? total - 1 : total, nearEdge: 0, outOfRange: state === "red" ? 1 : 0, positions: state === "red" ? [{ label: "nvdax/sol", status: "out_above", edgeDistancePct: null, binsFromRange: 3, inRange: false } as never] : [], stackedEvent: null, detail: "", reason: null, edgePct: 15, dataAt: null });
+  const strapOf = (state: StrapResult["state"], total = 2, out = "nvdax/sol"): StrapResult => ({ state, total, inRange: state === "red" ? total - 1 : total, nearEdge: 0, outOfRange: state === "red" ? 1 : 0, positions: state === "red" ? [{ label: out, status: "out_above", edgeDistancePct: null, binsFromRange: 3, inRange: false } as never] : [], stackedEvent: null, detail: "", reason: null, edgePct: 15, dataAt: null });
   const factsAt = (now: number, extra: Partial<TickFacts> = {}): TickFacts => {
     const fig = (ms: number) => stackFigures({ rows: [], source: "paper", since: now - ms, until: now });
     return { now, source: "paper", paper: true, staleReason: null, events: [], strap: strapOf("green"), milestone: null, daily: { figures: fig(DAY), opened: 0, bookSol: 150, openBands: 2 }, stack7d: fig(7 * DAY), lessons: [], env, dayN: 9, recent: [], days: [], closes: {}, ...extra };
@@ -113,6 +118,33 @@ async function main(): Promise<void> {
     const l = factsAt(at("2026-09-22T18:00:00Z"), { lessons: [lessonOf("L1", at("2026-09-22T16:00:00Z"), 0.15, 0.2)] });
     const r = tick.planTick(l, state({ lastLessonDay: null }), logOf({ postsToday: 1, times: [l.now - 90 * MIN] }), { ...OPTS, minGapMin: 90, gapJitterMin: 45 });
     assert.equal(r.pick?.kind, "lesson");
+  });
+
+  await test("a waiting strap's wait does not change between ticks: its jitter is seeded on the time the change was first seen, not on the key's tick slot", () => {
+    // a green>red change first seen 90 min after the last post, held by its jitter; find a first-seen time whose jitter is over 30 min
+    let t0 = at("2026-09-22T13:00:00Z");
+    while (guards.jitterMin(`strap:green>red:${t0}`, 45) <= 30) t0 += 15 * MIN;
+    const last = t0 - 90 * MIN;
+    const waits: number[] = [];
+    let st = state({ lastStrap: "green", lastStrapPostAt: null });
+    for (let k = 0; k < 3; k++) {
+      const now = t0 + k * 15 * MIN;
+      const p = tick.planTick(factsAt(now, { strap: strapOf("red") }), st, logOf({ postsToday: 1, times: [last] }), { ...OPTS, minGapMin: 90, gapJitterMin: 45 });
+      assert.equal(p.spaced, true, `tick ${k}: ${p.notes.join("; ")}`);
+      const m = p.notes[p.notes.length - 1].match(/plus (\d+) min of jitter for the strap/);
+      assert.ok(m, p.notes.join("; "));
+      waits.push(Number(m![1]));
+      st = p.nextState;
+      assert.equal(st.strapChangedAt, t0, "the change keeps the time it was first seen");
+    }
+    assert.equal(new Set(waits).size, 1, `the wait re-rolled: ${waits.join(", ")}`);
+    assert.equal(waits[0], guards.jitterMin(`strap:green>red:${t0}`, 45));
+    // and it goes on the first tick past 90 plus that jitter, not before
+    const due = t0 + Math.ceil(waits[0] / 15) * 15 * MIN;
+    const before = tick.planTick(factsAt(due - 15 * MIN, { strap: strapOf("red") }), st, logOf({ postsToday: 1, times: [last] }), { ...OPTS, minGapMin: 90, gapJitterMin: 45 });
+    assert.equal(before.pick, null);
+    const goes = tick.planTick(factsAt(due, { strap: strapOf("red") }), before.nextState, logOf({ postsToday: 1, times: [last] }), { ...OPTS, minGapMin: 90, gapJitterMin: 45 });
+    assert.equal(goes.pick?.kind, "strap", goes.notes.join("; "));
   });
 
   // ------------------------------------------------------------ the daily's rank
@@ -239,24 +271,68 @@ async function main(): Promise<void> {
     assert.equal(guards.tooSimilar(c, [{ at: T13, text: a }]), null);
     assert.equal(guards.tooSimilar(b, [{ at: T13, text: a }])?.hit.text, a);
   });
-  await test("tooSimilar filters a near-identical open (a note, no row, the key unspent) and never a close", () => {
-    const earlier = tick.openText(open("A-old", "P", T13 - DAY, 0.5), "paper");
+  await test("the word overlap never filters an open, a strap or a lesson: an open in another pool, a same-pool re-open, a strap with a different band out and a green after a red all go after a same-shape post; the milestone is the one kind it filters", () => {
+    const SHAPED = { ...OPTS, shape: craft.shapePost };
+    const textOf = (f: TickFacts, st: TickState = state()) => tick.planTick(f, st, logOf(), SHAPED).pick!.text;
+    // an open of the same shape yesterday in pool P: today's open in pool Q goes, and so does a new seat in P itself
+    const earlier = textOf(factsAt(T13 - DAY, { events: [open("A-old", "P", T13 - DAY - 10 * MIN, 0.5, "nvdax/usdc")] }));
     const recentTexts = [{ at: T13 - DAY, text: earlier, key: "open:A-old", type: "open" }];
-    const f = factsAt(T13, { events: [open("A-new", "P", T13 - 10 * MIN, 0.75)] });
-    const p = tick.planTick(f, state(), logOf({ recentTexts }), OPTS);
-    assert.equal(p.pick, null);
-    assert.equal(p.candidates.length, 0);
-    assert.ok(p.notes.some((x) => /^repeat: open open:A-new has (0\.[89]\d|1\.00) overlap with the open of 21 sep; the key stays unspent/.test(x)), p.notes.join("; "));
+    const q = tick.planTick(factsAt(T13, { events: [open("Q-1", "Q", T13 - 10 * MIN, 0.75, "pltrx/sol")] }), state(), logOf({ recentTexts }), SHAPED);
+    assert.equal(q.pick?.key, "open:Q-1", q.notes.join("; "));
+    assert.ok(guards.similarity(earlier, q.pick!.text) >= 0.75, `the two opens share most of their words by construction: ${guards.similarity(earlier, q.pick!.text).toFixed(2)}`);
+    const again = tick.planTick(factsAt(T13, { events: [open("A-new", "P", T13 - 10 * MIN, 0.75, "nvdax/usdc")] }), state(), logOf({ recentTexts }), SHAPED);
+    assert.equal(again.pick?.key, "open:A-new", "a new seat in the same pool is a new fact");
+    assert.ok(guards.similarity(earlier, again.pick!.text) >= 0.85, `the same pool again: ${guards.similarity(earlier, again.pick!.text).toFixed(2)} overlap, and it still goes`);
+    assert.ok(!q.notes.concat(again.notes).some((x) => /^repeat/.test(x)), q.notes.concat(again.notes).join("; "));
+    // two opens in different pools the same day: both eligible, the second goes once the first went
+    const two = factsAt(T13, { events: [open("Q-1", "Q", T13 - 10 * MIN, 0.75, "pltrx/sol"), open("R-1", "R", T13 - 8 * MIN, 0.5, "gmex/sol")] });
+    const first = tick.planTick(two, state(), logOf(), SHAPED);
+    assert.deepEqual(first.candidates.map((c) => c.key), ["open:Q-1", "open:R-1"]);
+    const second = tick.planTick({ ...two, now: T13 + 2 * HOUR, events: two.events.map((e) => ({ ...e, at: e.at + 2 * HOUR })) }, first.nextState, logOf({ recentTexts: [{ at: T13, text: first.pick!.text, key: "open:Q-1", type: "open" }], todayEntries: [{ key: "open:Q-1", type: "open" }], postsToday: 1, seen: new Set(["open:Q-1"]) }), SHAPED);
+    assert.equal(second.pick?.key, "open:R-1", second.notes.join("; "));
+    // a red strap with a different band out, a day after a red strap: goes; a green after a red goes though a green went 3 days ago
+    const redOld = textOf(factsAt(T13 - DAY, { strap: strapOf("red", 4, "gmex/sol") }), state({ lastStrap: "green" }));
+    const red = tick.planTick(factsAt(T13, { strap: strapOf("red", 4, "mu/usdc") }), state({ lastStrap: "green" }), logOf({ recentTexts: [{ at: T13 - DAY, text: redOld, key: "strap:green>red:1", type: "strap" }] }), SHAPED);
+    assert.equal(red.pick?.kind, "strap", red.notes.join("; "));
+    assert.ok(guards.similarity(redOld, red.pick!.text) >= 0.75, `the two reds share most of their words by construction: ${guards.similarity(redOld, red.pick!.text).toFixed(2)}`);
+    const greenOld = textOf(factsAt(T13 - 3 * DAY, { strap: strapOf("green", 4) }), state({ lastStrap: "red" }));
+    const green = tick.planTick(factsAt(T13, { strap: strapOf("green", 4) }), state({ lastStrap: "red" }), logOf({ recentTexts: [{ at: T13 - 3 * DAY, text: greenOld, key: "strap:red>green:1", type: "strap" }] }), SHAPED);
+    assert.equal(green.pick?.kind, "strap", green.notes.join("; "));
+    assert.equal(guards.similarity(greenOld, green.pick!.text), 1, "the same state three days apart is the same text");
+    assert.equal(green.nextState.lastStrap, "green");
+    // a loss is always said
     const lossText = tick.closeText(close("L-old", "P", T13 - DAY, -0.0412), "paper");
-    const q = tick.planTick(factsAt(T13, { events: [close("L-new", "P", T13 - 10 * MIN, -0.0412)] }), state(), logOf({ recentTexts: [{ at: T13 - DAY, text: lossText, key: "close:L-old", type: "close" }] }), OPTS);
-    assert.equal(q.pick?.key, "close:L-new", "a loss is always said");
-    // a candidate is never compared with its own key's earlier record (a retried draft)
-    const same = tick.planTick(f, state(), logOf({ recentTexts: [{ at: T13 - HOUR, text: tick.openText(f.events[0], "paper"), key: "open:A-new", type: "open" }] }), OPTS);
-    assert.equal(same.pick?.key, "open:A-new");
-    // a strap dropped as a repeat: the memory moves on
-    const s = tick.planTick(factsAt(T13, { strap: strapOf("red") }), state({ lastStrap: "green" }), logOf({ recentTexts: [{ at: T13 - 2 * DAY, text: tick.paperize(tick.planTick(factsAt(T13 - 2 * DAY, { strap: strapOf("red") }), state({ lastStrap: "green" }), logOf(), OPTS).pick!.text, true), key: "strap:old", type: "strap" }] }), OPTS);
-    assert.equal(s.pick, null);
-    assert.equal(s.nextState.lastStrap, "red");
+    const l = tick.planTick(factsAt(T13, { events: [close("L-new", "P", T13 - 10 * MIN, -0.0412)] }), state(), logOf({ recentTexts: [{ at: T13 - DAY, text: lossText, key: "close:L-old", type: "close" }] }), OPTS);
+    assert.equal(l.pick?.key, "close:L-new");
+    // the milestone keeps the guard: a milestone reworded from a non-milestone post of the week is a note with its key unspent
+    const m = factsAt(T13, { milestone: { n: 4, step: 10, firstAt: T13 - 12 * HOUR, netSol: 0.9534 } });
+    const text = tick.planTick(m, state(), logOf(), OPTS).pick!.text;
+    const filtered = tick.planTick(m, state(), logOf({ recentTexts: [{ at: T13 - 2 * DAY, text, key: "strap:x", type: "strap" }] }), OPTS);
+    assert.equal(filtered.pick, null);
+    assert.ok(filtered.notes.some((x) => /^repeat: milestone milestone:paper:40 has 1\.00 overlap with the strap of 20 sep; the key stays unspent/.test(x)), filtered.notes.join("; "));
+    assert.equal(filtered.nextState.milestoneN, 3, "the gate did not move");
+  });
+  await test("two losing lessons a day apart in different pools both go (the same three-part shape, different seats); a lesson with the same fee figure as another seat's close goes; one restating the milestone's net is filtered", () => {
+    const SHAPED = { ...OPTS, shape: craft.shapePost };
+    const y = at("2026-09-21T18:00:00Z");
+    const now = y + DAY;
+    const ctx = { proposed: null, decided: "CLOSE_POSITION", directive: "STOP", source: "engine", binsOut: 14 };
+    // 21 sep is a monday: its daily and stack have gone, so the lesson is the pick
+    const first = tick.planTick(factsAt(y, { lessons: [lessonOf("N1", y - 3 * HOUR, -0.0412, 0.0087, { label: "NVDAx/USDC", endReason: "stop", minutes: 312, inRangePct: 80 })], closes: { N1: ctx } }), state({ lastLessonDay: null, lastDailyDay: "2026-09-21", lastStackDay: "2026-09-21" }), logOf(), SHAPED);
+    assert.equal(first.pick?.key, "lesson:N1", first.notes.join("; "));
+    const second = tick.planTick(factsAt(now, { lessons: [lessonOf("M1", now - 3 * HOUR, -0.0203, 0.0121, { label: "MU/USDC", endReason: "stop", minutes: 198, inRangePct: 75 })], closes: { M1: ctx } }), state({ lastLessonDay: null }), logOf({ recentTexts: [{ at: y, text: first.pick!.text, key: "lesson:N1", type: "lesson" }] }), SHAPED);
+    assert.equal(second.pick?.key, "lesson:M1", second.notes.join("; "));
+    assert.ok(guards.similarity(first.pick!.text, second.pick!.text) >= 0.75, `the two lessons share most of their words by construction: ${guards.similarity(first.pick!.text, second.pick!.text).toFixed(2)}`);
+    // seat B closed today with fees 0.0100 and its close was posted; seat D's lesson also carries 0.0100: a coincidence, not a repeat
+    const bClose = { at: now - 5 * HOUR, text: tick.closeText({ ...close("B1", "PB", now - 5 * HOUR, 0.05, "pltrx/sol"), feesSol: 0.01 }, "paper"), key: "close:B1", type: "close" };
+    const d = tick.planTick(factsAt(now, { lessons: [lessonOf("D1", now - 3 * HOUR, -0.2, 0.01, { label: "SKHY/USDC", endReason: "stop" })] }), state({ lastLessonDay: null }), logOf({ recentTexts: [bClose] }), SHAPED);
+    assert.equal(d.pick?.key, "lesson:D1", d.notes.join("; "));
+    assert.match(d.pick!.text, /fees 0\.0100 sol/);
+    // the milestone's net restated by a lesson is still the repeat it was
+    const milestone = { at: now - 2 * HOUR, text: tick.paperize(tick.milestoneText({ n: 3, step: 10, firstAt: now - 12 * HOUR, netSol: -0.2 }, "paper"), true), key: "milestone:paper:30", type: "milestone" };
+    const r = tick.planTick(factsAt(now, { lessons: [lessonOf("D1", now - 3 * HOUR, -0.2, 0.01, { label: "SKHY/USDC", endReason: "stop" })] }), state({ lastLessonDay: null }), logOf({ recentTexts: [milestone] }), SHAPED);
+    assert.equal(r.pick, null);
+    assert.ok(r.notes.some((x) => /^repeat: lesson lesson:D1 restates 0\.2000 from the milestone of 22 sep/.test(x)), r.notes.join("; "));
   });
   await test("repeatedStat: the same 4-decimal figure; a lesson restating the milestone figure is filtered and the next unseen seat goes; its own close is not a repeat", () => {
     assert.deepEqual([...guards.statTokens("net +0.9534 sol, fees 1.0710 sol, 5 bands, 0.0000, 12.5%")], ["0.9534", "1.0710"]);
@@ -359,8 +435,9 @@ async function main(): Promise<void> {
       row(now - 30 * MIN, "close", { pool: "POOLX", position: "paper-X-1", solDelta: 9.9588, feeSol: 0.0087, entryValueSol: 10, rentSol: 0.05 }),
     ];
     fs.writeFileSync(path.join(d, "ledger.jsonl"), rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
-    const entry = (ts: number, extra: object) => ({ id: `e${ts}`, ts: new Date(ts).toISOString(), cycle: 1, mode: "paper", pool: { address: "POOLX", label: "GMEx/SOL", price: 1.005 }, positions: [], proposal: { action: "HOLD" }, decision: { action: "HOLD" }, allowed: true, execution: { mode: "none", ok: true }, ...extra });
-    const closing = entry(now - 30 * MIN, { positions: [{ address: "paper-X-1", inRange: false, binsFromRange: 14 }], proposal: { action: "HOLD" }, decision: { action: "CLOSE_POSITION" }, engine: { directive: "STOP" }, execution: { mode: "paper", ok: true, closed: "paper-X-1" } });
+    const entry = (ts: number, extra: object) => ({ id: `e${ts}`, ts: new Date(ts).toISOString(), cycle: 1, mode: "paper", pool: { address: "POOLX", label: "GMEx/SOL", price: 1.005 }, positions: [], llm: { source: "policy", model: "desk-policy", note: "Desk policy (hold): nothing to do." }, proposal: { action: "HOLD" }, decision: { action: "HOLD" }, allowed: true, execution: { mode: "none", ok: true }, ...extra });
+    // a STOP cycle as src/index.ts writes it: the model is not called, the proposal is the engine's own CLOSE_POSITION with llm.source "engine"
+    const closing = entry(now - 30 * MIN, { positions: [{ address: "paper-X-1", inRange: false, binsFromRange: 14 }], llm: { source: "engine", model: "engine", note: "STOP: 14 bins out" }, proposal: { action: "CLOSE_POSITION" }, decision: { action: "CLOSE_POSITION" }, engine: { directive: "STOP" }, execution: { mode: "paper", ok: true, closed: "paper-X-1" } });
     fs.writeFileSync(path.join(d, "decisions.jsonl"), [JSON.stringify(closing), JSON.stringify(entry(markAt, {}))].join("\n") + "\n");
     fs.writeFileSync(path.join(d, "lessons.jsonl"), JSON.stringify(lessonOf("paper-X-1", now - 30 * MIN, -0.0412, 0.0087, { label: "GMEx/SOL", endReason: "stop", tokensLeftSol: 0.0123, inRangePct: 62 })) + "\n");
     return d;
@@ -471,6 +548,16 @@ async function main(): Promise<void> {
     assert.equal(p.nextState.milestoneN, 4);
     assert.equal(facts[0].milestone?.bestDay?.day, "2026-09-21");
     assert.equal(facts[0].milestone?.lastDay?.day, "2026-09-21", "the most recent complete day");
+    // a milestone that fires early in a strong day: today's partial day is neither the best day nor the most recent one
+    const strong = factsAt(T13, { milestone: { n: 4, step: 10, firstAt: T13 - 8 * DAY, netSol: 1.35 }, days: [...days.slice(0, 2), { day: "2026-09-22", feesSol: 9.9, netSol: 5, closed: 3 }] });
+    const q = tick.planTick(strong, state({ milestoneN: 3 }), logOf(), { ...OPTS, shape });
+    assert.equal(q.pick?.key, "milestone:paper:40");
+    assert.equal(facts[facts.length - 1].milestone?.bestDay?.day, "2026-09-21");
+    assert.equal(facts[facts.length - 1].milestone?.lastDay?.day, "2026-09-21");
+    const onlyToday = factsAt(T13, { milestone: { n: 4, step: 10, firstAt: T13 - HOUR, netSol: 1.35 }, days: [{ day: "2026-09-22", feesSol: 9.9, netSol: 5, closed: 3 }] });
+    tick.planTick(onlyToday, state({ milestoneN: 3 }), logOf(), { ...OPTS, shape });
+    assert.equal(facts[facts.length - 1].milestone?.bestDay, null, "no completed day: no days line");
+    assert.equal(facts[facts.length - 1].milestone?.lastDay, null);
     // before TALK_DAY_START_UTC the milestone waits
     assert.equal(tick.planTick({ ...at4, now: at("2026-09-22T11:00:00Z") }, state({ milestoneN: 3 }), logOf(), OPTS).pick, null);
   });
@@ -501,7 +588,7 @@ async function main(): Promise<void> {
     const f = factsAt(now, {
       events: [close("A-1", "P", now - 10 * MIN, -0.0412)],
       lessons: [lessonOf("A-1", now - 10 * MIN, -0.0412, 0.0087)],
-      closes: { "A-1": { proposed: "HOLD", decided: "CLOSE_POSITION", directive: "STOP", binsOut: 14 } },
+      closes: { "A-1": { proposed: "HOLD", decided: "CLOSE_POSITION", directive: "STOP", source: "llm", binsOut: 14 } },
       recent: [{ day: "2026-09-21", feesSol: 0.0412, netSol: 0.03, closed: 2 }],
       dayN: 9,
     });
@@ -537,7 +624,33 @@ async function main(): Promise<void> {
     // no hook: the template
     const t = tick.planTick(f, state(), logOf(), OPTS);
     assert.match(t.pick!.text, /^closed my band on nvdax\/sol/);
+    // a hook's text over 280 (with the paper line counted) is a note and the template goes: a refused text would spend the key
+    const long = tick.planTick(f, state({ lastDailyDay: null }), logOf(), { ...OPTS, shape: (k) => (k === "daily" ? `day 9: ${"fees 0.0087 sol, ".repeat(18)}nothing else.` : null) });
+    assert.equal(long.pick?.kind, "daily");
+    assert.match(long.pick!.text, /^daily numbers, last 24h, paper book:/);
+    assert.ok(long.notes.some((x) => /^craft: daily daily:2026-09-22 ran \d+ characters, over 280; the template goes/.test(x)), long.notes.join("; "));
     // a hook's text still goes through the vet in the runner: a marker is refused, not posted
+  });
+  await test("the daily is never refused on length: the craft's odd-parity card on an extreme day with a yesterday row goes through planTick and the runner under 280", async () => {
+    // 23 sep is odd; the week before ends yesterday; today is the thinnest day of it, so both parts of the comparison want in
+    const now = at("2026-09-23T14:00:00Z");
+    const recent = [16, 17, 18, 19, 20, 21, 22].map((d, i) => ({ day: `2026-09-${d}`, feesSol: [0.21, 0.33, 0.12, 0.5, 0.09, 0.7, 0.0412][i], netSol: 0.01, closed: 2 }));
+    const fig = stackFigures({ rows: [], source: "paper", since: now - DAY, until: now });
+    const f = factsAt(now, { recent, dayN: 9, daily: { figures: { ...fig, feesRealizedSol: 0.0087, netRealizedSol: -0.0301, closedBands: 3, closedUp: 2, closedDown: 1, worstCloseSol: -0.0412 }, opened: 2, bookSol: 312.3456, openBands: 4 } });
+    const p = tick.planTick(f, state({ lastDailyDay: null }), logOf(), { ...OPTS, shape: craft.shapePost });
+    assert.equal(p.pick?.kind, "daily", p.notes.join("; "));
+    assert.ok(tick.loopLength(p.pick!.text) <= 280, `${tick.loopLength(p.pick!.text)}: ${p.pick!.text}`);
+    assert.deepEqual(vet(p.pick!.text), []);
+    assert.match(p.pick!.text, /^day 9, paper book, net -0\.0301 sol on the day\./);
+    assert.match(p.pick!.text, /book marked at 312\.3456 sol, 4 bands open/);
+    assert.ok(!p.notes.some((x) => /^craft/.test(x)), "the craft's own fit did it, not the fallback");
+    // the runner on the same odd day, with the real craft: drafted, not refused-lint
+    const data = makeData(now);
+    const r = await tick.runTick({ env: envOf(data, dir("state")), paperDesk: true, now });
+    assert.equal(r.status, "drafted", r.detail);
+    assert.equal(r.pick?.kind, "daily");
+    assert.ok(tick.loopLength(r.pick!.text) <= 280);
+    assert.match(r.pick!.text, /after \d\.\d{4} yesterday|thinner|fatter|day 4/);
   });
   await test("the runner passes the hook through to the plan and vets its text (a marker is refused, never posted)", async () => {
     const T15 = at("2026-09-22T15:00:00Z");
@@ -588,7 +701,14 @@ async function main(): Promise<void> {
     assert.deepEqual(f.recent.map((r) => r.day), ["2026-09-19", "2026-09-20", "2026-09-21", "2026-09-22"]);
     assert.equal(f.recent[3].closed, 1);
     assert.ok(Math.abs(f.recent[1].feesSol - 0.3) < 1e-9);
-    assert.deepEqual(f.closes["paper-X-1"], { proposed: "HOLD", decided: "CLOSE_POSITION", directive: "STOP", binsOut: 14 });
+    assert.deepEqual(f.closes["paper-X-1"], { proposed: null, decided: "CLOSE_POSITION", directive: "STOP", source: "engine", binsOut: 14 }, "a STOP cycle: the engine's own proposal is not his");
+    // a desk-policy close keeps its proposal, with the source the craft words it by
+    const policy = { id: "p", ts: new Date(T15).toISOString(), cycle: 2, mode: "paper", pool: { address: "POOLY", label: "MU/USDC", price: 1 }, positions: [{ address: "paper-Y-1", inRange: true, binsFromRange: 0 }], llm: { source: "policy", model: "desk-policy" }, proposal: { action: "CLOSE_POSITION" }, decision: { action: "CLOSE_POSITION" }, allowed: true, execution: { mode: "paper", ok: true, closed: "paper-Y-1" } } as never;
+    assert.deepEqual(tick.closeContextsOf([policy])["paper-Y-1"], { proposed: "CLOSE_POSITION", decided: "CLOSE_POSITION", directive: null, source: "policy", binsOut: 0 });
+    // the craft, fed that context, never says he proposed the engine's close
+    const shaped = craft.shapePost("close", { source: "paper", paper: true, now: T15, seed: "close:paper-X-1", event: { ...f.events.find((e) => e.key === "close:paper-X-1")!, ...f.closes["paper-X-1"], openBands: 1 } })!;
+    assert.match(shaped, /^the stop closed it\.$/m);
+    assert.ok(!/proposed/.test(shaped), shaped);
     assert.equal(tick.dayNumberOf(at("2026-09-14T22:42:15Z"), at("2026-09-22T14:00:00Z")), 9);
     assert.deepEqual(tick.closeContextsOf([]), {});
     assert.deepEqual(tick.dayFiguresOf([], "paper", T15 - DAY, T15), []);
