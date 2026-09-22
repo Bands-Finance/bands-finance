@@ -396,6 +396,20 @@ prints every row as agreeing, and test-web-model pins the shipped file to these 
   labelled "Fees earned ... Fees, not profit."
 - Start 19.79, peak 23.50, low 19.29, 39 hours: agree.
 
+## The roadmap (Zach, 22 Sep, evening)
+
+"Step one will just be mr bands paper trading and fine tuning his strategy in a couple days once he starts earning
+money onchain he will progress to building his own platform bands.finance."
+
+1. **Paper, tuning (now, a couple of days).** He trades on paper and his strategy is tuned on honest numbers (fees
+   from his own bins, swap impact charged; commits db33247, 00dc278, ed78ef3). The 22 Sep test rounds name what to
+   tune: the habits that lose money (re-lays that skip the entry checks, no sit-out after a stop, the full seat in a
+   crash, the bleed re-laid every hour) and the two safety checks that never fire.
+2. **On chain, earning.** When the paper book earns after every cost, he trades real money, small first. Before
+   that, the real-money path fixes land (transfer-fee tokens, priority fees, a landed-but-timed-out transaction,
+   the rent refund). This moves the earlier "no live money through 8 Oct" decision; the date is Zach's call.
+3. **Then bands.finance.** Once he earns on chain, he builds his platform.
+
 ## Decisions (Zach, Tue 22 Sep)
 
 1. **The copycat token: not his, and left as is.** No report to ClawPump or pump.fun, and no email to ClawPump at
