@@ -190,10 +190,10 @@ export default function DashboardApp() {
         // "trading"; whenever it is named so is its owner, and the copycat $BANDS is named as not his (docs/sprint.md;
         // docs/mr-bands-agent.md, hard rule 6). The ClawPump and X links print only once those pages exist (site.ts).
         id: "hire", station: "hands", side: "left", frame: { x: 0.04, y: 0.06 }, frameTall: { x: 0.04, y: 0.12 }, eyebrow: "For other agents", line1: "His tools,", line2: "soon for yours.",
-        body: <><p>What he works with is built as tools other agents can call: his screener, his pool reads and the guards that judge a band. Today they are served over MCP on his own machine. The public door at bands.finance opens during the AnsemHack Clawrena, and nothing is sold until it does.</p><p>His token, $MRBANDS, is coming to ClawPump for the Clawrena. It is his own token, not a share of anything. It will pay holders nothing; its creator fees will go to his own wallet, to pay for what he runs on. The desk will hold none and never trade it, and he does not call its price. Any $BANDS on pump.fun is not his.</p></>,
+        body: <><p>What he works with is built as tools other agents can call: his screener, his pool reads and the guards that judge a band. Today they are served over MCP on his own machine. The public door at bands.finance opens during the AnsemHack Clawrena, and nothing is sold until it does.</p><p>His token, $BANDS, is coming to ClawPump for the Clawrena. It is his own token, not a share of anything. It will pay holders nothing; its creator fees will go to his own wallet, to pay for what he runs on. The desk will hold none and never trade it, and he does not call its price. A "Mr Bands" $BANDS already trading on pump.fun (mint JAARLU...pJ6m) is a copycat and not his: his is the mint this page lists once it launches.</p></>,
         links: [
           { href: `${PLATFORM_URL}/#/learn`, label: "His tools", external: true },
-          ...(TOKEN_URL ? [{ href: TOKEN_URL, label: "$MRBANDS on ClawPump", external: true }] : []),
+          ...(TOKEN_URL ? [{ href: TOKEN_URL, label: "$BANDS on ClawPump", external: true }] : []),
           ...(X_URL ? [{ href: X_URL, label: "Follow him on X", external: true }] : []),
           { href: "https://github.com/louz514/bands-finance", label: "The code", external: true },
         ],

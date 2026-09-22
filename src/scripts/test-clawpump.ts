@@ -73,7 +73,7 @@ async function main(): Promise<void> {
     }
   });
 
-  await test("ops/live.env: the $MRBANDS spec decided on 22 Sep parses (SOL pair, no dev buy, no creator fee, name Mr Bands)", () => {
+  await test("ops/live.env: the $BANDS spec decided on 22 Sep parses (SOL pair, no dev buy, no creator fee, name Mr Bands, ticker BANDS)", () => {
     const env: Record<string, string> = {};
     for (const line of readFileSync(path.resolve(__dirname, "../../ops/live.env"), "utf8").split("\n")) {
       const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
@@ -81,7 +81,8 @@ async function main(): Promise<void> {
     }
     const t = tokenSpec(env);
     assert.equal(t.name, "Mr Bands");
-    assert.equal(t.symbol, "MRBANDS");
+    assert.equal(t.symbol, "BANDS");
+    assert.match(t.description ?? env.TOKEN_DESCRIPTION ?? "", /official mint is the one listed on mrbands\.finance/, "the ticker is shared with a copycat, so the metadata says where to check the mint");
     assert.equal(isSolPair(t.pumpPair), true);
     assert.equal(t.devBuySol, 0);
     assert.equal(t.creatorFeeBps, null);
