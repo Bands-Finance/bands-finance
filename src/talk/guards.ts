@@ -16,8 +16,8 @@
  *                             (a lesson repeating the milestone's net): a reader sees one talking point twice. Never
  *                             against a close, an open or a strap: a fee figure two seats share is a coincidence
  *   markersIn / selfEcho      a draft's own metadata ("**REPLY**", "Reasoning:") on the timeline, and an answer
- *                             returned twice inside one text: 37 of Merd's reply and skip drafts leaked before his
- *                             cleanReply existed. Insurance for the day a model rewrite exists here.
+ *                             returned twice inside one text: 24 of Merd's reply and skip drafts leaked (20 after
+ *                             his cleanReply existed). Model replies exist here now: replyGuards.ts vetReply runs both.
  *   jitterMin                 a deterministic 0..N minute jitter per event key: 78% of Merd's same-day gaps sat
  *                             within 230-250 min because the floor equalled the tick, the cron made visible
  *   eventCaps                 the day's event slots (close, open, strap, milestone share TALK_EVENT_POSTS_PER_DAY),

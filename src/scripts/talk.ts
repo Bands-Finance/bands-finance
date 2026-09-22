@@ -15,6 +15,12 @@
  *   npx tsx src/scripts/talk.ts tick [--force strap|daily|lesson|stack]   the posting loop, one tick (src/talk/tick.ts); --force only previews
  *   npx tsx src/scripts/talk.ts check                                     which account the X keys sign in as (a read)
  *   npx tsx src/scripts/talk.ts announce <intro|entry|token|follow> [--preview]
+ *   npx tsx src/scripts/talk.ts engage                                    one pass of the engage loop (src/talk/engage.ts)
+ *   npx tsx src/scripts/talk.ts engage status                             free: mode, cursor, pending, today's counts, hold
+ *   npx tsx src/scripts/talk.ts engage preview <mentions.json> [--no-model]   screen, brain and vet on a saved X response;
+ *                                                                         no X read and no post, ever
+ *   npx tsx src/scripts/talk.ts engage resume                             clears replies-off and brain-down
+ *   npx tsx src/scripts/talk.ts engage optouts                            the accounts that asked him to stop
  *
  * `post` goes through src/talk/x.ts: while X is dormant it prints the draft and why it was not posted.
  */
@@ -29,6 +35,9 @@ import { strapOf, windowLabel, fmtAge } from "../talk/strap";
 import { getEngagement, postTweet, readPosts, verifyCredentials } from "../talk/x";
 import { FORCE_KINDS, runTick, type ForceKind } from "../talk/tick";
 import { runAnnounce } from "../talk/announce-cli";
+import { engageResume, engageStatus, previewMentions, readOptOuts, runEngagePass } from "../talk/engage";
+import { mentionsFromResponse } from "../talk/x";
+import fs from "node:fs";
 
 const HOUR = 3600e3;
 const out = (s = "") => console.log(s);
@@ -216,8 +225,41 @@ async function main(): Promise<number> {
     }
     case "announce":
       return runAnnounce(args, t, now, out);
+    case "engage": {
+      const sub = args[0] ?? "";
+      if (sub === "") {
+        const r = await runEngagePass({ env: process.env, now });
+        // under launchd stdout is engage.log, which the pass already wrote (a dormant line once an hour): print only by hand
+        if (process.stdout.isTTY) out(`${new Date(now).toISOString()} engage ${r.status}: ${r.detail}`);
+        return r.status === "error" ? 1 : 0;
+      }
+      if (sub === "status") {
+        for (const line of engageStatus({ env: process.env, now })) out(line);
+        return 0;
+      }
+      if (sub === "resume") {
+        out(engageResume({ env: process.env, now }));
+        return 0;
+      }
+      if (sub === "optouts") {
+        const o = readOptOuts(t.statePath);
+        out(`${o.handles.length} opt-out(s)${o.handles.length ? `: ${o.handles.map((h) => `@${h}`).join(", ")}` : ""}`);
+        return 0;
+      }
+      if (sub === "preview" && args[1]) {
+        const mentions = mentionsFromResponse(JSON.parse(fs.readFileSync(args[1], "utf8")));
+        const rows = await previewMentions(mentions, { env: process.env, now, model: !args.includes("--no-model") });
+        for (const r of rows) {
+          out(`${r.id}  @${r.author}  ${r.outcome}`);
+          if (r.text !== undefined) out(`  | ${r.text}`);
+        }
+        return 0;
+      }
+      out("usage: engage | engage status | engage preview <mentions.json> [--no-model] | engage resume | engage optouts");
+      return 2;
+    }
     default:
-      out("usage: talk.ts strap | draft <strap|rebalance|stack|chop|lesson> [topic] | lint \"<text>\" | post <type> [topic] | proposals | approve <id> --operator <handle> | veto <id> --operator <handle> --reason \"<r>\" | use <bit-id> <landed|flopped> | reflect | drift | tick [--force strap|daily|lesson|stack] | check | announce <intro|entry|token|follow> [--preview]");
+      out("usage: talk.ts strap | draft <strap|rebalance|stack|chop|lesson> [topic] | lint \"<text>\" | post <type> [topic] | proposals | approve <id> --operator <handle> | veto <id> --operator <handle> --reason \"<r>\" | use <bit-id> <landed|flopped> | reflect | drift | tick [--force strap|daily|lesson|stack] | check | announce <intro|entry|token|follow> [--preview] | engage [status | preview <file> [--no-model] | resume | optouts]");
       return cmd ? 2 : 0;
   }
 }

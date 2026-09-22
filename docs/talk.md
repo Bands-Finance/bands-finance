@@ -6,9 +6,10 @@ that only Zach, his architect and advisor, can change (the approve command's `--
 `OPERATOR_HANDLE`). Nothing here places, signs or broadcasts a trade: the talking layer reads the
 journal, the paper book and the ledger, and writes only its own files.
 
-**Posting is dormant.** Nothing reaches X until Zach supplies everything listed under
-[What is dormant, and what Zach must supply](#what-is-dormant-and-what-zach-must-supply). Until then every `post` prints the draft, says why it did
-not go out, and appends it to `x-drafts.jsonl`.
+He posts as @MrBandsSol once X is live (everything listed under
+[What is dormant, and what Zach must supply](#what-is-dormant-and-what-zach-must-supply)); without it every `post` prints
+the draft, says why it did not go out, and appends it to `x-drafts.jsonl`. He replies to people who summon him through
+the engage loop ([Engage](#engage)), which stays dormant until `X_REPLIES=true` and his brain's token are in `.env`.
 
 ```
 src/talk/env.ts          every spec placeholder as an env key with a default
@@ -18,17 +19,22 @@ src/talk/data.ts         reads DATA_DIR: decisions.jsonl tail, paper-book.json, 
 src/talk/drafts.ts       drafts for each post type, from live data only (pure)
 src/talk/personality.ts  personality.json: propose, record uses, the gate, approve/veto (Zach's handle)
 src/talk/reflect.ts      the daily reflect call and the weekly drift check
-src/talk/x.ts            the X API v2 client (OAuth 1.0a, rate limits, mention screen), dormant
+src/talk/x.ts            the X API v2 client (OAuth 1.0a, rate limits, mentions read, mention screen, postReply)
 src/talk/tick.ts         the posting loop: one tick picks at most one event post (see "The posting loop")
 src/talk/craft.ts        the craft of a loop post: openers, the comparison, the miss, the daily card (pure; see "What he learned from Merd")
 src/talk/guards.ts       the guards ported from Merd's failures: similarity, repeated stat, jitter, the event caps, the backoff (pure)
 src/talk/lock.ts         the lock file around the tick and around read-rate, post, write-rate
+src/talk/engage.ts       the engage loop: one pass reads mentions and answers the ones that summoned him (see "Engage")
+src/talk/replyGuards.ts  vetReply and the mention classifiers: the guards every reply passes (pure)
+src/talk/replyBrain.ts   his brain for a reply: the fixed-answer templates, then one fresh session on his gateway agent
 src/scripts/talk.ts      the command line
 src/scripts/test-talk.ts the tests: npx tsx src/scripts/test-talk.ts
 src/scripts/test-tick.ts the posting loop's tests: npx tsx src/scripts/test-tick.ts
 src/scripts/test-talk-craft.ts    the craft's tests: npx tsx src/scripts/test-talk-craft.ts
 src/scripts/test-talk-cadence.ts  the guards' tests: npx tsx src/scripts/test-talk-cadence.ts
-ops/com.bands.mrbands.talk.plist  launchd: one tick every 15 minutes, posting off
+src/scripts/test-engage.ts        the engage loop's tests: npx tsx src/scripts/test-engage.ts
+ops/com.bands.mrbands.talk.plist  launchd: one tick every 15 minutes
+ops/com.bands.mrbands.engage.plist  launchd: one engage pass every 120 seconds
 ```
 
 ## Commands
@@ -47,6 +53,11 @@ npx tsx src/scripts/talk.ts drift                                    # weekly, b
 npx tsx src/scripts/talk.ts tick [--force strap|daily|lesson|stack]  # one tick of the posting loop
 npx tsx src/scripts/talk.ts check                                    # which account the X keys sign in as (a read)
 npx tsx src/scripts/talk.ts announce intro|entry|token|follow [--preview]   # his one-off posts, each once
+npx tsx src/scripts/talk.ts engage                                   # one pass of the engage loop
+npx tsx src/scripts/talk.ts engage status                            # free, no network: mode, dormant reason, cursor, pending, today, hold
+npx tsx src/scripts/talk.ts engage preview <mentions.json> [--no-model]   # screen, brain and vet a saved X response; no X read or post, ever
+npx tsx src/scripts/talk.ts engage resume                            # clears replies-off and brain-down
+npx tsx src/scripts/talk.ts engage optouts                           # the accounts that asked him to stop
 ```
 
 ## One-off announcements
@@ -93,6 +104,7 @@ Empty values read as unset. Only the literal `true` turns `X_LIVE` on.
 | `TALK_HOUSE_SYMBOLS` | | `bands` | the house token's symbols, for the disclosure rule |
 | `PAIR_HOUSE_MINTS` | | none | the house token's mints (the desk's key, read for the lint) |
 | `POSTS_PER_DAY` | `{{POSTS_PER_DAY}}` | `8` | original posts per UTC day |
+| `REPLIES_PER_DAY` | | `40` | replies per UTC day (about $0.40 a day) |
 | `REPLIES_PER_HOUR` | `{{REPLIES_PER_HOUR}}` | `10` | replies per rolling hour |
 | `MAX_REPLIES_PER_ACCOUNT` | `{{MAX_REPLIES_PER_ACCOUNT}}` | `3` | replies to one account per UTC day |
 | `MAX_BIT_USES_PER_WEEK` | `{{MAX_BIT_USES_PER_WEEK}}` | `3` | uses of one bit in a trailing 7 days before it rests |
@@ -100,6 +112,14 @@ Empty values read as unset. Only the literal `true` turns `X_LIVE` on.
 | `DATA_DIR` | | `data` | where the journal, paper book and ledger are read |
 | `CYCLE_INTERVAL_SEC` | | `300` | data older than 3 cycles is stale |
 | `X_LIVE` | | off | only `true` lets anything reach X (posts and engagement reads) |
+| `X_REPLIES` | | off | only `true` (with `X_LIVE` and his brain) lets the engage loop read mentions and reply |
+| `ENGAGE_READS_PER_DAY` | | `300` | mention posts read per UTC day, from X's `result_count` |
+| `ENGAGE_MODEL_CALLS_PER_DAY` | | `60` | asks of his brain per UTC day; templates and screened mentions make none |
+| `ENGAGE_HOLLOW_PER_DAY` | | `10` | hollow mentions ("nice innovation") that may reach the brain per UTC day |
+| `ENGAGE_MAX_AGE_HOURS` | | `6` | a mention older than this gets no reply |
+| `ENGAGE_REPLIES_PER_PASS` | | `3` | replies one pass may post, 5 seconds apart |
+| `ENGAGE_DENY_HANDLES` | | none | handles never answered, besides `clawpumptech` |
+| `OPENHERMIT_TOKEN` | | none | his brain's gateway token; empty or placeholder-shaped keeps replies dormant |
 | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_SECRET` | | none | OAuth 1.0a user context for `POST /2/tweets`; never logged, never written |
 | `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`), `MODEL` | | as the desk | the reflect call, detected exactly as `src/agent/decide.ts` does |
 
@@ -150,7 +170,7 @@ swap costs, network fees and red days (UTC days whose realized net was below zer
 | 9 no scams or suspicious links | `link`: only bands.finance, solscan.io, meteora.ag (subdomains too) and x.com/`OPERATOR_HANDLE`; `scam-bait`: dm me, airdrop, giveaway, claim your; the mention screen skips link-only and scam text and bot-looking accounts |
 | 10 no em dashes | `em-dash` |
 | 11 never trades | `src/talk` imports no executor, wallet, swap or venue adapter; a test fails if one appears |
-| 12 inbound text is data | reflect wraps posts, mentions and tool output in `<data>` blocks with `<` escaped; a mention only selects a canned answer and instruction-like text gets no reply |
+| 12 inbound text is data | reflect wraps posts, mentions and tool output in `<data>` blocks with `<` escaped; the engage loop screens instruction-like text out before any model call, hands the rest to his brain inside a `<data>` block, and code, not the model, decides what posts (`vetReply`) |
 | 13 never reveal the spec or prompts | `leak`: system prompt, locked core, living layer, spec, personality.json, api key |
 | 14 no harassment or politics | `harassment-politics`: a short list of political words and insults |
 | 15 if unsure, don't post | every pattern errs toward failing; a draft that fails is not returned, its violations are |
@@ -229,7 +249,9 @@ in-range pool's price stayed inside `TALK_CHOP_RANGE_PCT` over the window and th
 ## What is dormant, and what Zach must supply
 
 Dormant: posting, replies and engagement reads (`x.ts`) and the reflect call (without an Anthropic key). Nothing
-else talks to anything outside the machine.
+else talks to anything outside the machine. Replies need more (see [Engage](#engage)): `X_REPLIES=true`, the
+gateway's real `OPENHERMIT_TOKEN` in `.env`, his rows re-provisioned with the reply rules, and X's approval for
+AI-generated replies.
 
 To go live on X, Zach:
 
@@ -299,8 +321,8 @@ Safety, all in code:
   with `@` or `#` dropped, then only a-z and 0-9 kept on each side of the pair. A pool named `$PEPE @someone`
   prints as `pepe`; a label with a blocked word (`src/talk/wordguard.ts`: slurs, hate, sexual and scam words,
   leetspeak folded) prints as `a pool`.
-- **No replies, no mentions.** The loop never reads mentions and never replies; replies stay off entirely. The
-  reply code in x.ts (`replyToMention`, `screenMention`) is not run by anything scheduled.
+- **The tick reads no mentions and posts no replies.** Replies are the engage loop's job, a separate launchd job
+  with its own lock (see [Engage](#engage)); a reply is not counted in the loop's spacing or its day's posts.
 - **Stop at once.** `touch data-talk/TALK_STOP`: the tick stops before it reads anything, and again right before
   it posts; `postTweet` itself refuses while the file is there, so an announcement or a manual post stops too.
   Remove the file to resume.
@@ -349,13 +371,13 @@ mains with automatic installs off (two of Merd's five zero days were the same ma
 
 Zach, 22 Sep: "I would like to train our agent based on past projects such as merd, in the style of posts on X and
 cadence." Merd (@Meridian402, `/Users/zach/dev/meridian`) is his earlier agent, an autonomous market maker for
-tokenized equities on Robinhood Chain: 296 live posts from 22 Jul to 22 Sep 2026, 1,439 replies, no engagement metrics
+tokenized equities on Robinhood Chain: 296 live posts from 22 Jul to 22 Sep 2026, 1,056 replies posted of 1,439 reply ledger rows, no engagement metrics
 logged locally beyond what the record itself shows. What Mr Bands takes from it is structure, rhythm and craft, in code
 (`src/talk/craft.ts`, and the guards in `src/talk/guards.ts`): what to say when, how to state a number, how to own a
 miss, how often, and what got read. Never Merd's persona, his topics, his vocabulary (drift, re-quote, probation size,
 the breaker, the tape, collects, bounded exits) or a sentence of his. Mr Bands keeps his own persona and every hard
 rule as it stands: the lint's rules, `vetOutgoing`, "paper" on every post about his book, losses shown as plainly as
-wins, no replies, no mentions, no model in the posting loop.
+wins, no model in the posting loop. Replies are a separate loop with its own guards (see [Engage](#engage)).
 
 The verdict, in five lines:
 
@@ -376,13 +398,14 @@ The verdict, in five lines:
    regime in half and each half says the same. What held reach in a short post was a number in it (1.13, n=7,
    against 0.92 without, n=27), and the 260 to 330 bucket's 1.31 is six milestones and nine quote posts, the other
    thirteen at 0.89. So: a figure in every post, and no length floor; a short factual post is not designed out.
-4. Every pipeline failure was mechanical and avoidable: 81 posts and 59 prints lost to a 402 retried every 15 minutes
-   for 14 hours, 37 reply and skip drafts leaked onto the timeline with their `**REPLY**` and `Reasoning:` markers,
-   and every zero day was credits or the Mac.
+4. Every pipeline failure was mechanical and avoidable: 81 failed attempts (59 retries of one print plus 22 posts) on a
+   402 retried every 15 minutes for 14 hours, 24 reply and skip drafts leaked with their `**REPLY**` and `Reasoning:`
+   markers (22 top-level quote posts plus 2 replies; 20 of them after his cleaner existed), and every zero day was
+   credits or the Mac.
 5. What the record cannot teach is reach: impressions tracked his reply job, not the writing (Spearman 0.63 between
    replies posted that day and median impressions; 40-plus-reply days at 680 median impressions against under-5-reply
-   days at 160), and decayed monotonically to 24 to 26 impressions by 22 Sep once the replies stopped. Mr Bands never
-   replies, tags nobody and cannot quote-post, so his baseline is the low hundreds and single-digit likes, and no
+   days at 160), and decayed monotonically to 24 to 26 impressions by 22 Sep once the replies stopped. Mr Bands answers
+   only people who summoned him, tags nobody and cannot quote-post, so his baseline is the low hundreds and single-digit likes, and no
    content lever in Merd's record moves that by more than 1.5 to 2x except a genuine milestone. Hour, weekday and gap
    effects were all under 1.3x and inconsistent between regimes, so the cadence knobs stay where they are (the table
    above), with jitter, caps and a backoff ported from his failures, and he measures his own record after two weeks.
@@ -438,15 +461,162 @@ states the loss first; the zero-move daily is one line; the banned phrases never
   milestone or a lesson (a lesson repeating the milestone's net). Never against a close, an open or a strap: a fee
   figure two seats share is a coincidence, not a talking point twice, and the day's lesson was lost to one.
 - `vetOutgoing` refuses `**`, `reasoning:`, `draft:`, `post:`, `note:` and `skip` as a line or label (`loop-markers`)
-  and a sentence that repeats inside one post (`self-echo`): insurance for the day a model rewrite exists. Merd's 37
-  leaked drafts got through before his cleaner was written.
+  and a sentence that repeats inside one post (`self-echo`). Merd's 24 leaked drafts got through, 20 of them after his
+  cleaner was written; model replies exist here now, and `vetReply` (below) runs both on every one.
 - `jitterMin`, `eventCaps`, `backoff`: the knobs in the table above.
 - `x.ts` keeps X's `detail` beside `title` in a refusal reason, sliced to 200 characters, never the request headers:
   Merd's 81 failures are diagnosable in one grep only because `detail` said "credits depleted".
 
 Not ported: Merd's forbidden-phrase list (his secrets and product), his helpless-reply check (Mr Bands never asks the
-timeline), his reply cleaner (no model text reaches the loop), his junk filter (no replies) and delete (never used by
-design).
+timeline), his reply cleaner, `stripDashes` and `stripSelfEcho` (every reply guard here refuses and none rewrites),
+his launch-on-mention handler (nothing in the reply path acts on mention text) and delete (a leak is deleted by hand).
+
+## Engage
+
+Zach, 22 Sep: "Can we make sure our agent is replying and an active participant on X." Replies were off by design
+until then; that is reversed. He answers people who summoned him, and nobody else. The model proposes, the guards
+decide: his brain drafts a reply or says skip, and code decides whether anything is posted.
+
+`src/talk/engage.ts`, run as `talk.ts engage` by launchd every 120 seconds (`ops/com.bands.mrbands.engage.plist`,
+`RunAtLoad`, `DATA_DIR=data-live`, `TALK_STATE_PATH=data-talk`, log `data-talk/engage.log`). It is separate from the
+15-minute tick and never takes `tick.lock`: one pass may wait up to 45 seconds per mention on his brain. A poll that
+returns nothing is not billed, so the cost follows mention volume, not the polling rate (720 polls a day is 2.5% of
+the 300-per-15-minutes mentions limit). A mention gets its answer in about 2 to 3 minutes.
+
+**The switch.** Replies go out only when `X_REPLIES=true` (the literal string) and `X_LIVE=true` are in `.env`, his
+brain is ready (a real `OPENHERMIT_TOKEN` and a gateway that authorizes it), and neither `TALK_STOP` nor `ENGAGE_STOP`
+is in `data-talk`. Anything else is dormant with one status line an hour in `engage.log`; `talk.ts engage status`
+prints it every time, for free.
+
+**What Zach supplies.**
+
+1. `OPENHERMIT_TOKEN` in `.env`: the gateway's admin token. Empty, under 32 characters or placeholder-shaped
+   (`your`, `token`, `here`, `change`, `placeholder`, `example`, `xxx`) reads as dormant, and the reason never
+   prints the value. The loop never reads the gateway's own `.env`.
+2. Re-provision his rows (`src/scripts/openhermit.ts`) so the reply rules are his and the tool deny policy is on the
+   agent (web, session and memory reads denied to every caller): that needs the real token.
+3. **X's approval.** X's developer guidelines say an app posting AI-generated replies "Requires prior approval from X",
+   and "Deploying AI-generated replies without approval is a violation, even if the content itself is helpful". File
+   help.x.com/forms/platform and update the app's use case at console.x.com. Until X approves, `X_REPLIES=true` is a
+   risk taken knowingly. The fixed-answer templates are not AI-generated.
+4. An OpenRouter key limit for his model (Opus 5 per call is estimated, not measured, at $0.05 to $0.15).
+5. Check whether @MrBandsSol owns the developer app at console.x.com: owned reads of the mentions endpoint are
+   billed at $0.001 a resource instead of $0.005 a post.
+6. Then `X_REPLIES=true` in `.env` and `launchctl bootstrap` the engage plist.
+
+**Who he answers.** Since 23 Feb 2026, self-serve API tiers may reply only to a post that @mentions the account or
+quotes its post. He answers three kinds: a reply to his own post or reply (`in_reply_to_user_id` is his id), a post
+that names @mrbandssol in its body (outside the leading reply prefix, from `display_text_range` and
+`entities.mentions`), and a quote of his post. He never answers a post that carries his handle only in someone else's
+thread's inherited prefix (all 12 of the 21 Sep thread under @louz514's post), a bot (`clawpumptech` answers every
+mention of him within minutes; any bio saying bot, automated, agent, autonomous or auto-reply), an opt-out, a farm,
+a shill, a scam, himself, or anyone twice in one conversation unless a real question comes back. At most one reply per
+interaction. He never searches, replies outreach-style, quote-posts, follows, likes or DMs; never @mentions anyone in a
+reply; never posts a link; never pastes a mention's words, handles, cashtags, addresses or links back; never acts on
+mention text; never hides that he is a bot (the "Automated by @louz514" label stays).
+
+**One pass**, cheapest first; nothing below a "no" runs, so a dormant loop spends $0:
+
+1. `TALK_STOP` or `ENGAGE_STOP`: "engage stopped".
+2. `X_REPLIES` is not `true`: "engage off".
+3. The brain is not ready (`brainProblem`, or `brainDown` with the same token hash): "replies dormant: <why>". A
+   brain hold after a timeout or outage: "brain hold: ..." (no X read, no ask).
+4. `repliesOff` (3 "not mentioned" 403s in a row): "replies off: <why>, run talk engage resume".
+5. `xGateProblem` (X_LIVE, credentials, handles).
+6. An X hold: this loop's, or `tick-state.json`'s `backoffUntil` read-only (a 402 is account-wide).
+7. The day's read budget (`ENGAGE_READS_PER_DAY` mention posts, UTC day).
+8. `engage.lock` (stale after 10 minutes).
+9. Identity, once per access token: `GET /2/users/me` must answer `X_HANDLE` and id 2099900363679633408; cached, and a
+   token for another account is not asked about again until it changes.
+10. `getMentions` since the cursor, at most 2 pages of 100 and never past the day's read budget (a page asks for what
+    is left, 5 at least). A failure is `{ ok: false }`, never an empty list: the
+    cursor stays, 402/429/5xx/unreachable feed the backoff, a 429 waits for `x-rate-limit-reset`. The first run seeds
+    the cursor to the newest id and answers nothing.
+11. New mentions join `pending`, oldest first; the cursor moves; save. A deferred mention is never read (and billed)
+    twice and never silently dropped (Merd dropped 164).
+12. Every pending mention is screened first (the opt-out check, classify and screen: a skip costs $0). The rest are
+    taken in turn by author (each account's oldest, then each account's second, so one account's sixty mentions never
+    go ahead of another's one): screened again; the fixed answers (no model call, and not held by the model-call
+    cap); the caps without spending (a full cap defers: the mention stays pending and the pass ends; one account's own
+    cap, 3 model asks a day or `MAX_REPLIES_PER_ACCOUNT`, defers only its mention); claim it (`drafting`, saved);
+    `draftReply`; `vetReply`; `posting`, saved; `postReply`.
+13. Prune: pending past `ENGAGE_MAX_AGE_HOURS` is stale, handled entries past 7 days go; save; release the lock.
+
+**The screen**, all before any model call, every outcome in `x-mentions.jsonl`: the opt-out
+(`stop`, `unsubscribe`, `opt out`, `don't reply`, `leave me alone`, `go away`, `mute`; not stop-loss, nonstop or
+unstoppable), which goes into `engage-optout.json` for good with no reply ("if a user says stop, stop"); the kind;
+himself; stale; the bot deny list and bios; `screenMention` (flagged and suspicious handles, scam bait, key requests,
+3 a day per account); any link at all (X wraps every link in t.co); `INJECTION_RE`; blocked words in the handle, the
+display name and the text; the same link, instruction, blocked-word and shill checks on another account's parent
+post (it goes to the brain too); a mass tag (more than 3 other handles in the body, unless it answers his post); a cashtag
+or address other than the house token's or the copycat's (a shill is skipped, never corrected); the conversation caps
+(1 reply per author per conversation a day, 2 when the follow-up asks a question, 4 per conversation a day); and
+hollow praise ("this feels massive", three meaningful words or fewer, no question, no named topic): skipped from a
+farm (an account under 30 days old with under 20 followers), otherwise sent to the brain marked hollow, at most
+`ENGAGE_HOLLOW_PER_DAY` a day. 72% of Merd's 1,036 replies answered hollow mentions.
+
+**His brain** (`src/talk/replyBrain.ts`): the fixed-answer templates first (price, buy or sell, "how much can i make",
+the copycat mint, his token, "are you a bot"), with no model call; otherwise one fresh session per mention
+(`x-mention-<id>`) on his own gateway agent, 45 seconds, a facts block with no book figures, the mention inside a
+`<data>` block, and a one-object JSON contract. The templates read another account's parent with the mention, so a
+price or token question placed there still gets its fixed line. A timeout, an unreachable gateway or a bad turn puts
+the mention back and holds the brain (10 minutes, doubling to 2 hours, cleared by the next answer): no X read and no
+ask until it ends, so an outage spends neither. Unauthorized or not-found sets `brainDown` with a hash of the token,
+dormant until the token changes or `engage resume`. On the gateway, provisioning denies his agent every tool granted
+to "any" that a mention could turn against him (web_fetch, web_search, session and memory reads, docs, attachments):
+the talk loop voids a turn that called a tool outside `bands_*`, and the deny stops the tool from running at all.
+
+**The guards** (`src/talk/replyGuards.ts` `vetReply`, then `postTweet`'s lint). Every check refuses; none rewrites.
+A refused draft is final, logged in `x-drafts.jsonl` and `x-mentions.jsonl`, and never falls back to posting.
+
+| rule | refuses | from |
+|---|---|---|
+| shape | empty, more than 2 lines, over 200 X-weighted characters from the model or 280 from a template | |
+| markers | `**`, `reasoning:`, `draft:`, `post:`, `note:`, `reply:`, `quote:`, a `skip` line, a `>` line, `decision:`, `to @x:`, `@x, skip`, a backtick, `{`, `}`, `"reply"`, `(for the @`, "say the word and i'll draft" | "**@ponsdotfamily, SKIP**", "> migrating live treasuries" |
+| narration | "i'll skip", "i should keep", "the reply", "reads as", "nothing to add", "draft" and the rest, anywhere in the text; a whole-text non-answer ("n/a", "none", "pass", "no response needed"); talk about the prompt or the model ("as instructed", "i was told", "my instructions", opus, claude, anthropic, openhermit, the loop) | 2094236244871922117, 2092142015597154747; Merd's isSkip caught 0 of 21 leaks |
+| tags and links | any `@`, `#` or `$`, and their fullwidth and small-form look-alikes (X reads `＠` as an at-sign; the lint's `lookalike` rule refuses the whole fullwidth block in every post); any URL or bare domain (a link costs $0.20) | |
+| blocked words | `wordguard.blockedWordsIn` | Merd's "does the fucking" reply |
+| the lint | every rule of `lintText`, the house-token disclosure and the copycat denial included | |
+| self-echo | a sentence twice in one text | |
+| echo | a link, handle, cashtag or address from the mention or its parent, or any shared 5-word run | "you're early, not late"; "$GUARD ... undervalued" |
+| address | a base58 address that is not `TOKEN_MINT`, or the copycat's without a denial | |
+| model only | token topics (token, coin, memecoin, mint, ticker, ca, contract, pump, clawpump, launch, deploy, airdrop, presale, mcap, holders, early) and ownership claims ("mine", "i made", "i work for", "the team behind"), any number not in the facts, a pitch (sign up, check out, join, dm me, try the engine), advice ("i'd hold", "get out", "all in", "double down", "short it"), price direction ("goes up", "from here", "printing"), profit ("made money", "up big", "printed", "win", "it works"), dunks ("cope", "stay poor", "touch grass", "skill issue", "ratio") and politics | the review of 22 Sep: each one passed the lint |
+| paper | the book (my book, my bands, positions, seats, fees, net, pnl, sol, range, a band opened or closed) without "paper" | |
+| similar | a model reply with 0.5 meaningful-word overlap with any of his last 50 model replies. The fixed lines are meant to repeat (the copycat denial most of all) and are held by the per-account and conversation caps instead | 23 variants of "greatness is a big word" |
+
+`postTweet` refuses a `reply` without `replyTo` and `replyTo` on anything else (never a top-level post by accident),
+a reply to his own handle or post, and, inside the rate lock right before the POST, a second reply to the same
+mention (`x-posts.jsonl`, so one reply per mention survives a crash). `engage.ts` posts only through `postReply`.
+
+**After posting.** A 403 "not mentioned" is final for that mention; three in a row turn replies off until
+`engage resume`. A 402, 429 or 5xx means nothing went out: the mention goes back to pending with its vetted draft,
+and the reply-post counter (`postFails`, cleared only by a reply that posts, never by a mentions read) sets the hold:
+a 402 holds at once for 60 minutes, a 429 waits for its `x-rate-limit-reset`, a 5xx holds from the third in a row;
+each hold doubles to 360 (`TALK_RETRY_BACKOFF_MIN`, 0 turns holds off). The retry after the hold re-vets the kept draft
+and posts it without asking the brain again. An unreachable POST may have landed, so the mention stays handled and is
+never retried. Our own limiter (`rate: `) defers and is not an X failure.
+Every X refusal keeps X's title and detail. Merd retried one 402 59 times over 14.6 hours.
+
+**Caps**, env keys with defaults, enforced in code: `REPLIES_PER_DAY` 40 ($0.40 a day at $0.010 a reply),
+`REPLIES_PER_HOUR` 10, `MAX_REPLIES_PER_ACCOUNT` 3, the conversation caps above, 3 replies a pass 5 seconds apart (no
+human-pacing jitter: he is labelled automated), `ENGAGE_HOLLOW_PER_DAY` 10, `ENGAGE_READS_PER_DAY` 300 and
+`ENGAGE_MODEL_CALLS_PER_DAY` 60, 3 model asks per account a day whatever comes back, and `ENGAGE_REPLIES_PER_PASS`
+times 2 model asks a pass. X's pay-per-use prices as read from docs.x.com: $0.005 a post read, $0.010 a user
+read, $0.010 a reply to a post that mentions him, $0.015 a plain post, $0.200 with a link; the same resource is billed
+once per UTC day. Expected X spend about $1 to $2 a day (today's 20 to 60 mentions read for $0.30 to $1.20), with a
+hard ceiling near $6.50 (reads $6.00, replies $0.40, his own posts $0.09).
+
+**State**, all in `data-talk`: `engage-state.json` (the cursor, the confirmed identity, `pending`, `handled`,
+`brainDown`, the brain hold, the read and reply-post backoff, the kept drafts, the 403 count, `repliesOff`, the day's counters; temp + rename after every mention; an
+unreadable file stops the pass), `engage-optout.json`, `x-mentions.jsonl`, `engage.log`, `engage-status.json` (the
+last dormant line) and `engage.lock`.
+
+**Stop.** `touch data-talk/TALK_STOP` (posts and replies) or `touch data-talk/ENGAGE_STOP` (replies only); remove
+`X_REPLIES` from `.env`; or `launchctl bootout gui/$(id -u)/com.bands.mrbands.engage`. When a bad reply escapes: touch
+`TALK_STOP` and delete the reply by hand. He never defends a leak in public.
+
+`talk.ts engage preview <mentions.json> [--no-model]` runs the classify, the screen, the brain and the vet on a saved X
+response: no X read and no post, ever, and nothing written.
 
 ## The weekly review
 

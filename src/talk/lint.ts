@@ -25,6 +25,7 @@ import { COPYCAT_MINTS } from "../risk/house";
 export type LintRule =
   | "empty"
   | "invisible"
+  | "lookalike"
   | "lowercase"
   | "em-dash"
   | "length"
@@ -252,6 +253,12 @@ const BARE_DOMAIN_RE = /(?<![\w@.$/-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z
 const BASE58_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,88}\b/g;
 const EM_DASH_RE = /[‒–—―⸺⸻︱︲﹘]|--/;
 const INVISIBLE_RE = /[​-‏⁠-⁤﻿‪-‮­]/;
+/**
+ * Fullwidth and small-form ASCII look-alikes (U+FF01 to U+FF5E, U+FE50 to U+FE6B). X's twitter-text reads "\uFF20" as
+ * an at-sign and "\uFF03" as a hashtag sign, so "\uFF20someone" really tags that account; a lowercase English post
+ * never needs any of them, and a word written in them slips past every word rule here.
+ */
+export const LOOKALIKE_RE = /[\uFF01-\uFF5E\uFE50-\uFE6B]/;
 const EMOJI_RE = /\p{Extended_Pictographic}/gu;
 
 /** The text the word rules read: lowercase, straight quotes, hyphens/underscores as spaces, single spaces. */
@@ -334,6 +341,8 @@ export function lintText(text: string, ctx: LintContext = {}): LintResult {
   if (raw.trim() === "") return { ok: false, violations: [{ rule: "empty", detail: "nothing to say" }], length };
 
   if (INVISIBLE_RE.test(raw)) v.push({ rule: "invisible", detail: "invisible or direction-control characters" });
+  const look = raw.match(LOOKALIKE_RE);
+  if (look) v.push({ rule: "lookalike", detail: `a fullwidth or small-form look-alike ("${look[0]}"), which x may read as a tag` });
 
   // lowercase: links and base58 addresses keep their case; nothing else does (cashtags and handles included)
   const cased = raw.replace(URL_RE, " ").replace(BASE58_RE, " ");
