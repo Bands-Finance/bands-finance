@@ -221,7 +221,7 @@ export const NOT_HIS_RE = new RegExp(
 );
 
 /** Hosts a link may point at (subdomains included). x.com only as x.com/<OPERATOR_HANDLE>. */
-export const LINK_ALLOWLIST: readonly string[] = ["bands.finance", "solscan.io", "meteora.ag", "mrbands.finance"];
+export const LINK_ALLOWLIST: readonly string[] = ["bands.finance", "mrbands.finance", "solscan.io", "meteora.ag"];
 
 const URL_RE = /\bhttps?:\/\/[^\s<>"']+/gi;
 const BARE_DOMAIN_RE = /(?<![\w@.$/-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s<>"']*)?/gi;

@@ -41,7 +41,31 @@ npx tsx src/scripts/talk.ts reflect                                  # daily
 npx tsx src/scripts/talk.ts drift                                    # weekly, before review
 npx tsx src/scripts/talk.ts tick [--force strap|daily|lesson|stack]  # one tick of the posting loop
 npx tsx src/scripts/talk.ts check                                    # which account the X keys sign in as (a read)
+npx tsx src/scripts/talk.ts announce intro|entry|token|follow [--preview]   # his one-off posts, each once
 ```
+
+## One-off announcements
+
+`src/talk/announce.ts`, `talk.ts announce <kind>`. Each kind is composed from current facts (the desk's source
+must read paper, the paper book's open bands, `TOKEN_MINT`), checked, and posted once:
+
+| kind | what | parts |
+|---|---|---|
+| `intro` | his first post: an ai agent making markets on meteora across the screener's pools, tokenized stocks one part of the book, the book is paper, the one real-money run and every decision and guard veto on mrbands.finance. No token. | 1 |
+| `entry` | his AnsemHack Clawrena entry in his own words, tagging `@clawpumptech` (required), never the hackathon template. With `TOKEN_MINT`: his token by its mint, any other "mr bands" $bands not his, and the disclosure line as a self-reply. | 1, or 2 with a mint |
+| `token` | only with `TOKEN_MINT`: live, by its mint, a key and not a share, the copycat by its mint as not his, the disclosure line as a self-reply | 2 |
+| `follow` | a printed instruction: X removed follows (and likes, quote posts) from every self-serve API tier on 16 Apr 2026, so the follow is done by hand, signed in as his account | 0 |
+
+Checks on every part: the lint, and a per-kind @mention allowlist (only the entry may tag, only `@clawpumptech`,
+and it must). The lint's own mention rule is unchanged (at most two anywhere). No token talk before `TOKEN_MINT`;
+a `TOKEN_MINT` that is the copycat's, several mints or not base58 refuses every kind. Links end the text, as full
+URLs, so the length counts them as X does.
+
+Dormant (`X_LIVE` unset): every part goes to `x-drafts.jsonl`, nothing is recorded, and it can be run again. Live:
+`GET /2/users/me` must answer `X_HANDLE` (keys generated on the operator's own account are refused), then the parts
+go out as a thread through `postTweet` (lint, gate, rate limit), and each posted id is written to
+`TALK_STATE_PATH/announcements.json` as it lands. A kind whose parts are all recorded is refused; a thread cut short
+resumes at its next part; a file that exists but cannot be read refuses. `--preview` composes and checks only.
 
 Point it at a desk with `DATA_DIR` (the paper desk under launchd uses `data-live`). Set `TALK_STATE_PATH` to a
 directory of its own (for example `data-talk`) so the talking layer's files never sit among the desk's.

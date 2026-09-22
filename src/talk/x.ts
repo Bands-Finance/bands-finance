@@ -42,8 +42,8 @@ export const DRAFTS_FILE = "x-drafts.jsonl";
 /** held around read-rate, post, write-rate so two processes can never both post on the same rate state */
 export const RATE_LOCK_FILE = "x-rate.lock";
 
-/** the draft types, plus the posting loop's own event posts (src/talk/tick.ts) */
-export type XPostType = DraftType | "open" | "close" | "daily" | "milestone";
+/** the draft types, plus the posting loop's own event posts (src/talk/tick.ts) and "announce": his one-off posts (src/talk/announce.ts), each posted once */
+export type XPostType = DraftType | "open" | "close" | "daily" | "milestone" | "announce";
 
 export interface XPostRecord {
   id: string;
@@ -226,6 +226,12 @@ export function rateProblem(s: RateState, t: Pick<TalkEnv, "postsPerDay" | "repl
 export interface PostOptions {
   type: XPostType;
   replyTo?: { tweetId: string; handle: string } | null;
+  /**
+   * The id of HIS OWN earlier post to continue as a thread (src/talk/announce.ts). Not a reply to anyone: no
+   * reply screen, counted as an original post by the limiter. Self-threads are outside X's Feb 2026 limit on
+   * programmatic replies, which covers replies to other authors' posts. Ignored when replyTo is set.
+   */
+  inThreadOf?: string | null;
   bits?: string[];
   /** the posting loop's stable event key, carried into the post or draft record */
   key?: string;
@@ -254,6 +260,8 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
     const screen = screenAccount(replyToHandle, t);
     if (screen) return draft(`reply: ${screen}`);
   }
+  const threadOf = opts.replyTo ? null : (opts.inThreadOf ?? null);
+  if (threadOf !== null && !/^\d{1,20}$/.test(threadOf)) return draft("thread: the post id is not an x post id");
   const gate = xGateProblem(t);
   if (gate) return draft(gate);
   const creds = xCredentials(envObj);
@@ -273,7 +281,8 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
     if (limited) return draft(limited);
 
     const url = `${X_API_BASE}/2/tweets`;
-    const body = { text, ...(opts.replyTo ? { reply: { in_reply_to_tweet_id: opts.replyTo.tweetId } } : {}) };
+    const inReplyTo = opts.replyTo?.tweetId ?? threadOf;
+    const body = { text, ...(inReplyTo ? { reply: { in_reply_to_tweet_id: inReplyTo } } : {}) };
     let res: Response;
     try {
       res = await (deps.fetch ?? fetch)(url, {
@@ -295,7 +304,7 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
     if (replyToHandle) rate.replies.push({ at: now, id, handle: replyToHandle });
     else rate.posts.push({ at: now, id });
     writeRate(t.statePath, rate, now);
-    const record: XPostRecord = { id, text, type: opts.type, at: new Date(now).toISOString(), replyTo: opts.replyTo?.tweetId ?? null, replyToHandle, ...(opts.bits?.length ? { bits: opts.bits } : {}), ...(opts.key ? { key: opts.key } : {}) };
+    const record: XPostRecord = { id, text, type: opts.type, at: new Date(now).toISOString(), replyTo: inReplyTo ?? null, replyToHandle, ...(opts.bits?.length ? { bits: opts.bits } : {}), ...(opts.key ? { key: opts.key } : {}) };
     appendJsonl(t.statePath, POSTS_FILE, record);
     return { posted: true, id };
   }
@@ -429,4 +438,32 @@ export async function replyToMention(m: Mention, deps: XDeps = {}): Promise<Post
   const draft = replyFor(m.text, { env: t });
   if (!draft.ok) return { posted: false, reason: `no reply: ${draft.reason}`, ...(draft.violations.length ? { violations: draft.violations } : {}) };
   return postTweet(draft.text, { type: "reply", replyTo: { tweetId: m.id, handle: m.authorHandle } }, deps);
+}
+
+// ---------------------------------------------------------------- identity
+
+export type WhoAmIResult = { ok: true; id: string; handle: string } | { ok: false; reason: string };
+
+/**
+ * GET /2/users/me: whose account the access token speaks for, behind the same gate as posting. Used before a
+ * one-off announcement so a token generated for the operator's own account is caught before anything goes out.
+ */
+export async function whoAmI(deps: XDeps = {}): Promise<WhoAmIResult> {
+  const envObj = deps.env ?? process.env;
+  const gate = xGateProblem(talkEnv(envObj));
+  if (gate) return { ok: false, reason: gate };
+  const creds = xCredentials(envObj);
+  if (!creds) return { ok: false, reason: "dormant: credentials unreadable" };
+  const url = `${X_API_BASE}/2/users/me`;
+  let res: Response;
+  try {
+    res = await (deps.fetch ?? fetch)(url, { method: "GET", headers: { authorization: oauthHeader({ method: "GET", url, creds, nonce: deps.nonce?.(), timestamp: Math.floor((deps.now ?? Date.now()) / 1000) }) } });
+  } catch (err) {
+    return { ok: false, reason: `x api unreachable: ${(err as Error).name}` };
+  }
+  const json = (await res.json().catch(() => ({}))) as { data?: { id?: string; username?: string }; title?: string };
+  if (!res.ok || !json.data?.id || !json.data.username) return { ok: false, reason: `x api ${res.status}${json.title ? `: ${String(json.title).slice(0, 80)}` : ""}` };
+  const handle = normalizeHandle(json.data.username);
+  if (!handle) return { ok: false, reason: "x api returned a handle that is not a valid x handle" };
+  return { ok: true, id: String(json.data.id), handle };
 }
