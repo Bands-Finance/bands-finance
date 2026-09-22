@@ -68,7 +68,7 @@ function summaryOf(r: Result): string {
     case "journal":
       return `${r.entries.length} pool${r.entries.length === 1 ? "" : "s"} in the journal · newest decision ${ago(r.entries[0].ts)}`;
     case "limits":
-      return `${Object.keys(r.limits).length} rules, none of them his to change`;
+      return `${Object.keys(r.limits).length} rules`;
   }
 }
 
@@ -113,12 +113,12 @@ function renderResult(r: Result): ReactNode {
         ["the most he can put in one band", `${l.maxPositionSol} SOL`],
         ["the most he can have out across every band", `${l.maxTotalExposureSol} SOL`],
         ["kept in the wallet for fees and rent", `${l.gasReserveSol} SOL`],
-        ["a band this far below what went in is closed for him", `−${l.stopLossPct}%`],
+        ["a band this far below what went in is closed", `−${l.stopLossPct}%`],
         ["a band can be at most this wide", `${l.maxBinWidth} bins`],
         ["actions per day, at most", `${l.maxTxPerDay}`],
         ["and at least this long apart", `${Math.round(l.minSecondsBetweenActions / 60)} min`],
         ["a fill worse than this is refused", `${l.maxSlippagePct}% slippage`],
-        ["a price jump this big in one cycle means no new bands", `> ${l.maxPriceMovePctPerCycle}%`],
+        ["no new band after a jump this big in one cycle", `> ${l.maxPriceMovePctPerCycle}%`],
       ];
       return rows.map(([sentence, value]) => (
         <div className="tryit__row" key={sentence}>
@@ -158,7 +158,7 @@ export function TryIt() {
       <div className="tryit__head r-item" style={ri(0)}>
         <span className="eyebrow tryit__eyebrow">Try it · nothing to connect</span>
         <h2 className="tryit__title">Read the board yourself.</h2>
-        <p className="tryit__sub">Pick one and run it: a real read of the same files Mr Bands works from. No wallet, no sign-up, no charge.</p>
+        <p className="tryit__sub">A real read of the files Mr Bands works from.</p>
       </div>
 
       <div className="tryit__panel r-item" style={ri(1)}>
@@ -192,8 +192,8 @@ export function TryIt() {
       </div>
 
       <p className="tryit__fine r-item" style={ri(2)}>
-        That was a real read. <strong>Every number on this site comes from these three sources</strong>, and you can call them from anywhere:{" "}
-        <span className="tryit__402">/api/screen</span>, <span className="tryit__402">/api/journal</span>, <span className="tryit__402">/api/limits</span> (or the bundled snapshots). Want the full record? The journal is one JSON line per decision.
+        <strong>Every number on this site comes from these three sources</strong>:{" "}
+        <span className="tryit__402">/api/screen</span>, <span className="tryit__402">/api/journal</span>, <span className="tryit__402">/api/limits</span>. The journal is one JSON line per decision.
       </p>
     </section>
   );

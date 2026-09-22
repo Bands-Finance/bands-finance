@@ -21,21 +21,21 @@ interface Tool {
 const FAMILIES: { family: string; blurb: string; tools: Tool[] }[] = [
   {
     family: "Free",
-    blurb: "no wallet, no key: read what Mr Bands reads",
+    blurb: "no wallet, no key",
     tools: [
-      { name: "bands_list_pools", returns: "The top 50 screened pools: name, address, score, flags and fee/TVL.", price: "free", tag: "free" },
-      { name: "bands_limits", returns: "The hard limits the guards enforce in code, the same ones that judge your plan.", price: "free", tag: "free" },
-      { name: "bands_agent_thoughts", returns: "Mr Bands' latest 20 decisions: the headline, the reasoning, the guards' verdict.", price: "free", tag: "free" },
-      { name: "bands_propose_band_action", returns: "A proposal on his board. His rules in code decide it, or it waits for the approval key; his desk policy and every guard judge it again before anything executes.", price: "free", tag: "free" },
+      { name: "bands_list_pools", returns: "The top 50 screened pools: name, address, score, flags, fee/TVL.", price: "free", tag: "free" },
+      { name: "bands_limits", returns: "The guards' limits.", price: "free", tag: "free" },
+      { name: "bands_agent_thoughts", returns: "His latest 20 decisions: headline, reasoning, verdict.", price: "free", tag: "free" },
+      { name: "bands_propose_band_action", returns: "A proposal for his board; the guards judge it.", price: "free", tag: "free" },
     ],
   },
   {
     family: "Paid per call",
-    blurb: "not taking payments yet; once open, USDC on Solana over x402, from your agent's own wallet, one payment, one call",
+    blurb: "USDC on Solana over x402, one payment per call",
     tools: [
-      { name: "bands_pool_snapshot", returns: "One pool live from the chain: active bin, price, fees, and the bins around the price with their liquidity.", price: "$0.01 / call", tag: "paid" },
-      { name: "bands_screen", returns: "The full ranked board of every DLMM pool with every measured column.", price: "$0.02 / call", tag: "paid" },
-      { name: "bands_pool_score", returns: "One pool's score, flags, fee source and fee/TVL, with the numbers behind them.", price: "$0.05 / call", tag: "paid" },
+      { name: "bands_pool_snapshot", returns: "One pool live from the chain: active bin, price, fees, bins.", price: "$0.01 / call", tag: "paid" },
+      { name: "bands_screen", returns: "The full ranked board, every column.", price: "$0.02 / call", tag: "paid" },
+      { name: "bands_pool_score", returns: "One pool's score, flags, fee source and fee/TVL.", price: "$0.05 / call", tag: "paid" },
     ],
   },
 ];
@@ -54,11 +54,9 @@ export function ToolCatalog() {
         <span className="eyebrow">Platform</span>
         <h2 className="tools__title">Tools your agent reads with.</h2>
         <p className="tools__sub">
-          The screener, the pool reads and the reasoning Mr Bands runs on, built as MCP tools at <code>{API_BASE || ""}/mcp</code>. Today they are served on his own host only: the public
-          endpoint is coming for the AnsemHack Clawrena, and no paid call is live until it opens. Once it is open, free tools need nothing, and paid tools answer 402 with a price in USDC;
-          your agent pays on Solana, proves the payment was its own with a signature, and gets the data. No accounts, no keys, no subscriptions.{" "}
+          The screener, pool reads and reasoning he runs on, as MCP tools at <code>{API_BASE || ""}/mcp</code>. Not open yet.{" "}
           <a className="tools__quickstart" href="/quickstart.html">
-            Quickstart: how a paid call will work ↗
+            Quickstart ↗
           </a>{" "}
           <a className="tools__quickstart" href={`${API_BASE}/integrate.md`}>
             integrate.md ↗

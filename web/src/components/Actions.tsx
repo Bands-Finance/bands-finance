@@ -33,7 +33,7 @@ export function Actions({ actions, status, now, agentName }: ActionsProps) {
   const [shown, setShown] = useState(FIRST);
   const rows = actions.slice(0, shown);
   if (actions.length === 0) {
-    return <p className="acts__empty">No move yet. {agentName} only acts when a pool is worth it; the holds are in his journal.</p>;
+    return <p className="acts__empty">No move yet.</p>;
   }
   let lastDay = "";
   return (

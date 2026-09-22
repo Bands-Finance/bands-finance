@@ -21,7 +21,7 @@ const STYLES = ["concise", "balanced", "deep"] as const;
 const FOCUS: FocusArea[] = ["market-making", "yield", "directional", "research"];
 
 const NO_API_COPY =
-  "The platform API is not hosted yet: it is coming with the platform. This page will then let you sign in with a Solana wallet and talk to a Mr Bands of your own; until then the site shows Mr Bands' own journal.";
+  "Not open yet.";
 
 function timeOf(ts: number): string {
   return new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
@@ -33,15 +33,14 @@ export function MyAgent() {
     <main className="app__tabview">
       <section className="app__desk me" aria-label="Your Mr Bands">
         <div className="app__desk-head">
-          <span className="eyebrow me__eyebrow">your own mr bands · it talks, it never trades</span>
+          <span className="eyebrow me__eyebrow">your own mr bands · it talks, never trades</span>
           <h2 className="app__desk-title">Your Mr Bands</h2>
           <p className="app__desk-sub">
-            Sign in with a Solana wallet and talk to a Mr Bands of your own that reads the same desk Mr Bands works from: his journal, his pool screen, the guards
-            around him. It talks; it never holds a key and cannot move funds, and nothing it says is financial advice. Slash commands shape it; messages ask it things.
+            Sign in with a Solana wallet and talk to a Mr Bands of your own. It holds no key and moves nothing.
           </p>
         </div>
 
-        {api === null && <p className="me__note">checking for the platform API…</p>}
+        {api === null && <p className="me__note">checking for the API…</p>}
         {api === false && <p className="me__note me__note--plain">{NO_API_COPY}</p>}
 
         {api === true && (
@@ -79,7 +78,7 @@ export function MyAgent() {
             {error && <p className="me__err">{error}</p>}
             {status !== "signed-in" && (
               <p className="me__note">
-                The signature proves you hold the wallet. It authorizes no transaction and moves nothing; bands.finance never sees a key.
+                The signature moves nothing.
               </p>
             )}
             {status === "signed-in" && token && address && <AdvisorTerminal token={token} address={address} />}
@@ -118,12 +117,12 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
     cli.print([
       ...prior.map((m) => ({ kind: m.role === "user" ? ("input" as const) : ("agent" as const), text: m.content })),
       notConfigured
-        ? { kind: "error" as const, text: "your mr bands is not configured on this host: no model key. commands still work; messages will be refused.", suggest: ["/status", "/help"] }
+        ? { kind: "error" as const, text: "no model key on this host. commands work; messages will be refused.", suggest: ["/status", "/help"] }
         : prior.length
           ? { kind: "system" as const, text: `${agent.name} is live.`, suggest: ["/help"] }
           : {
               kind: "system" as const,
-              text: `${agent.name} is live and it is yours. it reads his desk every turn and remembers this conversation.`,
+              text: `${agent.name} is yours. it remembers this conversation.`,
               suggest: ["what is on his book today?", "/explore", "/help"],
             },
     ]);
@@ -195,7 +194,7 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
   const dot = agent.state === "error" ? "offline" : agent.state === "ready" ? "live" : "connecting";
   const thinking = agent.state === "thinking";
   const creditsLabel =
-    agent.credits === null ? null : agent.creditsInfo?.enforced ? `${agent.credits} credit${agent.credits === 1 ? "" : "s"}` : `${agent.credits} credits · free right now`;
+    agent.credits === null ? null : agent.creditsInfo?.enforced ? `${agent.credits} credit${agent.credits === 1 ? "" : "s"}` : `${agent.credits} credits · free`;
 
   return (
     <>
@@ -203,7 +202,7 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
         <span className="me__chip" title="1 credit = 1 message. Commands are free.">
           {creditsLabel ?? "credits ·"}
         </span>
-        {agent.outOfCredits && <span className="me__chip me__chip--warn">out of credits; buying is not wired on this host yet</span>}
+        {agent.outOfCredits && <span className="me__chip me__chip--warn">out of credits; buying is not wired yet</span>}
         <span className="me__spacer" />
         <button className="me__btn" onClick={() => setDrawer((v) => !v)} aria-expanded={drawer}>
           {drawer ? "close settings" : "configure"}
@@ -229,8 +228,8 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
 
         <div className="term__body" ref={bodyRef}>
           <p className="term__boot">
-            {agent.name} · keyed to {who} · reads Mr Bands' journal, screen and guards each turn · holds no key, moves nothing · messages
-            {agent.creditsInfo?.enforced ? " cost 1 credit" : " are free right now"} · commands are free
+            {agent.name} · keyed to {who} · holds no key, moves nothing · messages
+            {agent.creditsInfo?.enforced ? " cost 1 credit" : " are free"}
           </p>
 
           {agent.state === "provisioning" && <p className="term__line term__line--dim">// setting up your mr bands…</p>}
@@ -257,7 +256,7 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
             </div>
           )}
 
-          <p className="term__hint">// message, or /help. tab completes, up/down recalls.</p>
+          <p className="term__hint">// message, or /help. tab completes.</p>
           <form className="term__input-row" onSubmit={onSubmit}>
             <span className="term__user term__user--guest">{who}@bands</span>
             <span className="term__path">:~</span>$&nbsp;
@@ -391,11 +390,11 @@ function SettingsDrawer({ settings, onSave, onClose }: { settings: AgentSettings
       </fieldset>
       <label className="me__field me__field--wide">
         <span>goal</span>
-        <input value={goal} onChange={(e) => setGoal(e.target.value)} maxLength={280} placeholder="what you want it working toward" />
+        <input value={goal} onChange={(e) => setGoal(e.target.value)} maxLength={280} placeholder="its goal" />
       </label>
       <label className="me__field me__field--wide">
         <span>voice</span>
-        <input value={voice} onChange={(e) => setVoice(e.target.value)} maxLength={200} placeholder="how it should sound: dry, warm, blunt" />
+        <input value={voice} onChange={(e) => setVoice(e.target.value)} maxLength={200} placeholder="how it should sound" />
       </label>
       <div className="me__drawer-actions">
         <button className="me__btn me__btn--primary" type="submit" disabled={saving}>

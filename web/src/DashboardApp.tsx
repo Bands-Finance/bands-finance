@@ -82,9 +82,8 @@ export default function DashboardApp() {
     const nBands = bands.length;
     const moved = actions.filter((a) => a.action === "REBALANCE").length;
     const px = (n: number) => (n >= 1 ? n.toFixed(2) : n.toPrecision(4));
-    const crossed = first ? first.activePrice < first.upperPrice : false;
     const live = status.mode === "live";
-    const where = first ? (first.activePrice > first.upperPrice ? "The price is above his band, so every bin still holds SOL." : first.activePrice < first.lowerPrice ? "The price is below his band, so every bin now holds the token." : "The price is inside his band.") : "";
+    const where = first ? (first.activePrice > first.upperPrice ? "The price is above it." : first.activePrice < first.lowerPrice ? "The price is below it." : "The price is inside it.") : "";
     const asOf = book.asOf !== null ? new Date(book.asOf).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : null;
 
     const holding: Beat[] = nBands
@@ -108,8 +107,8 @@ export default function DashboardApp() {
       : [
           {
             id: "holds", station: "vault", side: "right", eyebrow: "What he holds", line1: "Nothing,", line2: "this minute.",
-            body: <><p>No band is open. He only lays one when a pool's fees are worth the rent and the risk. Until then his SOL is stacked by the hat.</p>{book.lastExit && <p>His last exit: “{book.lastExit.headline}”</p>}</>,
-            figure: record ? { value: `${num(record.equityNow)} SOL`, label: status.mode === "paper" ? "waiting in his paper wallet" : "waiting in his wallet" } : null,
+            body: <><p>No band is open. He lays one only when the fees are worth the risk.</p>{book.lastExit && <p>His last exit: “{book.lastExit.headline}”</p>}</>,
+            figure: record ? { value: `${num(record.equityNow)} SOL`, label: "waiting in his wallet" } : null,
           } satisfies Beat,
         ];
 
@@ -120,7 +119,7 @@ export default function DashboardApp() {
         // meet the words (the trays he stands over are the next chapter's, and the words' mist may take them)
         id: "hero", station: "hero", side: "left", frame: { x: 0.06, y: 0.28 }, frameTall: { x: 0.03, y: -0.12 },
         // the first line says what he is before any number does
-        eyebrow: `${new Date(now).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })} · A market-making agent on Meteora, Solana`,
+        eyebrow: `${new Date(now).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })} · Market maker on Meteora, Solana`,
         line1: h1, line2: h2,
         // the story's first sentence, then the one that says what kind of run this is (paper or live; always the story's
         // last sentence, narrative.ts), so a stranger learns whether the money is real in the first window. Two paragraphs,
@@ -128,12 +127,12 @@ export default function DashboardApp() {
         // and the fee figure the second sentence carried is the holds, dish and made chapters' own.
         body: <>{[narrative.story[0], ...(narrative.story.length > 1 ? [narrative.story[narrative.story.length - 1]] : [])].map((s, i) => <p key={i}>{s}</p>)}</>,
         // the wallet is proof only when the desk is live; a paper run's proof is the code
-        links: [{ href: "#lays", label: "See how he works" }, live && walletAddress ? { href: `https://solscan.io/account/${walletAddress}`, label: "His wallet", external: true } : { href: "https://github.com/louz514/bands-finance", label: "The code", external: true }],
+        links: [{ href: "#lays", label: "How he works" }, live && walletAddress ? { href: `https://solscan.io/account/${walletAddress}`, label: "His wallet", external: true } : { href: "https://github.com/louz514/bands-finance", label: "The code", external: true }],
       },
       {
         id: "lays", station: "rows", side: "left", frame: { x: 0.2, y: 0.08 }, eyebrow: "The band", line1: "He lays SOL", line2: "under the price.",
-        body: nBands ? <><p>A band is a row of price bins. In each bin under the market he leaves SOL, offered to anyone who wants to sell him the token there. Tokenized stocks are one part of his book: there he lays both sides and hedges the stock half short where a perp is listed.</p><p>Each strapped bundle on the desk is one bin of his SOL.</p></> : <><p>A band is a row of price bins with his SOL laid in them. Tokenized stocks are one part of his book: there he lays both sides and hedges the stock half short where a perp is listed. He holds none right now.</p><p>His SOL is stacked by the hat until a pool is worth it.</p></>,
-        figure: record ? (nBands ? { value: `${num(record.atWork)} SOL`, label: `at work in ${nBands} band${nBands === 1 ? "" : "s"}, ${bins} bins in all` } : { value: `${num(record.equityNow)} SOL`, label: status.mode === "paper" ? "waiting in his paper wallet" : "waiting in his wallet" }) : null,
+        body: nBands ? <><p>A band is a row of price bins with his SOL laid in each. Tokenized stocks are one part of his book.</p></> : <><p>A band is a row of price bins with his SOL laid in each. Tokenized stocks are one part of his book.</p><p>He holds none.</p></>,
+        figure: record ? (nBands ? { value: `${num(record.atWork)} SOL`, label: `at work in ${nBands} band${nBands === 1 ? "" : "s"}, ${bins} bins` } : { value: `${num(record.equityNow)} SOL`, label: "waiting in his wallet" }) : null,
       },
       // the sheets come straight after the band they describe: lay, hold, cross, paid. It also keeps the camera on the
       // tray side of the desk (rows -> row0 -> row1) before the long walk round to the cursor and the dish.
@@ -142,33 +141,31 @@ export default function DashboardApp() {
         id: "cross", station: "cursor", side: "right", frame: { x: -0.2, y: 0.04 }, eyebrow: "The crossing", line1: "Traders cross his band.", line2: "He gets paid.",
         // with no band there is no tray, no cursor and no slab on the desk, so the words must not point at them
         body: first
-          ? <><p>When the price falls into a bin, his SOL there buys the token. When it climbs back out, he sells it again. {crossed ? "The dark slabs are bins the price has already crossed." : "The brass cursor is the price. It stands above his band, so no bin has been crossed yet."}</p><p>Every crossing pays him the pool's fee.</p></>
-          : <><p>He holds no band this minute, so there is nothing for the price to cross. When he lays one, a brass cursor on the tray marks the price, and the bins it has crossed go dark.</p><p>Every crossing pays him the pool's fee.</p></>,
-        figure: first ? { value: px(first.activePrice), label: `${first.poolLabel} now. His band runs from ${px(first.lowerPrice)} to ${px(first.upperPrice)}. ${where}` } : null,
+          ? <><p>Price falls into a bin and his SOL there buys the token. Price climbs out and he sells it back.</p><p>Every crossing pays him the pool's fee.</p></>
+          : <><p>He holds no band, so there is nothing to cross.</p><p>Every crossing pays him the pool's fee.</p></>,
+        figure: first ? { value: px(first.activePrice), label: `${first.poolLabel}. His band runs ${px(first.lowerPrice)} to ${px(first.upperPrice)}. ${where}` } : null,
       },
       {
         id: "fees", station: "dish", side: "left", eyebrow: "The dish", line1: "Fees fall", line2: "into the dish.",
-        body: <><p>One coin for every tenth of a SOL traders have paid him. Claimed fees go back to his wallet as SOL.</p>{flowTotals && flowTotals.fees60mSol > 0 && <p>In the last hour his pools paid {num(flowTotals.fees60mSol)} SOL to everyone making a market there.</p>}</>,
+        body: <><p>One coin for every tenth of a SOL in fees.</p></>,
         figure: record ? { value: `${num(feesAll)} SOL`, label: "in fees since he started" } : null,
       },
       ...(record && chart
         ? [{
             // "paid" only once something has been claimed; until then the fees are earned and still in the bands, and the
             // headline says so rather than sit over a "Claimed +0"
-            id: "made", station: "chart", side: "left", wide: true, eyebrow: status.mode === "paper" ? "What he made on paper" : "What he made", line1: "He has earned", line2: record.feesRealized < 0.0005 ? `${num(feesAll)} SOL, unclaimed.` : `${num(feesAll)} SOL in fees.`,
+            id: "made", station: "chart", side: "left", wide: true, eyebrow: "What he made", line1: "He has earned", line2: record.feesRealized < 0.0005 ? `${num(feesAll)} SOL, unclaimed.` : `${num(feesAll)} SOL in fees.`,
             content: <MadeBlock record={record} solPriceUsd={solPriceUsd} now={now} chart={chart} />,
           } satisfies Beat]
         : []),
       {
         id: "relay", station: "plan", side: "right", frame: { x: -0.2, y: 0.02 }, eyebrow: "The re-lay", line1: "Price walks away.", line2: "He lays it again.",
-        body: <><p>A band the price has left earns nothing. He waits for a quiet minute, then lays it under the price again.</p><p>Moving costs a little, so he counts that too, and he writes down what each band taught him.</p></>,
-        // no ledger is promised below when there is none yet to show
-        figure: moved === 0 ? { value: "0", label: "bands moved yet; a band moves only once the price has walked out of it" } : { value: `${moved}`, label: `band${moved === 1 ? "" : "s"} moved so far, each one in the ledger below` },
+        body: <><p>A band the price has left earns nothing. He lays it again.</p></>,
+        figure: moved === 0 ? { value: "0", label: "bands moved yet" } : { value: `${moved}`, label: `band${moved === 1 ? "" : "s"} moved so far` },
       },
       {
         id: "record", station: "ledger", side: "left", wide: true, eyebrow: "The record", line1: "Every move", line2: "is on the record.",
-        // only a live book is on Solana; a paper book says what it is (the same gate the note uses, components/Dash.tsx)
-        body: <><p>This page is printed from his journal and nothing else. {live && walletAddress ? "The wallet is his own, and anyone can read it on Solana." : status.mode === "paper" ? "This is paper trading: real Meteora pools at live prices, a pretend wallet." : ""}</p></>,
+        body: <><p>He proposes, the guards decide. Every figure here is from his journal.</p></>,
         content: <StatementList rows={statementRows({ record, summary: selected, solPriceUsd, status, now, stamp })} />,
         links: live && walletAddress ? [{ href: `https://solscan.io/account/${walletAddress}`, label: "His wallet on Solscan", external: true }] : undefined,
       },
@@ -178,19 +175,17 @@ export default function DashboardApp() {
       // and while the live feed still holds the frozen run and nothing newer, the ledger would print that run twice
       ...(actions.length && !didIsTheRun
         ? [{
-            id: "did", station: "tape", side: "left", wide: true, eyebrow: status.mode === "paper" ? "What he did on paper" : "What he did", line1: "Each move,", line2: "newest first.",
-            body: <><p>One sentence a move, with the money it realised{live ? " and its transaction" : ""}. Holds are not moves.</p></>,
+            id: "did", station: "tape", side: "left", wide: true, eyebrow: "What he did", line1: "Each move,", line2: "newest first.",
+            body: <><p>One line a move{live ? ", with its transaction" : ""}.</p></>,
             content: <Actions actions={actions} status={status} now={now} agentName={agentName} />,
           } satisfies Beat]
         : []),
       {
-        // the ask, at the cigar hand (a station the desk already carries). Only what is true today: his tools are built and
-        // served over MCP on his own host, the public door at bands.finance is not open yet, and no call is paid for (the x402
-        // gate is not taking real payments). The token is announced for the Clawrena and not minted, so it is "coming", never
-        // "trading"; whenever it is named so is its owner, and the copycat $BANDS is named as not his (docs/sprint.md;
-        // docs/mr-bands-agent.md, hard rule 6). The ClawPump and X links print only once those pages exist (site.ts).
+        // the ask, at the cigar hand. Only what is true: the tools are not open, the token is coming and not minted, and the
+        // copycat $BANDS is named as not his by its full mint (docs/mr-bands-agent.md, hard rule 6: only the mint tells them
+        // apart; the <wbr>s let a phone break it). The ClawPump and X links print only once those pages exist (site.ts).
         id: "hire", station: "hands", side: "left", frame: { x: 0.04, y: 0.06 }, frameTall: { x: 0.04, y: 0.12 }, eyebrow: "For other agents", line1: "His tools,", line2: "soon for yours.",
-        body: <><p>What he works with is built as tools other agents can call: his screener, his pool reads and the guards that judge a band. Today they are served over MCP on his own machine. The public door at bands.finance is coming for the AnsemHack Clawrena, and nothing is sold until it opens.</p><p>His token, $BANDS, is coming to ClawPump for the Clawrena, and no mint exists yet. It will be his own token, not a share of anything. It will pay holders nothing; its creator fees will go to his own operating wallet, to pay for what he runs on. The desk holds none and never trades it, a rule in code, and he does not call its price. A "Mr Bands" $BANDS already trading on pump.fun (mint JAARLU...pJ6m) is a copycat and not his: his will be the mint this page links to once it launches.</p></>,
+        body: <><p>His screener, pool reads and guards, as tools for other agents. Not open yet.</p><p>His token, $BANDS, is coming to ClawPump: his own, it pays holders nothing and the desk never trades it. The $BANDS at mint JAARLUawF9DT<wbr />auc9pHUyYpga<wbr />8mDU3172cY7N<wbr />zLfhpJ6m is not his.</p></>,
         links: [
           { href: `${PLATFORM_URL}/#/learn`, label: "His tools", external: true },
           ...(TOKEN_URL ? [{ href: TOKEN_URL, label: "$BANDS on ClawPump", external: true }] : []),

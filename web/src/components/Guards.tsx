@@ -50,7 +50,7 @@ function familiesOf(l: RiskLimits | null, maxActivePools: number): Family[] {
   return [
     {
       name: "How much",
-      blurb: "the money he may put to work",
+      blurb: "the money he may put out",
       rules: [
         {
           name: "Max per band",
@@ -70,7 +70,7 @@ function familiesOf(l: RiskLimits | null, maxActivePools: number): Family[] {
           body: (
             <>
               must stay in the wallet for{" "}
-              <T t="Fees: what Solana charges to process a transaction. Rent: a small deposit Solana holds while a band's account exists; it comes back when the band is closed.">fees and rent</T>
+              <T t="Fees: what Solana charges per transaction. Rent: a deposit held while a band exists, returned when it closes.">fees and rent</T>
             </>
           ),
           kind: "reserve",
@@ -79,15 +79,14 @@ function familiesOf(l: RiskLimits | null, maxActivePools: number): Family[] {
     },
     {
       name: "How wide, how often, how many",
-      blurb: "the shape of a band and the pace of a day",
+      blurb: "the shape of a band, the pace of a day",
       rules: [
         {
           name: "Max band width",
           value: n(L?.maxBinWidth, " bins"),
           body: (
             <>
-              a wider band is a different strategy (
-              <T t="Pools on Meteora cut price into small steps called bins. A band is a run of bins.">bins</T> are the price steps a band is made of)
+              <T t="Pools on Meteora cut price into small steps called bins. A band is a run of bins.">bins</T> are the price steps a band is made of
             </>
           ),
           kind: "cap",
@@ -98,7 +97,7 @@ function familiesOf(l: RiskLimits | null, maxActivePools: number): Family[] {
     },
     {
       name: "What gets refused or forced",
-      blurb: "checks that override whatever he proposed",
+      blurb: "checks that override him",
       rules: [
         {
           name: "Deposit slippage",
@@ -106,7 +105,7 @@ function familiesOf(l: RiskLimits | null, maxActivePools: number): Family[] {
           body: (
             <>
               a{" "}
-              <T t="A fill is the price a deposit actually goes in at. Slippage is the gap between that and the price expected, because the deposit itself moved the pool.">fill</T>{" "}
+              <T t="A fill is the price a deposit goes in at; slippage is the gap from the price expected.">fill</T>{" "}
               worse than this is refused
             </>
           ),
@@ -117,18 +116,18 @@ function familiesOf(l: RiskLimits | null, maxActivePools: number): Family[] {
           value: L ? `> ${L.maxPriceMovePctPerCycle}% in one cycle` : NA,
           body: (
             <>
-              a jump that big is bad data or a crash; no new bands into it (a{" "}
-              <T t="A cycle is one look at the pool, every 5 minutes, ending in one written decision.">cycle</T> is one 5-minute look)
+              no new band after a jump that big in one{" "}
+              <T t="A cycle is one look at the pool, every 5 minutes.">cycle</T>
             </>
           ),
           kind: "refusal",
         },
-        { name: "Stop-loss", value: L ? `−${L.stopLossPct}%` : NA, body: <>the guards close a band that falls this far below what went in, whatever he proposed</>, kind: "forced" },
+        { name: "Stop-loss", value: L ? `−${L.stopLossPct}%` : NA, body: <>a band this far below what went in is closed</>, kind: "forced" },
       ],
     },
     {
       name: "The off switch",
-      blurb: "no proposal, no vote, no delay",
+      blurb: "no vote, no delay",
       rules: [{ name: "Kill switch", value: "a file named STOP", body: <>blocks every new band the moment it exists</>, kind: "switch", wide: true }],
     },
   ];
@@ -150,11 +149,10 @@ export function Guards({ limits, record, maxActivePools = 6 }: GuardsProps) {
   return (
     <section className="tools reveal" id="guards" ref={ref} aria-label="The rules he can't break">
       <div className="tools__head r-item" style={ri(idx++)}>
-        <span className="eyebrow">The guards · enforced in code</span>
+        <span className="eyebrow">The guards</span>
         <h2 className="tools__title">The rules he can't break</h2>
         <p className="tools__sub">
-          Enforced in code, outside whatever proposes his moves. He sees them; he cannot change them.
-          {!limits && <> The limits file has not answered yet, so the numbers below are blank; the rules still run.</>}
+          {!limits && <>No limits loaded yet.</>}
         </p>
       </div>
 
@@ -185,12 +183,10 @@ export function Guards({ limits, record, maxActivePools = 6 }: GuardsProps) {
             <b>{plural(counts.vetoed, "proposal")}</b> vetoed · <b>{plural(counts.overrides, "override")}</b> · <b>{counts.holds}</b> holds of {counts.decisions} decisions
           </span>
         ) : (
-          <span className="tools__family-blurb">No decisions on file yet, so nothing to count.</span>
+          <span className="tools__family-blurb">No decisions on file yet.</span>
         )}
       </div>
-      <p className="tools__sub r-item" style={ri(idx++)}>
-        Mr Bands proposes. The guards decide. Every veto and every override is printed in the journal next to what he wanted to do.
-      </p>
+      <p className="tools__sub r-item" style={ri(idx++)} />
     </section>
   );
 }

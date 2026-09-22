@@ -38,26 +38,26 @@ interface Col {
 }
 
 const COLS: Col[] = [
-  { key: "feeToTvl24hPct", label: "Daily fee yield", title: "fees earned in 24h as a share of the money in the pool; the number a liquidity provider cares about", render: (p) => <b>{p.feeToTvl24hPct === null ? "n/a" : `${p.feeToTvl24hPct.toFixed(2)}%`}</b> },
-  { key: "tvlUsd", label: "Money in pool", title: "what the pool holds right now: valued from chain for Meteora, reported by the venue's API for Raydium and Orca", render: (p) => fmtUsd(p.tvlUsd) },
-  { key: "volume24hUsd", label: "Volume 24h", title: "how much was traded through the pool in the last day", render: (p) => fmtUsd(p.volume24hUsd) },
+  { key: "feeToTvl24hPct", label: "Daily fee yield", title: "24h fees as a share of the pool's money", render: (p) => <b>{p.feeToTvl24hPct === null ? "n/a" : `${p.feeToTvl24hPct.toFixed(2)}%`}</b> },
+  { key: "tvlUsd", label: "Money in pool", title: "what the pool holds", render: (p) => fmtUsd(p.tvlUsd) },
+  { key: "volume24hUsd", label: "Volume 24h", title: "traded in the last day", render: (p) => fmtUsd(p.volume24hUsd) },
   {
     key: "fees24hUsd",
     label: "Fees 24h",
-    title: `fees paid to the people whose money is in the pool, last 24h. ${FEES_MARK_GLOSS}`,
+    title: `fees paid to the pool's liquidity in 24h. ${FEES_MARK_GLOSS}`,
     render: (p) => (
       <>
         {fmtUsd(p.fees24hUsd)}
-        {p.feesSource === "onchain" ? <span className="onchain" title={`measured on-chain over a ${p.feesWindowHours}h window`}>*</span> : null}
+        {p.feesSource === "onchain" ? <span className="onchain" title={`measured on-chain over ${p.feesWindowHours}h`}>*</span> : null}
         {p.feesSource === "api" ? <span className="api" title={`reported by ${VENUE_LABEL[venueOf(p)]}'s API`}>°</span> : null}
       </>
     ),
   },
-  { key: "turnover24h", label: "Turnover", title: "how many times the pool's money changed hands today", render: (p) => mult(p.turnover24h) },
+  { key: "turnover24h", label: "Turnover", title: "times the pool's money changed hands in a day", render: (p) => mult(p.turnover24h) },
   { key: "priceChange24hPct", label: "24h", title: "price change over the last day", render: (p) => <span className={p.priceChange24hPct === null ? "" : p.priceChange24hPct >= 0 ? "pos" : "neg"}>{p.priceChange24hPct === null ? "n/a" : fmtPct(p.priceChange24hPct, 1)}</span> },
-  { key: "binRangePct", label: "Range", title: "how far the price walked during the sample window, in percent (Meteora only)", render: (p) => (p.binRangePct === null ? "n/a" : `${p.binRangePct.toFixed(1)}%`) },
-  { key: "mcapUsd", label: "Mcap", title: "market cap: what every token in existence is worth at today's price", render: (p) => fmtUsd(p.mcapUsd) },
-  { key: "ageHours", label: "Age", title: "how long the pool has existed", render: (p) => ageLabel(p.ageHours) },
+  { key: "binRangePct", label: "Range", title: "how far the price walked (Meteora only)", render: (p) => (p.binRangePct === null ? "n/a" : `${p.binRangePct.toFixed(1)}%`) },
+  { key: "mcapUsd", label: "Mcap", title: "market cap", render: (p) => fmtUsd(p.mcapUsd) },
+  { key: "ageHours", label: "Age", title: "pool age", render: (p) => ageLabel(p.ageHours) },
 ];
 
 export function Pools({ screen, status, now }: PoolsProps) {
@@ -143,7 +143,7 @@ export function Pools({ screen, status, now }: PoolsProps) {
   };
 
   if (!screen) {
-    return <div className="loading">The screener has not filed a scan yet. It runs every half hour.</div>;
+    return <div className="loading">No scan yet. The screener runs every half hour.</div>;
   }
 
   const venues = venuesOf(screen);
@@ -154,7 +154,7 @@ export function Pools({ screen, status, now }: PoolsProps) {
     <section className="pools" id="pools" aria-label="Every pool, ranked">
       <div className="venue-chips" role="group" aria-label="Venue">
         <span className="seg">
-          <button type="button" aria-pressed={venue === "all"} onClick={() => pickVenue("all")} title="every venue on one board">All</button>
+          <button type="button" aria-pressed={venue === "all"} onClick={() => pickVenue("all")} title="every venue">All</button>
           {venuesPresent.map((v) => (
             <button key={v} type="button" aria-pressed={venue === v} onClick={() => pickVenue(v)} title={VENUE_GLOSS[v]}>
               {VENUE_LABEL[v]}
@@ -162,10 +162,10 @@ export function Pools({ screen, status, now }: PoolsProps) {
             </button>
           ))}
         </span>
-        <button type="button" className="toggle-chip" aria-pressed={stocksOnly} onClick={toggleStocks} title="only pools whose base token is a tokenized stock from a known issuer (xStocks, Backpack). Turning it on widens the quote filter to SOL & USDC, since stock pools are USDC-quoted.">
+        <button type="button" className="toggle-chip" aria-pressed={stocksOnly} onClick={toggleStocks} title="tokenized stocks only">
           Stocks{stockCount > 0 && <span className="venue-chip-count">{stockCount}</span>}
         </button>
-        {multi && <span className="venue-note">Mr Bands trades Meteora only, for now; Raydium and Orca are on the board so he can see where the money is.</span>}
+        {multi && <span className="venue-note">He trades Meteora only; Raydium and Orca are shown, not traded.</span>}
       </div>
 
       <div className="pools-filters">
@@ -177,7 +177,7 @@ export function Pools({ screen, status, now }: PoolsProps) {
             <option value="all">SOL &amp; USDC</option>
           </select>
         </label>
-        <span className="fld-note">Mr Bands trades SOL-paired Meteora pools only, for now</span>
+        <span className="fld-note">he trades SOL-paired pools only</span>
         <label className="fld">
           <span>Min money in pool</span>
           <select id="minliq" value={minLiq} onChange={(e) => { setMinLiq(Number(e.target.value)); setPage(1); }}>
@@ -210,10 +210,10 @@ export function Pools({ screen, status, now }: PoolsProps) {
         <table className="pools-table">
           <thead>
             <tr>
-              <th className="num col-rank" title="rank by Mr Bands' score">#</th>
+              <th className="num col-rank" title="rank by his score">#</th>
               <th className="col-pool">Pool</th>
-              <th className="col-venue" title="where the pool lives: Meteora is read from chain, Raydium and Orca from their public APIs">Venue</th>
-              <th className="num sortable" onClick={() => sortBy("score")} title="0–100: fee yield, marked down for thin, new, wild or one-sided pools">Mr Bands' score{arrow("score")}</th>
+              <th className="col-venue" title="venue">Venue</th>
+              <th className="num sortable" onClick={() => sortBy("score")} title="0–100: fee yield, marked down for thin, new, wild or one-sided">Mr Bands' score{arrow("score")}</th>
               {cols.map((c) => (
                 <th key={c.key} className="num sortable" onClick={() => sortBy(c.key)} title={c.title}>{c.label}{arrow(c.key)}</th>
               ))}
@@ -236,11 +236,11 @@ export function Pools({ screen, status, now }: PoolsProps) {
                         </span>
                       )}
                       <span className="chip tiny" title={stepGloss(v)}>{stepOf(p)} bps</span>
-                      <span className="chip tiny" title="base fee: the cut of every trade the pool pays to the people whose money is in it">{p.baseFeePct.toFixed(2)}% fee</span>
+                      <span className="chip tiny" title="base fee: the pool's cut of every trade">{p.baseFeePct.toFixed(2)}% fee</span>
                     </div>
                     {st && (
                       <div className="pool-status">
-                        <span className={`chip ${st === "in band" ? "inrange" : "dim"}`} title={st === "in band" ? "the journal shows an open band of his in this pool" : "he has read this pool in the last two hours and holds no band here"}>{STATUS_WORDS[st]}</span>
+                        <span className={`chip ${st === "in band" ? "inrange" : "dim"}`} title={st === "in band" ? "his open band is here" : "read in the last two hours"}>{STATUS_WORDS[st]}</span>
                       </div>
                     )}
                     <div className="pool-sub">
@@ -284,7 +284,7 @@ export function Pools({ screen, status, now }: PoolsProps) {
         </span>
       </div>
       <p className="fine">
-        Meteora rows: money in pool, fees, bin step and fee tiers are read from the pool accounts on Solana. Raydium and Orca rows: liquidity, volume, fees, tick spacing and fee tiers come from the venue's public API. Volume, prices, market cap and pool age are filled from GeckoTerminal where a venue does not report them. Fees marked <b>*</b> are measured from on-chain fee counters over the sample window and scaled to 24h; <b>°</b> are the venue's own 24h figure; the rest are volume × base fee. Tokenized stocks are recognised by mint: xStocks mints start with Xs; Backpack Securities are named as such by the venue or listed by hand.
+        Meteora rows are read from Solana, Raydium and Orca rows from the venue's API. Fees marked <b>*</b> are measured on-chain; <b>°</b> are the venue's figure; the rest are volume × base fee.
       </p>
     </section>
   );
