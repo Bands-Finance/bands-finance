@@ -183,17 +183,23 @@ export function decisionSources(file: string, sinceMs: number, opts: { chunkByte
  *               sample the shipped default stands and the surface says so.
  * Reads are bounded (the tail of each file) and read-only. Nothing here writes.
  * ------------------------------------------------------------------------------------------- */
+import { FEE_SHARE_DEFAULT, learnEnv } from "./desk/learning";
 import { freezeState } from "./learn/freeze";
 import { NEVER_TOUCHED, emptyLearnedView, type LearnMode, type LearnedChange, type LearnedFactor, type LearnedRatio, type LearnedSeat, type LearnedView } from "./learn/surface";
 
+/**
+ * The thresholds the page quotes are the LEARNER'S OWN, read from the same env the desk reads, not a
+ * second set typed here: an operator who raises LEARN_CAL_MIN_N must not leave the page saying "0 of
+ * the 20 it needs" while the desk is waiting for 30.
+ */
 /** What ships in code: the flat haircut at src/agent/policy.ts, which learning may lower and never raise. */
-export const DEFAULT_CALIBRATION = 0.5;
+export const DEFAULT_CALIBRATION = FEE_SHARE_DEFAULT;
 /** A pool with no penalty learned yet trades at its full size. The penalty may only shrink it. */
 export const DEFAULT_POOL_PENALTY = 1;
-/** The calibration may not move under this many scored seats in the lane. */
-export const CALIBRATION_MIN_SAMPLE = 20;
-/** A pool penalty may not move under this many closed seats in the pool. */
-export const POOL_MIN_SAMPLE = 3;
+/** The calibration may not move under this many scored seats in the lane (LEARN_CAL_MIN_N). */
+export const calibrationMinSample = (env: NodeJS.ProcessEnv = process.env): number => learnEnv(env).calMinN;
+/** A pool penalty may not move under this many closed seats in the pool (LEARN_POOL_MIN_N). */
+export const poolMinSample = (env: NodeJS.ProcessEnv = process.env): number => learnEnv(env).poolMinN;
 
 /** One row of lessons.jsonl, as the surfaces need it. Fields the learner may not yet write are optional. */
 interface LessonRow {
@@ -326,6 +332,8 @@ export interface LearnedViewOptions {
  */
 export function readLearnedView(opts: LearnedViewOptions): LearnedView {
   const now = opts.now ?? Date.now();
+  const calMin = calibrationMinSample(opts.env ?? process.env);
+  const poolMin = poolMinSample(opts.env ?? process.env);
   const view = emptyLearnedView(opts.mode, now);
   view.modelOn = opts.modelOn ?? false;
   view.frozen = learnFrozen(opts.env ?? process.env);
@@ -363,8 +371,8 @@ export function readLearnedView(opts: LearnedViewOptions): LearnedView {
       factor: last ? last.to : DEFAULT_CALIBRATION,
       defaultFactor: DEFAULT_CALIBRATION,
       n,
-      minSample: CALIBRATION_MIN_SAMPLE,
-      underSample: n < CALIBRATION_MIN_SAMPLE,
+      minSample: calMin,
+      underSample: n < calMin,
       asOf: laneLessons.length ? Math.max(...laneLessons.map((r) => r.at ?? 0)) : null,
       lastMovedAt: last ? last.at : null,
       why: last ? last.why : null,
@@ -388,8 +396,8 @@ export function readLearnedView(opts: LearnedViewOptions): LearnedView {
       factor: c.to,
       defaultFactor: DEFAULT_POOL_PENALTY,
       n: poolLessons.length,
-      minSample: POOL_MIN_SAMPLE,
-      underSample: poolLessons.length < POOL_MIN_SAMPLE,
+      minSample: poolMin,
+      underSample: poolLessons.length < poolMin,
       asOf: poolLessons.length ? Math.max(...poolLessons.map((r) => r.at ?? 0)) : null,
       lastMovedAt: c.at,
       why: c.why,

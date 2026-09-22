@@ -156,6 +156,33 @@ export async function runLearnSurfaceTests(test: Runner): Promise<void> {
     assert.equal(forecastRatio([{ predictedYieldPct: null, realizedYieldPctPerDay: null }]), null);
   });
 
+  await test("the page quotes the LEARNER's thresholds, so raising LEARN_CAL_MIN_N cannot leave it saying \"of the 20\"", () => {
+    const dir = fixture(scoredSeats(24), []);
+    const shipped = readLearnedView({ dir, mode: "paper", now: T0 + H }).factors.find((x) => x.lane === "memecoin")!;
+    assert.deepEqual([shipped.minSample, shipped.n, shipped.underSample], [20, 24, false], "24 scored seats clear the shipped minimum of 20");
+    const raised = readLearnedView({ dir, mode: "paper", now: T0 + H, env: { LEARN_CAL_MIN_N: "30" } as NodeJS.ProcessEnv }).factors.find((x) => x.lane === "memecoin")!;
+    assert.deepEqual([raised.minSample, raised.n, raised.underSample], [30, 24, true], "the desk is now waiting for 30, and the page says 30 rather than its own copy of 20");
+    const pool = readLearnedView({ dir, mode: "paper", now: T0 + H, env: { LEARN_POOL_MIN_N: "5" } as NodeJS.ProcessEnv, changes: 5 });
+    const journalled = fixture(scoredSeats(24), [change({ knob: "pool-penalty", pool: POOL, label: "wXMR/SOL", lane: undefined, from: 1, to: 0.75, n: 4, windowH: 48, why: "3 of its last 4 seats went through the bottom" })]);
+    const p = readLearnedView({ dir: journalled, mode: "paper", now: T0 + H, env: { LEARN_POOL_MIN_N: "5" } as NodeJS.ProcessEnv }).factors.find((x) => x.knob === "pool-penalty")!;
+    assert.equal(p.minSample, 5, "and the pool minimum comes from LEARN_POOL_MIN_N too");
+    assert.equal(pool.factors.every((x) => x.knob === "calibration"), true, "a pool with no journalled row shows no penalty at all");
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(journalled, { recursive: true, force: true });
+  });
+
+  await test("a pool penalty the DESK journalled (knob under `pool`, not `lane`) reaches the page", () => {
+    // the desk writes {knob: "pool-penalty", pool: <address>}; an earlier surface read it under `lane`
+    // and dropped every row, so this is the shape on disk, not a shape a test invented
+    const dir = fixture(scoredSeats(4), [change({ knob: "pool-penalty", lane: undefined, pool: POOL, label: "wXMR/SOL", from: 1, to: 0.75, n: 4, windowH: 48, why: "3 of its last 4 seats went through the bottom" })]);
+    const v = readLearnedView({ dir, mode: "paper", now: T0 + H });
+    const p = v.factors.find((x) => x.knob === "pool-penalty")!;
+    assert.ok(p, "the row is not dropped on the way to the page");
+    assert.deepEqual([p.lane, p.label, p.factor, p.defaultFactor], [POOL, "wXMR/SOL", 0.75, 1]);
+    assert.equal(v.changes[0].pool, POOL, "and the journal row keeps the pool it names");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   await test("the freeze switch: only the literal \"true\" freezes, and it is per knob too", () => {
     const table: [string | undefined, boolean][] = [
       [undefined, false],

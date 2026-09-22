@@ -9,7 +9,8 @@
  *   1. THE CALIBRATION, per lane. Today the desk prices a seat at half the pool's face fee pace
  *      (src/agent/policy.ts, the literal 0.5: "a band earns only while price is inside it"). The
  *      live book says that is still too generous: over the 17-19 Sep real-money run a seat came in
- *      at a median 0.40 of what was forecast for it, too high 48 times out of 52. So the 0.5
+ *      at a median 0.39 of what was forecast for it, too high 48 times out of 52 (recomputed from the
+ *      casebook by `npm run learning`, never typed in). So the 0.5
  *      becomes a learned share of face, hard-clamped to [0.1, 0.5]. It can never be raised above
  *      the 0.5 the code already uses, so a calibrated desk always refuses MORE seats, never fewer.
  *   2. THE POOL PENALTY, per pool. A pool whose recent seats ended by going THROUGH the band, or on
@@ -40,10 +41,17 @@
  *                   paper seats, and a seat can be stopped on drift while the price sits above the
  *                   band. The learners key on the END SIDE and on the yield ratio only.
  *
- * PACKAGE NOTE (learn-desk, 2026-09-22): this file is the desk's own copy of the learn-core
- * contract, written here because learn-core had not landed when the wiring was built. When
- * src/learn/ ships its calibration, freeze and view modules, delete this file and re-point the four
- * imports in src/index.ts and src/agent/policy.ts at them: the signatures below are the agreed ones.
+ * WHO ELSE MAY HOLD A COPY: nobody. This file is the one learner that acts, and because it is the
+ * only writer of DATA_DIR/learning.json and DATA_DIR/learning.jsonl it is also their only reader:
+ * src/learn/lessons.ts re-exports these readers rather than keeping a second spelling of the file,
+ * and src/learn/view.ts reads the state through them. The freeze table is the exception in the
+ * other direction: it lives in src/learn/freeze.ts and this file delegates to it, so the desk, the
+ * API, the site and the MCP tool can never disagree about whether he is learning.
+ *
+ * src/learn/calibration.ts answers the same question a second way, from the in-range share that the
+ * backfilled seats can supply and a forecast cannot. It is printed beside the target as a SECOND
+ * OPINION and it moves nothing: on a paper book its pace half is borrowed from the 17-19 Sep
+ * real-money run, and a borrowed number may inform him, not decide for him.
  */
 import fs from "node:fs";
 import { calibrationFrozen, poolsFrozen } from "../learn/freeze";
