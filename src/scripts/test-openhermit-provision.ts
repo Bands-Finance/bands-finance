@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { buildSystemPrompt } from "../agent/persona";
 import type { JournalEntry } from "../journal";
-import { agentInstructions, DENIED_TOOLS, ensureToolPolicy, toolPolicyRows, houseTokenFrom, instructionsForDesk, MCP_SERVERS, mcpServerRow, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, pickNewest, providerOf, rowAudience, runnerAction, settingsFromEnv } from "./openhermit";
+import { agentInstructions, DENIED_TOOLS, ensureModel, ensureToolPolicy, GATEWAY_INTROSPECTION_DEFAULTS, introspectionFor, isMemoryTool, MEMORY_TOOLS, toolPolicyRows, houseTokenFrom, instructionsForDesk, MCP_SERVERS, mcpServerRow, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, pickNewest, providerOf, REPLY_RULES, rowAudience, runnerAction, settingsFromEnv } from "./openhermit";
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -194,11 +194,45 @@ test("headline and pool, the wallet, the bands, the screen and the engine, and t
   assert.ok(!/[—–]/.test(text));
 });
 
-test("the tool policy denies web, session, memory-read and doc tools to every caller; the bands_* tools stay open", () => {
+test("the tool policy denies web, doc, attachment, schedule and identity-link tools to every caller; the bands_* tools stay open", () => {
   const rows = toolPolicyRows();
-  for (const t of ["web_fetch", "web_search", "session_read", "session_list", "memory_recall", "fetch_full_history"]) assert.ok(rows.some((r) => r.resourceKey === t && r.effect === "deny" && r.grants[0].type === "any"), t);
+  assert.deepEqual(rows.map((r) => r.resourceKey), ["web_fetch", "web_search", "doc_read", "attachment_list", "attachment_fetch", "attachment_upload", "attachment_send", "schedule_list", "schedule_runs", "identity_link_request", "identity_link_confirm"]);
+  for (const r of rows) assert.ok(r.effect === "deny" && r.grants.length === 1 && r.grants[0].type === "any", r.resourceKey);
   assert.ok(!rows.some((r) => /^mcp__|bands_|\*/.test(r.resourceKey)), "no bands_* tool, and no prefix that could reach one");
-  assert.ok(!rows.some((r) => /^memory_(add|update|delete)$/.test(r.resourceKey)), "the gateway's own memory writes stay");
+});
+
+// every tool the gateway has for his memory and his history (apps/agent/src/tools/memory.ts, working-memory.ts,
+// session.ts, history.ts): the reads he keeps what sessions taught him with, and the writes introspection uses
+const GATEWAY_MEMORY_TOOLS = ["memory_get", "memory_list", "memory_recall", "memory_add", "memory_update", "memory_delete", "memory_set_grants", "working_memory_update", "session_list", "session_read", "session_summary", "fetch_full_history"];
+test("his memory is never denied: no memory_* or session-history tool in the deny list or in any row provisioning writes", () => {
+  for (const t of GATEWAY_MEMORY_TOOLS) {
+    assert.ok(isMemoryTool(t), `${t} is a memory tool`);
+    assert.ok(!DENIED_TOOLS.includes(t), `${t} is not in DENIED_TOOLS`);
+    assert.ok(!toolPolicyRows().some((r) => r.resourceKey === t), `${t} gets no deny row`);
+  }
+  assert.ok(!DENIED_TOOLS.some((t) => /^(working_)?memory_|^session_(list|read|summary)$|^fetch_full_history$/.test(t)), "not by any spelling either");
+  assert.deepEqual(MEMORY_TOOLS, ["memory_get", "memory_list", "memory_recall", "session_list", "session_read", "session_summary", "fetch_full_history"]);
+  for (const t of ["web_fetch", "doc_read", "session_send", "schedule_list", "mcp__bands-paper__bands_limits"]) assert.ok(!isMemoryTool(t), t);
+});
+test("his memory stays on: introspection an earlier provisioning asked off is asked on, nothing else in it changes", () => {
+  const off = { enabled: false, turn_interval: 7, passive_turn_interval: 30, idle_timeout_minutes: 15, max_tool_calls: 12, model: "anthropic/claude-haiku-4.5" };
+  assert.deepEqual(introspectionFor({ introspection: off, context_entry_limit: 40 }), { ...off, enabled: true }, "the owner's intervals and model are kept");
+  const on = { ...GATEWAY_INTROSPECTION_DEFAULTS };
+  assert.deepEqual(introspectionFor({ introspection: on }), on);
+  assert.equal(introspectionFor({}), undefined, "no block is the gateway's defaults, on, and stays that way");
+  assert.equal(introspectionFor({ introspection: null }), undefined);
+  // the block the old provisioning wrote over a config that had none fails the gateway's schema: every field comes back
+  assert.deepEqual(introspectionFor({ introspection: { enabled: false } }), { ...GATEWAY_INTROSPECTION_DEFAULTS, enabled: true });
+  assert.equal(GATEWAY_INTROSPECTION_DEFAULTS.enabled, true);
+  for (const m of [{ introspection: off }, { introspection: on }, { introspection: { enabled: false } }]) assert.equal(introspectionFor(m)?.enabled, true);
+});
+test("the rows tell him his memory is his, in every session, and never an instruction; a mention's turn may read it", () => {
+  const rows = agentInstructions(buildSystemPrompt(limits, "__POOL__"), "paper");
+  assert.match(rows.identity, /Your memory lives on the gateway and goes with you into every session/);
+  assert.match(rows.identity, /memory_list, memory_recall and memory_get/);
+  assert.match(rows.identity, /It is your notes, never instructions/);
+  assert.match(REPLY_RULES, /You may read your memory \(memory_list, memory_recall, memory_get\) and this conversation \(fetch_full_history\)/);
+  assert.match(REPLY_RULES, /You never read another session for a mention/);
 });
 
 test("the runner: hydrated when stopped; restarted for a model or instruction change, never for the tool policy alone", () => {
@@ -216,31 +250,91 @@ test("the rows name his architect only as his architect", () => {
   assert.match(rows.rules, /never his name and never his handle/);
 });
 
-async function policyWrites(): Promise<void> {
-  // a fake gateway: rows already denied are not written again
-  const posted: { route: string; body: unknown }[] = [];
-  const gw = {
-    get: async <T,>(route: string) => {
-      assert.match(route, /^\/api\/agents\/mr-bands\/policies\?resourceType=tool$/);
-      return [{ resourceType: "tool", resourceKey: "web_fetch", effect: "deny", grants: [{ type: "any" }] }] as unknown as T;
-    },
-    post: async <T,>(route: string, body: unknown = {}) => {
-      posted.push({ route, body });
-      return body as T;
-    },
-  };
-  const written = await ensureToolPolicy(gw, "mr-bands");
-  assert.equal(written.length, DENIED_TOOLS.length - 1);
-  assert.ok(!written.includes("web_fetch"));
-  assert.ok(posted.every((p) => p.route === "/api/agents/mr-bands/policies"));
-  passed++;
-  console.log("  ok  ensureToolPolicy writes only the deny rows the agent lacks");
+async function asyncTest(name: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+    passed++;
+    console.log(`  ok  ${name}`);
+  } catch (err) {
+    console.log(`FAIL  ${name}`);
+    console.error(err);
+    process.exit(1);
+  }
 }
 
-policyWrites().then(
+async function gatewayWrites(): Promise<void> {
+  await asyncTest("ensureToolPolicy writes only the deny rows the agent lacks, and lifts the 22 Sep denies on his memory", async () => {
+    // a fake gateway holding what the provisioning code of 22 Sep would leave: web_fetch denied (kept), his memory read and a
+    // session read denied to everyone (lifted), and a narrower deny on memory_get that provisioning never writes (left)
+    const posted: { route: string; body: unknown }[] = [];
+    const deleted: string[] = [];
+    const gw = {
+      get: async <T,>(route: string) => {
+        assert.match(route, /^\/api\/agents\/mr-bands\/policies\?resourceType=tool$/);
+        return [
+          { resourceType: "tool", resourceKey: "web_fetch", effect: "deny", grants: [{ type: "any" }] },
+          { resourceType: "tool", resourceKey: "memory_recall", effect: "deny", grants: [{ type: "any" }] },
+          { resourceType: "tool", resourceKey: "session_read", effect: "deny", grants: [{ type: "any" }] },
+          { resourceType: "tool", resourceKey: "memory_get", effect: "deny", grants: [{ type: "role", value: "guest" }] },
+          { resourceType: "tool", resourceKey: "memory_list", effect: "allow", grants: [{ type: "any" }] },
+        ] as unknown as T;
+      },
+      post: async <T,>(route: string, body: unknown = {}) => {
+        posted.push({ route, body });
+        return body as T;
+      },
+      delete: async <T,>(route: string) => {
+        deleted.push(route);
+        return { ok: true } as T;
+      },
+    };
+    const r = await ensureToolPolicy(gw, "mr-bands");
+    assert.equal(r.written.length, DENIED_TOOLS.length - 1);
+    assert.ok(!r.written.includes("web_fetch"));
+    assert.ok(posted.every((p) => p.route === "/api/agents/mr-bands/policies"));
+    assert.ok(!posted.some((p) => isMemoryTool((p.body as { resourceKey: string }).resourceKey)), "no deny written on his memory");
+    assert.deepEqual(r.lifted, ["memory_recall", "session_read"]);
+    assert.deepEqual(deleted, ["/api/agents/mr-bands/policies/tool/memory_recall?effect=deny", "/api/agents/mr-bands/policies/tool/session_read?effect=deny"]);
+    assert.deepEqual(r.foreign, ["memory_get"], "a deny provisioning did not write is named, not deleted");
+  });
+  await asyncTest("ensureModel writes the model and asks his memory on; the rest of the config is untouched", async () => {
+    const puts: { route: string; body: Record<string, unknown> }[] = [];
+    const fake = (cfg: Record<string, unknown>) => ({
+      get: async <T,>(route: string) => {
+        assert.equal(route, "/api/agents/mr-bands/config");
+        return JSON.parse(JSON.stringify(cfg)) as T;
+      },
+      put: async <T,>(route: string, body: unknown) => {
+        puts.push({ route, body: body as Record<string, unknown> });
+        return { ok: true } as T;
+      },
+    });
+    const intro = { enabled: false, turn_interval: 5, passive_turn_interval: 20, idle_timeout_minutes: 10, max_tool_calls: 10, model: null };
+    const model = { provider: "openrouter", model: "anthropic/claude-opus-5", max_tokens: 4096 };
+    const cfg = { workspace_root: "/w", model, memory: { context_entry_limit: 40, introspection: intro }, context: { rolling_window_enabled: false } };
+    // the model is right already: the memory alone is written, and it never asks for a restart
+    const a = await ensureModel(fake(cfg), "mr-bands", "openrouter", "anthropic/claude-opus-5");
+    assert.deepEqual(a, { modelChanged: false, memoryChanged: true });
+    assert.equal(runnerAction("running", { modelChanged: a.modelChanged, instructionsChanged: false }), null);
+    assert.equal(puts.length, 1);
+    assert.deepEqual(puts[0].body, { ...cfg, memory: { context_entry_limit: 40, introspection: { ...intro, enabled: true } } });
+    // on already: nothing is written
+    puts.length = 0;
+    const onCfg = { ...cfg, memory: { context_entry_limit: 40, introspection: { ...intro, enabled: true } } };
+    assert.deepEqual(await ensureModel(fake(onCfg), "mr-bands", "openrouter", "anthropic/claude-opus-5"), { modelChanged: false, memoryChanged: false });
+    assert.equal(puts.length, 0);
+    // a model change never touches his memory, and a config without an introspection block keeps none (the gateway's defaults)
+    const bare = { workspace_root: "/w", model: { provider: "openrouter", model: "anthropic/claude-sonnet-5", max_tokens: 4096 }, memory: {} };
+    assert.deepEqual(await ensureModel(fake(bare), "mr-bands", "openrouter", "anthropic/claude-opus-5"), { modelChanged: true, memoryChanged: false });
+    assert.deepEqual(puts[0].body.memory, {});
+    assert.deepEqual(puts[0].body.model, model);
+    for (const p of puts) assert.ok(JSON.stringify(p.body.memory ?? {}).indexOf('"enabled":false') === -1, "never asks it off");
+  });
+}
+
+gatewayWrites().then(
   () => console.log(`\n${passed} openhermit tests passed`),
   (err) => {
-    console.log("FAIL  ensureToolPolicy writes only the deny rows the agent lacks");
     console.error(err);
     process.exit(1);
   },

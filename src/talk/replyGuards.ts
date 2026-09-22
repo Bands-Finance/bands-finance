@@ -10,8 +10,11 @@
  *                             variants of one thank-you, and a bot's "you're early, not late" coming back out
  *   classifyMention           the three kinds he answers: a reply to his post, a post that names him in its body,
  *                             a quote of his post; anything else (his handle only in an inherited reply prefix) is null
- *   optOutIn                  "stop", "unsubscribe", "leave me alone", "do not reply to me", "don't @ me" and similar,
- *                             outside stop-loss and friends
+ *   optOutIn                  "stop", "unsubscribe", "leave me alone", "do not reply to me", "don't @ me", "fuck off",
+ *                             "unfollow me" and similar, outside stop-loss and friends; "not interested" and "no thanks"
+ *                             only as the whole message ("not interested in memecoins, what about stocks?" is a question)
+ *   tokenAskIn                a question about HIS token (his coin, his ca, his mint, $bands, his launch), read past the
+ *                             LP words that carry a token word ("which token pairs", "deploy", "a mint authority")
  *   foldForMatch / instructionIn   the text the mention rules read (invisible characters stripped, look-alike letters
  *                             folded to latin), and whether it reads like an instruction
  *   isHollow / isFarm         a reply-worthy thought, or three words of praise; a fresh account with no followers
@@ -98,11 +101,34 @@ export function instructionIn(text: string): boolean {
 export const ARCHITECT_NAME_RE = /\b(zach\w*|louz\w*|loubert)\b/;
 
 /**
- * A token topic in a mention: the fixed lines answer it and the model is never asked (fixedAnswer), and a model reply
- * to a mention that holds one is refused whatever it says ("yes." carries the claim through the question).
+ * A question about HIS token in a mention: the fixed lines answer it and the model is never asked (fixedAnswer), and a
+ * model reply to a mention that holds one is refused whatever it says ("yes." carries the claim through the question).
+ * A token word ("wen token", "wen coin", "is that ticker yours", clawpump, dexscreener, a presale, a bare $bands), his
+ * ca, contract address or mint ("whats the ca", "contract address?", "your mint"), his launch ("are you launching
+ * anything", "did u launch bands", "wen launch"), the dev of his token ("r u the dev of bands"), or a rug of his. An LP
+ * question is not one, and never gets the token line: "how much sol do you deploy per band", "when do you launch a new
+ * band", "is the dlmm pool contract audited", "do you avoid pools with a mint authority", "how do devs plug into the
+ * engine", "did you get rugged on any pool" (the review of 22 Sep, third round). Read on tokenTopicText, never raw.
  */
 export const TOKEN_ASK_RE =
-  /\b(tokens?|tkns?|coins?|memecoins?|meme coins?|tickers?|ca|mints?|contract( address)?|launch\w*|devs?|deploy\w*|airdrops?|presale|clawpump|pump ?fun|pump\.fun|on pump|dexscreener|dex screener|rug\w*|bonding curve)\b|(^|[^\w])\$(bands|mrbands)\b/;
+  /\b(tokens?|tkns?|coins?|memecoins?|meme coins?|tickers?|ca|contract address|mint address|airdrops?|presale|clawpump|pump ?fun|pump\.fun|on pump|dexscreener|dex screener|bonding curve)\b|(^|[^\w])\$(bands|mrbands)\b|\b(your|ur|his) (own )?(mint|contract|ca|ticker)\b|^\W*(the |your |ur )?(mint|contract)\W*$|\bwhat('?s| is|s)? (the|your|ur|his) (mint|contract)\W*$|\blaunch(ing|ed|es)? (anything|something|soon|yet|date|day)\b|\b(wen|when) launch\b|\b(did|have|has|will|are|r) (you|u|he|mr ?bands) (already |ever |gonna |going to )?launch(ed|ing)? (mr ?)?bands\b|\bdeploy(ed|ing|s)? (a |an |the |your |ur )?(own )?(contract|mint)\b|\b(r|are) (u|you) (the |a )?devs?\b|\bdevs? (of|behind) (bands|mr ?bands|it|this|that|the (project|thing))\b|\b(is|was) (this|that|it|bands|mr ?bands) (a )?rug\b|\b(will|would|gonna|going to|are|r) (you|u) (\w+ ){0,2}rug( us| me)?\W*$/;
+
+/**
+ * LP words that carry a token word and name no token of his ("which token pairs do you lp", "the base token", "token
+ * x"): read out before the token route, so an LP question goes to the model like any other.
+ */
+const LP_TOKEN_PHRASE_RE = /\b(tokens?|coins?) pairs?\b|\b(base|quote|pool|pair|lp|both|each|either|other) (tokens?|coins?)\b|\btokens? [xy]\b/g;
+
+/** The text the token route reads: a folded mention (foldForMatch) with the LP words that carry a token word read out. PURE. */
+export function tokenTopicText(folded: string): string {
+  return String(folded ?? "").replace(LP_TOKEN_PHRASE_RE, " ");
+}
+
+/** The first word of a question about his token in a mention (its handles removed, folded, LP words read out), or null. PURE. */
+export function tokenAskIn(text: string): string | null {
+  const m = tokenTopicText(foldForMatch(String(text ?? "").replace(/@\w{1,15}/g, " "))).match(TOKEN_ASK_RE);
+  return m ? m[0].trim() : null;
+}
 
 /** Whether a text carries a copycat mint, whole or a piece of five characters or more from its start or its end. */
 export function namesCopycat(text: string): boolean {
@@ -133,11 +159,14 @@ export const NARRATION_RE =
   /i'?ll skip|skipping|skip this|no reply|not replying|i'?ll pass|nothing (useful )?to add|falls under|i should (keep|reply|say)|the reply|this (post|tweet|mention|reply) (is|reads|looks)|reads as|no pitch|draft|as an ai language model|stay(ing)? (quiet|silent)|stay(ing)? out of (it|this|that)|not engaging|nothing (true|specific)|\bbait\b|fixed line|\bdeflect(s|ed|ing)?\b|\ba shill\b|\bhostile\b|leav(e|ing) (this|it|that)( one)? alone|sit(ting)? (this|it|that)( one)? out|nothing to say|no thoughts|not taking the|let(ting)? (this|it|that)( one)? (go|slide|pass)|pass(ing)? on (this|that|it)\b|won'?t (engage|respond|answer)/;
 
 /**
- * token topics are template-only: a model never talks about a token, a coin, a mint or a launch, and never claims
- * one ("the coin is mine", "i launched it", "i work for the team behind it": the copycat is not his)
+ * token topics are template-only: a model never talks about a token, a coin, a mint address or a launch of one, and
+ * never claims one ("the coin is mine", "i launched it", "i work for the team behind it": the copycat is not his).
+ * An LP answer's own words are not token talk: "i deploy what the engine sizes", "a new band launches once the range
+ * closes", "i read the pool's contract", "a mint authority left on", "devs read the engine" (the review of 22 Sep,
+ * third round). Only the claims made with them are: "i launched it", "i deployed it", "launching soon", "the dev wallet".
  */
 export const TOKEN_TOPIC_RE =
-  /\b(tokens?|coins?|memecoins?|mints?|minted|ticker|ca|contract( address)?|pump(fun)?|clawpump|launch(ed|es|ing)?|deploy(ed|s|ing)?|airdrops?|presale|mcap|market cap|holders?|early|mine|devs?|i (made|created|own|run|work for)|(the )?team behind)\b/;
+  /\b(tokens?|coins?|memecoins?|minted|ticker|ca|contract address|mint address|pump(fun)?|clawpump|airdrops?|presale|mcap|market cap|holders?|early|mine|i (made|created|own|run|work for)|(the )?team behind)\b|\b(i|we|i'?ve|we'?ve|i have|we have|he|they) (just |already |never )?(launched|deployed|minted|dropped|released) (it|this|that|one|mine|ours|bands|mr ?bands)\b|\blaunch(ing|es)? (soon|date|day|next|this week|tomorrow|tonight)\b|\b(my|our) launch\b|\bdevs? (wallet|team|allocation|supply|sold|dumped|bags?)\b|\bdoxx\w*\b/;
 /** pitching: he never sells the engine or asks anyone to act */
 export const PITCH_RE = /\b(sign up|signup|check (it |this |me )?out|join|try the engine|dm me|dms)\b/;
 /** his book: any of these needs the word "paper" beside it ("my bands printed today" is his book too) */
@@ -291,8 +320,8 @@ export function vetReply(text: string, ctx: VetContext): VetRefusal | null {
     const tok = norm.match(TOKEN_TOPIC_RE);
     if (tok) return refuse("token-topic", `"${tok[0]}": token topics are template-only`);
     // a mention about a token gets a fixed line or nothing: a model's "yes." would carry the claim through the question
-    const asked = foldForMatch(ctx.mention.text.replace(/@\w{1,15}/g, " ")).match(TOKEN_ASK_RE);
-    if (asked || namesCopycat(ctx.mention.text)) return refuse("token-topic", `the mention asks about a token ("${(asked?.[0] ?? "the copycat mint").trim()}"): template-only`);
+    const asked = tokenAskIn(ctx.mention.text);
+    if (asked || namesCopycat(ctx.mention.text)) return refuse("token-topic", `the mention asks about a token ("${asked ?? "the copycat mint"}"): template-only`);
     const allowed = new Set(ctx.allowedNumbers.map((n) => String(n)));
     for (const n of raw.match(/\d+(?:[.,]\d+)*/g) ?? []) if (!allowed.has(n)) return refuse("number", `"${n}" is not in the facts`);
     const word = norm.match(NUMBER_WORD_RE);
@@ -343,7 +372,14 @@ export function classifyMention(m: Mention, selfId: string, selfHandle: string |
 
 /** X: "implement keyword detection for common opt-out phrases". Spelled out ("do not reply") as well as contracted. */
 const OPT_OUT_RE =
-  /\b(stop( (replying|responding|tagging|mentioning|messaging|it|pls|please))?|unsubscribe|opt ?out|(do not|don'?t|dont) (ever )?(reply|respond|tag|mention|message|dm)|never (reply|respond|tag|mention|message|talk)( to)? (me|us)|quit (replying|responding|tagging|mentioning|messaging)|no more (replies|replying|tags|tagging|mentions|messages)|remove me|leave me (alone|out)|go away|mute|shut up|stfu|i don'?t want (your |any |more )?(replies|tags|mentions|messages|answers))\b|\bno replies( (please|pls|thanks|thx))?\W*$/;
+  /\b(stop( (replying|responding|tagging|mentioning|messaging|it|pls|please))?|unsubscribe|opt ?out|(do not|don'?t|dont) (ever )?(reply|respond|tag|mention|message|dm)|(do not|don'?t|dont) (ever )?(talk|speak) to (me|us)|never (reply|respond|tag|mention|message|talk)( to)? (me|us)|quit (replying|responding|tagging|mentioning|messaging)|no more (replies|replying|tags|tagging|mentions|messages)|remove me|leave (me|us) (alone|out|be)|go away|(fuck|fuk|fck|fk|f|piss|bugger|sod) off|unfollow (me|us)|mute|shut up|stfu|i don'?t want (your |any |more )?(replies|tags|mentions|messages|answers))\b|\bno replies( (please|pls|thanks|thx))?\W*$/;
+/**
+ * "not interested" and "no thanks" say stop only as the whole message, a closer or two aside ("not interested, bot",
+ * "no thanks bot", "not interested in your replies"). With a question behind them they are a question: "not interested
+ * in memecoins, what about stocks?" asks about stocks, and "no thanks, how do fees work?" about fees.
+ */
+const OPT_OUT_WHOLE_RE =
+  /^\W*(?:(?:i'?m|im|i am|we'?re|we are|honestly|sorry|nah|nope)[,.!]?\s+)*(?:(?:really|just|so|totally|still)\s+)?(?:not interested|no (?:thanks|thank you|thx|ty)|nah (?:thanks|thank you|thx|ty))(?:\s+in (?:you|this|it|that|your (?:replies|reply|bot|posts?|tweets?|messages|takes|spam)))?(?:[,.!]?\s+(?:thanks|thank you|thx|ty|bot|bro|ser|sorry|mate|pal|buddy|fam|lol|man|dude|though|tho|anyway|mr ?bands))*\W*$/;
 /** "don't @ me" and "dont @me": read before the handles are removed, and a bare "@" ends it, which \b never could */
 const AT_ME_RE = /(^|[^\w])(do not|don'?t|dont|never|stop|quit|no more)\s*@\s*(me|us)?(?!\w)/;
 const NOT_OPT_OUT_RE = /\bstop ?loss(es)?\b|\bnon ?stop\b|\bunstoppable\b/g;
@@ -352,7 +388,7 @@ const NOT_OPT_OUT_RE = /\bstop ?loss(es)?\b|\bnon ?stop\b|\bunstoppable\b/g;
 export function optOutIn(text: string): boolean {
   if (AT_ME_RE.test(foldForMatch(String(text ?? "")))) return true;
   const norm = foldForMatch(String(text ?? "").replace(/@\w{1,15}/g, " ")).replace(NOT_OPT_OUT_RE, " ");
-  return OPT_OUT_RE.test(norm);
+  return OPT_OUT_RE.test(norm) || OPT_OUT_WHOLE_RE.test(norm);
 }
 
 /** a named topic makes a short mention a real one ("paper first?" is not hollow) */

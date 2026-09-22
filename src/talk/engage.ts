@@ -25,11 +25,14 @@
  *   13 prune: pending past ENGAGE_MAX_AGE_HOURS is stale, handled past 7 days goes; save; release the lock.
  *
  * Holds. A failed POST never starts over on the next pass: a 402 (out of credits), a 401 or a 403 other than "not
- * mentioned" (the account or the app refused) hold X at once, a 429 waits for its x-rate-limit-reset, a 5xx holds
- * from the third in a row, and a mentions read that goes through clears none of
+ * mentioned" or "duplicate content" (the account or the app refused) hold X at once, a 429 waits for its
+ * x-rate-limit-reset, a 5xx holds from the third in a row, and a mentions read that goes through clears none of
  * it (only a reply that posts does). The vetted draft stays on its pending mention, so the retry after the hold
- * re-vets and posts it without asking the brain again. A brain timeout or outage holds the brain (10 minutes,
- * doubling to 2 hours) before the next X read, so an outage spends neither reads nor model calls.
+ * re-vets and posts it without asking the brain again. A 403 "duplicate content" refuses that one text, not the
+ * account: final for its mention (the kept draft goes with it), no hold, the same text is not sent again that UTC day,
+ * and it does not use up the pass, so three people asking the same thing never hold the answers behind them. A brain
+ * timeout or outage holds the brain (10 minutes, doubling to 2 hours) before the next X read, so an outage spends
+ * neither reads nor model calls.
  *
  * State, all in TALK_STATE_PATH: engage-state.json (temp + rename after every mention; unreadable THROWS),
  * engage-optout.json (permanent), x-mentions.jsonl (one row per outcome), engage.log, engage-status.json (the last
@@ -45,7 +48,7 @@ import { withLock } from "./lock";
 import { classifyMention, instructionIn, isFarm, isHollow, looksLikeBot, massTag, optOutIn, SELF_USER_ID, spelledDomainIn, vetReply, type MentionKind } from "./replyGuards";
 import { readTickState, tokenHashOf } from "./tick";
 import { blockedWordsIn } from "./wordguard";
-import { byIdAsc, DRAFTS_FILE, getMentions, linksInMentionBody, noteUncertainReply, postReply, readPosts, readRate, rateProblem, screenMention, TALK_STOP_FILE, whoAmI, xGateProblem, type Mention, type XDeps } from "./x";
+import { byIdAsc, DRAFTS_FILE, getMentions, linksInMentionBody, noteUncertainReply, postReply, readDrafts, readPosts, readRate, rateProblem, screenMention, TALK_STOP_FILE, whoAmI, xGateProblem, type Mention, type XDeps } from "./x";
 import { COPYCAT_MINTS } from "../risk/house";
 
 // ---------------------------------------------------------------- the seam with src/talk/replyBrain.ts
@@ -136,8 +139,9 @@ export const ASKS_PER_AUTHOR_PER_DAY = 3;
 export const ASKS_PER_REPLY_PER_PASS = 2;
 /**
  * Model runs one ask costs, counted against ENGAGE_MODEL_CALLS_PER_DAY: the reply turn, and the gateway's idle
- * introspection, which runs his model over every session 10 minutes after its last turn whatever the agent's config
- * says (docs/openhermit.md). Each mention is a fresh session, so each ask is two runs on the shared OpenRouter key.
+ * introspection, which runs his model over every session 10 minutes after its last turn to keep what it taught him
+ * (his memory stays on: docs/openhermit.md). Each mention is a fresh session, so each ask is two runs on the shared
+ * OpenRouter key.
  */
 export const MODEL_RUNS_PER_ASK = 2;
 /** one fixed line goes out at most this many times a UTC day, to anyone (X: duplicated replies to many accounts are spam) */
@@ -148,6 +152,11 @@ export const BRAIN_HOLD_MAX_MIN = 120;
 /** a dormant line is written to engage.log at most this often unless it changes */
 const STATUS_EVERY_MS = HOUR;
 const NOT_MENTIONED_RE = /x api 403\b.*(mentioned|reply to this conversation|not allowed to reply)/i;
+/**
+ * X refused the text itself, a copy of one of his posts ("You are not allowed to create a Tweet with duplicate
+ * content"): a refusal of that one text, never of the account. It happens when a fixed line answers a second account.
+ */
+export const DUPLICATE_CONTENT_RE = /^x api 403\b.*\bduplicate content\b/i;
 
 export interface HandledEntry {
   /** "posted <id>", "skip: why", "refused: rule", "stale", "opt-out", "drafting", "posting", "unknown: why", "x 403: ..." */
@@ -672,8 +681,12 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
   let stopReason: string | null = null;
   /** a model cap that held a mention back (the pass goes on for the fixed lines behind it) */
   let modelHeld: string | null = null;
-  /** reply POSTs tried this pass, whatever X answered: the per-pass cap and the spacing count these */
+  /** reply POSTs tried this pass, whatever X answered, a duplicate-content refusal aside: the per-pass cap counts these */
   let posts = 0;
+  /** every reply POST tried this pass: the 5 s spacing counts these */
+  let tried = 0;
+  /** texts X refused as duplicate content today (x-drafts.jsonl): never sent again the same UTC day */
+  const duplicates = new Set(readDrafts(t.statePath).filter((d) => d.type === "reply" && DUPLICATE_CONTENT_RE.test(d.reason ?? "") && utcDay(Date.parse(d.at)) === utcDay(now)).map((d) => d.text.trim()));
   const recentReplies = () => readPosts(t.statePath).filter((p) => p.type === "reply").slice(-50).map((p) => p.text);
   let asksThisPass = 0;
   const asksPerPass = t.engageRepliesPerPass * ASKS_PER_REPLY_PER_PASS;
@@ -782,6 +795,13 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
     // the same fixed line goes to at most TEMPLATE_REPLIES_PER_DAY mentions a UTC day, whoever asks (X: duplicated
     // replies to many accounts are spam); past that the mention is skipped, never carried into the next day
     const line = m.draft?.source === "template" ? m.draft.text : fixed?.kind === "reply" && fixed.source === "template" ? fixed.text : null;
+    // X refused this very text as duplicate content today: it would refuse it again, so no POST is spent on it
+    const ready = m.draft?.text ?? (fixed?.kind === "reply" ? fixed.text : null);
+    if (ready !== null && duplicates.has(ready.trim())) {
+      finish(m, "refused: x 403 duplicate content", sc.kind, "x refused this text as duplicate content today; not sent again");
+      skipped++;
+      continue;
+    }
     if (line !== null) {
       const sent = readPosts(t.statePath).filter((p) => p.type === "reply" && p.text.trim() === line.trim() && utcDay(Date.parse(p.at)) === utcDay(now)).length;
       if (sent >= TEMPLATE_REPLIES_PER_DAY) {
@@ -883,7 +903,7 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
     }
     const kept: KeptDraft = { text: draft.text, source: draft.source, ...(draft.template ? { template: draft.template } : {}) };
     // h. post, at most once, 5 s after the pass's last POST whatever X answered it, and not once a stop file is there
-    if (posts > 0) await (deps.sleep ?? defaultSleep)(REPLY_SPACING_MS);
+    if (tried > 0) await (deps.sleep ?? defaultSleep)(REPLY_SPACING_MS);
     const stopNow = stopFile();
     if (stopNow) {
       putBack(m, kept);
@@ -896,7 +916,10 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
     // everyone else the post names (its reply prefix and its body) is left out of his reply: he answers the author only
     const exclude = (m.mentionUserIds ?? []).filter((id) => id !== m.authorId && id !== selfId);
     const r = await postReply(draft.text, { tweetId: m.id, handle: m.authorHandle, ...(exclude.length ? { excludeUserIds: exclude } : {}) }, xDeps);
-    posts++;
+    tried++;
+    // a duplicate-content refusal sent nothing and says nothing about the account: it does not use up the pass
+    const duplicate = !r.posted && DUPLICATE_CONTENT_RE.test(r.reason);
+    if (!duplicate) posts++;
     if (r.posted) {
       st.consecutive403 = 0;
       postOk();
@@ -905,6 +928,14 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
       continue;
     }
     const reason = r.reason;
+    if (duplicate) {
+      // X refused this one text: final for this mention (the kept draft goes with it), no hold, no 403 count, and the
+      // pass goes on to the next mention
+      duplicates.add(draft.text.trim());
+      finish(m, "refused: x 403 duplicate content", sc.kind, reason.slice(0, 200));
+      skipped++;
+      continue;
+    }
     if (NOT_MENTIONED_RE.test(reason)) {
       st.consecutive403 += 1;
       if (st.consecutive403 >= NOT_MENTIONED_403_LIMIT) st.repliesOff = { why: `${st.consecutive403} "not mentioned" 403s in a row (${reason.slice(0, 120)})`, at: now };
@@ -917,7 +948,8 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
     }
     if (/^x api (401|402|403|429|5\d\d)\b/.test(reason)) {
       // X said no, so nothing went out: it goes back with its vetted draft and waits for the hold. A 401 or a 403 other
-      // than "not mentioned" is the account or the app refused, not this mention: held at once, like a 402
+      // than "not mentioned" or "duplicate content" is the account or the app refused, not this mention: held at once,
+      // like a 402
       const held = postFailed(reason, r.resetAt);
       putBack(m, kept);
       stopReason = `${reason.slice(0, 160)}${held ? `; ${held}` : ""}`;

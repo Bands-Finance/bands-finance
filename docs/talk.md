@@ -494,14 +494,16 @@ prints it every time, for free.
    (`your`, `token`, `here`, `change`, `placeholder`, `example`, `xxx`) reads as dormant, and the reason never
    prints the value. The loop never reads the gateway's own `.env`.
 2. Re-provision his rows (`src/scripts/openhermit.ts`) so the reply rules are his and the tool deny policy is on the
-   agent (web, session and memory reads denied to every caller): that needs the real token.
+   agent (web, docs, attachments, schedules and identity links denied to every caller). His memory stays on: no
+   memory or session-history tool is denied, the run lifts any such deny an earlier provisioning wrote (the code of
+   22 Sep denied seven), and introspection is asked on again. That needs the real token.
 3. **X's approval.** X's developer guidelines say an app posting AI-generated replies "Requires prior approval from X",
    and "Deploying AI-generated replies without approval is a violation, even if the content itself is helpful". File
    help.x.com/forms/platform and update the app's use case at console.x.com. Until X approves, `X_REPLIES=true` is a
    risk taken knowingly. The fixed-answer templates are not AI-generated.
 4. An OpenRouter key limit for his model (Opus 5 per call is estimated, not measured, at $0.05 to $0.15). Each ask
-   is two model runs: the reply turn, and the gateway's idle introspection 10 minutes later, which runs on every
-   session whatever the agent's config says (docs/openhermit.md). `ENGAGE_MODEL_CALLS_PER_DAY` counts both.
+   is two model runs: the reply turn, and the gateway's idle introspection 10 minutes later, which keeps what the
+   session taught him (his memory stays on: docs/openhermit.md). `ENGAGE_MODEL_CALLS_PER_DAY` counts both.
 5. Check whether @MrBandsSol owns the developer app at console.x.com: owned reads of the mentions endpoint are
    billed at $0.001 a resource instead of $0.005 a post.
 6. Then `X_REPLIES=true` in `.env` and `launchctl bootstrap` the engage plist.
@@ -556,9 +558,11 @@ mention text; never hides that he is a bot (the "Automated by @louz514" label st
 
 **The screen**, all before any model call, every outcome in `x-mentions.jsonl`: the opt-out
 (`stop`, `unsubscribe`, `opt out`, `don't reply` and `do not reply`, `do not tag me`, `never reply to me`, `quit
-replying`, `no more replies`, `remove me`, `don't @ me`, `shut up`, `stfu`, `leave me alone`, `go away`, `mute`; not
-stop-loss, nonstop or unstoppable), which goes into `engage-optout.json` for good with no reply ("if a user says stop,
-stop"); the kind; himself; stale; the bot deny list and bios; `screenMention` (flagged and suspicious handles, scam
+replying`, `no more replies`, `remove me`, `don't @ me`, `don't talk to me`, `shut up`, `stfu`, `leave me alone`,
+`leave me be`, `go away`, `fuck off`, `piss off`, `unfollow me`, `mute`; `not interested` and `no thanks`
+only as the whole message, a closer like "bot" or "thanks" aside, since "not interested in memecoins, what about
+stocks?" is a question; not stop-loss, nonstop or unstoppable), which goes into `engage-optout.json` for good with no
+reply ("if a user says stop, stop"); the kind; himself; stale; the bot deny list and bios; `screenMention` (flagged and suspicious handles, scam
 bait, key requests, 3 a day per account); any link at all (X wraps every link in t.co), and a domain spelled out
 ("solclaim dot io", "solclaim[.]io"); `instructionIn`: `INJECTION_RE` plus a paraphrase ("disregard the above", "your
 task now"), a gateway tool's name (web_fetch, session_*, memory_*), read through invisible characters and look-alike
@@ -573,9 +577,16 @@ farm (an account under 30 days old with under 20 followers), otherwise sent to t
 **His brain** (`src/talk/replyBrain.ts`): the fixed-answer templates first, with no model call. They route on the
 topic, not the phrasing, on the text with its @handles removed, invisible characters stripped and look-alike letters
 folded: the copycat line only when the mention carries the copycat mint (or a piece of five characters or more) or asks
-whether a coin is his; any other token word (token, coin, memecoin, ticker, ca, mint, contract, launch, dev, deploy,
-airdrop, presale, clawpump, pump.fun, dexscreener, rug, a bare `$bands`) gets "no token of mine is live" (a generic
-"which tokens" is skipped); who built him, who is behind him, bot or human, or his architect by name gets the
+whether a coin is his; any other question about HIS token gets "no token of mine is live": a token word (token, coin,
+memecoin, ticker, airdrop, presale, clawpump, pump.fun, dexscreener, a bare `$bands`), his ca, contract address or
+mint ("whats the ca", "contract address?", "your mint"), his launch ("are you launching anything", "did u launch
+bands", "wen launch"), the dev of his token ("r u the dev of bands") or a rug of his ("is bands a rug"). An LP question
+that only borrows one of those words goes to the model like any other: "how much sol do you deploy per band", "when do
+you launch a new band after a rebalance", "do you deploy both sides of the range", "which token pairs do you lp on
+meteora", "is the dlmm pool contract audited", "how do devs plug into the engine", "do you avoid pools with a mint
+authority still on" (the review of 22 Sep, third round; "did you get rugged on any pool" is still skipped by the
+screen, whose word guard blocks "rugged"). A generic plural ("which tokens", "memecoins") is skipped, and the model is
+not asked; who built him, who is behind him, bot or human, or his architect by name gets the
 architect line, which names nobody; real money, live, on chain or simulated gets the paper line; "how much"; any price
 question (a buy or sell word, "would you add", "is sol going up", "where is it headed", bullish, a good time, the dip);
 "are you a bot" and "are you real" only as the whole question; an affiliation question ("are you with meteora", "an
@@ -586,8 +597,11 @@ mention, so a price or token question placed there still gets its fixed line. A 
 the mention back and holds the brain (10 minutes, doubling to 2 hours, cleared by the next answer): no X read and no
 ask until it ends, so an outage spends neither. Unauthorized or not-found sets `brainDown` with a hash of the token,
 dormant until the token changes or `engage resume`. On the gateway, provisioning denies his agent every tool granted
-to "any" that a mention could turn against him (web_fetch, web_search, session and memory reads, docs, attachments):
-the talk loop voids a turn that called a tool outside `bands_*`, and the deny stops the tool from running at all.
+to "any" that a mention could turn against him (web_fetch, web_search, docs, attachments, schedules, identity links),
+and never his memory: a reply turn may read his memories (`memory_get`, `memory_list`, `memory_recall`) and its own
+conversation (`fetch_full_history`). The talk loop voids a turn that called anything else outside `bands_*`, another
+session's history included (`session_list`, `session_read`, `session_summary`: a turn with no user is served any
+session on the agent, his architect's chats included), and the deny stops a web tool from running at all.
 
 **The guards** (`src/talk/replyGuards.ts` `vetReply`, then `postTweet`'s lint). Every check refuses; none rewrites.
 A refused draft is final, logged in `x-drafts.jsonl` and `x-mentions.jsonl`, and never falls back to posting.
@@ -605,7 +619,7 @@ A refused draft is final, logged in `x-drafts.jsonl` and `x-mentions.jsonl`, and
 | self-echo | a sentence twice in one text | |
 | echo | a link, handle, cashtag or address from the mention or its parent, or any shared 5-word run | "you're early, not late"; "$GUARD ... undervalued" |
 | address | a base58 address that is not `TOKEN_MINT`, or the copycat's without a denial | |
-| model only | token topics (token, coin, memecoin, mint, ticker, ca, contract, pump, clawpump, launch, deploy, airdrop, presale, mcap, holders, early) and ownership claims ("mine", "i made", "i work for", "the team behind"), and any reply at all to a mention about a token (a "yes." carries the claim through the question); any number not in the facts, in digits or in words ("three sol", "a few bands"); a pitch (sign up, check out, join, dm me, try the engine); advice ("i'd hold", "get out", "all in", "i'd be a buyer here", "if i were you", "not advice but", "size small", "off the table", "the best pool"); price direction ("goes up", "from here", "printing", "looks cheap", "ready to run", "the bottom is in", "expect a bounce", "it'll climb", "the dip"); profit ("made money", "up big", "printed", "win", "it works", "is up on", "best week"); live money ("real money", "real funds", "went live", "no longer paper", "on chain", "a real track record"); dunks ("cope", "stay poor", "touch grass", "skill issue", "ratio", "rekt", "cooked", "who asked", "cringe"); politics (with dems, libs, gensler, tariffs, the senate, the president); and fewer than 3 meaningful words ("k", "...", "no") | the review of 22 Sep, both rounds: each one passed the lint |
+| model only | token topics (token, coin, memecoin, minted, ticker, ca, contract address, mint address, pump, clawpump, airdrop, presale, mcap, holders, early), a launch or dev claim ("i launched it", "i deployed it", "launching soon", "my launch", "the dev wallet") and ownership claims ("mine", "i made", "i work for", "the team behind"), and any reply at all to a mention about his token (a "yes." carries the claim through the question). An LP answer's own words pass: "i deploy", "a band launches", "the pool's contract", "a mint authority", "devs"; any number not in the facts, in digits or in words ("three sol", "a few bands"); a pitch (sign up, check out, join, dm me, try the engine); advice ("i'd hold", "get out", "all in", "i'd be a buyer here", "if i were you", "not advice but", "size small", "off the table", "the best pool"); price direction ("goes up", "from here", "printing", "looks cheap", "ready to run", "the bottom is in", "expect a bounce", "it'll climb", "the dip"); profit ("made money", "up big", "printed", "win", "it works", "is up on", "best week"); live money ("real money", "real funds", "went live", "no longer paper", "on chain", "a real track record"); dunks ("cope", "stay poor", "touch grass", "skill issue", "ratio", "rekt", "cooked", "who asked", "cringe"); politics (with dems, libs, gensler, tariffs, the senate, the president); and fewer than 3 meaningful words ("k", "...", "no") | the review of 22 Sep, both rounds: each one passed the lint |
 | paper | the book (my book, my bands, positions, seats, fees, net, pnl, sol, range, a band opened or closed) without "paper"; "not paper", "no longer paper" and "from paper" are not "paper" | |
 | similar | a model reply with 0.5 meaningful-word overlap with any of his last 50 model replies. The fixed lines are meant to repeat (the copycat denial most of all) and are held by the per-account and conversation caps instead | 23 variants of "greatness is a big word" |
 
@@ -616,13 +630,18 @@ mention (`x-posts.jsonl`, so one reply per mention survives a crash). `engage.ts
 **The POST.** `postReply` leaves everyone the mention names except its author (its reply prefix and its body, from
 `entities.mentions[].id`) out of his reply with `reply.exclude_reply_user_ids`, so a reply deep in someone else's thread
 pings nobody who did not summon him; a plain reply keeps the plain `{text, reply:{in_reply_to_tweet_id}}` body. Each
-POST tried counts toward `ENGAGE_REPLIES_PER_PASS`, whatever X answered, and waits 5 seconds after the pass's last one.
+POST tried counts toward `ENGAGE_REPLIES_PER_PASS`, whatever X answered, a duplicate-content refusal aside, and waits 5
+seconds after the pass's last one.
 
 **After posting.** A 403 "not mentioned" is final for that mention; three in a row turn replies off until
-`engage resume`. A 401, a 402, any other 403, a 429 or a 5xx means nothing went out: the mention goes back to pending
-with its vetted draft, and the reply-post counter (`postFails`, cleared only by a reply that posts, never by a mentions
-read) sets the hold: a 402, a 401 or a 403 (the account or the app refused, "looks automated", duplicate content)
-holds at once for 60 minutes, a 429 waits for its `x-rate-limit-reset`, a 5xx holds from the third in a row;
+`engage resume`. A 403 "duplicate content" ("You are not allowed to create a Tweet with duplicate content": a fixed line
+answering a second account) refuses that one text, not the account: final for that mention ("refused: x 403 duplicate
+content", the kept draft dropped), no hold, no count toward the 403s or `postFails`, not counted toward the pass's
+replies, and the same text is not sent again that UTC day (x-drafts.jsonl remembers the refusal), so three people
+asking the same thing never hold the answers behind them. A 401, a 402, any other 403, a 429 or a 5xx means nothing
+went out: the mention goes back to pending with its vetted draft, and the reply-post counter (`postFails`, cleared only
+by a reply that posts, never by a mentions read) sets the hold: a 402, a 401 or a 403 (the account or the app refused,
+"looks automated") holds at once for 60 minutes, a 429 waits for its `x-rate-limit-reset`, a 5xx holds from the third in a row;
 each hold doubles to 360 (`TALK_RETRY_BACKOFF_MIN`, 0 turns holds off). The retry after the hold re-vets the kept draft
 and posts it without asking the brain again. An unreachable POST may have landed, so the mention stays handled and is
 never retried. Our own limiter (`rate: `) defers and is not an X failure.
