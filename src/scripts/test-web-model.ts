@@ -471,7 +471,7 @@ async function main() {
     assert.equal(deskBlocks([noted])[0]!.fallbackNote, "Screened (in-range). The model was not asked.");
   });
 
-  await test("no other token's mint is ever on the site or in the platform chat (Zach, 22 Sep: not disclosed on the website at all)", () => {
+  await test("no other token's mint and no Meridian mention on the site or in the platform chat (Zach, 22 Sep)", () => {
     const { COPYCAT_MINTS } = require("../risk/house") as typeof import("../risk/house");
     const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
     const root = path.resolve(__dirname, "../..");
@@ -487,6 +487,8 @@ async function main() {
     for (const f of files) {
       let text = "";
       try { text = readFileSync(f, "utf8"); } catch { continue; }
+      // Zach, 22 Sep: the site never mentions Meridian (CSS class names are not shown to visitors)
+      if (!/\.css$/.test(f)) assert.ok(!/meridian402|sister desk|["'`>]\s*Meridian\b/.test(text), `${path.relative(root, f)} mentions Meridian`);
       for (const m of COPYCAT_MINTS) {
         assert.ok(!text.includes(m), `${path.relative(root, f)} names another token's mint`);
         assert.ok(!text.replace(/<wbr\s*\/>/g, "").includes(m), `${path.relative(root, f)} names another token's mint (split by <wbr>)`);
