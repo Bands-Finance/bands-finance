@@ -9,6 +9,14 @@
  *            its mint as not his, and the disclosure line as the thread's reply. No price, no chart, no buy.
  *   follow   following @clawpumptech. X removed follows from every self-serve API tier on 16 Apr 2026
  *            (docs.x.com/changelog), so this is a printed instruction, never an API call.
+ *   correction  the builder voice (sentence case): owns the false line of his intro. Since 22 Sep both sites show
+ *            only his real-money run, so "every decision and every guard veto" are no longer public there. Post it
+ *            only while the paper journal is off the sites.
+ *   pinned   the builder voice: the standing disclosure (the builder plan's sample 0) that replaces the intro as the
+ *            pinned post: paper until after 8 Oct, the paper book's start, and the real run's 19.79 to 19.71. X's
+ *            API cannot pin, so pinning it is one click in the app, signed in as his account.
+ * The two builder kinds pass the builder voice's guards (src/talk/postGuards.ts vetBuilderPost) against a facts
+ * block of his standing facts, in place of the lowercase lint; the older kinds keep the lowercase lint.
  *
  * Every part goes through lintText with the desk's context, plus one rule of this module: a part may @mention
  * only the handles its kind allows (entry: exactly @clawpumptech, and it must; the others: nobody). The lint
@@ -27,12 +35,16 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { COPYCAT_MINTS } from "../risk/house";
+import { blockOf, bookStartOf, count, fact, realRunFacts, standingFacts, type FactsBlock } from "./facts";
+import { vetBuilderPost } from "./postGuards";
 import type { TalkData } from "./data";
 import { lintContextOf, talkEnv, type TalkEnv } from "./env";
 import { lintText, mentionsHouseToken, type LintContext, type LintRule } from "./lint";
 import { postTweet, TALK_STOP_FILE, whoAmI, xGateProblem, type XDeps } from "./x";
 
-export const ANNOUNCE_KINDS = ["intro", "entry", "token", "follow"] as const;
+export const ANNOUNCE_KINDS = ["intro", "entry", "token", "follow", "correction", "pinned"] as const;
+/** the kinds written in the builder voice: sentence case, vetted by vetBuilderPost */
+export const BUILDER_KINDS: readonly string[] = ["correction", "pinned"];
 export type AnnounceKind = (typeof ANNOUNCE_KINDS)[number];
 export type PostedKind = Exclude<AnnounceKind, "follow">;
 
@@ -46,7 +58,29 @@ export const CLAWPUMP_HANDLE = "clawpumptech";
 export const SITE_URL = "https://mrbands.finance";
 
 /** The only @handles each kind may carry. */
-export const ALLOWED_MENTIONS: Record<PostedKind, readonly string[]> = { intro: [], entry: [CLAWPUMP_HANDLE], token: [] };
+export const ALLOWED_MENTIONS: Record<PostedKind, readonly string[]> = { intro: [], entry: [CLAWPUMP_HANDLE], token: [], correction: [], pinned: [] };
+
+/** The correction, word for word (Zach, 22 Sep). */
+export const CORRECTION_TEXT =
+  "A correction to my first post. I said every decision and every guard veto was public at mrbands.finance. Since 22 Sep the site shows only my real-money run. For now, these posts are the only public record of my paper book.";
+
+/** The standing disclosure (the builder plan's sample 0), its paper figures from the book's own start. */
+export function pinnedText(start: { startSol: number; startUsdc: number }): string {
+  return `I'm Mr Bands, an AI agent making markets on Meteora: I place liquidity in bands around the price and collect swap fees. Until after 8 Oct my book is paper, ${count(start.startSol)} SOL and ${count(start.startUsdc)} USDC against live prices. My one real-money run, 17 to 19 Sep, went from 19.79 to 19.71 SOL.`;
+}
+
+/** The facts the builder one-offs are checked against: where he stands, the real run, and what the sites show since 22 Sep. */
+export function announceFactsBlock(kind: string, start: { startSol: number; startUsdc: number; startedAt: number }, now: number): FactsBlock {
+  return blockOf(
+    `announce:${kind}`,
+    [
+      ...standingFacts({ now, ...start }),
+      ...realRunFacts(),
+      fact("sites", "Since 22 Sep both of my sites show only my real-money run; the paper book came off them.", "none", "git 0506fa4, 6d9c796"),
+    ],
+    ["SOL/USD"],
+  );
+}
 
 /**
  * His disclosure line (docs/sprint.md, "How he talks about it"), with the fee destination as it stands since
@@ -67,6 +101,10 @@ export interface AnnounceFacts {
   tokenMint: string | null;
   /** TOKEN_MINT was set but is not usable (not base58, several mints, the copycat's) */
   tokenProblem: string | null;
+  /** the paper book's start (the pinned post's paper figures); the running desk's defaults without a book */
+  bookStart?: { startSol: number; startUsdc: number; startedAt: number };
+  /** when the facts were read (the builder kinds' facts block) */
+  now?: number;
 }
 
 const BASE58_MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -84,11 +122,11 @@ export function tokenMintOf(env: NodeJS.ProcessEnv): { mint: string | null; prob
 
 export function factsOf(data: Pick<TalkData, "source" | "book">, env: NodeJS.ProcessEnv): AnnounceFacts {
   const t = tokenMintOf(env);
-  return { source: data.source, openBands: data.book ? data.book.bands.length : null, tokenMint: t.mint, tokenProblem: t.problem };
+  return { source: data.source, openBands: data.book ? data.book.bands.length : null, tokenMint: t.mint, tokenProblem: t.problem, bookStart: bookStartOf(data.book), now: Date.now() };
 }
 
 export interface AnnounceViolation {
-  rule: LintRule | "mention" | "house-token-early";
+  rule: LintRule | "mention" | "house-token-early" | `builder-${string}`;
   detail: string;
 }
 
@@ -120,6 +158,11 @@ function textsOf(kind: PostedKind, f: AnnounceFacts): string[] | string {
         `i'm entering the ansemhack clawrena, hosted by @${CLAWPUMP_HANDLE}, as an agent that makes markets on meteora, on paper right now. my own token is $bands, mint ${f.tokenMint}. any other "mr bands" $bands is not mine.`,
         disclosureFor(f.tokenMint),
       ];
+    case "correction":
+      return [CORRECTION_TEXT];
+    case "pinned":
+      if (f.source !== "paper") return `the desk data reads ${f.source}, and the pinned post says the book is paper`;
+      return [pinnedText(f.bookStart ?? bookStartOf(null))];
     case "token":
       if (!f.tokenMint) return "TOKEN_MINT is not set: the token is not launched, so there is nothing to announce";
       return [
@@ -138,9 +181,19 @@ export function mentionsIn(text: string): string[] {
  * The checks every part of a kind passes: the lint, the kind's @mention allowlist (and its required tags), and no
  * naming of his token before it exists. Exported so the tests can feed it texts the composer would never write.
  */
-export function checkParts(kind: PostedKind, texts: readonly string[], tokenLive: boolean, ctx: LintContext): AnnounceViolation[] {
+export function checkParts(kind: PostedKind, texts: readonly string[], tokenLive: boolean, ctx: LintContext, facts?: FactsBlock): AnnounceViolation[] {
   const allowed = ALLOWED_MENTIONS[kind];
   const violations: AnnounceViolation[] = [];
+  if (BUILDER_KINDS.includes(kind)) {
+    // the builder voice: its own guards (sentence case, numbers from the facts, paper and real said, no token, no
+    // mention, no model or vendor name), the lint inside them with sentence case in place of lowercase
+    const block = facts ?? announceFactsBlock(kind, bookStartOf(null), Date.now());
+    texts.forEach((text, i) => {
+      const r = vetBuilderPost(text, { facts: block, length: "long", lint: ctx, recent: [], arc: true });
+      if (r) violations.push({ rule: `builder-${r.rule}`, detail: `${r.detail}${texts.length > 1 ? ` (part ${i + 1})` : ""}` });
+    });
+    return violations;
+  }
   texts.forEach((text, i) => {
     const at = texts.length > 1 ? ` (part ${i + 1})` : "";
     for (const v of lintText(text, ctx).violations) violations.push({ rule: v.rule, detail: `${v.detail}${at}` });
@@ -155,10 +208,12 @@ export function checkParts(kind: PostedKind, texts: readonly string[], tokenLive
 export function composeAnnouncement(kind: AnnounceKind, f: AnnounceFacts, ctx: LintContext): Composed {
   if (!(ANNOUNCE_KINDS as readonly string[]).includes(kind)) return refuse(kind, `unknown announcement "${kind}": ${ANNOUNCE_KINDS.join(", ")}`);
   if (kind === "follow") return refuse(kind, followInstruction());
-  if (f.tokenProblem) return refuse(kind, f.tokenProblem);
+  // the builder one-offs never name a token: a TOKEN_MINT problem is not theirs to refuse on
+  if (f.tokenProblem && !BUILDER_KINDS.includes(kind)) return refuse(kind, f.tokenProblem);
   const texts = textsOf(kind, f);
   if (typeof texts === "string") return refuse(kind, texts);
-  const violations = checkParts(kind, texts, f.tokenMint !== null, ctx);
+  const facts = BUILDER_KINDS.includes(kind) ? announceFactsBlock(kind, f.bookStart ?? bookStartOf(null), f.now ?? Date.now()) : undefined;
+  const violations = checkParts(kind, texts, f.tokenMint !== null, ctx, facts);
   if (violations.length) return refuse(kind, "a part fails the checks", violations);
   return { ok: true, kind, parts: texts };
 }
@@ -250,7 +305,7 @@ export async function announce(kind: string, deps: AnnounceDeps): Promise<Announ
 
   const gate = xGateProblem(t);
   if (gate) {
-    for (const text of parts.slice(start)) await postTweet(text, { type: "announce" }, { ...deps, env: envObj, now });
+    for (const text of parts.slice(start)) await postTweet(text, { type: "announce", sentenceCase: BUILDER_KINDS.includes(kp) }, { ...deps, env: envObj, now });
     return { status: "drafted", kind: kp, parts: parts.slice(start), reason: gate };
   }
 
@@ -261,7 +316,7 @@ export async function announce(kind: string, deps: AnnounceDeps): Promise<Announ
   const rec: AnnouncementRecord = prior ?? { ids: [], texts: [], at: new Date(now).toISOString(), done: false };
   for (let i = start; i < parts.length; i++) {
     const prev = rec.ids[rec.ids.length - 1] ?? null;
-    const r = await postTweet(parts[i], { type: "announce", inThreadOf: prev }, { ...deps, env: envObj, now });
+    const r = await postTweet(parts[i], { type: "announce", inThreadOf: prev, sentenceCase: BUILDER_KINDS.includes(kp) }, { ...deps, env: envObj, now });
     if (!r.posted) {
       return rec.ids.length
         ? { status: "refused", kind: kp, reason: `part ${i + 1} of ${parts.length} not posted (${r.reason}); parts ${rec.ids.join(", ")} are out, and the next run resumes at part ${i + 1}` }

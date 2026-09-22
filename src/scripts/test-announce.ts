@@ -153,7 +153,7 @@ async function main(): Promise<void> {
 
   console.log("the mention exception is narrow");
   await test("only the entry may tag, only @clawpumptech, and the entry must", () => {
-    assert.deepEqual(a.ALLOWED_MENTIONS, { intro: [], entry: ["clawpumptech"], token: [] });
+    assert.deepEqual(a.ALLOWED_MENTIONS, { intro: [], entry: ["clawpumptech"], token: [], correction: [], pinned: [] });
     const ok = "i'm entering the ansemhack clawrena, hosted by @clawpumptech";
     assert.deepEqual(a.checkParts("entry", [ok], false, CTX), []);
     assert.ok(a.checkParts("entry", [`${ok} with @someone`], false, CTX).some((v) => v.rule === "mention" && v.detail.includes("@someone")));

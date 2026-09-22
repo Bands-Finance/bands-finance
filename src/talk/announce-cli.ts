@@ -1,5 +1,5 @@
 /**
- * `talk.ts announce <intro|entry|token|follow> [--preview]` (src/talk/announce.ts). Kept out of talk.ts so the
+ * `talk.ts announce <intro|entry|token|follow|correction|pinned> [--preview]` (src/talk/announce.ts). Kept out of talk.ts so the
  * command line gains one case. --preview composes and checks only: nothing is written, not even a draft.
  */
 import { composeAnnouncement, announce, factsOf, followInstruction, type AnnounceKind, type AnnounceViolation } from "./announce";
@@ -37,6 +37,7 @@ export async function runAnnounce(args: string[], t: TalkEnv, now: number, out: 
   switch (r.status) {
     case "posted":
       out(`posted ${r.kind}: ${r.ids.join(", ")}`);
+      if (r.kind === "pinned") out(`X's API cannot pin: pin it by hand in the app, signed in as his account (x.com/i/status/${r.ids[0]}, the ... menu, Pin to your profile)`);
       return 0;
     case "instruction":
       out(r.text);

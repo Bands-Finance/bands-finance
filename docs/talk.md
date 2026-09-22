@@ -20,7 +20,14 @@ src/talk/drafts.ts       drafts for each post type, from live data only (pure)
 src/talk/personality.ts  personality.json: propose, record uses, the gate, approve/veto (Zach's handle)
 src/talk/reflect.ts      the daily reflect call and the weekly drift check
 src/talk/x.ts            the X API v2 client (OAuth 1.0a, rate limits, mentions read, mention screen, postReply)
-src/talk/tick.ts         the posting loop: one tick picks at most one event post (see "The posting loop")
+src/talk/tick.ts         the posting loop: the lock, the stop file, the backoff, then the builder voice (default) or the
+                         older ledger cards (TALK_VOICE=ledger; see "The posting loop")
+src/talk/builder.ts      the builder voice's tick: read, pick, ask his model, vet, post (see "The builder voice")
+src/talk/moments.ts      the picker: candidate moments, scores, the caps and the spacing (pure)
+src/talk/facts.ts        the facts block: pre-rounded figures tagged paper, real or none, with their sources (pure)
+src/talk/postBrain.ts    his post writer: one fresh gateway session per post, the JSON contract, the daily call cap
+src/talk/postGuards.ts   vetBuilderPost: the guards every builder post passes (pure)
+src/talk/buildLedger.ts  the build ledger: ops/build.seed.jsonl plus TALK_STATE_PATH/build.jsonl
 src/talk/craft.ts        the craft of a loop post: openers, the comparison, the miss, the daily card (pure; see "What he learned from Merd")
 src/talk/guards.ts       the guards ported from Merd's failures: similarity, repeated stat, jitter, the event caps, the backoff (pure)
 src/talk/lock.ts         the lock file around the tick and around read-rate, post, write-rate
@@ -33,6 +40,8 @@ src/scripts/test-tick.ts the posting loop's tests: npx tsx src/scripts/test-tick
 src/scripts/test-talk-craft.ts    the craft's tests: npx tsx src/scripts/test-talk-craft.ts
 src/scripts/test-talk-cadence.ts  the guards' tests: npx tsx src/scripts/test-talk-cadence.ts
 src/scripts/test-engage.ts        the engage loop's tests: npx tsx src/scripts/test-engage.ts
+src/scripts/test-talk-builder.ts  the builder voice's tests: npx tsx src/scripts/test-talk-builder.ts
+ops/build.seed.jsonl              the build ledger's seed: the week's real build history since 17 Sep, in plain words
 ops/com.bands.mrbands.talk.plist  launchd: one tick every 15 minutes
 ops/com.bands.mrbands.engage.plist  launchd: one engage pass every 120 seconds
 ```
@@ -50,9 +59,11 @@ npx tsx src/scripts/talk.ts veto <id> --operator <handle> --reason "<reason>"
 npx tsx src/scripts/talk.ts use <bit-id> landed|flopped              # the measure step for one bit
 npx tsx src/scripts/talk.ts reflect                                  # daily
 npx tsx src/scripts/talk.ts drift                                    # weekly, before review
-npx tsx src/scripts/talk.ts tick [--force strap|daily|lesson|stack]  # one tick of the posting loop
+npx tsx src/scripts/talk.ts tick [--force daily]                     # one tick of the posting loop; --force previews the pick (no model call)
 npx tsx src/scripts/talk.ts check                                    # which account the X keys sign in as (a read)
-npx tsx src/scripts/talk.ts announce intro|entry|token|follow [--preview]   # his one-off posts, each once
+npx tsx src/scripts/talk.ts announce intro|entry|token|follow|correction|pinned [--preview]   # his one-off posts, each once
+npx tsx src/scripts/talk.ts build list                               # the build ledger: seed + TALK_STATE_PATH/build.jsonl
+npx tsx src/scripts/talk.ts build add '<json row>'                   # append one row (checked; see "The build ledger")
 npx tsx src/scripts/talk.ts engage                                   # one pass of the engage loop
 npx tsx src/scripts/talk.ts engage status                            # free, no network: mode, dormant reason, cursor, pending, today, hold
 npx tsx src/scripts/talk.ts engage preview <mentions.json> [--no-model]   # screen, brain and vet a saved X response; no X read or post, ever
@@ -71,8 +82,15 @@ must read paper, the paper book's open bands, `TOKEN_MINT`), checked, and posted
 | `entry` | his AnsemHack Clawrena entry in his own words, tagging `@clawpumptech` (required), never the hackathon template. With `TOKEN_MINT`: his token by its mint, any other "mr bands" $bands not his, and the disclosure line as a self-reply. | 1, or 2 with a mint |
 | `token` | only with `TOKEN_MINT`: live, by its mint, a key and not a share, the copycat by its mint as not his, the disclosure line as a self-reply | 2 |
 | `follow` | a printed instruction: X removed follows (and likes, quote posts) from every self-serve API tier on 16 Apr 2026, so the follow is done by hand, signed in as his account | 0 |
+| `correction` | the builder voice, word for word: "A correction to my first post. I said every decision and every guard veto was public at mrbands.finance. Since 22 Sep the site shows only my real-money run. For now, these posts are the only public record of my paper book." Post it only while the paper journal is off the sites. | 1 |
+| `pinned` | the builder voice, the standing disclosure (the plan's sample 0) that replaces the intro as the pinned post: an AI agent making markets on Meteora, paper until after 8 Oct with the book's own start (150 SOL and 10,000 USDC), the real run 17 to 19 Sep, 19.79 to 19.71 SOL. X's API cannot pin: after it posts, the command prints the one click to do in the app. | 1 |
 
-Checks on every part: the lint, and a per-kind @mention allowlist (only the entry may tag, only `@clawpumptech`,
+`correction` and `pinned` are sentence case and pass the builder voice's guards (`vetBuilderPost`, see "The builder
+voice") against a facts block of his standing facts (the book's start, the arc's dates, the real run, what the sites
+show since 22 Sep), in place of the lowercase lint; `postTweet` lints them with the sentence-case rule. A
+`TOKEN_MINT` problem does not refuse them: they never name a token. The older kinds below keep the lowercase lint.
+
+Checks on every part of the older kinds: the lint, and a per-kind @mention allowlist (only the entry may tag, only `@clawpumptech`,
 and it must). The lint's own mention rule is unchanged (at most two anywhere). No token talk before `TOKEN_MINT`;
 a `TOKEN_MINT` that is the copycat's, several mints or not base58 refuses every kind. Links end the text, as full
 URLs, so the length counts them as X does.
@@ -112,6 +130,11 @@ Empty values read as unset. Only the literal `true` turns `X_LIVE` on.
 | `DATA_DIR` | | `data` | where the journal, paper book and ledger are read |
 | `CYCLE_INTERVAL_SEC` | | `300` | data older than 3 cycles is stale |
 | `X_LIVE` | | off | only `true` lets anything reach X (posts and engagement reads) |
+| `TALK_VOICE` | | `builder` | the posting loop's voice; `ledger` rolls back to the older lowercase cards |
+| `TALK_BUILDER_LIVE` | | off | only `true` (with `X_LIVE`) lets a builder-voice post reach X; until then every pick is a dry record and a draft row |
+| `TALK_MODEL_CALLS_PER_DAY` | | `8` | asks of his post writer per UTC day, counted on disk (`post-brain.json`) before each ask; `0` leaves only the daily's template |
+| `TALK_TARGET_POSTS_PER_DAY` | | `5` | past this many posts in a UTC day only an urgent moment goes (the daily, a close at or below -1 SOL, a promise due); `POSTS_PER_DAY` (6) stays the hard cap |
+| `TALK_POST_TIMEOUT_MS` | | `90000` | the deadline of one ask of his post writer |
 | `X_REPLIES` | | off | only `true` (with `X_LIVE` and his brain) lets the engage loop read mentions and reply |
 | `ENGAGE_READS_PER_DAY` | | `300` | mention posts read per UTC day, from X's `result_count` |
 | `ENGAGE_MODEL_CALLS_PER_DAY` | | `60` | asks of his brain per UTC day; templates and screened mentions make none |
@@ -267,9 +290,111 @@ To go live on X, Zach:
 
 For reflect: `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`).
 
+## The builder voice
+
+Zach, 22 Sep: the posting loop speaks in the builder-in-public voice (the plan with its 23 samples and the judges'
+notes: the scratchpad's `x-builder-plan.json`, key `builder`). He posts as the founder building his own market maker:
+what he built, cut, fixed or got wrong, what his desk decided and why, what things cost, and one daily card. First
+person, sentence case, dry, one or two numbers a post, no performance. `TALK_VOICE` unset means this voice; the
+loop's lock, stop file, identity check, rate limiter and X backoff are unchanged.
+
+**CODE PICKS, HIS MODEL WORDS, CODE DECIDES.** Each tick (`src/talk/builder.ts`):
+
+1. **Reads** the paper book and its report (`src/paper/report.ts paperSummary`: equity against the start valued at
+   today's SOL price, and the SOL/USD valuation term), the last 24 hours of the ledger, the paper lessons of 48h, the
+   journal tail, the learners' counts in `mrbands.log`, the screener snapshot, the build ledger, his own posts of 7
+   days.
+2. **Picks** (`src/talk/moments.ts pickMoment`, pure) at most one moment. The per-close, open, strap and milestone
+   kinds of the older loop are retired; a close is a moment only with its lessons row, and a fee total goes out only
+   with the book's result beside it.
+
+   | moment | when | score | key |
+   |---|---|---|---|
+   | daily | 14:00-15:00 UTC (`TALK_DAILY_HOUR_UTC`), the one fixed-time post, with a template fallback | 100 | `daily:<day>` |
+   | promise | a promised build row he posted: done when a row `resolves` it, slipped after its due day | 55 | `promise:<id>` |
+   | desk | a paper close from `lessons.jsonl`; at or below -1 SOL it scores 90 and more and stays eligible its whole UTC day | 30, +15 at 0.5 SOL either way, +60 at -1 SOL | `close:<band>` |
+   | followup | a close in a pool he posted about in the last 24h ("Follow-up on ORE/SOL:") | desk +20 | `close:<band>` |
+   | halt | a halt holding the paper desk 30 minutes or more | 50 | `halt:<day>` |
+   | arc | 28 Sep (judging opens), 7 Oct (closes), 8 Oct (the end of paper), from 15 UTC | 40 | `arc:<day>` |
+   | refusals | his entry rules refused 3 or more of his own moves on one pool today | 35 | `refusals:<day>:<pool>` |
+   | build / miss | a public build-ledger row of the last 7 days; one a UTC day | 30 (a miss 42), -2 a day | `build:<id>` |
+   | learner | a learner count that moved; at most one in his last 14 posts | 18 (58 at its count) | `learn:<cat>:<n>` |
+   | screener | one observation from 16 UTC; at most one in his last 14 posts; never a verdict on a pool | 16 | `screen:<day>` |
+
+   Desk moments lose 5 a hour of age (not the big losses); the same type as his last post loses 15 (no shape twice in
+   a row); a moment under 20 is silence, never filler. A desk event within 30 minutes is news; later it is a
+   past-tense follow-up with no clock time; after 3 hours it is dropped (a big loss is kept its UTC day). A close is
+   told only when the journal holds decision rows across its band's life with no gap over 60 minutes (the PLTRx/SOL
+   gap of 17 to 21 Sep); otherwise the daily card names it as the worst close. Caps: `POSTS_PER_DAY` (6) hard; past
+   `TALK_TARGET_POSTS_PER_DAY` (5) only an urgent moment; `TALK_MIN_GAP_MIN` (90) plus 0 to `TALK_GAP_JITTER_MIN` (45)
+   minutes fixed by the key (uneven gaps; the daily waits at most 45); `TALK_WINDOW_POSTS` in `TALK_WINDOW_HOURS`
+   (the daily passes); `TALK_NIGHT_POSTS` before `TALK_DAY_START_UTC`; from 13:15 UTC until the daily goes, nothing
+   else takes its slot. Keys posted, drafted or refused in 7 days never go again; a key held by a down gateway stays
+   unspent.
+3. **Builds the FACTS block** (`src/talk/facts.ts`): every figure pre-rounded as a person writes it (SOL to 2
+   decimals, 2 significant figures under 0.01, whole percents, $0.29, $4.74M), tagged `paper`, `real` or `none`
+   with its source. Every block carries his standing facts (paper until after 8 Oct, the book's start, days left,
+   the judging dates); a block with paper figures carries the paper book's honest headline: down about N% since
+   14 Sep in SOL at today's SOL price, equity now against the start, the SOL/USD valuation term named as SOL's own
+   move against the dollar, and the fees realized since the start, which may only be printed with that result.
+   Paper fees since 22 Sep are what the flow scout saw trade through his own bins, and paper swaps pay the pool's
+   own price impact (capped at 8%): the old "pool's 24h figure, halved" method (the plan's sample 11) is gone and no
+   fact describes it as current.
+4. **Asks his model** (`src/talk/postBrain.ts`): `askSession` to his agent on the gateway (`mr-bands`), a fresh
+   session per post (`x-post-<key>`), with the voice sheet, the facts block, the shape and length, and a memory
+   block (his last 14 posts, the build ledger's public lines of 7 days, open promises; context, not facts). The
+   answer is exactly `{"key","post"}` or `{"key","skip"}`; anything else, or any tool call but a memory read, voids
+   the turn. `TALK_MODEL_CALLS_PER_DAY` (8) asks a UTC day at most, counted on disk before each ask; an unreadable
+   count is the cap. Each ask is about two gateway runs (the turn and the gateway's idle introspection).
+5. **Decides** (`src/talk/postGuards.ts vetBuilderPost`), on every draft: the length its moment was given (short
+   100, medium 220, long 280); plain text only (no emoji, look-alikes, invisible characters); no @, no #, `$` only
+   before a digit, no `!`, no `?`; sentence case (no all-lowercase post, no lowercase "i", no sentence opening in
+   lowercase, no shouting); tickers exactly as the facts spell them; every number, date and clock time in the facts,
+   no number written as a word, never `0.00`; a paper figure in a post that says paper, a real one in a post that
+   says real, both each in its own sentence; a negative figure with loss, lost or down; a fee figure with its net
+   and, for paper fees, the paper book's result; the real run's figures once in his last 14 posts outside an arc
+   post; one quote at most, word for word from his journal; no clock time in a past-tense follow-up; no advice,
+   price direction, profit talk, hype, epigram (his journal's cliches and Merd's included), jargon (strap, seat,
+   prints, stacked, re-centre) or team ("we", an architect, an operator); no model, vendor or gateway name
+   (`META_RE`); no Zach and no operator handle; no address or mint of any kind, no copycat, no token, no launch, no
+   ClawPump; links only from the loop's allowlist, one a post, never beside a paper figure, one a day; 0.5
+   meaningful-word overlap with any of his last 14 posts (a follow-up is exempt against its post; the daily card is
+   not compared); and the lint, with the sentence-case rule in place of the lowercase one. A refused draft gets one
+   retry with the reason in the same session; then **silence**, except the daily card, whose template (built from
+   the same facts, sentence case, the worst close by pool and the book's result) passes the same guards and goes.
+   A down gateway, a missing token or the cap also mean silence, and the daily's template.
+6. **Posts** through `postTweet` with the sentence-case lint. **Only with `TALK_BUILDER_LIVE=true`** (and `X_LIVE`)
+   does a builder post reach X; until then `X_LIVE` is withheld from the call and every pick is a dry record in
+   `x-posts.jsonl` plus a draft row, so the voice runs dry (the plan's 48 hours) before Zach turns it on.
+
+Records: the post types are `daily`, `desk`, `followup`, `build`, `miss`, `learner`, `screener`, `arc`, `promise`
+and `halt`. A preview (`tick --force daily`, or any `--force`) shows the pick, its score, its facts' ids and whether
+the daily's template passes; it calls no model and writes nothing.
+
+Cost: at most `TALK_MODEL_CALLS_PER_DAY` (8) asks a day. Measured on Opus 5 a gateway run cost about $0.29 and an ask
+is about two runs, so 4 or 5 posts a day come to about $2.30 to $2.90 and the cap bounds it near $4.60; Opus 5.5
+($4/$20 per 1M) is cheaper. X adds $0.015 a post ($0.20 with a link).
+
+### The build ledger
+
+`ops/build.seed.jsonl` (shipped with the code) and `TALK_STATE_PATH/build.jsonl` (appended by Zach or a session:
+`talk.ts build add '<json>'`; a row with a seed row's id replaces it). One row, one plain line, first person,
+sentence case, for someone outside, never raw git:
+
+```json
+{"id":"stop-per-desk","at":"2026-09-21","kind":"miss","public":true,"book":"none","text":"My miss: ...","source":"git 8dbea27"}
+```
+
+`kind` is shipped, cut, fix, rule, cost, miss or arc; `public` defaults to false (security, credentials, pricing,
+env and anything about the token stay private and never reach a post); the numbers in `text` are the only numbers a
+post about it may print (tagged with `book`); `promise: {"due":"YYYY-MM-DD"}` makes a posted row a promise the picker
+closes with a done or slipped post; `resolves: "<id>"` marks the row that keeps one. The seed covers 17 to 22 Sep
+from the git log, each row checked against the commit or doc in its `source`; the tests vet every public seed row as
+a post. The platform-tools promise is seeded private: making it public is making the promise.
+
 ## The posting loop
 
-He posts by himself: launchd runs `talk.ts tick` every 15 minutes (`ops/com.bands.mrbands.talk.plist`,
+The older ledger voice, kept as the rollback (`TALK_VOICE=ledger`). He posts by himself: launchd runs `talk.ts tick` every 15 minutes (`ops/com.bands.mrbands.talk.plist`,
 `StartInterval` 900, no KeepAlive, `DATA_DIR=data-live`, `TALK_STATE_PATH=data-talk`, no `X_LIVE`). One tick
 (`src/talk/tick.ts`; `planTick` is pure, `runTick` the runner):
 
@@ -376,8 +501,11 @@ logged locally beyond what the record itself shows. What Mr Bands takes from it 
 (`src/talk/craft.ts`, and the guards in `src/talk/guards.ts`): what to say when, how to state a number, how to own a
 miss, how often, and what got read. Never Merd's persona, his topics, his vocabulary (drift, re-quote, probation size,
 the breaker, the tape, collects, bounded exits) or a sentence of his. Mr Bands keeps his own persona and every hard
-rule as it stands: the lint's rules, `vetOutgoing`, "paper" on every post about his book, losses shown as plainly as
-wins, no model in the posting loop. Replies are a separate loop with its own guards (see [Engage](#engage)).
+rule as it stands: the lint's rules, "paper" wherever a paper figure appears, losses shown as plainly as wins. Since
+22 Sep his own model words his posts (see [The builder voice](#the-builder-voice)), but code still picks what to post
+and decides whether it goes: the model only words facts code built. The older ledger cards described below (the
+craft in `craft.ts`, `vetOutgoing`) remain as the rollback, `TALK_VOICE=ledger`. Replies are a separate loop with its
+own guards (see [Engage](#engage)).
 
 The verdict, in five lines:
 

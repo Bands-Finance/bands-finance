@@ -68,7 +68,9 @@ export function retryableReason(reason: string): boolean {
 }
 
 /** the draft types, plus the posting loop's own event posts (src/talk/tick.ts) and "announce": his one-off posts (src/talk/announce.ts), each posted once */
-export type XPostType = DraftType | "open" | "close" | "daily" | "milestone" | "announce";
+/** the builder voice's shapes (src/talk/moments.ts), recorded as their own types */
+export type BuilderPostType = "desk" | "followup" | "build" | "miss" | "learner" | "screener" | "arc" | "promise" | "halt";
+export type XPostType = DraftType | BuilderPostType | "open" | "close" | "daily" | "milestone" | "announce";
 
 export interface XPostRecord {
   id: string;
@@ -275,6 +277,11 @@ export interface PostOptions {
   bits?: string[];
   /** the posting loop's stable event key, carried into the post or draft record */
   key?: string;
+  /**
+   * The builder voice (sentence case): the lint here runs without its lowercase rule, because the caller has already
+   * passed the text through vetBuilderPost (src/talk/postGuards.ts), whose sentence-case check replaces it.
+   */
+  sentenceCase?: boolean;
 }
 
 /** ": <title>; <detail>" from an X error body (title 80, detail 200 characters), or "" when it carries neither. */
@@ -304,7 +311,7 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
   // a reply always names the post it answers, and only a reply may: never a top-level post by accident
   if (opts.type === "reply" && !opts.replyTo) return draft("reply: a reply without the post it answers; never a top-level post by accident");
   if (opts.replyTo && opts.type !== "reply") return draft(`reply: replyTo is set on a ${opts.type} post; only a reply may answer a post`);
-  const lint = lintText(text, lintContextOf(t));
+  const lint = lintText(text, { ...lintContextOf(t), ...(opts.sentenceCase && !opts.replyTo ? { caseRule: "sentence" as const } : {}) });
   if (!lint.ok) return draft(`lint: ${describeViolations(lint.violations)}`, lint.violations);
   if (opts.replyTo) {
     if (!replyToHandle) return draft("reply: the account handle is not a valid x handle");
