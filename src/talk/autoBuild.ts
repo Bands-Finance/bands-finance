@@ -98,6 +98,25 @@ export function rowsFromCommits(commits: readonly CommitLine[]): AutoRow[] {
   return out;
 }
 
+/** the evening recap goes in from this UTC hour, once a day, when at least RECAP_MIN_AREAS areas changed */
+export const RECAP_HOUR_UTC = 20;
+export const RECAP_MIN_AREAS = 2;
+
+/**
+ * PURE. The day's "shipped today" row: one plain line naming the public areas he changed today, or null (before the
+ * recap hour, under two areas, or already written).
+ */
+export function recapRow(dayRows: readonly Pick<AutoRow, "id" | "at">[], now: number, have: ReadonlySet<string>): AutoRow | null {
+  const day = new Date(now).toISOString().slice(0, 10);
+  const id = `auto-${day.replace(/-/g, "")}-recap`;
+  if (new Date(now).getUTCHours() < RECAP_HOUR_UTC || have.has(id)) return null;
+  const areas = [...new Set(dayRows.filter((r) => r.at === day && !r.id.endsWith("-recap")).map((r) => r.id.replace(/^auto-\d{8}-/, "")))];
+  const words = [...new Set(areas.map((a) => AREA_WORDS[a] ?? AREA_WORDS[a.replace(/-/g, " ")]).filter(Boolean))];
+  if (words.length < RECAP_MIN_AREAS) return null;
+  const list = words.length === 2 ? words.join(" and ") : `${words.slice(0, -1).join(", ")}, and ${words[words.length - 1]}`;
+  return { id, at: day, kind: "shipped", public: true, text: `What I shipped today: changes to ${list}.`, source: `the day's auto rows: ${areas.join(", ")}` };
+}
+
 /** The commits after `since` (exclusive) on HEAD, oldest first, merges excluded; [] when git is not there. */
 export function readCommits(cwd: string, since: string | null, maxCount = 200, ownOnly = false): CommitLine[] {
   try {
@@ -139,7 +158,8 @@ export function syncAutoBuild(o: { cwd: string; statePath: string; runtimeRepo?:
     // his own work on the runtime he runs on (TALK_RUNTIME_REPO): only this machine's author, never upstream's history
     const runtime = o.runtimeRepo ? readCommits(o.runtimeRepo, state.lastRuntimeCommit ?? null, 200, true) : [];
     const runtimeAsArea = runtime.map((c) => ({ ...c, subject: `openhermit: ${c.subject.replace(/^[a-z]+(\([^)]*\))?!?:\s*/i, "")}` }));
-    if (!commits.length && !runtime.length) return { added: [], note: null };
+    const recapDue = new Date().getUTCHours() >= RECAP_HOUR_UTC;
+    if (!commits.length && !runtime.length && !recapDue) return { added: [], note: null };
     const buildFile = path.join(o.statePath, BUILD_FILE);
     let existing = "";
     try {
@@ -160,6 +180,8 @@ export function syncAutoBuild(o: { cwd: string; statePath: string; runtimeRepo?:
         }),
     );
     const rows = rowsFromCommits([...commits, ...runtimeAsArea]).filter((r) => !have.has(r.id));
+    const recap = recapRow([...[...have].filter((id) => id.startsWith("auto-")).map((id) => ({ id, at: `${id.slice(5, 9)}-${id.slice(9, 11)}-${id.slice(11, 13)}` })), ...rows], Date.now(), have);
+    if (recap) rows.push(recap);
     fs.mkdirSync(o.statePath, { recursive: true });
     if (rows.length) fs.appendFileSync(buildFile, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
     const next = {

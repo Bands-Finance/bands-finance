@@ -164,6 +164,18 @@ async function main(): Promise<void> {
     for (const r of rows) assert.ok(!/merd|mrbands|opus|zach|launch|token/i.test(r.text), r.text);
   });
 
+  await test("the evening recap: after 20:00 UTC, once, naming the areas changed today (two or more)", async () => {
+    const ab = await import("../talk/autoBuild.js");
+    const rows = [{ id: "auto-20260922-paper", at: "2026-09-22" }, { id: "auto-20260922-openhermit", at: "2026-09-22" }, { id: "auto-20260921-web", at: "2026-09-21" }];
+    const at20 = Date.parse("2026-09-22T20:05:00Z");
+    const r = ab.recapRow(rows, at20, new Set())!;
+    assert.equal(r.id, "auto-20260922-recap");
+    assert.equal(r.text, "What I shipped today: changes to my paper book and OpenHermit, the agentic runtime I run on.");
+    assert.equal(ab.recapRow(rows, Date.parse("2026-09-22T19:55:00Z"), new Set()), null, "not before 20:00 UTC");
+    assert.equal(ab.recapRow(rows, at20, new Set(["auto-20260922-recap"])), null, "once a day");
+    assert.equal(ab.recapRow(rows.slice(0, 1), at20, new Set()), null, "not for one area");
+  });
+
   // ------------------------------------------------------------ the picker
   console.log("the picker");
   await test("the daily card: only 14:00-15:00 UTC, first in line, with a template built from the same facts that passes the guards", () => {
