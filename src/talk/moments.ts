@@ -97,6 +97,8 @@ export interface ScreenPool {
 }
 
 export interface MomentInputs {
+  /** build notes allowed on a UTC day (TALK_BUILD_POSTS_PER_DAY; default BUILD_POSTS_PER_DAY) */
+  buildPostsPerDay?: number;
   now: number;
   /** why desk data is too old to post about positions, or null: then only build, promise and arc moments */
   stale: string | null;
@@ -489,13 +491,13 @@ function arcMoment(i: MomentInputs): Moment | null {
   };
 }
 
-/** at most this many build notes (an owned miss included) on a UTC day: 4-6 a week, never the whole feed */
+/** at most this many build notes (an owned miss included) on a UTC day, by default; TALK_BUILD_POSTS_PER_DAY raises it */
 export const BUILD_POSTS_PER_DAY = 1;
 
 function buildMoments(i: MomentInputs, shortToday: boolean): Moment[] {
   const out: Moment[] = [];
   const today = utcDay(i.now);
-  if (i.posts.filter((p) => utcDay(p.at) === today && (p.type === "build" || p.type === "miss")).length >= BUILD_POSTS_PER_DAY) return out;
+  if (i.posts.filter((p) => utcDay(p.at) === today && (p.type === "build" || p.type === "miss")).length >= (i.buildPostsPerDay ?? BUILD_POSTS_PER_DAY)) return out;
   for (const r of i.build) {
     if (!r.public || r.at > i.now || i.now - r.at > BUILD_MAX_AGE_MS) continue;
     if (r.resolves) continue; // a row that keeps a promise goes out as the promise's done post

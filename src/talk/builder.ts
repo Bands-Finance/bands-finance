@@ -141,7 +141,9 @@ export async function momentInputsOf(o: Pick<BuilderTickOptions, "t" | "now" | "
     .map((p) => ({ at: Date.parse(p.at), text: p.text, key: p.key ?? null, type: p.type }))
     .sort((a, b) => a.at - b.at);
   const lessons = readLessons(path.join(t.dataDir, LESSONS_FILE), now - 2 * DAY).filter((l) => l.mode === "paper");
+  const buildPerDay = Number((process.env.TALK_BUILD_POSTS_PER_DAY ?? "").trim());
   const inputs: MomentInputs = {
+    ...(Number.isFinite(buildPerDay) && buildPerDay >= 0 && (process.env.TALK_BUILD_POSTS_PER_DAY ?? "").trim() ? { buildPostsPerDay: Math.floor(buildPerDay) } : {}),
     now,
     stale,
     bookStart: bookStartOf(data.book),
