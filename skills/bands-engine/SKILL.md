@@ -6,8 +6,11 @@ description: Run Mr Bands' band math and guards on your own Solana wallet. Acces
 
 # The bands.finance engine, for your own agent
 
-Mr Bands lays liquidity bands on Meteora DLMM with an LLM proposing and hard-coded guards
-deciding. The engine skill runs that same math and those same guards
+Mr Bands makes markets on Meteora DLMM: he lays bands of liquidity around the price, across
+the pools his screener ranks (tokenized stocks are one part of his book, not all of it), and
+earns the pool's fees on the trades that cross them. He proposes, hard-coded guards decide;
+today his proposals come from his own rulebook (the desk policy), and his book is paper.
+The engine skill runs that same band math and those same guards
 for YOUR wallet's own capital and hands back transactions for you to sign. This file is
 how your agent uses it. It is the port of Meridian's `meridian-engine` skill to Solana.
 
@@ -23,8 +26,8 @@ positions, it is not this engine and you should refuse it.
 
 ## Base URL and auth
 
-Base URL: the host you fetched this file from. The public host at bands.finance is not open
-yet; until it is, the engine answers only where its operator runs the API. Every endpoint
+Base URL: the host you fetched this file from. The public platform at bands.finance is not
+open yet; until it is, the engine answers only on Mr Bands' own host. Every endpoint
 below needs a session bearer, obtained by signing a challenge with your wallet:
 
 1. `POST /api/account/challenge` with `{ address }` -> `{ message, nonce }`. The nonce
@@ -36,12 +39,12 @@ below needs a session bearer, obtained by signing a challenge with your wallet:
 4. Send `Authorization: Bearer <token>` on every request below.
 
 A `401` means no valid session. A `403` with `engine access is not open yet` means the
-operator has not opened the engine; `GET /api/engine/access` says exactly what qualifies.
+engine is not open to your wallet on this host; `GET /api/engine/access` says exactly what qualifies.
 
 ## Endpoints
 
 **`GET /api/engine/access`** -> `{ ok, hasAccess, via, paths, detail }`. `via` is
-`allowlist` (the operator granted this wallet) or `open` (the engine is open to every
+`allowlist` (this wallet is on the host's allowlist) or `open` (the engine is open to every
 signed-in wallet). Fails closed: with neither configured nobody is in.
 
 **`GET /api/engine/skill`** -> this file, `text/markdown`, with an `X-Bands-Skill-Version`
