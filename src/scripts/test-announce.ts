@@ -137,6 +137,12 @@ async function main(): Promise<void> {
   await test("the disclosure line passes the lint with a 44-character mint", () => {
     assert.ok(lintText(a.disclosureFor(MINT), CTX).ok);
   });
+  await test("the disclosure says where the cut goes since 22 Sep: his agent on ClawPump, which keeps the keys; not his own wallet", () => {
+    const d = a.disclosureFor(MINT);
+    assert.ok(/its trades pay a cut to my agent on clawpump, which keeps the keys\.$/.test(d), d);
+    assert.ok(!/own wallet|pays for what i run on/.test(d), d);
+    assert.ok(d.length <= 280, `${d.length}`);
+  });
   await test("TOKEN_MINT: the copycat's, several, or not base58 refuse every kind", () => {
     assert.match(a.tokenMintOf({ TOKEN_MINT: COPY }).problem ?? "", /copycat/);
     assert.match(a.tokenMintOf({ TOKEN_MINT: `${MINT},${MINT}x` }).problem ?? "", /more than one/);

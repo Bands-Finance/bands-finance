@@ -1,0 +1,9 @@
+{
+  "name": "mrbands-clawpump-agents",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The pinned install of ClawPump's MCP server that the launch bridge spawns (docs/launch.md). Install with npm ci --ignore-scripts.",
+  "dependencies": {
+    "@clawpump/agents": "0.1.27"
+  }
+}

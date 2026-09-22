@@ -29,7 +29,7 @@ import path from "node:path";
 import { COPYCAT_MINTS } from "../risk/house";
 import type { TalkData } from "./data";
 import { lintContextOf, talkEnv, type TalkEnv } from "./env";
-import { lintText, mentionsHouseToken, type LintContext, type LintRule } from "./lint";
+import { disclosureLine, lintText, mentionsHouseToken, type LintContext, type LintRule } from "./lint";
 import { postTweet, TALK_STOP_FILE, whoAmI, xGateProblem, type XDeps } from "./x";
 
 export const ANNOUNCE_KINDS = ["intro", "entry", "token", "follow"] as const;
@@ -49,12 +49,12 @@ export const SITE_URL = "https://mrbands.finance";
 export const ALLOWED_MENTIONS: Record<PostedKind, readonly string[]> = { intro: [], entry: [CLAWPUMP_HANDLE], token: [] };
 
 /**
- * His disclosure line (docs/sprint.md, "How he talks about it"), with the fee destination as it stands since
- * 22 Sep: his token's trades pay a cut to his own wallet. It stops there: that the wallet pays his bills is being
- * built and is not said yet. When lint.ts gains its own disclosureLine (the wording pass), use that instead.
+ * His disclosure line (docs/sprint.md, "How he talks about it"): lint.ts disclosureLine, one wording for both. Since
+ * 22 Sep the fee clause says where the cut really goes: to his agent on ClawPump, which keeps the creator wallet's
+ * keys (docs/launch.md). It no longer says his own wallet.
  */
 export function disclosureFor(mint: string): string {
-  return `my own token. i launched it myself. the desk holds none and never trades it. holding ${mint} in a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my own wallet.`;
+  return disclosureLine(mint);
 }
 
 /** What the posts are composed from. */
