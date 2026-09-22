@@ -20,10 +20,14 @@
  * enough that the desk's size does not move it, which holds for the sizes the stock book trades
  * against $1M+ pools but overstates the fill on a thin one.
  *
+ * H1 (src/risk/house.ts): quote() and buildSwap() refuse any leg whose input or output is the house mint
+ * (TOKEN_MINT, PAIR_HOUSE_MINTS) or the copycat's, before any request is made.
+ *
  * Env: JUPITER_API_URL (default the lite endpoint), SWAP_SLIPPAGE_BPS (default 50), SWAP_FEE_PCT
  * (paper fills, default 0.1). Read at call time so tests pin their own.
  */
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { houseSwapViolation } from "../risk/house";
 
 export const JUPITER_API_URL_DEFAULT = "https://lite-api.jup.ag/swap/v1";
 export const SWAP_SLIPPAGE_BPS_DEFAULT = 50;
@@ -235,6 +239,9 @@ export class JupiterClient {
 
   /** Price a route. Throws JupiterError when Jupiter finds none. */
   async quote(req: QuoteRequest): Promise<JupiterQuote> {
+    // H1 (src/risk/house.ts): the desk never swaps its own token or the copycat's. Every live leg is priced here first.
+    const h1 = houseSwapViolation(req.inputMint, req.outputMint);
+    if (h1) throw new Error(`quote refused: ${h1}`);
     const amount = BigInt(req.amount);
     if (amount <= 0n) throw new Error(`quote: amount must be > 0 (got ${req.amount})`);
     const slippageBps = req.slippageBps ?? this.slippageBps;
@@ -262,6 +269,8 @@ export class JupiterClient {
 
   /** The swap transaction for a quote, for `userPublicKey` to sign. Not signed, not sent. */
   async buildSwap(quote: JupiterQuote, userPublicKey: string | PublicKey, opts: { wrapAndUnwrapSol?: boolean; dynamicComputeUnitLimit?: boolean } = {}): Promise<SwapBuild> {
+    const h1 = houseSwapViolation(quote.inputMint, quote.outputMint);
+    if (h1) throw new Error(`swap refused: ${h1}`);
     const user = typeof userPublicKey === "string" ? userPublicKey : userPublicKey.toBase58();
     const raw = obj(
       await this.request<unknown>("POST", "/swap", {

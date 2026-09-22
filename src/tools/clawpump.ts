@@ -16,9 +16,18 @@
  * Env: CLAWPUMP_AGENT_ID (the Mr Bands agent on ClawPump), CLAWPUMP_API_KEY (never in git or chat),
  * CLAWPUMP_API_URL (default https://clawpump.tech). The token's own fields: TOKEN_NAME, TOKEN_SYMBOL,
  * TOKEN_DESCRIPTION (20+ characters), TOKEN_IMAGE_URL (https), TOKEN_DEV_BUY_SOL (default 0),
- * TOKEN_PUMP_PAIR (the pump.fun creation pair: SOL by default; the Clawrena entry is paired with NVDA,
- * so "NVDAx", "NVDA" or the mint, resolved against ClawPump's live catalogue) and TOKEN_CREATOR_FEE_BPS
- * (100-300, custom pairs only; pump.fun does not allow it on the SOL pair).
+ * TOKEN_PUMP_PAIR (the pump.fun creation pair: SOL by default, and $MRBANDS is launched on SOL by the
+ * decision of 22 Sep, docs/sprint.md; a custom pair is "NVDAx", "NVDA" or a mint, resolved against
+ * ClawPump's live catalogue) and TOKEN_CREATOR_FEE_BPS (100-300, custom pairs only; pump.fun does not
+ * allow it on the SOL pair, so $MRBANDS leaves it unset). TOKEN_PAYER_EXPECTED: the treasury address the
+ * launch must pay from (launchRefusal).
+ *
+ * No buyback, ever. The self-funded body always carries `buybackBps: 0`. The developers page (read 22 Sep)
+ * lists `buybackBps` among the POST /api/v1/launch/self-funded fields with no description and no stated
+ * default, so it is set off in so many words rather than left to one. The same page has no field for
+ * holder rewards or for splitting the creator fee (the payer's 75% share is fixed; ClawPump keeps 25%),
+ * so there is nothing else to turn off. `devBuyAmountUsd` (a post-launch buy on SOL pairs, $0.50-$500)
+ * is never sent, and `devBuySol` is sent as TOKEN_DEV_BUY_SOL, 0 for $MRBANDS.
  */
 
 export const CLAWPUMP_URL_DEFAULT = "https://clawpump.tech";
@@ -188,6 +197,8 @@ export function launchBody(r: LaunchRequest, extra: { preflight?: true; txSignat
     agentName: r.agentName,
     walletAddress: r.walletAddress,
     devBuySol: r.token.devBuySol,
+    // never a buyback: the field is on the self-funded endpoint with no documented default (see the header)
+    buybackBps: 0,
   };
   if (r.pumpQuoteMint && r.pumpQuoteMint !== SOL_MINT) {
     body.pumpQuoteMint = r.pumpQuoteMint;
@@ -320,14 +331,22 @@ export class ClawPumpClient {
   }
 }
 
+/** TOKEN_PAYER_EXPECTED: the treasury address the launch must pay from, or null when unset. */
+export const payerExpectedOf = (env: NodeJS.ProcessEnv = process.env): string | null => (env.TOKEN_PAYER_EXPECTED ?? "").trim() || null;
+
 /**
- * The gate on actually launching: the desk's own SOL leaves the wallet, and a token appears with
- * Mr Bands' name on it. All three must hold, and Zach says go in words first (docs/clawrena.md).
+ * The gate on actually launching: SOL leaves the treasury, and a token appears with Mr Bands' name on it.
+ * The payer is the permanent creator-fee beneficiary, so it must be the treasury keypair pinned by
+ * TOKEN_PAYER_EXPECTED and never the desk's hot wallet (EXPECTED_WALLET). Then DRY_RUN=false and --confirm,
+ * and Zach says go in words first (docs/token.md).
  */
-export function launchRefusal(o: { dryRun: boolean; confirm: boolean; apiKey: string | null; agentId: string | null; ephemeralWallet: boolean }): string | null {
+export function launchRefusal(o: { dryRun: boolean; confirm: boolean; apiKey: string | null; agentId: string | null; ephemeralWallet: boolean; payer: string; payerExpected: string | null; deskWallet: string | null }): string | null {
   if (!o.agentId) return "CLAWPUMP_AGENT_ID is not set";
   if (!o.apiKey) return "CLAWPUMP_API_KEY is not set (a cpk_ key from https://clawpump.tech/dashboard/api)";
-  if (o.ephemeralWallet) return "no WALLET_SECRET_KEY: the launch fee must come from the desk's own wallet";
+  if (o.ephemeralWallet) return "no WALLET_SECRET_KEY: the launch fee must come from the treasury keypair";
+  if (o.deskWallet && o.payer === o.deskWallet) return `the payer ${o.payer} is the desk wallet (EXPECTED_WALLET): launch from the treasury keypair, never the hot desk wallet`;
+  if (!o.payerExpected) return "TOKEN_PAYER_EXPECTED is not set: pin the treasury address the launch pays from (creator fees go to the payer for good)";
+  if (o.payer !== o.payerExpected) return `WALLET_SECRET_KEY derives to ${o.payer}, but TOKEN_PAYER_EXPECTED is ${o.payerExpected}: wrong key for the launch`;
   if (o.dryRun) return "DRY_RUN is on: the wallet will not send the launch fee (set DRY_RUN=false for this command only, with Zach's go)";
   if (!o.confirm) return "pass --confirm to send the launch fee and mint the token";
   return null;
