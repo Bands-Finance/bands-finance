@@ -158,8 +158,11 @@ const num = (v: string | undefined, d: number): number => {
 
 export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
   const base = policyEnvBase(env);
-  // the self-learning tuner's knobs on top (TUNING_FILE, src/learn/lessons.ts), inside its bounds
-  const file = (env.TUNING_FILE ?? "").trim();
+  // the retired width tuner's file is read ONLY when it is asked for by name. It is the one learned
+  // number with no journal row, no minimum sample, no bounded step and no freeze switch behind it,
+  // and nothing writes it any more, so an unset LEARN_WIDTH_TUNING leaves it out of every decision.
+  // applyTuning and its bounds stay tested in src/learn/lessons.ts for the day the evidence changes.
+  const file = (env.LEARN_WIDTH_TUNING ?? "").trim().toLowerCase() === "true" ? (env.TUNING_FILE ?? "").trim() : "";
   const tuned = file ? applyTuning(base, readTuningCached(file), tuneEnv(env)) : base;
   return withLearnedFeeShare(tuned, env);
 }

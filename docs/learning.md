@@ -181,7 +181,10 @@ may be dropped or softened.
    conservative assumption.
 6. **Band width is NOT learnable on this evidence.** The width tuner stays in the tree and stays off.
    Nothing in either book separates a good width from a bad one. If that changes, the evidence will be
-   in `npm run learning` before the knob moves.
+   in `npm run learning` before the knob moves. It is also the one learned number in the tree with no
+   journal row, no minimum sample, no bounded step and no freeze switch, so `policyEnv` reads
+   `TUNING_FILE` only when `LEARN_WIDTH_TUNING` is the literal `"true"`. `ops/live.env` still names the
+   file; naming it no longer does anything.
 7. **No learner reads `netSol`.** -8.479 SOL of SOL/USD drift sits inside the 32 USDC-quoted paper seats.
    AMD/USDC stopped at -6.014 SOL, of which -6.346 was drift: the seat itself was **+0.332** and the
    price was 48 bins ABOVE the band when the stop fired. The learners key on the end side and on the

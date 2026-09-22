@@ -17,10 +17,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { policyEnv } from "../agent/policy";
 import type { LedgerRow } from "../engine/ledger";
 import { calEnv, calibrationFrom, calibrationStep, ewma, forecastRatio, PACE_SEED_1719_SEP, type Lane } from "../learn/calibration";
 import { calibrationFrozen, freezeLine, freezeState, isFrozenValue, learningFrozen, poolsFrozen } from "../learn/freeze";
-import { appendLearningChange, applyTuning, endReasonOf, forecastOf, LEARNING_FILE, LEARNING_LOG, LESSONS_FILE, lessonLine, lessonOf, modeOf, quoteDriftOf, readLearningChanges, readLearning, readLessons, writeLearning, tuneEnv, tuneFromLessons, type BandMeta, type LearningChange, type Lesson } from "../learn/lessons";
+import { appendLearningChange, applyTuning, endReasonOf, forecastOf, LEARNING_FILE, LEARNING_LOG, LESSONS_FILE, lessonLine, lessonOf, modeOf, quoteDriftOf, readLearningChanges, readLearning, readLessons, writeLearning, tuneEnv, tuneFromLessons, TUNING_FILE, type BandMeta, type LearningChange, type Lesson } from "../learn/lessons";
 import { downExit, endSideOf, endSideTally, poolMemoryEnv, poolPenalty } from "../learn/poolMemory";
 import { clearLearnedCache, learnedLines, learnedView } from "../learn/view";
 import { kindOf, missingBands, reachBins, splitReason } from "./lessons-recompute";
@@ -416,6 +417,18 @@ async function runLearners(): Promise<void> {
     assert.equal(applyTuning(base, { volMultiple: 1.25, history: [] }, bounds, "live").tunedVolMultiple, 1.25, "a file written before modes existed is still read: it predates the leak, and the bounds still hold");
     assert.equal(applyTuning(base, { volMultiple: 1.25, mode: "paper", history: [] }, bounds).tunedVolMultiple, 1.25, "a caller that names no mode gets the old behaviour");
     assert.deepEqual([modeOf(null), modeOf({}), modeOf({ mode: " " }), modeOf({ mode: "paper" })], [null, null, null, "paper"]);
+  });
+
+  await test("the retired width tuner reaches no decision unless LEARN_WIDTH_TUNING is the literal \"true\"", () => {
+    const dir = tmpDir();
+    const file = path.join(dir, TUNING_FILE);
+    // a width a human never journalled, in the file the live desk's env still names
+    fs.writeFileSync(file, JSON.stringify({ volMultiple: 1.4, mode: "live", history: [] }));
+    const env = { TUNING_FILE: file, DRY_RUN: "true", LEARN_FILE: path.join(dir, "no-such-learning.json") } as NodeJS.ProcessEnv;
+    assert.equal(policyEnv(env).tunedVolMultiple, undefined, "TUNING_FILE alone changes nothing: no journal, no sample, no step, no freeze");
+    assert.equal(policyEnv({ ...env, LEARN_WIDTH_TUNING: "1" }).tunedVolMultiple, undefined, "and only the literal true turns it on, like every other switch here");
+    assert.equal(policyEnv({ ...env, LEARN_WIDTH_TUNING: "true" }).tunedVolMultiple, 1.4, "asked for by name, it is read, and its bounds still hold");
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   await test("the journal: a change is a row with its evidence, the state is mode-stamped, and a paper desk cannot read a live file", () => {
