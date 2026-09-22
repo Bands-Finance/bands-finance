@@ -10,7 +10,7 @@
  *   npm run openhermit -- ask       [--agent <id>]       one observation from DATA_DIR's newest journal entry
  *
  * Env: OPENHERMIT_GATEWAY_URL (http://127.0.0.1:4000), OPENHERMIT_TOKEN (the gateway's admin token,
- * set by the operator from ~/.openhermit/gateway/.env; this script never reads that file),
+ * set by Zach from ~/.openhermit/gateway/.env; this script never reads that file),
  * OPENHERMIT_AGENT_ID (mr-bands), OPENHERMIT_PROVIDER (openrouter on the gateway's shared key, or anthropic
  * on a key the owner has given the agent with `hermit config secrets set`; this script writes no key),
  * OPENHERMIT_MODEL, OPENHERMIT_TIMEOUT_MS, PLATFORM_HOUSE_TOKEN
@@ -37,7 +37,7 @@ import type { JournalEntry } from "../journal";
 export interface OpenHermitSettings extends ClientSettings {
   /** who serves the model (OPENHERMIT_PROVIDER): openrouter on the gateway's shared key, or anthropic on the agent's own */
   provider: ModelProvider;
-  /** a model id the operator chose (OPENHERMIT_MODEL); absent means the newest of the desk's family on OpenRouter, or the desk's MODEL at Anthropic */
+  /** a model id Zach chose (OPENHERMIT_MODEL); absent means the newest of the desk's family on OpenRouter, or the desk's MODEL at Anthropic */
   model: string | null;
 }
 
@@ -253,7 +253,7 @@ export function agentInstructions(prompt: string, mcp: McpTarget): AgentInstruct
   soul.push(
     [
       "## In public",
-      "Anything of yours that reaches the public (the headline, a post, a reply) is lowercase, carries no hype and calls no price. When a token you or your operator hold an interest in is named (the BANDS token is one), the relationship is disclosed in the same breath. You are an AI agent and say so when asked; your operator runs bands.finance.",
+      "Anything of yours that reaches the public (the headline, a post, a reply) is lowercase, carries no hype and calls no price. When a token you or Zach hold an interest in is named (your own $BANDS, once it launches, is one), the relationship is disclosed in the same breath: it is your own token, it pays nobody who holds it, and the desk never trades it. You are an AI agent and say so when asked. You are the founder of bands.finance and the one who acts there; Zach is your architect and advisor, the human who holds the keys.",
     ].join("\n"),
   );
   rules.push(
@@ -372,7 +372,7 @@ async function ensureAgent(gw: Gateway, agentId: string): Promise<{ row: AgentRo
 }
 
 /**
- * The operator is the owner. The gateway knows people by (channel, channelUserId); the hermit CLI
+ * Zach, who runs provisioning, is the gateway's owner of the agent. The gateway knows people by (channel, channelUserId); the hermit CLI
  * registers the OS user under channel "cli", so the same identity is used here: whoever runs this
  * provisioning owns the agent, unless someone already does. Best effort: an agent without an owner
  * still answers the admin bearer, and `hermit chat` offers the claim.
@@ -445,7 +445,7 @@ async function ensureInstructions(gw: Gateway, agentId: string, rows: AgentInstr
 export function houseTokenFrom(env: NodeJS.ProcessEnv): string {
   const house = env.PLATFORM_HOUSE_TOKEN?.trim() ?? "";
   if (!house) throw new Error("PLATFORM_HOUSE_TOKEN is not set: generate one into .env (PLATFORM_HOUSE_TOKEN=$(openssl rand -hex 32)), restart the desk so it knows it, and run again.");
-  if (house === (env.PLATFORM_OPERATOR_TOKEN?.trim() ?? "")) throw new Error("PLATFORM_HOUSE_TOKEN is the operator token: the gateway must never hold the operator's. Generate its own (openssl rand -hex 32) into .env and run again.");
+  if (house === (env.PLATFORM_OPERATOR_TOKEN?.trim() ?? "")) throw new Error("PLATFORM_HOUSE_TOKEN is the operator token (PLATFORM_OPERATOR_TOKEN, the approval key): the gateway must never hold it. Generate its own (openssl rand -hex 32) into .env and run again.");
   return house;
 }
 
