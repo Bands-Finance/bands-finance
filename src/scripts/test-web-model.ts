@@ -14,6 +14,7 @@ import { dayWord, narrativeOf, noBookNarrative, num, sinceWord } from "../../web
 import { trimEntries } from "../publish/live";
 import { liveRunOf, runDays, type LiveRunFile } from "../../web/src/liveRun";
 import { readFileSync } from "node:fs";
+import path from "node:path";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -468,6 +469,29 @@ async function main() {
     const noted = { ...e, llm: { source: "screen", model: "desk-policy", note: "Screened (in-range). The model was not asked." } } as unknown as JournalEntry;
     assert.equal(deskBlocks([screened])[0]!.fallbackNote, "screened by the desk policy: the model was not asked");
     assert.equal(deskBlocks([noted])[0]!.fallbackNote, "Screened (in-range). The model was not asked.");
+  });
+
+  await test("no other token's mint is ever on the site or in the platform chat (Zach, 22 Sep: not disclosed on the website at all)", () => {
+    const { COPYCAT_MINTS } = require("../risk/house") as typeof import("../risk/house");
+    const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
+    const root = path.resolve(__dirname, "../..");
+    const files: string[] = [path.join(root, "src/platform/myAgent.ts"), path.join(root, "web/index.html")];
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const f = path.join(dir, name);
+        if (statSync(f).isDirectory()) walk(f);
+        else if (/\.(tsx?|jsx?|html|json|md|txt|css)$/.test(name)) files.push(f);
+      }
+    };
+    for (const d of ["web/src", "web/public", "web/scripts"]) walk(path.join(root, d));
+    for (const f of files) {
+      let text = "";
+      try { text = readFileSync(f, "utf8"); } catch { continue; }
+      for (const m of COPYCAT_MINTS) {
+        assert.ok(!text.includes(m), `${path.relative(root, f)} names another token's mint`);
+        assert.ok(!text.replace(/<wbr\s*\/>/g, "").includes(m), `${path.relative(root, f)} names another token's mint (split by <wbr>)`);
+      }
+    }
   });
 
   console.log(`\n${passed} web model tests passed`);
