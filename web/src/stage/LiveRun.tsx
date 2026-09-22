@@ -29,24 +29,29 @@ export function useLiveRun(): LiveRun | null {
 }
 
 export function LiveRunBlock({ run, now }: { run: LiveRun; now: number }) {
-  // what the run made and what it cost, both from the record: the change in the book is the fees he claimed less what the rest took
+  // what the run made and what it cost, both from the record: the change in the book is the fees he earned less what the rest took.
+  // Settled, the end is the ledger's all-cash book (docs/sprint.md, "One headline number"), not the chart's last mark.
   const rest = run.change - run.feesClaimed;
+  const ended = run.settled
+    ? `All SOL once the last band was closed; the last mark, with a band open, was ${sol(run.lastMarkEquity)}.`
+    : "At the last mark.";
+  const tokens = run.feesInTokens !== null && run.feesInTokens > 0 ? `, and about ${sol(run.feesInTokens)} of it came as tokens, sold later for what they fetched` : "";
   const lost = run.change < 0;
   return (
     <>
       <Figures
         items={[
           { label: "Started with", value: <>{sol(run.startEquity)}<small> SOL</small></>, note: `${dayOf(run.firstTs)}, ${new Date(run.firstTs).toISOString().slice(11, 16)} UTC` },
-          { label: "Stopped with", value: <>{sol(run.endEquity)}<small> SOL</small></>, tone: lost ? "bad" : "good", note: `${signed(run.change)} SOL, ${signed(run.changePct, 1)}%. At its best ${sol(run.peakEquity)}.` },
-          { label: "Fees claimed", value: <>+{sol(run.feesClaimed)}<small> SOL</small></>, tone: "good", note: `claimed on ${run.claims} claims, ${run.closes} closes and ${run.relays} re-lays` },
+          { label: "Stopped with", value: <>{sol(run.endEquity)}<small> SOL</small></>, tone: lost ? "bad" : "good", note: `${signed(run.change)} SOL, ${signed(run.changePct, 1)}%. At its best ${sol(run.peakEquity)}. ${ended}` },
+          { label: "Fees earned", value: <>+{sol(run.feesClaimed)}<small> SOL</small></>, tone: "good", note: `valued when claimed, on ${run.claims} claims, ${run.closes} closes and ${run.relays} re-lays. Fees, not profit.` },
           { label: "Moves", value: run.moves.toLocaleString(), note: `${run.opens} opens, ${run.relays} re-lays, ${run.closes} closes, ${run.claims} claims` },
           { label: "Transactions", value: run.transactions.toLocaleString(), note: "each one linked below" },
           { label: "Pools", value: run.pools.length.toLocaleString(), note: run.pools.slice(0, 3).join(", ") + (run.pools.length > 3 ? " and more" : "") },
         ]}
       />
       <p className="chap__p">
-        He started with {sol(run.startEquity)} SOL and stopped with {sol(run.endEquity)}, so the run {lost ? "lost" : "made"} {sol(Math.abs(run.change))} SOL. Fees paid him {sol(run.feesClaimed)} SOL over
-        those {lengthWords(run.hours)}; {rest < 0 ? `price moves and the cost of moving took ${sol(Math.abs(rest))} back` : `the rest of the book gained ${sol(rest)}`}. Both are in the ledger below.
+        He started with {sol(run.startEquity)} SOL and stopped with {sol(run.endEquity)}, so the run {lost ? "lost" : "made"} {sol(Math.abs(run.change))} SOL. He earned {sol(run.feesClaimed)} SOL in fees over
+        those {lengthWords(run.hours)}, each valued when it was claimed{tokens}. {rest < 0 ? `Price moves and the cost of moving took ${sol(Math.abs(rest))} back` : `The rest of the book gained ${sol(rest)}`}. Both are in the ledger below.
       </p>
       <p className="chap__facts engrave">
         <span>{run.decisions.toLocaleString()} decisions</span>

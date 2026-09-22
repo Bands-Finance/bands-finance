@@ -332,23 +332,21 @@ short, and without the close fee legs); "7.91 SOL in 111 claims" (the figure is 
 plus the fee legs of 52 closes); -0.18 matches no cut from start to end (the book's first five minutes
 went 19.79 to 19.61, when the stock halves were bought and marked at the pool).
 
-**What the site shows today, checked against this** (web/ is another builder's; not edited here):
-- **Net: -0.11 SOL, 19.79 to 19.68** (live-run.json points, LiveRun.tsx "Stopped with"). Disagrees: the
-  last mark with 3.18 SOL still in a band. Either show 19.71 / -0.08, or label it as the last mark.
-- **"Fees claimed +7.91"**: agrees to the hundredth (7.9093 at the last mark against 7.9126; the 0.0034 is
-  the fee leg of the hand close after it).
-- **"claimed on 110 claims"** and **"110 claims" in Moves, 204 moves**: disagree. The journal and the
-  ledger have 111. live-run.json is missing one executed claim: GP/SOL, 18 Sep 00:58:36Z
-  (id `2026-09-18T00:58:36.503Z-12-64JeeF`, signature `59nhBz...xT99K`, 0.1033 SOL). With it: 205 moves.
-- **Transactions 292**: disagrees. The journal signed 293 (the same missing claim); the ledger has 295
-  with the hand close and its sale. This file's own "329 signed transactions" (Role 1) matches no source
-  here; Role 1 now says 293 (295 with the hand close).
-- **"5 failed"** (live-run.json `failed`): the journal has 4 executed moves that failed (2 re-lays, 1 claim,
-  1 open). Worth a look by whoever regenerates the file, and Role 1's "0 errors" needs to say what it
-  counts (no failed transaction on chain, or no failed move) before it is posted.
-- **The sentence** "Fees paid him 7.91 SOL ...; price moves and the cost of moving took 8.01 back"
-  (LiveRun.tsx): the arithmetic holds on the marks, but about 3.27 of the 7.91 were tokens valued when
-  claimed, so "paid him" reads as cash it was not. Suggest "earned 7.91 SOL in fees, valued when claimed".
+**What the site shows, checked against this** (fixed on 22 Sep in sprint-day1; `npm run record` now
+prints every row as agreeing, and test-web-model pins the shipped file to these figures):
+- **Net:** web/public/live-run.json carries a `settled` block (19.7125 SOL at 19 Sep 01:44Z, fees 7.9126,
+  3.2691 of them as tokens, from the ledger), and LiveRun.tsx states it: "Stopped with 19.71", -0.08, with
+  the last mark (19.68, a band still open) named in the note. The chart still ends on the last mark.
+- **Claims 111, moves 205, transactions 293:** the missing GP/SOL claim of 18 Sep 00:58:36Z is in the file.
+  It had been left out because its sweep leg (selling the leftover GP) failed in simulation while the claim
+  itself landed; web/src/model.ts `verdictOf` now calls a move placed when the desk reports it ok and a leg
+  signed, and failed only when the desk reports it not ok.
+- **Failed 4:** the journal's 4 moves the desk reported not ok (2 re-lays, 1 claim, 1 open). The fifth the old
+  file counted was that claim's sweep leg. Role 1's "0 errors" still needs to say what it counts before it
+  is posted.
+- **The sentence** now reads "He earned 7.91 SOL in fees over those 39 hours, each valued when it was
+  claimed, and about 3.27 of it came as tokens, sold later for what they fetched", and the figure is
+  labelled "Fees earned ... Fees, not profit."
 - Start 19.79, peak 23.50, low 19.29, 39 hours: agree.
 
 ## Decisions (Zach, Tue 22 Sep)

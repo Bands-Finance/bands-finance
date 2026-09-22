@@ -89,7 +89,7 @@ function main(): void {
   for (const u of rec.unlessoned) console.log(`    no lesson: ${u.position.slice(0, 6)} in ${u.pool.slice(0, 6)}, ${at(u.openedAt)} to ${u.closedAt ? at(u.closedAt) : "open"}, ${s4(u.flowSol)} SOL${u.before ? "" : " (after lessons began)"}`);
 
   if (existsSync(siteFile)) {
-    const site = JSON.parse(readFileSync(siteFile, "utf8")) as { points: BookPoint[]; entries: { decision: { action: string }; execution: { ok?: boolean; txs: { signature?: string | null }[] } }[]; peakEquitySol?: number; lowEquitySol?: number };
+    const site = JSON.parse(readFileSync(siteFile, "utf8")) as { points: BookPoint[]; entries: { decision: { action: string }; execution: { ok?: boolean; txs: { signature?: string | null }[] } }[]; peakEquitySol?: number; lowEquitySol?: number; failed?: number; settled?: { equitySol: number; feesSol: number } };
     const sb = bookOf(site.points);
     const claims = site.entries.filter((e) => e.decision.action === "CLAIM_FEES").length;
     const sigs = site.entries.reduce((n, e) => n + e.execution.txs.filter((t) => t.signature).length, 0);
@@ -98,14 +98,22 @@ function main(): void {
     console.log(`\nTHE SITE'S FILE (${siteFile}), as web/src/liveRun.ts reads it, against the above`);
     if (sb) {
       row("start", f4(sb.startSol), f4(book.startSol));
-      row("end", f4(sb.endSol), f4(book.endSol));
-      row("net", s4(sb.changeSol), s4(book.changeSol));
+      // a site file with the settled block states the ledger's all-cash end, as web/src/liveRun.ts does
+      if (site.settled) {
+        row("end (cash)", f4(site.settled.equitySol), f4(cashEnd));
+        row("net (cash)", s4(site.settled.equitySol - sb.startSol), s4(rec.cashChangeSol));
+      } else {
+        row("end", f4(sb.endSol), f4(book.endSol));
+        row("net", s4(sb.changeSol), s4(book.changeSol));
+      }
       row("peak", f4(site.peakEquitySol ?? sb.peakSol), f4(book.peakSol));
       row("low", f4(site.lowEquitySol ?? sb.lowSol), f4(book.lowSol));
-      row("fees", f4(sFees), f4(fees.totalSol));
+      row("fees", f4(site.settled ? site.settled.feesSol : sFees), f4(fees.totalSol));
     }
     row("claims", String(claims), String(fees.claims));
     row("transactions", String(sigs), String(jSigs.size));
+    const jFailed = journal.filter((e) => e.execution?.mode === MODE && e.execution.ok === false).length;
+    row("failed", String(site.failed ?? 0), String(jFailed));
   }
 }
 

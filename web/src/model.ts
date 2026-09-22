@@ -72,7 +72,10 @@ export type Verdict = "placed" | "simulated" | "failed" | "blocked" | "override"
 export function verdictOf(e: JournalEntry): Verdict {
   if (e.emergency) return "override";
   if (!e.allowed) return "blocked";
-  if (e.execution.txs.some((t) => !t.ok)) return "failed";
+  // a move whose own transaction landed is placed even when a side leg did not (a sweep that could not sell the
+  // leftover tokens): the desk reports it ok, and the claim is on chain. A move the desk reports not ok failed.
+  const landed = e.execution.ok && e.execution.txs.some((t) => t.ok && t.signature);
+  if (e.execution.txs.some((t) => !t.ok) && !landed) return "failed";
   if (e.execution.txs.length > 0) return e.execution.mode === "live" ? "placed" : "simulated";
   return "hold";
 }

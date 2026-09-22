@@ -7,11 +7,13 @@
  *   npx tsx src/scripts/test-web-model.ts
  */
 import assert from "node:assert/strict";
-import { actionsOf, bookOf, flowOf, flowTotalsOf, recordOf } from "../../web/src/model";
+import { actionsOf, bookOf, flowOf, flowTotalsOf, recordOf, verdictOf } from "../../web/src/model";
 import { bookCycle, completeCycles, cycleEquity, cyclesOf, equitySeriesOf, summarize } from "../../web/src/derive";
 import type { EquityHistoryPoint, JournalEntry, Position } from "../../web/src/types";
 import { dayWord, narrativeOf, num, sinceWord } from "../../web/src/narrative";
 import { trimEntries } from "../publish/live";
+import { liveRunOf, type LiveRunFile } from "../../web/src/liveRun";
+import { readFileSync } from "node:fs";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -404,6 +406,34 @@ async function main() {
     const none = narrativeOf({ record: null, status: { ...status, mode: "live" } as never, agentName: "Mr Bands", now });
     assert.equal(none.headline, "Reading the journal.");
     assert.match(none.story[0], /his own wallet on Solana/);
+  });
+
+  await test("liveRunOf on the shipped live-run.json: the one headline number (docs/sprint.md), not the last mark, and every executed move", () => {
+    const file = JSON.parse(readFileSync(new URL("../../web/public/live-run.json", import.meta.url), "utf8")) as LiveRunFile;
+    const run = liveRunOf(file)!;
+    assert.ok(run.settled, "the file carries the ledger's all-cash end");
+    assert.equal(run.startEquity.toFixed(2), "19.79");
+    assert.equal(run.endEquity.toFixed(2), "19.71");
+    assert.equal(run.change.toFixed(2), "-0.08");
+    assert.equal(run.lastMarkEquity.toFixed(2), "19.68");
+    assert.equal(run.feesClaimed.toFixed(2), "7.91");
+    assert.equal(run.feesInTokens?.toFixed(2), "3.27");
+    assert.equal(run.claims, 111);
+    assert.equal(run.moves, 205);
+    assert.equal(run.transactions, 293);
+    assert.equal(run.failed, 4);
+    assert.equal(run.peakEquity.toFixed(2), "23.50");
+    assert.equal(run.lowEquity.toFixed(2), "19.29");
+    // the GP/SOL claim of 18 Sep 00:58Z landed and its sweep leg did not: a claim on the ledger, not a failed move
+    const gp = file.entries.find((e) => e.id === "2026-09-18T00:58:36.503Z-12-64JeeF")!;
+    assert.equal(verdictOf(gp), "placed");
+    assert.equal(verdictOf({ ...gp, execution: { ...gp.execution, ok: false } }), "failed", "a move the desk reports not ok is failed, signed legs or not");
+    // without the settled block the page falls back to the last mark, and says so
+    const { settled: _s, ...marks } = file;
+    const m = liveRunOf(marks as LiveRunFile)!;
+    assert.equal(m.settled, false);
+    assert.equal(m.endEquity.toFixed(2), "19.68");
+    assert.equal(m.feesInTokens, null);
   });
 
   console.log(`\n${passed} web model tests passed`);

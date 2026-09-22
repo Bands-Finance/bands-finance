@@ -30,6 +30,12 @@ export interface LiveRunFile {
   entries: JournalEntry[];
   /** the equity history, thinned: every day's first and last mark are kept */
   points: EquityHistoryPoint[];
+  /**
+   * The run as it ended in cash, from data-mainnet/ledger.jsonl (npm run record, docs/sprint.md "One
+   * headline number"): the last mark still had a band open, and the hand close a few minutes later is
+   * the book's true end, all SOL. When present, the page states these and not the last mark.
+   */
+  settled?: { ts: string; equitySol: number; feesSol: number; feesInTokensSol: number; source: string };
 }
 
 export interface LiveRun {
@@ -44,8 +50,14 @@ export interface LiveRun {
   changePct: number;
   peakEquity: number;
   lowEquity: number;
-  /** fees claimed to the wallet over the run, SOL, from the desk's own marks */
+  /** fees realised to the wallet over the run, SOL, each valued at its own mark (the ledger's when settled) */
   feesClaimed: number;
+  /** of feesClaimed, what came as tokens valued at the claim's mark; null when the file does not say */
+  feesInTokens: number | null;
+  /** true when endEquity is the ledger's all-cash end and not the last mark */
+  settled: boolean;
+  /** the equity series' last mark, which the chart ends on */
+  lastMarkEquity: number;
   /** every executed move, claims included, as the ledger lists them */
   moves: number;
   opens: number;
@@ -79,6 +91,9 @@ export function liveRunOf(file: LiveRunFile): LiveRun | null {
   const count = (a: ActionRow["action"]) => rows.filter((r) => r.action === a).length;
   const firstTs = Date.parse(file.firstTs);
   const lastTs = Date.parse(file.lastTs);
+  const settled = file.settled && typeof file.settled.equitySol === "number" && typeof file.settled.feesSol === "number" ? file.settled : null;
+  const endEquity = settled ? settled.equitySol : record.equityNow;
+  const change = endEquity - record.startEquity;
   const pools: string[] = [];
   for (const e of entries) if (!pools.includes(e.pool.label)) pools.push(e.pool.label);
   return {
@@ -88,12 +103,15 @@ export function liveRunOf(file: LiveRunFile): LiveRun | null {
     lastTs,
     hours: (lastTs - firstTs) / 3600e3,
     startEquity: record.startEquity,
-    endEquity: record.equityNow,
-    change: record.net,
-    changePct: record.netPct,
+    endEquity,
+    change,
+    changePct: settled ? (record.startEquity > 0 ? (change / record.startEquity) * 100 : 0) : record.netPct,
     peakEquity: typeof file.peakEquitySol === "number" ? file.peakEquitySol : Math.max(record.startEquity, record.equityNow),
     lowEquity: typeof file.lowEquitySol === "number" ? file.lowEquitySol : Math.min(record.startEquity, record.equityNow),
-    feesClaimed: record.feesRealized,
+    feesClaimed: settled ? settled.feesSol : record.feesRealized,
+    feesInTokens: settled && typeof settled.feesInTokensSol === "number" ? settled.feesInTokensSol : null,
+    settled: !!settled,
+    lastMarkEquity: record.equityNow,
     moves: rows.length,
     opens: count("OPEN_POSITION"),
     relays: count("REBALANCE"),
