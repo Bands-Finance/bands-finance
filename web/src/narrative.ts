@@ -48,9 +48,9 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const upDown = (x: number, flatBelow = 0.05) => (x >= flatBelow ? "up" : x <= -flatBelow ? "down" : "flat");
 
 const MODE_SENTENCE: Record<Status["mode"], string> = {
-  paper: "This is paper trading: real pools, live prices, a pretend wallet.",
+  paper: "This is paper: real pools, a pretend wallet.",
   "dry-run": "This is a rehearsal: real pools, a wallet that sends nothing.",
-  live: "This is his own wallet on Solana. Every move links to its transaction.",
+  live: "This is his own wallet on Solana.",
   demo: "This is a scripted demo: no wallet, no money.",
 };
 

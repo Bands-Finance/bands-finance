@@ -16,7 +16,7 @@ const T = ({ t, children }: { t: string; children: ReactNode }) => (
 export const FLAG_GLOSS: Record<string, string> = {
   thin: "thin: under about $20k of liquidity",
   new: "new: under 24 hours old",
-  hot: "hot: the price is moving fast, so bands get run over",
+  hot: "hot: the price is moving fast",
   volatile: "volatile: the price swung hard in the last day",
   "one-sided": "one-sided: almost all the liquidity on one side",
   "adaptive-fee": "adaptive fee: a variable fee on top of the base",
@@ -28,9 +28,9 @@ export const FEES_MARK_GLOSS = "* measured on-chain; ° the venue's figure; unma
 export const VENUE_ORDER: Venue[] = ["meteora-dlmm", "raydium-clmm", "orca-whirlpool"];
 export const VENUE_LABEL: Record<Venue, string> = { "meteora-dlmm": "Meteora", "raydium-clmm": "Raydium", "orca-whirlpool": "Orca" };
 export const VENUE_GLOSS: Record<Venue, string> = {
-  "meteora-dlmm": "Meteora DLMM: read from Solana. The only venue he trades.",
-  "raydium-clmm": "Raydium CLMM: read from Raydium's API. Shown, not traded.",
-  "orca-whirlpool": "Orca Whirlpools: read from Orca's API. Shown, not traded.",
+  "meteora-dlmm": "Meteora DLMM",
+  "raydium-clmm": "Raydium CLMM",
+  "orca-whirlpool": "Orca Whirlpools",
 };
 export const ISSUER_LABEL: Record<StockIssuer, string> = { xstocks: "xStocks", backpack: "Backpack", ondo: "Ondo", unknown: "unverified" };
 export const ISSUER_GLOSS: Record<StockIssuer, string> = {
@@ -103,8 +103,7 @@ export function PoolsHead({ screen, maxActivePools }: PoolsHeadProps) {
         <p className="census__sub">
           Every <T t={VENUE_GLOSS["meteora-dlmm"]}>Meteora DLMM</T>,{" "}
           <T t={VENUE_GLOSS["raydium-clmm"]}>Raydium CLMM</T> and <T t={VENUE_GLOSS["orca-whirlpool"]}>Orca Whirlpool</T> pool, scored by fees per dollar of{" "}
-          <T t="Liquidity is the money sitting in a pool, ready to be traded against.">liquidity</T> and marked down for thin, new, wild or one-sided. He works the top Meteora rows on paper,{" "}
-          <T t="Tokenized stocks: tokens backed one-to-one by a listed share, issued by xStocks or Backpack Securities.">tokenized stocks</T> among them.
+          <T t="Liquidity is the money sitting in a pool, ready to be traded against.">liquidity</T>.
         </p>
       </div>
 

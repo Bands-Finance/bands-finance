@@ -162,7 +162,7 @@ export function Pools({ screen, status, now }: PoolsProps) {
             </button>
           ))}
         </span>
-        <button type="button" className="toggle-chip" aria-pressed={stocksOnly} onClick={toggleStocks} title="tokenized stocks only; widens the quote filter to SOL & USDC">
+        <button type="button" className="toggle-chip" aria-pressed={stocksOnly} onClick={toggleStocks} title="tokenized stocks only">
           Stocks{stockCount > 0 && <span className="venue-chip-count">{stockCount}</span>}
         </button>
         {multi && <span className="venue-note">He trades Meteora only; Raydium and Orca are shown, not traded.</span>}
@@ -212,7 +212,7 @@ export function Pools({ screen, status, now }: PoolsProps) {
             <tr>
               <th className="num col-rank" title="rank by his score">#</th>
               <th className="col-pool">Pool</th>
-              <th className="col-venue" title="Meteora from chain, Raydium and Orca from their APIs">Venue</th>
+              <th className="col-venue" title="venue">Venue</th>
               <th className="num sortable" onClick={() => sortBy("score")} title="0–100: fee yield, marked down for thin, new, wild or one-sided">Mr Bands' score{arrow("score")}</th>
               {cols.map((c) => (
                 <th key={c.key} className="num sortable" onClick={() => sortBy(c.key)} title={c.title}>{c.label}{arrow(c.key)}</th>

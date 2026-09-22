@@ -7,7 +7,7 @@ import react from "@vitejs/plugin-react";
  */
 const DASH_URL = "https://mrbands.finance";
 const DASH_TITLE = "Mr Bands · Market maker on Solana";
-const DASH_DESC = "Mr Bands makes markets on Meteora DLMM, Solana. He lays bands of SOL under the price, earns the pool's fees when traders cross them, and publishes every move. His book is paper: real pools, live prices, a pretend wallet.";
+const DASH_DESC = "Mr Bands makes markets on Meteora DLMM, Solana. His book is paper: real pools, a pretend wallet.";
 function dashboardHead(): Plugin {
   return {
     name: "dashboard-head",
@@ -32,7 +32,7 @@ function dashboardHead(): Plugin {
             `  <meta property="og:image" content="${DASH_URL}/social-card.jpg" />`,
             `  <meta property="og:image:width" content="1200" />`,
             `  <meta property="og:image:height" content="630" />`,
-            `  <meta property="og:image:alt" content="An engraving of Mr Bands' desk: a top hat with an orange band, rows of strapped banknote bundles, a ticker under a glass dome." />`,
+            `  <meta property="og:image:alt" content="Mr Bands' desk, engraved." />`,
             `  <meta name="twitter:card" content="summary_large_image" />`,
             `  <meta name="twitter:image" content="${DASH_URL}/social-card.jpg" />`,
             `  </head>`,
@@ -41,7 +41,7 @@ function dashboardHead(): Plugin {
         // what a crawler reads: the page's substance in plain HTML, replaced by the app the moment it mounts
         .replace(
           '<div id="root"></div>',
-          `<div id="root"><main style="max-width:calc(1080px + 2 * clamp(18px,4vw,56px));margin:0 auto;padding:clamp(120px,19vh,210px) clamp(18px,4vw,56px) 0;color:#16120f;font-family:Fraunces,Georgia,serif"><p style="margin:0 0 18px;font:600 12px 'Cormorant SC',Georgia,serif;letter-spacing:.24em;text-transform:uppercase;color:#c9560a">Meteora DLMM · Solana</p><h1 style="max-width:640px;margin:0;font-weight:600;font-size:clamp(44px,6.6vw,104px);line-height:1;letter-spacing:-.025em">Mr Bands makes markets<br>on Solana.</h1><p style="max-width:44ch;margin:26px 0 0;font-size:clamp(17px,1.3vw,20px);line-height:1.5;color:#3d362f">${DASH_DESC}</p><p style="max-width:44ch;margin:.7em 0 0;font-size:clamp(17px,1.3vw,20px);line-height:1.5;color:#3d362f">He proposes each move and the guards decide. Every move is on the record. <a href="https://bands.finance/#/learn" style="color:#c9560a">How it works</a></p></main></div>`,
+          `<div id="root"><main style="max-width:calc(1080px + 2 * clamp(18px,4vw,56px));margin:0 auto;padding:clamp(120px,19vh,210px) clamp(18px,4vw,56px) 0;color:#16120f;font-family:Fraunces,Georgia,serif"><p style="margin:0 0 18px;font:600 12px 'Cormorant SC',Georgia,serif;letter-spacing:.24em;text-transform:uppercase;color:#c9560a">Meteora DLMM · Solana</p><h1 style="max-width:640px;margin:0;font-weight:600;font-size:clamp(44px,6.6vw,104px);line-height:1;letter-spacing:-.025em">Mr Bands makes markets<br>on Solana.</h1><p style="max-width:44ch;margin:26px 0 0;font-size:clamp(17px,1.3vw,20px);line-height:1.5;color:#3d362f">His book is paper: real pools, a pretend wallet.</p><p style="max-width:44ch;margin:.7em 0 0;font-size:clamp(17px,1.3vw,20px);line-height:1.5;color:#3d362f">He lays SOL under the price and earns the fee when traders cross it. He proposes, the guards decide, every move is published. <a href="https://bands.finance/#/learn" style="color:#c9560a">How it works</a></p></main></div>`,
         );
     },
   };

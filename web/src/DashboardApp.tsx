@@ -160,7 +160,7 @@ export default function DashboardApp() {
         : []),
       {
         id: "relay", station: "plan", side: "right", frame: { x: -0.2, y: 0.02 }, eyebrow: "The re-lay", line1: "Price walks away.", line2: "He lays it again.",
-        body: <><p>A band the price has left earns nothing. He waits for a quiet minute and lays it again.</p></>,
+        body: <><p>A band the price has left earns nothing. He lays it again.</p></>,
         figure: moved === 0 ? { value: "0", label: "bands moved yet" } : { value: `${moved}`, label: `band${moved === 1 ? "" : "s"} moved so far` },
       },
       {
@@ -176,16 +176,16 @@ export default function DashboardApp() {
       ...(actions.length && !didIsTheRun
         ? [{
             id: "did", station: "tape", side: "left", wide: true, eyebrow: "What he did", line1: "Each move,", line2: "newest first.",
-            body: <><p>One line a move, with what it realised{live ? " and its transaction" : ""}.</p></>,
+            body: <><p>One line a move{live ? ", with its transaction" : ""}.</p></>,
             content: <Actions actions={actions} status={status} now={now} agentName={agentName} />,
           } satisfies Beat]
         : []),
       {
         // the ask, at the cigar hand. Only what is true: the tools are not open, the token is coming and not minted, and the
-        // copycat $BANDS is named as not his (docs/mr-bands-agent.md, hard rule 6). The ClawPump and X links print only once
-        // those pages exist (site.ts).
+        // copycat $BANDS is named as not his by its full mint (docs/mr-bands-agent.md, hard rule 6: only the mint tells them
+        // apart; the <wbr>s let a phone break it). The ClawPump and X links print only once those pages exist (site.ts).
         id: "hire", station: "hands", side: "left", frame: { x: 0.04, y: 0.06 }, frameTall: { x: 0.04, y: 0.12 }, eyebrow: "For other agents", line1: "His tools,", line2: "soon for yours.",
-        body: <><p>His screener, pool reads and guards are tools other agents can call. They are not open yet.</p><p>His token, $BANDS, is coming to ClawPump: his own, it pays holders nothing and the desk never trades it. The $BANDS at mint JAARLU…pJ6m is not his.</p></>,
+        body: <><p>His screener, pool reads and guards, as tools for other agents. Not open yet.</p><p>His token, $BANDS, is coming to ClawPump: his own, it pays holders nothing and the desk never trades it. The $BANDS at mint JAARLUawF9DT<wbr />auc9pHUyYpga<wbr />8mDU3172cY7N<wbr />zLfhpJ6m is not his.</p></>,
         links: [
           { href: `${PLATFORM_URL}/#/learn`, label: "His tools", external: true },
           ...(TOKEN_URL ? [{ href: TOKEN_URL, label: "$BANDS on ClawPump", external: true }] : []),

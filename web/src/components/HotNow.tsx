@@ -28,11 +28,11 @@ const venueClass = (v: string) => (v === "meteora-dlmm" ? "meteora" : v.startsWi
 
 /** What each hot flag means, in plain words. */
 export const HOT_FLAG_GLOSS: Record<string, string> = {
-  new: "new: the pool is under 12 hours old, so the hour's numbers have little behind them; kept off the tradable list",
-  dumping: "dumping: most of the hour's trades were sells and the price fell",
-  wild: "wild: the price moved more than 15% in the last hour",
-  fading: "fading: the last five minutes were near silent after a busy hour",
-  "fee-unknown": "fee unknown: nobody reported this pool's fee, so it is ordered by turnover alone",
+  new: "new: under 12 hours old, not tradable",
+  dumping: "dumping: mostly sells, price falling",
+  wild: "wild: moved over 15% in the hour",
+  fading: "fading: the last five minutes went quiet",
+  "fee-unknown": "fee unknown: no reported fee, ordered by turnover",
 };
 
 const pct = (n: number | null, d = 2) => (n === null ? "n/a" : `${n.toFixed(d)}%`);
@@ -94,7 +94,7 @@ export function HotNow({ hot: given, refreshSec = 120, now }: HotNowProps) {
           <h2 className="hot__title">Where the fees are this hour.</h2>
         </div>
         <p className="hot__sub">
-          The screener ranks a day; this watches the hour. Volume in the last five and sixty minutes, fee yield per dollar, and the pools ahead of their daily pace.
+          Volume, fee yield and pace over the last hour.
           {surges > 0 && (
             <>
               {" "}
@@ -117,14 +117,14 @@ export function HotNow({ hot: given, refreshSec = 120, now }: HotNowProps) {
                 </a>
                 <span className={`hot__venue hot__venue--${venueClass(r.venue)}`}>{venueTag(r.venue)}</span>
                 {r.surge && (
-                  <span className="hot__surge" title={r.surgeAt ? `surge fired ${ago(r.surgeAt, at)}` : "surge"}>
+                  <span className="hot__surge" title={`surge: daily pace over 5% with the hour at twice the day, or new to the top ten${r.surgeAt ? ` · fired ${ago(r.surgeAt, at)}` : ""}`}>
                     SURGE
                   </span>
                 )}
               </div>
 
               <div className="hot__yield">
-                <span className="hot__yield-value" title="fee yield last hour: what a dollar in the pool earned in the last 60 minutes">
+                <span className="hot__yield-value" title="fee yield last hour">
                   {r.feeToTvl1hPct === null ? <span className="hot__na">fee n/a</span> : pct(r.feeToTvl1hPct, 3)}
                 </span>
                 <span className="hot__yield-label">
@@ -149,7 +149,7 @@ export function HotNow({ hot: given, refreshSec = 120, now }: HotNowProps) {
                   <dt>Vol 1h</dt>
                   <dd>{fmtUsd(r.vol1hUsd)}</dd>
                 </div>
-                <div title="acceleration: the last hour against the day's hourly pace; 1× is steady">
+                <div title="the hour against the day's pace; 1× is steady">
                   <dt>Accel</dt>
                   <dd className={r.acceleration !== null && r.acceleration >= 2 ? "pos" : ""}>{mult(r.acceleration)}</dd>
                 </div>
@@ -182,7 +182,7 @@ export function HotNow({ hot: given, refreshSec = 120, now }: HotNowProps) {
       </ol>
 
       <p className="hot__gloss r-item">
-        <b>Fee yield last hour</b>: what a dollar in the pool earned in 60 minutes; <b>daily pace</b> is that times 24. <b>Accel</b>: the hour against the day's pace. <b>new</b>: under 12 hours old, not tradable · <b>dumping</b>: mostly sells, price falling · <b>wild</b>: moved over 15% in the hour · <b>fading</b>: the last five minutes went quiet · <b>fee-unknown</b>: ordered by turnover. <b>SURGE</b>: daily pace over 5% with the hour at twice the day, or new to the top ten.
+        <b>Fee yield</b>: what a dollar in the pool earned in the last hour; <b>daily pace</b> is that times 24. <b>Accel</b>: the hour against the day's pace.
       </p>
     </section>
   );

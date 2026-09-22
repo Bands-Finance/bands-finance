@@ -59,10 +59,10 @@ export const GLOSS = {
   band: "A band is a slice of price Mr Bands puts liquidity into. Every trade that crosses it pays him a fee.",
   inRange: "In range: the price is inside the band, so it is earning.",
   bin: "Meteora cuts price into small steps called bins. A band is a run of bins.",
-  dryRun: "Dry run: he proposes, the guards decide, the wallet builds each transaction and sends none.",
-  paper: "Paper trading: real pools, live prices, a pretend wallet. No transaction is sent.",
+  dryRun: "Dry run: every transaction is built and none is sent.",
+  paper: "Paper: real pools, a pretend wallet. Nothing is sent.",
   demo: "Demo: a seeded example of how he proposes and the guards decide, not a real run.",
-  guards: "Plain code around what proposes his moves: caps, a stop-loss, a cooldown. It can veto him or pull him out, and it prints why.",
+  guards: "The guards: plain code that can veto him or pull him out, and prints why.",
 };
 
 /* ---------- verdicts ---------- */
@@ -650,7 +650,7 @@ export function statusOf(newestFirst: JournalEntry[], now: number, demo: boolean
     return { mode, lastTs, ageMs, short: "demo", sentence: `A scripted demo: ${span} of simulated decisions in ${latest?.pool.label ?? "one pool"}. No wallet, no money.` };
   }
   if (mode === "paper") {
-    return { mode, lastTs, ageMs, short: "paper", sentence: `Paper trading: real pools, live prices, a pretend wallet. Last decision ${ago}.` };
+    return { mode, lastTs, ageMs, short: "paper", sentence: `Paper: real pools, a pretend wallet. Last decision ${ago}.` };
   }
   if (mode === "dry-run") {
     return { mode, lastTs, ageMs, short: "dry run", sentence: `Rehearsal: a real pool, a wallet that sends nothing. Last decision ${ago}.` };

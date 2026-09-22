@@ -78,11 +78,11 @@ interface ConsoleEntry {
 }
 
 const START_LINES = [
-  "1. He reads the pool: price, bins, wallet, open bands.",
+  "1. He reads the pool.",
   "2. He proposes one move: open, close, claim, move, or hold.",
   "3. The guards decide.",
-  "4. A yes runs on paper, or live through the wallet.",
-  "5. It lands in this journal. Type 'help' for more.",
+  "4. A yes runs, on paper or live.",
+  "5. It lands in this journal.",
 ];
 
 const HELP_LINES = [
@@ -97,7 +97,7 @@ const HELP_LINES = [
 function guardLines(limits: RiskLimits | null): string[] {
   if (!limits) return ["limits not loaded; the guards still run."];
   return [
-    "plain code. it can veto him or pull him out:",
+    "the guards:",
     `no single band bigger than ${limits.maxPositionSol} SOL`,
     `no more than ${limits.maxTotalExposureSol} SOL out in bands at once`,
     `${limits.gasReserveSol} SOL kept back for gas`,
@@ -239,8 +239,7 @@ function DeskInner({ entries, status, limits, screen, agentName, id }: DeskProps
       <div className="app__desk-head">
         <h2 className="app__desk-title">Watch {agentName} work</h2>
         <p className="app__desk-sub">
-          His journal, {demo ? <Gloss term="demo">a scripted demo</Gloss> : status.mode === "paper" ? <Gloss term="paper">paper traded</Gloss> : "live"}: he proposed, the{" "}
-          <Gloss term="guards">guards</Gloss> decided. Type <code>start</code> below.
+          His journal. Type <code>start</code> below.
         </p>
       </div>
 

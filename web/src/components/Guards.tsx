@@ -70,7 +70,7 @@ function familiesOf(l: RiskLimits | null, maxActivePools: number): Family[] {
           body: (
             <>
               must stay in the wallet for{" "}
-              <T t="Fees: what Solana charges per transaction. Rent: a deposit Solana holds while a band exists; it comes back when the band is closed.">fees and rent</T>
+              <T t="Fees: what Solana charges per transaction. Rent: a deposit held while a band exists, returned when it closes.">fees and rent</T>
             </>
           ),
           kind: "reserve",
@@ -116,8 +116,8 @@ function familiesOf(l: RiskLimits | null, maxActivePools: number): Family[] {
           value: L ? `> ${L.maxPriceMovePctPerCycle}% in one cycle` : NA,
           body: (
             <>
-              no new bands after a jump that big (a{" "}
-              <T t="A cycle is one look at the pool, every 5 minutes.">cycle</T> is one 5-minute look)
+              no new band after a jump that big in one{" "}
+              <T t="A cycle is one look at the pool, every 5 minutes.">cycle</T>
             </>
           ),
           kind: "refusal",
@@ -152,8 +152,7 @@ export function Guards({ limits, record, maxActivePools = 6 }: GuardsProps) {
         <span className="eyebrow">The guards</span>
         <h2 className="tools__title">The rules he can't break</h2>
         <p className="tools__sub">
-          He sees them; he cannot change them.
-          {!limits && <> No limits loaded yet.</>}
+          {!limits && <>No limits loaded yet.</>}
         </p>
       </div>
 
@@ -187,9 +186,7 @@ export function Guards({ limits, record, maxActivePools = 6 }: GuardsProps) {
           <span className="tools__family-blurb">No decisions on file yet.</span>
         )}
       </div>
-      <p className="tools__sub r-item" style={ri(idx++)}>
-        Every veto and override is printed in the journal.
-      </p>
+      <p className="tools__sub r-item" style={ri(idx++)} />
     </section>
   );
 }

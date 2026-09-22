@@ -40,11 +40,7 @@ const IDEAS: Idea[] = [
     body: (
       <>
         Every half hour he ranks every pool on the chain by fees earned per dollar of{" "}
-        <T t="Liquidity is the money sitting in a pool, ready to be traded against.">liquidity</T>, marked down for being{" "}
-        <T t="Thin: under about $20k in the pool.">thin</T>,{" "}
-        <T t="New: under 24 hours old.">new</T>,{" "}
-        <T t="Wild: the price swung hard in the last day.">wild</T>, or{" "}
-        <T t="One-sided: almost all the money sits on one side of the price.">one-sided</T>. He works a few at a time, and tokenized stocks are one part of his book.
+        <T t="Liquidity is the money sitting in a pool, ready to be traded against.">liquidity</T>. He works a few at a time; tokenized stocks are one part of his book.
       </>
     ),
   },
@@ -54,7 +50,7 @@ const IDEAS: Idea[] = [
     body: (
       <>
         On{" "}
-        <T t="Meteora is an exchange on Solana; DLMM is its pool design.">Meteora DLMM</T>, price is cut into small steps called bins. He stacks his money in a band of bins around the price: a bigger share of each trade, and nothing while the price is outside it.
+        <T t="Meteora is an exchange on Solana; DLMM is its pool design.">Meteora DLMM</T>, price is cut into steps called bins. He stacks his SOL in a band of bins around the price and earns nothing while the price is outside it.
       </>
     ),
   },
@@ -75,8 +71,8 @@ const IDEAS: Idea[] = [
     wide: true,
     body: (
       <>
-        A band the price falls through ends up holding the token that fell, and that gap against just holding is{" "}
-        <T t="Impermanent loss: what a band gives up against simply holding.">impermanent loss</T>. On his real-money run, 17 to 19 Sep, he claimed 7.91 SOL of fees and the book still went from 19.79 to 19.71 SOL.
+        A band the price falls through ends up holding the token that fell:{" "}
+        <T t="Impermanent loss: what a band gives up against simply holding.">impermanent loss</T>. On his real-money run, 17 to 19 Sep, he claimed 7.91 SOL of fees and the book went from 19.79 to 19.71 SOL.
       </>
     ),
   },
@@ -86,10 +82,7 @@ const IDEAS: Idea[] = [
     wide: true,
     body: (
       <>
-        He proposes; plain code decides: a cap per band, a cap on money out, a{" "}
-        <T t="Gas reserve: SOL kept back for transaction fees.">gas reserve</T>, a{" "}
-        <T t="Stop-loss: a band that falls too far below what went in is closed.">stop-loss</T>, a daily action cap, a{" "}
-        <T t="Cooldown: a minimum wait between actions.">cooldown</T>. A proposal that breaks a rule is vetoed, a bleeding band is closed, and both are printed in the journal.
+        He proposes; the guards decide. A proposal that breaks a rule is vetoed, and the veto is printed.
       </>
     ),
   },
@@ -108,9 +101,7 @@ export function Learn() {
         <span className="learn__flag">Start here</span>
         <span className="eyebrow learn__eyebrow">How it works</span>
         <h1 className="learn__title">How he earns fees.</h1>
-        <p className="learn__sub">
-          Six ideas, in plain words.
-        </p>
+        <p className="learn__sub" />
       </div>
 
       <div className="learn__grid">

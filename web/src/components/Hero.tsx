@@ -36,11 +36,10 @@ export function Hero({ record, screen, status, workingNow, agentName }: HeroProp
           ? "bands.finance · rehearsal · nothing broadcast"
           : "bands.finance · demo · nothing broadcast";
 
-  const sim = live ? "" : status.mode === "paper" ? " (paper)" : " (simulated)";
   const stats = [
     { value: screen ? screen.scannedPools.toLocaleString() : "·", label: "pools scanned" },
     { value: record ? String(record.counts.decisions) : "·", label: "decisions published" },
-    { value: record ? (record.feesRealized + record.feesUnclaimed).toFixed(4) : "·", label: `SOL fees earned${sim}` },
+    { value: record ? (record.feesRealized + record.feesUnclaimed).toFixed(4) : "·", label: "SOL fees earned" },
   ];
 
   return (
@@ -56,9 +55,8 @@ export function Hero({ record, screen, status, workingNow, agentName }: HeroProp
           {agentName} <em>makes markets on Solana</em> and shows his work.
         </h1>
         <p className="hero__lede r-item" style={ri(2)}>
-          He ranks every pool on Meteora DLMM, lays <span className="term" title={GLOSS.band}>bands</span> of liquidity
-          around the price in the best ones, and earns the fees on trades that cross them. He proposes, the guards decide,
-          and every decision is published here.
+          He lays <span className="term" title={GLOSS.band}>bands</span> of SOL in the best pools on Meteora DLMM and earns the fees on
+          trades that cross them. He proposes, the guards decide, and every decision is published here.
         </p>
 
         <div className="hero__cta r-item" style={ri(3)}>

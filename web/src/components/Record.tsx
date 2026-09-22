@@ -111,20 +111,19 @@ export function Record({ record, solPriceUsd, status, agentName, compact = false
         </span>
         <span className="pnl__sub">
           Started with {solFmt(record.startEquity)} on {startDate(record.startTs)}. The book is {solFmt(record.equityNow)}
-          {usdShadow(record.equityNow, solPriceUsd)} today: {solFmt(record.wallet)}{record.quote ? ` and ${fmtAmount(record.quote.amount)} ${record.quote.symbol} (${solFmt(record.quote.inSol)})` : ""} in the wallet, {solFmt(record.atWork)} at work in{" "}
+          {usdShadow(record.equityNow, solPriceUsd)}. {solFmt(record.wallet)}{record.quote ? ` and ${fmtAmount(record.quote.amount)} ${record.quote.symbol} (${solFmt(record.quote.inSol)})` : ""} in the wallet, {solFmt(record.atWork)} at work in{" "}
           <span className="term" title={GLOSS.band}>bands</span>
-          {record.tokens.length ? `, ${tokensHeld} held from bands that were closed` : ""}
-          {record.hedge !== null && Math.abs(record.hedge) >= 0.00005 ? `, the hedge desk at ${signedSol(record.hedge)}` : ""}, marked to live pool prices
-          {record.sinceStart ? `; ${solFmt(record.rent)} of rent comes back when bands close and is not counted` : `, plus ${solFmt(record.rent)} of rent that comes back when bands close`}.
+          {record.tokens.length ? `, ${tokensHeld} from closed bands` : ""}
+          {record.hedge !== null && Math.abs(record.hedge) >= 0.00005 ? `, the hedge desk at ${signedSol(record.hedge)}` : ""}.
         </span>
         <details className="pnl__how">
           <summary>How this is computed</summary>
           <p>
-            ‘At work’ is SOL in bands, marked to the pool's price. ‘Wallet’ is SOL back in hand. ‘Rent’ is what Solana
-            charges to keep a band open, refunded when it closes. Every figure is from his journal.
+            ‘At work’ is SOL in bands at the pool's price.{" "}
+            {record.sinceStart ? `${solFmt(record.rent)} of rent comes back when bands close and is not counted.` : `The book includes ${solFmt(record.rent)} of rent that comes back when bands close.`}
           </p>
           {record.anySimulated && (
-            <p>In a dry run nothing is sent, so these fees are what he would have earned.</p>
+            <p>In a dry run nothing is sent; these fees are what he would have earned.</p>
           )}
         </details>
         <span className="pnl__links">
@@ -441,8 +440,7 @@ function EarningsChart({ points, feesUnclaimed, solPriceUsd, agentName }: { poin
         )}
       </svg>
       <span className="pnl__chart-label pnl__chart-label--why">
-        fees {agentName} has claimed, from his journal. every dot is one claim, sized by amount · click a dot for its
-        transaction{anySim ? " · simulated claims are drawn hollow" : ""}
+        every dot is one claim, sized by amount · click a dot for its transaction{anySim ? " · simulated claims are drawn hollow" : ""}
       </span>
       <span className="pnl__chart-label">
         last 24h: {plural(claims24, "claim")}, {plusFee(last24)}
@@ -468,7 +466,7 @@ function ConsistencyBoard({ days, feesRealized, solPriceUsd }: { days: DayRow[];
   return (
     <div className="pnl__board">
       <div className="pnl__chart-head">
-        <span className="pnl__chart-eyebrow">The daily record · every day since the first decision</span>
+        <span className="pnl__chart-eyebrow">The daily record</span>
         <span className="pnl__chart-substat">
           {plural(days.length, "day")} on record · {feeSol(feesRealized)}{usdShadow(feesRealized, solPriceUsd)} fees · best day {dayLabel(best.date)}{" "}
           {plusFee(best.fees)} · worst day {dayLabel(worst.date)}{" "}
@@ -510,7 +508,7 @@ function ConsistencyBoard({ days, feesRealized, solPriceUsd }: { days: DayRow[];
         </table>
       </div>
       <span className="pnl__chart-label pnl__chart-label--why">
-        days roll at midnight UTC. fees cannot retrace; the book breathes with the market. Red is printed as plainly as green.
+        days roll at midnight UTC.
       </span>
     </div>
   );

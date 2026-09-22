@@ -56,15 +56,13 @@ export function Book({ book, status, agentName, compact = false }: BookProps) {
         {book.asOf !== null && <span className="livepos__asof">as of {ago(book.asOf, now)}</span>}
       </div>
       {!compact && <p className="livepos__gloss">
-        // every <span className="term" title={GLOSS.band}>band</span> {agentName} holds, from the newest cycle in the journal · ‘<span className="term" title={GLOSS.inRange}>in range</span>’
-        means the price is inside it and it earns · ‘out by 3 <span className="term" title={GLOSS.bin}>bins</span>’ means it earns nothing until the price comes back
+        // every <span className="term" title={GLOSS.band}>band</span> {agentName} holds, from the newest cycle in the journal
       </p>}
 
       {bands.length === 0 ? (
         <p className="livepos__flat">
-          Flat. No band on the book. {agentName} opens one only when the fees are worth the rent and the risk.
+          Flat. {agentName} opens a band only when the fees are worth the risk.
           {book.lastExit ? ` Last exit: ${ACTION_PAST[book.lastExit.action]} ${ago(book.lastExit.ts, now)}, “${book.lastExit.headline}”.` : ""}
-          {" "}Flat is a decision.
         </p>
       ) : (
         <div className="livepos__grid">
@@ -76,16 +74,15 @@ export function Book({ book, status, agentName, compact = false }: BookProps) {
 
       {!compact && bands.length > 0 && (
         <p className="livepos__foot">
-          Each band earns the pool's fee on every trade while the dot stays inside the bar. Below the band his SOL buys the token
-          as the price falls; above it the token sells back to SOL as the price rises.
+          Each band earns the pool's fee while the dot stays inside the bar. Below it his SOL buys the token; above it the token sells back to SOL.
         </p>
       )}
       {!compact && bands.length > 0 && waiting > 0 && (
         <p className="livepos__foot">
-          <strong>{feeSol(waiting)}</strong> of fees is waiting inside these bands, not yet claimed.
+          <strong>{feeSol(waiting)}</strong> of fees waiting in these bands, unclaimed.
         </p>
       )}
-      {!compact && <p className="livepos__foot">{status.sentence}</p>}
+      {!compact && <p className="livepos__foot" />}
     </section>
   );
 }

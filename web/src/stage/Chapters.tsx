@@ -141,7 +141,7 @@ export function MadeBlock({ record, solPriceUsd, now, chart }: { record: AgentRe
       <p className="chap__p">
         {chart.coins.some((c) => c > 0)
           ? `On the desk each column of coins is one ${chart.bucket} of claims, each coin ${chart.unit} SOL.`
-          : "No claim yet, so the abacus on the desk is empty."}
+          : "No claim yet; the abacus is empty."}
       </p>
       {days.length > 0 && (
         <div className="chap__scroll">

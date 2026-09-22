@@ -78,7 +78,7 @@ export function MyAgent() {
             {error && <p className="me__err">{error}</p>}
             {status !== "signed-in" && (
               <p className="me__note">
-                The signature proves you hold the wallet; it moves nothing.
+                The signature moves nothing.
               </p>
             )}
             {status === "signed-in" && token && address && <AdvisorTerminal token={token} address={address} />}
@@ -228,8 +228,8 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
 
         <div className="term__body" ref={bodyRef}>
           <p className="term__boot">
-            {agent.name} · keyed to {who} · reads his desk · holds no key, moves nothing · messages
-            {agent.creditsInfo?.enforced ? " cost 1 credit" : " are free"} · commands are free
+            {agent.name} · keyed to {who} · holds no key, moves nothing · messages
+            {agent.creditsInfo?.enforced ? " cost 1 credit" : " are free"}
           </p>
 
           {agent.state === "provisioning" && <p className="term__line term__line--dim">// setting up your mr bands…</p>}
