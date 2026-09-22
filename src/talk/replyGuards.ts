@@ -291,7 +291,8 @@ export function vetReply(text: string, ctx: VetContext): VetRefusal | null {
   const op = (ctx.lint?.operatorHandle ?? "").toLowerCase().replace(/[^a-z0-9_]/g, "").replace(/_/g, "[ _]");
   if (op && new RegExp(`(^|[^\\w])@?${op}\\b`).test(foldedAll)) return refuse("architect", "names his architect's handle");
   // 6. the lint
-  const lint = lintText(raw, ctx.lint ?? {});
+  // replies are sentence case like his posts (Zach, 22 Sep); the rest of the lint applies unchanged
+  const lint = lintText(raw, { ...(ctx.lint ?? {}), caseRule: "sentence" });
   if (!lint.ok) return refuse("lint", describeViolations(lint.violations));
   // 7. an answer returned twice
   const echo = selfEcho(raw);

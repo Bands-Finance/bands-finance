@@ -120,10 +120,10 @@ async function main(): Promise<void> {
   console.log("fixed answers");
   const lintCtx = lintContextOf(talkEnv({ TALK_VENUES: "meteora dlmm" }));
   const lintCtxLaunched = lintContextOf(talkEnv({ TALK_VENUES: "meteora dlmm", TOKEN_MINT: HIS_MINT }));
-  await test("every template passes lintText, carries no @ # $ or link, and fits 280", () => {
+  await test("every template passes lintText in sentence case, carries no @ # $ or link, and fits 280", () => {
     for (const [name, text] of Object.entries(REPLY_TEMPLATES)) {
       for (const ctx of [lintCtx, lintCtxLaunched]) {
-        const r = lintText(text, ctx);
+        const r = lintText(text, { ...ctx, caseRule: "sentence" });
         assert.ok(r.ok, `${name}: ${describeViolations(r.violations)}`);
       }
       assert.ok(!/[@#$]/.test(text), `${name}: no @ # $`);

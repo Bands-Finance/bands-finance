@@ -674,7 +674,7 @@ async function main(): Promise<void> {
     assert.equal(vet("a".repeat(201))?.rule, "length");
     assert.equal(vet("one line.\ntwo lines.\nthree lines.")?.rule, "lines");
     assert.equal(vet("")?.rule, "empty");
-    assert.equal(vet("Capital letters are not his voice.")?.rule, "lint");
+    assert.equal(vet("My paper book held its range all day."), null, "replies are sentence case like his posts");
   });
 
   await test("vetReply: the copycat template passes without the mint even when the mention names it; the mint itself never does; another address never does", async () => {

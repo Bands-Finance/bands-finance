@@ -342,7 +342,7 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
   // a reply always names the post it answers, and only a reply may: never a top-level post by accident
   if (opts.type === "reply" && !opts.replyTo) return draft("reply: a reply without the post it answers; never a top-level post by accident");
   if (opts.replyTo && opts.type !== "reply") return draft(`reply: replyTo is set on a ${opts.type} post; only a reply may answer a post`);
-  const lint = lintText(text, { ...lintContextOf(t), ...(opts.sentenceCase && !opts.replyTo ? { caseRule: "sentence" as const } : {}) });
+  const lint = lintText(text, { ...lintContextOf(t), ...(opts.sentenceCase ? { caseRule: "sentence" as const } : {}) });
   if (!lint.ok) return draft(`lint: ${describeViolations(lint.violations)}`, lint.violations);
   if (opts.replyTo) {
     if (!replyToHandle) return draft("reply: the account handle is not a valid x handle");
@@ -613,7 +613,7 @@ export async function replyToMention(m: Mention, deps: XDeps = {}): Promise<Post
 
 /** A reply to one mention: postTweet with type "reply" and replyTo always set. engage.ts never calls postTweet itself. */
 export function postReply(text: string, replyTo: { tweetId: string; handle: string; excludeUserIds?: readonly string[] }, deps: XDeps = {}): Promise<PostResult> {
-  return postTweet(text, { type: "reply", replyTo }, deps);
+  return postTweet(text, { type: "reply", replyTo, sentenceCase: true }, deps);
 }
 
 /**
