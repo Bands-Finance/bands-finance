@@ -1,6 +1,7 @@
 import { quoteOf, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
 import type { PoolAnalytics } from "../tools/lpagent";
 import type { FlowContext } from "../scouts/flow";
+import type { LearnedFactor, LearnedView } from "../learn/surface";
 
 export interface ScreenContext {
   rank: number;
@@ -120,7 +121,21 @@ export interface Observation {
   flow?: NonNullable<ScreenContext["flow"]> | null;
   portfolio: PortfolioContext;
   engine: EngineObservation | null;
+  /**
+   * WHAT HE HAS LEARNED (src/learn/surface.ts), built for THIS pool and populated by the desk loop.
+   * Until it is set he is shown only what he proposed and whether the guards allowed it, never what
+   * a seat earned, which is the whole reason nothing he does gets better. The block it renders is
+   * bounded: 5 closed seats, a 7-day window, and LEARNED_BUDGET_CHARS of text.
+   */
+  learned?: LearnedView | null;
 }
+
+/**
+ * The character budget for the '## What you have learned' block. His whole observation is about
+ * 1,070 characters today, so the block is not allowed to be the observation: seats are dropped
+ * oldest-first until it fits, and the line that says how many were dropped is kept.
+ */
+export const LEARNED_BUDGET_CHARS = 1200;
 
 const r = (n: number | null | undefined, digits = 4) =>
   n === null || n === undefined || !Number.isFinite(n) ? "n/a" : Number(n.toFixed(digits)).toString();
@@ -128,6 +143,89 @@ const usdShort = (n: number | null | undefined) =>
   n === null || n === undefined || !Number.isFinite(n) ? "n/a" : n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(0)}K` : `$${n.toFixed(0)}`;
 const sig = (n: number | null | undefined) =>
   n === null || n === undefined || !Number.isFinite(n) ? "n/a" : n.toPrecision(6);
+
+/** A signed SOL figure, 3 decimals, always with its sign so a loss reads as a loss. */
+const solSigned = (n: number | null | undefined, digits = 3) =>
+  n === null || n === undefined || !Number.isFinite(n) ? "n/a" : `${n >= 0 ? "+" : "-"}${Math.abs(n).toFixed(digits)}`;
+
+/**
+ * '## What you have learned': the one block that shows him an OUTCOME. Everything else in the
+ * observation is the present tense (what the pool looks like, what the guards say); this is what his
+ * last seats in THIS pool actually did, how his forecast has scored against reality, and which knob
+ * is in force with the sample behind it.
+ *
+ * Two rules it keeps, both tested:
+ *   NEVER A FACTOR WITHOUT ITS SAMPLE. Under the minimum the shipped default stands and the line
+ *   says so with the count, so he can never read a number as evidence it is not.
+ *   NEVER OVER BUDGET. Seats are dropped oldest-first until the block fits LEARNED_BUDGET_CHARS,
+ *   and the drop is stated rather than hidden.
+ * The block also says plainly whether his model is on, because while it is off these knobs moved by
+ * his rulebook and nothing here was reasoned by him.
+ */
+export function formatLearned(v: LearnedView, budget = LEARNED_BUDGET_CHARS): string {
+  const head: string[] = ["## What you have learned"];
+  head.push(
+    `- book: ${v.mode}. ${v.modelOn ? "Your model is answering." : "Your model is off (no gateway token): these knobs moved by your rulebook, not by you."}` +
+      `${v.frozen.all ? " Learning is FROZEN: nothing below will move until it is switched back on." : ""}`,
+  );
+  const refusedSeats = Object.entries(v.refused.lessons);
+  if (refusedSeats.length || v.refused.changes > 0) {
+    head.push(
+      `- ${refusedSeats.map(([m, n]) => `${n} seat(s) from the ${m} book`).join(", ")}${v.refused.changes ? `${refusedSeats.length ? " and " : ""}${v.refused.changes} change(s) from another book` : ""} are on this file and are NOT counted below: a number learned on one book does not carry to another.`,
+    );
+  }
+  const ratio = v.lessons.ratio;
+  head.push(
+    ratio
+      ? `- your entry forecast has come in at a median ${ratio.median.toFixed(2)} of realised over ${ratio.n} closed seats, too high ${ratio.tooHigh} times. Read your own forecast as a ceiling.`
+      : `- no closed seat has scored your entry forecast yet (${v.lessons.total} lessons on the book): your forecast is unproven, not proven right.`,
+  );
+  // a pool-scoped view carries this pool's lane and this pool's penalty; a book-wide one carries every lane
+  for (const f of v.factors) head.push(learnedFactorLine(f));
+  const seatHead = v.pool && v.seats.length > 0 ? `- your last ${v.seats.length} closed seat(s) in ${v.pool.label}, newest first:` : null;
+  const seatLines = v.seats.map(
+    (s) =>
+      `  - ${Math.round(s.minutes)}m, ${s.bins} bins, ${s.coverPct === null ? "n/a" : `${s.coverPct.toFixed(1)}%`} cover, ${s.inRangePct === null ? "n/a" : `${Math.round(s.inRangePct)}%`} in range, ended ${s.endReason}: ` +
+      `fees ${solSigned(s.feesSol)}, net ${solSigned(s.netSol)} SOL${s.netExDriftSol === null ? "" : ` (${solSigned(s.netExDriftSol)} ex-drift)`}, ` +
+      `forecast ${s.predictedYieldPct === null ? "none" : `${s.predictedYieldPct.toFixed(1)}%/day`} -> realised ${s.realizedYieldPctPerDay === null ? "n/a" : `${s.realizedYieldPctPerDay.toFixed(1)}%/day`}`,
+  );
+  if (v.pool && v.seats.length === 0) head.push(`- no closed seat in ${v.pool.label} in the last week: you have no record here to argue from.`);
+
+  // fit the budget by dropping the oldest seats, and say how many were dropped rather than hide it
+  let shown = seatLines.length;
+  const render = (n: number): string => {
+    const lines = [...head];
+    if (seatHead && n > 0) {
+      lines.push(seatHead);
+      lines.push(...seatLines.slice(0, n));
+      if (n < seatLines.length) lines.push(`  - (${seatLines.length - n} older seat(s) not shown)`);
+    }
+    return lines.join("\n");
+  };
+  let out = render(shown);
+  while (out.length > budget && shown > 0) out = render(--shown);
+  return out;
+}
+
+/**
+ * One knob, never printed without the sample it rests on, and never printed as unmoved when it has
+ * moved. THE ORDER MATTERS: a knob that was journalled is what the desk is pricing at RIGHT NOW,
+ * whatever its sample reads today (a window empties, a threshold is raised, the seats that bought it
+ * age out). Under-sample used to win, so he could be shown "x0.50, the shipped default: not enough
+ * seats yet, 0 of the 20 it needs, so it has not moved" while the desk priced every seat at 0.45 and
+ * the change that made it was listed in the journal two lines below. So: moved first, with its
+ * evidence and its sample stated honestly; the default only while nothing has moved.
+ */
+function learnedFactorLine(f: LearnedFactor): string {
+  const what = f.knob === "calibration" ? `${f.lane} forecast factor` : `this pool's size penalty`;
+  const state =
+    f.lastMovedAt !== null
+      ? `x${f.factor.toFixed(2)}, in force now on ${f.n} scored seat(s)${f.underSample ? `, which is under the ${f.minSample} a fresh move needs, so it stands where it was left` : ""} (${f.why ?? "no evidence sentence was journalled"})`
+      : f.underSample
+        ? `x${f.defaultFactor.toFixed(2)}, the shipped default: not enough seats yet, ${f.n} of the ${f.minSample} it needs, so it has not moved`
+        : `x${f.defaultFactor.toFixed(2)}, the shipped default: ${f.n} seats say it may move, and it has not moved yet`;
+  return `- ${what}: ${state}${f.frozen ? " [frozen]" : ""}. It can only ever make a seat smaller.`;
+}
 
 export function formatObservation(o: Observation): string {
   const s = o.snapshot;
@@ -259,6 +357,10 @@ export function formatObservation(o: Observation): string {
     }
   }
   lines.push("");
+  if (o.learned) {
+    lines.push(formatLearned(o.learned));
+    lines.push("");
+  }
   lines.push("## Your recent decisions (newest first)");
   if (o.recent.length === 0) lines.push("- none yet");
   for (const g of o.recent) {

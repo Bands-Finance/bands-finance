@@ -36,6 +36,26 @@ export interface BandMeta {
   travelBins60m: number | null;
   /** the last seat check's yield on this seat, percent a day; null until one ran */
   predictedYieldPct: number | null;
+  /**
+   * THE TRAINING LABEL. The forecast the desk decided on when it laid this band, percent a day, kept as
+   * it was at the open and never overwritten. predictedYieldPct is the LAST seat check's figure and is
+   * rewritten every cycle (src/index.ts), so it says what the desk thought at the close, not what it
+   * believed when it chose to sit down. Null when nothing priced the seat.
+   */
+  entryYieldPct?: number | null;
+  /** where that forecast's fee pace came from: the scout's 4h or 60m window, or the venue's 24h figure */
+  entrySource?: "policy" | "flow-4h" | "flow-60m" | "24h" | null;
+  /** minutes of pool flow the scout had read when the forecast was made; null on a 24h figure */
+  entryCoveredMin?: number | null;
+  /** the share of the band's depth the seat took at the open, percent */
+  entrySharePct?: number | null;
+  /**
+   * The in-range haircut in force when that forecast was made (the 0.5 literal in seatEarnings, or the
+   * calibrated factor once one is in force). The calibration needs it to be self-consistent: a ratio of
+   * realised to forecast only says what the RIGHT factor is once it is read against the factor that made
+   * the forecast. Absent means the shipped 0.5 (LEARN_CAL_BASE).
+   */
+  entryYieldFactor?: number | null;
   /** an ASK band (src/engine/askExit.ts): a closed bid band's token being worked off over the price, not a seat the desk chose */
   ask?: boolean;
 }
@@ -77,6 +97,23 @@ export interface Lesson {
   /** the part of netSol that is this seat's tokens still unsold in the wallet, at the close's mark; absent on lessons written before it was counted */
   tokensLeftSol?: number;
   predictedYieldPct: number | null;
+  /** the forecast the desk decided on at the open, carried from the meta: the learners' training label */
+  entryYieldPct?: number | null;
+  entrySource?: "policy" | "flow-4h" | "flow-60m" | "24h" | null;
+  entryCoveredMin?: number | null;
+  entrySharePct?: number | null;
+  entryYieldFactor?: number | null;
+  /**
+   * The part of netSol that is the quote token moving against SOL, not the seat trading: for a seat
+   * quoted in something other than SOL, seatSol x (the quote's mark in SOL at the close over its mark at
+   * the open, less one). Null for a SOL-quoted seat and when the ledger has no mark at both ends.
+   * -8.479 SOL of it sits inside the 32 USDC-quoted paper seats, so no learner reads netSol.
+   */
+  quoteDriftSol?: number | null;
+  /** netSol with that drift taken out: what the seat itself did */
+  netSolExDrift?: number;
+  /** written by the backfill (src/scripts/lessons-recompute.ts --backfill), not by the desk at the close */
+  backfilled?: boolean;
   /** fees over the seat, per day, percent */
   realizedYieldPctPerDay: number;
   headline: string;
@@ -145,6 +182,27 @@ export function seatNetSol(own: readonly LedgerRow[], poolSwaps: readonly Ledger
 }
 
 /**
+ * PURE. The quote token's drift against SOL over a seat's life, in SOL, or null for a SOL-quoted seat
+ * and when the ledger carries no mark at both ends. A USDC-quoted seat is booked in SOL, so SOL moving
+ * under it shows up in netSol as a gain or a loss the seat never made: AMD/USDC's stop on 2026-09-18
+ * read -6.014 SOL of which -6.346 was this, the seat itself +0.332, and the price 48 bins ABOVE the
+ * band at the time. Every learner reads the end side and the yield ratio; this is decomposed and shown,
+ * never learned from.
+ */
+export function quoteDriftOf(own: readonly LedgerRow[], seatSol: number): number | null {
+  const markOf = (r: LedgerRow): number | null => (typeof r.markQuoteInSol === "number" && r.markQuoteInSol > 0 ? r.markQuoteInSol : null);
+  const rows = [...own].sort((a, b) => a.ts - b.ts);
+  const at = rows.find((r) => r.mech === "open" && markOf(r) !== null);
+  const to = [...rows].reverse().find((r) => r.mech === "close" && markOf(r) !== null);
+  if (!at || !to) return null;
+  const from = markOf(at)!;
+  const till = markOf(to)!;
+  // a SOL pool marks its quote at 1 at both ends: nothing to take out
+  if (from === 1 && till === 1) return null;
+  return Math.round(seatSol * (till / from - 1) * 1e6) / 1e6;
+}
+
+/**
  * PURE. The lesson of a closed seat from its meta, its range stats and the ledger rows that belong
  * to it: the position's own rows, plus its share of the pool's swap rows inside the seat's life (the
  * token half bought at the open, the liquidation at the close): seatNetSol.
@@ -159,6 +217,7 @@ export function lessonOf(i: { meta: BandMeta; position: string; stats: RangeStat
   const feesSol = mine.reduce((t, r) => t + (r.mech === "collect" ? (r.feeSol ?? Math.max(0, r.solDelta)) : r.mech === "close" ? (r.feeSol ?? 0) : 0), 0);
   const minutes = Math.max(1 / 60, (i.closedAt - meta.openedAt) / 60_000);
   const realizedYieldPctPerDay = meta.seatSol > 0 ? (feesSol / meta.seatSol) * (1440 / minutes) * 100 : 0;
+  const quoteDriftSol = quoteDriftOf(own, meta.seatSol);
   return {
     at: i.closedAt,
     mode: i.mode ?? "live",
@@ -180,6 +239,13 @@ export function lessonOf(i: { meta: BandMeta; position: string; stats: RangeStat
     netSol: Math.round(netSol * 1e6) / 1e6,
     tokensLeftSol: Math.round(tokensLeftSol * 1e6) / 1e6,
     predictedYieldPct: meta.predictedYieldPct,
+    entryYieldPct: meta.entryYieldPct ?? null,
+    entrySource: meta.entrySource ?? null,
+    entryCoveredMin: meta.entryCoveredMin ?? null,
+    entrySharePct: meta.entrySharePct ?? null,
+    entryYieldFactor: meta.entryYieldFactor ?? null,
+    quoteDriftSol,
+    netSolExDrift: Math.round((netSol - (quoteDriftSol ?? 0)) * 1e6) / 1e6,
     ...(meta.ask ? { ask: true } : {}),
     realizedYieldPctPerDay: Math.round(realizedYieldPctPerDay * 100) / 100,
     headline: i.headline,
@@ -194,6 +260,8 @@ export const lessonLine = (l: Lesson): string =>
 
 export interface TuningChange {
   at: number;
+  /** the desk that learned it. A paper number must never ride into the live book unlabelled. */
+  mode?: string;
   knob: "volMultiple";
   from: number;
   to: number;
@@ -202,6 +270,8 @@ export interface TuningChange {
 
 export interface Tuning {
   volMultiple?: number;
+  /** the desk that wrote the file; applyTuning refuses a file stamped for another desk */
+  mode?: string;
   history: TuningChange[];
 }
 
@@ -274,9 +344,30 @@ export function tuneFromLessons(lessons: readonly Lesson[], current: { volMultip
  * multiple is learned from memecoin seats, so it rides as `tunedVolMultiple` and the policy applies it
  * to pools that are not stocks; `volMultiple` stays what the env says.
  */
-export function applyTuning<T extends { volMultiple: number; tunedVolMultiple?: number }>(env: T, tuning: Tuning | null, bounds: Pick<TuneEnv, "min" | "max">): T {
+export function applyTuning<T extends { volMultiple: number; tunedVolMultiple?: number }>(env: T, tuning: Tuning | null, bounds: Pick<TuneEnv, "min" | "max">, mode?: string): T {
   if (!tuning || typeof tuning.volMultiple !== "number" || !Number.isFinite(tuning.volMultiple)) return env;
+  // A shared TUNING_FILE is how a paper-learned width reaches the live desk (ops/live.env points the
+  // halted live desk at one). A file stamped for another desk is not this desk's experience: refuse it.
+  if (mode !== undefined && modeOf(tuning) !== null && modeOf(tuning) !== mode) return env;
   return { ...env, tunedVolMultiple: Math.min(bounds.max, Math.max(bounds.min, tuning.volMultiple)) };
+}
+
+/** PURE. The desk a learned file was written by, or null when it is unstamped (written before modes). */
+export const modeOf = (f: { mode?: string } | null | undefined): string | null => {
+  const m = (f?.mode ?? "").trim();
+  return m === "" ? null : m;
+};
+
+/**
+ * PURE. The forecast a lesson is scored against: what the desk decided on at the open when it was kept,
+ * else the last seat check's figure. The 59 lessons of the 17-19 Sep real-money run predate the entry
+ * stamp and carry only the seat check's, so the corpus that calibrates the desk would be empty without
+ * the fallback. `source` says which, and the report and the page print it.
+ */
+export function forecastOf(l: Pick<Lesson, "entryYieldPct" | "predictedYieldPct">): { pct: number; source: "entry" | "seat-check" } | null {
+  if (typeof l.entryYieldPct === "number" && Number.isFinite(l.entryYieldPct) && l.entryYieldPct > 0) return { pct: l.entryYieldPct, source: "entry" };
+  if (typeof l.predictedYieldPct === "number" && Number.isFinite(l.predictedYieldPct) && l.predictedYieldPct > 0) return { pct: l.predictedYieldPct, source: "seat-check" };
+  return null;
 }
 
 /* ---------- files ---------- */
@@ -323,3 +414,20 @@ export function readTuningCached(file: string, now = Date.now()): Tuning | null 
   cache = { file, at: now, t: readTuning(file) };
   return cache.t;
 }
+
+/** Tests and a script that has just written the file: the next read hits the disk. */
+export const clearTuningCache = (): void => {
+  cache = null;
+};
+
+/* ---------- the learning journal ---------- */
+
+/**
+ * THE JOURNAL lives in src/desk/learning.ts, which is the desk's own learner and the ONLY writer of
+ * DATA_DIR/learning.json and DATA_DIR/learning.jsonl. This file used to carry a second copy of the
+ * state shape and its reader; two spellings of one file is how a surface ends up printing a number
+ * nothing on the desk is acting on, so the copy is gone. Read the journal through
+ * readLearning / readLearningChanges / factorFor in src/desk/learning.ts, and write it through
+ * writeLearning / appendLearningChange there.
+ */
+export { LEARNING_FILE, LEARNING_LOG, appendLearningChange, readLearning, readLearningCached, readLearningChanges, writeLearning, type LearningChange, type LearningState } from "../desk/learning";

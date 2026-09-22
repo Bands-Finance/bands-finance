@@ -5,7 +5,10 @@
  *   npm run test:status
  *
  *   GET /api/status        every field from a fake saved state, and never a secret; every halt source;
- *                          the marks counter and the desk's approvals, from where they are kept
+ *                          the marks counter and the desk's approvals, from where they are kept; the
+ *                          `learning` block, and GET /api/learning beside it
+ *   what he learned        the four public surfaces (src/scripts/test-learn-surface.ts), run here so
+ *                          they ride in `npm run test:all` on a DATA_DIR that is already pinned
  *   watchdogStep           a paper desk exits after two AWAKE windows, never after a host sleep or a
  *                          DarkWake burst, and never on a live wallet
  *   createDeployer         one push at a time, each step timed out, the two steps independent
@@ -115,6 +118,28 @@ async function main(): Promise<void> {
     assert.deepEqual(j.deploy, { lastAt: now - 3 * MIN, ok: true });
     assert.equal(j.marks, null, "nothing in this process has noted the marks yet");
     assert.equal(j.autoApprove, null);
+  });
+
+  await test("status: the learning block sits beside the decider mix, and changes nothing", async () => {
+    const j = (await (await app.request("/api/status")).json()) as Record<string, any>;
+    assert.ok("learning" in j, "the status names what he has learned");
+    for (const k of ["mode", "generatedAt", "frozen", "modelOn", "factors", "changes", "lessons", "refused", "neverTouched"]) {
+      assert.ok(k in j.learning, `the learning block is missing ${k}`);
+    }
+    assert.equal(j.learning.mode, "dry-run", "it is labelled with the book it was learned on");
+    assert.deepEqual(j.learning.frozen, { all: false, calibration: false, pools: false });
+    assert.deepEqual(j.learning.changes, [], "nothing has been journalled on this fixture");
+    assert.ok(j.learning.neverTouched.includes("MAX_POSITION_SOL"), "it names what learning may never touch");
+    // a factor is never served without the sample behind it
+    for (const f of j.learning.factors as Record<string, any>[]) {
+      assert.equal(typeof f.n, "number");
+      assert.equal(typeof f.minSample, "number");
+      assert.equal(f.underSample, f.n < f.minSample);
+      assert.ok(f.factor <= f.defaultFactor, "a knob may never be served above what ships in code");
+    }
+    const own = await app.request("/api/learning");
+    assert.equal(own.status, 200);
+    assert.deepEqual(Object.keys((await own.json()) as Record<string, unknown>).sort(), Object.keys(j.learning).sort(), "the route and the block are the same shape");
   });
 
   await test("status: the OpenHermit token is a boolean, never the value", async () => {
@@ -428,6 +453,12 @@ async function main(): Promise<void> {
       server.close();
     }
   });
+
+  // What he learned, in public: his observation's block, the status block, learned.json and the
+  // MCP casebook (src/scripts/test-learn-surface.ts). Run here so they ride in `npm run test:all`.
+  console.log("\nwhat he learned, in public");
+  const { runLearnSurfaceTests } = await import("./test-learn-surface.js");
+  await runLearnSurfaceTests(test);
 
   console.log(`\n${passed} passed, ${failed} failed`);
   fs.rmSync(TEST_DIR, { recursive: true, force: true });

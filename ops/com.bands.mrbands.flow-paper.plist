@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The PAPER FLOW SCOUT: the same scout as com.bands.mrbands.flow, pointed at the PAPER book.
+
+  Why it exists. The live scout sources ops/live.env, which sets DATA_DIR=data-mainnet, so it writes
+  data-mainnet/flow.json. The paper desk reads DATA_DIR/flow.json, which is data-live/flow.json, and
+  that file has never existed. One missing file kept four of the desk's outcome loops dark: the seat
+  check and its fade exit (0 "seat check:" lines in 64,284 lines of the paper log), the memecoin seat
+  ranking, consolidation, and the travelBins60m and predicted-yield columns on every lesson. The
+  desk also printed "the scout has not read ... no rotation this cycle" 803 times out of 809.
+
+  So this service carries its own env block with DATA_DIR=data-live and sources nothing. It has no
+  wallet and signs nothing: it reads swaps off the chain and writes a file. The live scout's plist
+  is untouched.
+
+  Install:  cp ops/com.bands.mrbands.flow-paper.plist ~/Library/LaunchAgents/
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bands.mrbands.flow-paper.plist
+  Stop:     launchctl bootout gui/$(id -u)/com.bands.mrbands.flow-paper
+  Watch:    tail -f data-live/flow.log
+  Check:    ls -l data-live/flow.json  and  grep -c "seat check:" data-live/mrbands.log
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.bands.mrbands.flow-paper</string>
+  <key>WorkingDirectory</key><string>/Users/zach/Bands.Finance/mr-bands</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/npm</string>
+    <string>run</string>
+    <string>flow</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-live/flow.log</string>
+  <key>StandardErrorPath</key><string>/Users/zach/Bands.Finance/mr-bands/data-live/flow.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string>
+    <!-- the paper book's own directory: the scout writes data-live/flow.json, which the paper desk reads -->
+    <key>DATA_DIR</key><string>data-live</string>
+    <!-- no wallet, nothing broadcast: the scout only reads swaps -->
+    <key>DRY_RUN</key><string>true</string>
+  </dict>
+</dict>
+</plist>

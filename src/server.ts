@@ -1,9 +1,10 @@
 /**
  * bands.finance API + static site.
  *   GET /api/health                             up, mode, and the last completed iteration
- *   GET /api/status                             his state at a glance: mode, kill switch, breakers, decider, the hour's decisions
+ *   GET /api/status                             his state at a glance: mode, kill switch, breakers, decider, the hour's decisions, what he learned
  *   GET /api/journal?limit=500&agent=mr-bands   entries, newest first
  *   GET /api/limits                             the hard risk limits in force
+ *   GET /api/learning                           the knobs he has tuned, their evidence and the change journal
  *   GET /api/ledger?mode=live|dry-run           cash-boundary attribution rows + summary
  *   GET /api/engine                             breakers, bench, regime, watchdog
  *   GET /api/basis                              stock pools vs Backpack perps
@@ -36,7 +37,8 @@ import { openHermitAvailable } from "./agent/openhermit";
 import { loadEngineState } from "./engine/breakers";
 import { readLock } from "./engine/watchdog";
 import { describeHalt, killSwitchSources } from "./risk/state";
-import { decisionSources, snapshot } from "./status";
+import { decisionSources, readLearnedView, snapshot } from "./status";
+import type { LearnedView } from "./learn/surface";
 import { railsRoutes } from "./platform/railsRoutes";
 
 const modeOf = (): "paper" | "dry-run" | "live" => (paperEnabled(process.env, config.dryRun) ? "paper" : config.dryRun ? "dry-run" : "live");
@@ -47,8 +49,18 @@ function lastIterationAt(): number | null {
 }
 
 /**
+ * What he has learned, as the API serves it: the same view the site and the MCP tool print, read
+ * back off DATA_DIR/learning.jsonl (src/status.ts readLearnedView). The desk's own book is the only
+ * mode accepted, so a paper-learned number never appears under a live desk's status.
+ */
+export function learningReport(now = Date.now()): LearnedView {
+  return readLearnedView({ dir: dataDir(), mode: modeOf(), modelOn: openHermitAvailable() && deciderOf() === "openhermit", now });
+}
+
+/**
  * GET /api/status. Read-only, and on the loopback with the rest of the desk (SERVE_HOST). It names
- * whether an OpenHermit token is set and never what it is: no secret leaves through here.
+ * whether an OpenHermit token is set and never what it is: no secret leaves through here. The
+ * `learning` block is read-only too: it reports what the learner journalled and changes nothing.
  */
 export function statusReport(now = Date.now()): Record<string, unknown> {
   const engine = loadEngineState();
@@ -76,6 +88,7 @@ export function statusReport(now = Date.now()): Record<string, unknown> {
     decider: deciderOf(),
     openhermitTokenPresent: openHermitAvailable(),
     decisionsLastHour: hour,
+    learning: learningReport(now),
     ...snap,
     // the registry is empty in a server started alone: then the lock answers
     lastIterationAt: lastIterationAt(),
@@ -124,6 +137,9 @@ export function buildApp(): Hono {
   });
 
   app.get("/api/limits", (c) => c.json(riskLimits));
+
+  // What he learned, on its own: the same block /api/status carries, for a caller that wants only this.
+  app.get("/api/learning", (c) => c.json(learningReport()));
 
   app.get("/api/screen", (c) => {
     const screen = loadScreen();

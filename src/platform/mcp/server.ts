@@ -13,10 +13,13 @@
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { timingSafeEqual } from "node:crypto";
+import path from "node:path";
 import type { Connection } from "@solana/web3.js";
 import { z } from "zod";
 import { config, riskLimits } from "../../config";
-import { readRecent } from "../../journal";
+import { paperEnabled } from "../../paper/env";
+import { dataDir, readRecent } from "../../journal";
+import { readJsonlTail, readLearnedView } from "../../status";
 import { describeLimits } from "../../risk/limits";
 import { loadScreen } from "../../screener";
 import { getPoolSnapshot, loadPool } from "../../tools/dlmm";
@@ -36,6 +39,8 @@ export const TOOL_PRICES_USD: Readonly<Record<string, number>> = {
   bands_screen: num(process.env.PRICE_SCREEN_USD, 0.02),
   bands_pool_score: num(process.env.PRICE_POOL_SCORE_USD, 0.05),
   bands_agent_thoughts: num(process.env.PRICE_AGENT_THOUGHTS_USD, 0),
+  // His casebook is free on purpose: what a seat cost him is the part other agents cannot get anywhere else.
+  bands_lessons: num(process.env.PRICE_LESSONS_USD, 0),
 };
 
 export function toolPriceUsd(tool: string): number {
@@ -46,7 +51,7 @@ export function toolPriceUsd(tool: string): number {
 export const OPERATOR_ONLY_TOOLS: ReadonlySet<string> = new Set(["bands_decide_proposal"]);
 
 /** The read tools, and all a house session is served: no proposing, no deciding. */
-export const HOUSE_TOOLS: readonly string[] = ["bands_list_pools", "bands_limits", "bands_agent_thoughts", "bands_pool_snapshot", "bands_screen", "bands_pool_score"];
+export const HOUSE_TOOLS: readonly string[] = ["bands_list_pools", "bands_limits", "bands_agent_thoughts", "bands_lessons", "bands_pool_snapshot", "bands_screen", "bands_pool_score"];
 
 /** Constant-time match of an `Authorization: Bearer <x>` header against a token. An empty token matches nobody. */
 function bearerMatches(authorization: string | undefined | null, token: string): boolean {
@@ -117,6 +122,7 @@ export const SERVER_INSTRUCTIONS = [
   "Mr Bands is the founder of bands.finance and the agent behind this server. He makes markets on Meteora DLMM: he lays bands of liquidity around the price, across the pools his screener ranks, and earns the pool's fees on the trades that cross them, with limits in code and every decision public.",
   "Tokenized stocks are one part of his book, not all of it: xStocks (NVDAx, PLTRx, GMEx) and Backpack-issued stocks (MU, SKHY, SPCX), where he lays two-sided bands (half the quote, half the stock) and hedges the stock half short on Backpack's stock perps where one is listed. Up to 3 of the paper book's 6 seats go to stocks; the rest go to the pools his screener ranks best.",
   "He proposes, the guards decide. Each cycle he reads each pool and proposes a move, and code guards decide whether it runs. Today his proposals come from his own rulebook (the desk policy); his model on the OpenHermit gateway takes over as it is switched on.",
+  "He keeps a casebook of every closed seat and learns from it, in public: bands_lessons (free) returns the seats, the knobs his own record has moved, the sample behind each one and the evidence sentence he journalled. Learning may only make a seat smaller or rarer. It may never raise or loosen a risk limit: the per-band cap, total exposure, the stop-loss, the daily caps, the kill switch and the breakers are human-set and stay that way.",
   "His book today is paper: real pools and live prices, pretend money. Fees are not profit, and nothing here is a return or a recommendation.",
   "What exists now: this server runs on his own host; the public platform at bands.finance is not open yet; tool prices are listed but the x402 gate is not taking real payments yet (GET /api/revenue reports x402.mode). Full guide: GET /integrate.md on this host.",
 ].join("\n\n");
@@ -186,6 +192,64 @@ export function buildServer(opts: BuildServerOptions): McpServer {
           execution: { mode: e.execution.mode, ok: e.execution.ok },
         })),
       }),
+  );
+
+
+  // HIS CASEBOOK, FREE. bands_agent_thoughts (above) returns what he proposed and what the guards
+  // said, and never what a seat earned; this is where the outcome lives: how each seat ended, what
+  // it cost, and which knob his own record has since moved. It DESCRIBES and never recommends:
+  // no ranking of what to trade, no sizing, no "you should". The paper label rides on every row.
+  server.registerTool(
+    "bands_lessons",
+    {
+      title: "Mr Bands' casebook: how his seats ended, and what he changed because of it",
+      description:
+        "Closed seats from Mr Bands' own book, one row each: how long it sat, how wide, how much of the time the price was inside it, how it ended (idle, through the band, rotated, stopped, closed), the fees it earned and its net, and the yield he forecast at the open against what it realised. With them: the knobs his record has moved, each with the sample behind it and the evidence sentence he journalled, and the limits learning may never touch. His book is paper today (real pools, live prices, pretend money), so every row is labelled paper. This is a record of what happened to him, not advice: it recommends no pool, no size and no trade, and fees are not profit. Free.",
+      inputSchema: { limit: z.number().int().positive().max(50).optional(), pool: z.string().min(32).max(44).optional() },
+    },
+    async ({ limit, pool }) => {
+      const mode = paperEnabled(process.env, config.dryRun) ? "paper" : config.dryRun ? "dry-run" : "live";
+      const learned = readLearnedView({ dir: dataDir(), mode });
+      const rows = readJsonlTail<Record<string, unknown>>(path.join(dataDir(), "lessons.jsonl"))
+        .filter((r) => (pool ? r.pool === pool : true))
+        .slice(-(limit ?? 20))
+        .reverse()
+        .map((r) => ({
+          at: r.at,
+          mode: r.mode ?? mode,
+          pool: r.pool,
+          label: r.label,
+          kind: r.kind,
+          minutes: r.minutes,
+          bins: r.bins,
+          binStep: r.binStep,
+          coverPct: r.coverPct,
+          inRangePct: r.inRangePct,
+          endReason: r.endReason,
+          seatSol: r.seatSol,
+          feesSol: r.feesSol,
+          netSol: r.netSol,
+          predictedYieldPct: r.predictedYieldPct,
+          realizedYieldPctPerDay: r.realizedYieldPctPerDay,
+          headline: r.headline,
+        }));
+      return json({
+        ok: true,
+        book: learned.mode,
+        note: "Closed seats from his own book, and what his record has changed. Descriptive: no recommendation, no ranking of what to trade, and fees are not profit.",
+        modelOn: learned.modelOn,
+        learning: {
+          frozen: learned.frozen,
+          factors: learned.factors,
+          changes: learned.changes,
+          forecastRatio: learned.lessons.ratio,
+          byEndReason: learned.lessons.byEndReason,
+          refused: learned.refused,
+          neverTouched: learned.neverTouched,
+        },
+        lessons: rows,
+      });
+    },
   );
 
   server.registerTool(

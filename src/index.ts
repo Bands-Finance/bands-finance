@@ -52,9 +52,10 @@ import path from "node:path";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { config, riskLimits } from "./config";
 import { adviseProposal, decide, deciderOf, engineDecideResult, hasLlmCredentials, policyMayTradeLive, proposalDecideResult } from "./agent/decide";
-import { openHermitSettings } from "./agent/openhermit";
+import { openHermitAvailable, openHermitSettings } from "./agent/openhermit";
+import type { LearnMode } from "./learn/surface";
 import type { Decision } from "./agent/schema";
-import { policyDecide, policyEnv } from "./agent/policy";
+import { entryForecastOf, policyDecide, policyEnv } from "./agent/policy";
 import { POSITION_RENT_SOL } from "./tools/dlmm";
 import { allProposals, approvedProposals, decideProposal, markExecuted, markRefused, pendingProposals, proposalDecision, proposalNote, proposalOutcome, Proposal } from "./platform/proposals";
 import { autoBudget, autoDecide, autoEnv, deskHalt, nextApprovedProposal, noteDeskApprovals } from "./platform/autoDecide";
@@ -84,7 +85,11 @@ import { pairStockCandidateFor, pairStockCandidatesOf, pairStockEnv, pairStockRe
 import { binsForCover, coveragePct, MIN_BAND_SOL, stockBinsPerSide, travelSizeMultiple } from "./agent/policy";
 import { earlyCycleAllowed, fastEnv, fastTrigger, type WatchedBand } from "./engine/fastwatch";
 import { buildLiveFeed, liveFeedOn, publishLiveFeed } from "./publish/live";
-import { appendLesson, endReasonOf, LESSONS_FILE, lessonLine, lessonOf, readLessons, readTuning, TUNING_FILE, tuneEnv, tuneFromLessons, writeTuning, type BandMeta } from "./learn/lessons";
+import { appendLesson, endReasonOf, LESSONS_FILE, lessonLine, lessonOf, readLessons, type BandMeta } from "./learn/lessons";
+import {
+  appendLearningChange, applyChange, calibrationChange, calibrationReading, clearLearningCache, emptyLearning, factorFor, knobFrozen, LANES, learnEnv, learnFiles, learningFrozen,
+  laneOf, poolPenaltyChanges, readLearning, reentryMinFor, seatCapSol, writeLearning, FEE_SHARE_DEFAULT, type Lane, type LearningChange, type LearningState,
+} from "./desk/learning";
 import { loadHotFileCached } from "./hot/store";
 import type { ScreenResult } from "./screener/types";
 import { KNOWN_TOKENS, PoolSnapshot, PositionSnapshot, quoteOf, QuotePriceUnknownError, setSolPriceUsd, UnsupportedQuoteError } from "./tools/dlmm";
@@ -92,7 +97,7 @@ import { bookEnv, isTradableVenue, liveVenues, loadVenuePool, poolsWithPositions
 import { fetchPoolAnalytics } from "./tools/lpagent";
 import { Wallet } from "./tools/wallet";
 import { startServer } from "./server";
-import { noteDeploy, noteIteration, noteScreen } from "./status";
+import { noteDeploy, noteIteration, noteScreen, readLearnedView } from "./status";
 import { createDeployer } from "./publish/deploy";
 import { rpcConnection } from "./lib/timedFetch";
 import { basisForPool, basisForTicker, basisVerdict, refreshBasis, sessionClock, sessionWidthMultiplier, type BasisRow } from "./basis";
@@ -197,6 +202,66 @@ interface Observed {
 
 const cfg = config.engine;
 
+/**
+ * THE DESK'S MODE, spelled once. Every lesson carries it and every learning file carries it, and a
+ * reader refuses a file that is not its own: a paper-learned number must never ride into the live
+ * desk unlabelled (ops/live.env points the halted live desk at a shared tuning path today).
+ */
+const deskMode = (paper: unknown): string => (paper ? "paper" : config.dryRun ? "dry-run" : "live");
+
+/** The learning state as this process last read or wrote it, and where it lives. */
+let learning: { state: LearningState; files: { state: string; log: string; mode: string } } | null = null;
+const learnedState = (): LearningState | null => learning?.state ?? null;
+
+/**
+ * OPEN THE LEARNING FILES. Learning is on by default and writes beside the desk's own book; the off
+ * switch is LEARN_FROZEN=true, loud and printed. LEARN_FILE overrides the path for a scratch run.
+ * The state is read here so the policy's first call already has the factors in force.
+ */
+function openLearning(paper: unknown): void {
+  const mode = deskMode(paper);
+  const files = learnFiles(path.resolve(process.cwd(), config.dataDir), mode);
+  process.env.LEARN_FILE = files.state;
+  process.env.LEARN_MODE = mode;
+  clearLearningCache();
+  const state = readLearning(files.state, mode, (why) => console.error(`[learning] ${why}`)) ?? emptyLearning(mode);
+  learning = { state, files };
+}
+
+/**
+ * What he has learned, for one pool, as his observation renders it. The desk's own book and the
+ * desk's own mode, so a paper number can never be shown to a live desk as its own experience; his
+ * model is named as off while there is no gateway token, because a knob that moved by the rulebook
+ * must not read to him as something he reasoned. Never throws: a missing or torn file is no block.
+ */
+function learnedFor(address: string, label: string): ReturnType<typeof readLearnedView> | null {
+  try {
+    return readLearnedView({
+      dir: path.resolve(process.cwd(), config.dataDir),
+      // the mode openLearning settled on: the same book the desk is learning from this process
+      mode: (learning?.files.mode ?? deskMode(null)) as LearnMode,
+      modelOn: openHermitAvailable() && deciderOf() === "openhermit",
+      pool: { address, label },
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** One line: what is learned, what it rests on, where it lives, and whether it may move. */
+function learningBanner(): string {
+  if (!learning) return "not opened";
+  const { state, files } = learning;
+  const frozen = learningFrozen(process.env) ? "FROZEN (LEARN_FROZEN=true): he still writes lessons and still says what he would have changed, and changes nothing" : "on";
+  const lanes = LANES.map((l) => {
+    const c = state.calibration[l];
+    return `${l} ${factorFor(state, l).toFixed(2)} of face${c ? ` (n=${c.n}, ${new Date(c.at).toISOString().slice(0, 16)}Z)` : ` (shipped default ${FEE_SHARE_DEFAULT}, nothing learned yet)`}`;
+  }).join(", ");
+  const pools = Object.values(state.pools).filter((p) => p.penalty < 1);
+  const le = learnEnv(process.env);
+  return `${frozen} | mode ${state.mode} | seat pricing: ${lanes} | pool penalties ${pools.length ? pools.map((p) => `${p.label} x${p.penalty} (sit out ${p.sitOutMin} min)`).join(", ") : "none"} | ${le.calWindowH}h window, ${le.calMinN} seats a lane before it moves, one ${le.calStep} step per ${le.minGapMs / 3_600_000}h | ${files.state}`;
+}
+
 function banner(app: App): void {
   const mode = app.paper ? `PAPER: virtual ${app.paper.startSol} SOL wallet${app.paper.startUsdc > 0 ? ` + ${app.paper.startUsdc} USDC` : ""}, live prices, nothing broadcast` : config.dryRun ? "DRY RUN (nothing is broadcast)" : "LIVE (real transactions)";
   console.log("=".repeat(72));
@@ -211,8 +276,14 @@ function banner(app: App): void {
         `entry: ${pe.requireFlow ? `the scout's reading first, ${pe.minFlowCoverMin} min of it` : "no flow gate"}, seat yield >= ${pe.minSeatYieldPct}%/day, score > ${pe.minScore}, 24h volume >= $${pe.minVolume24hUsd.toLocaleString("en-US")} | ` +
         `size: side share <= ${pe.maxSideSharePct}%${pe.sizeRefTravelPct > 0 ? `, scaled down past ${pe.sizeRefTravelPct}% of hourly travel (floor ${pe.sizeMinMultiple})` : ""}, swap impact <= ${pe.maxSwapImpactPct}% | ` +
         `idle re-lay ${pe.idleRelaySec > 0 ? `${pe.idleRelaySec}s` : "3x the out-of-range minimum"} | fast watch ${fe.everySec > 0 ? `every ${fe.everySec}s` : "off"} | ` +
-        `fee tokens ${(process.env.SWEEP_FEE_TOKENS ?? "").trim().toLowerCase() === "false" ? "kept" : `sold from ${process.env.SWEEP_MIN_SOL ?? "0.05"} SOL`} | sells ${(() => { const c = swapImpactEnv(process.env); return c ? `sized under ${c.sweepPct}% impact for a sweep, ${c.exitPct}% for an exit (the rest at once up to ${c.hardPct}%, else a residue sold over later cycles, SOL books only)` : "one swap, no impact cap"; })()} | stop on market value, fees aside | exit ${(() => { const a = askExitEnv(process.env); return a.on ? `via an ask band ${a.coverPct}% over the price (token worth >= ${a.minSol} SOL; stop ${a.stopPct}% under the chain's basis, ${a.maxHoldMin > 0 ? `${a.maxHoldMin} min` : "no limit"} on the book, follows the price after ${a.relaySec}s; then the sale)` : "by sale"; })()} | tuner ${(process.env.TUNING_FILE ?? "").trim() || "off"}`,
+        `fee tokens ${(process.env.SWEEP_FEE_TOKENS ?? "").trim().toLowerCase() === "false" ? "kept" : `sold from ${process.env.SWEEP_MIN_SOL ?? "0.05"} SOL`} | sells ${(() => { const c = swapImpactEnv(process.env); return c ? `sized under ${c.sweepPct}% impact for a sweep, ${c.exitPct}% for an exit (the rest at once up to ${c.hardPct}%, else a residue sold over later cycles, SOL books only)` : "one swap, no impact cap"; })()} | stop on market value, fees aside | exit ${(() => { const a = askExitEnv(process.env); return a.on ? `via an ask band ${a.coverPct}% over the price (token worth >= ${a.minSol} SOL; stop ${a.stopPct}% under the chain's basis, ${a.maxHoldMin > 0 ? `${a.maxHoldMin} min` : "no limit"} on the book, follows the price after ${a.relaySec}s; then the sale)` : "by sale"; })()} | learning ${learningBanner()}`,
     );
+    // The width tuner is retired, not broken: band width did not separate winners from losers in
+    // either book. The mainnet seats that went THROUGH the band were the WIDER ones (24.5% median
+    // cover against 17.4% for the seats that ended above it), and on the paper book the idle exits
+    // and the through-band exits share an identical 4.1%. tuneFromLessons and its tests stay where
+    // they are; nothing calls it. The knob that does separate them is the forecast level, below.
+    console.log("rules     width tuning retired: band width did not separate winners from losers in either book; the calibration and the pool penalty are the knobs that learn now");
   }
   console.log(`venues    tradable ${tradableVenues().join(", ") || "none"} | live ${liveVenues().filter((v) => isTradableVenue(v)).join(", ") || "none"} (a tradable venue off LIVE_VENUES trades in paper and dry-run only) | book ${bookEnv()}${bookEnv() === "stocks" ? ` (tokenized stocks first, liquidity >= $${stockMinLiquidityUsd().toLocaleString("en-US")})` : ""}`);
   console.log(`quotes    SOL and USDC (a USDC pool is valued at the screen's SOL price: ${app.screen?.solPriceUsd ? `$${app.screen.solPriceUsd.toFixed(2)}` : "none yet, USDC pools skipped until a screen lands"})`);
@@ -392,6 +463,22 @@ function perpMidForTicker(app: App, ticker: string): number | null {
   const row = basisForTicker(ticker);
   if (!row?.perpSymbol) return null;
   return app.perpMarks.get(row.perpSymbol)?.mid ?? row.perpMid ?? null;
+}
+
+/**
+ * THE LANE a pool's seat belongs to (src/desk/learning.ts LANES), spelled ONCE. The lesson's `kind`,
+ * the seat check's calibration and the policy's own laneOf have to answer this the same way: a seat
+ * priced with the memecoin factor whose lesson then teaches the "other" lane is a loop that never
+ * closes, and the seat check used to read `screen.stock ? "stock" : "memecoin"`, which has no "other"
+ * lane at all and called a pair pool and a Backpack basis row memecoins.
+ */
+function laneOfPool(app: App, address: string, snapshot: PoolSnapshot | null, hints?: { stock?: unknown; pinnedTicker?: string | null }): Lane {
+  const stock =
+    !!hints?.stock ||
+    !!app.screen?.pools.find((p) => p.address === address)?.stock ||
+    !!meteoraStockAt(app, address) ||
+    basisRowFor(address, snapshot, hints?.pinnedTicker ?? null) !== null;
+  return laneOf({ stock, pair: !!snapshot?.pair });
 }
 
 /** The basis row a pool reads: its own (a board pool), else its ticker's (a stock pair of ours is never on the board). */
@@ -600,7 +687,9 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
   }
   // a pool the ranking gave up sits out METEORA_STOCK_REENTRY_MIN: MRVL/SOL was closed at 0.08%/day and
   // wanted back four minutes later at 1.95% on two swaps (2026-09-17)
-  const satOut = (a: string) => !withPositions.includes(a) && sittingOut(state.rotatedOutAt?.[a], rEnv, now);
+  // a pool that keeps ending its seats through the band waits longer than the configured minimum before
+  // it may be seated again (src/desk/learning.ts): the learned sit-out never shortens the human one
+  const satOut = (a: string) => !withPositions.includes(a) && sittingOut(state.rotatedOutAt?.[a], { reentryMin: reentryMinFor(rEnv.reentryMin, learnedState(), a) }, now);
   // while the scout runs, a candidate it has not read yet is watched, not seated: the venue's day figure
   // put MRVL/SOL at 139%/day on the seat during a scout backfill and the picker took it (2026-09-17)
   const unreadCandidate = (r: RankedSeat) => r.feeSource === "24h" && app.flow.size > 0 && !withPositions.includes(r.address);
@@ -851,7 +940,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // a pool the desk gave up for a better one sits out METEORA_STOCK_REENTRY_MIN before it can be picked again (ping-pong)
   const rotState = loadState();
   const rEnvPick = seatRankingEnv();
-  const satOutNow = (address: string) => sittingOut(rotState.rotatedOutAt?.[address], rEnvPick, Date.now());
+  const satOutNow = (address: string) => sittingOut(rotState.rotatedOutAt?.[address], { reentryMin: reentryMinFor(rEnvPick.reentryMin, learnedState(), address) }, Date.now());
   // THE CANDIDATE A ROTATION FREED A SEAT FOR goes first, before any lane, while it still passes every gate the board loop applies
   if (app.seatFor && seatsHeld() < ordinaryCap && !set.has(app.seatFor.address) && !takenTokens.has(app.seatFor.baseMint)) {
     const p = (app.screen?.pools ?? []).find((x) => x.address === app.seatFor!.address);
@@ -1525,7 +1614,12 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     bench: view.bench,
     regime: { medianMove24hPct: view.regime.medianMove24hPct, multiplier: view.regime.multiplier, reason: view.regime.reason },
     sizeMultiplier: view.sizeMultiplier,
-    effectiveMaxPositionSol: riskLimits.maxPositionSol * view.sizeMultiplier,
+    // THE POOL PENALTY (src/desk/learning.ts) beside the engine's own bench and regime multiples: a
+    // pool whose recent seats went through the band gets a smaller seat there. It is <= 1 always and
+    // it multiplies the human-set cap, so it can only ever take a smaller seat than MAX_POSITION_SOL,
+    // never a larger one, and it can never bench a pool. The guards are untouched: this is a size the
+    // guards then judge, not a guard.
+    effectiveMaxPositionSol: seatCapSol(riskLimits.maxPositionSol, view.sizeMultiplier, learnedState(), o.address),
     stops,
     outOfRangeSec: oorSec,
     minOutOfRangeSec: moveSec,
@@ -1553,6 +1647,13 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     flow: offBoardFlow,
     portfolio,
     engine: engineObs,
+    // WHAT HE HAS LEARNED (src/status.ts readLearnedView, rendered by formatLearned). Everything else
+    // in the observation is the present tense: what the pool looks like, what the guards say, what he
+    // proposed. This is the one block that shows him an OUTCOME, built for THIS pool. Without it he
+    // is never told what a seat earned, and nothing he does can get better: the field was declared
+    // and rendered for a week while no caller ever set it, so the whole surface was inert. A read
+    // off disk, bounded and cached; a failure costs him the block, never the cycle.
+    learned: learnedFor(o.address, snapshot.label),
   };
   console.log(
     `${tag}${venueTag} active bin ${snapshot.activeBinId} price ${snapshot.activePrice.toPrecision(6)} ${snapshot.priceLabel} | quote ${q.symbol}${quoteIsSol ? "" : ` (1 ${q.symbol} = ${q.priceInSol.toFixed(6)} SOL)`} | screen ${screen ? `#${screen.rank} score ${screen.score}` : "n/a"} | wallet ${sol.toFixed(4)} SOL, ${quoteIsSol ? "" : `${quote.toFixed(2)} ${q.symbol}, `}${token.ui.toFixed(2)} ${snapshot.baseToken.symbol} | bands ${positions.length} | size x${view.sizeMultiplier}${knife ? ` | ${knife}` : ""}`,
@@ -1738,7 +1839,14 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     if (meta) {
       try {
         const lesson = lessonOf({ meta, position: execution.closed, stats: state.rangeStats?.[execution.closed] ?? null, rows: readLedgerRows(), closedAt: Date.now(), endReason: endReasonOf(directive?.kind ?? null, app.rotateOut?.pool === o.address ? app.rotateOut.reason : null, verdict.decision.headline, verdict.overrides), headline: verdict.decision.headline, mode: execution.mode, ledgerMode: execution.mode === "live" ? "live" : "dry-run" });
-        appendLesson(path.join(path.resolve(process.cwd(), config.dataDir), LESSONS_FILE), lesson);
+        appendLesson(path.join(path.resolve(process.cwd(), config.dataDir), LESSONS_FILE), {
+          ...lesson,
+          entryYieldPct: meta.entryYieldPct ?? null,
+          entrySource: meta.entrySource ?? null,
+          entryCoveredMin: meta.entryCoveredMin ?? null,
+          entrySharePct: meta.entrySharePct ?? null,
+          entryYieldFactor: meta.entryYieldFactor ?? null,
+        });
         console.log(`${tag} ${lessonLine(lesson)}`);
       } catch (err) {
         console.error(`${tag} lesson not written: ${(err as Error).message}`);
@@ -1750,7 +1858,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   if (execution.ok && execution.opened && verdict.decision.open && execution.mode !== "dry-run") {
     const op = verdict.decision.open;
     const bins = op.binsBelowActive + op.binsAboveActive + 1;
-    const kind: BandMeta["kind"] = screen?.stock || basisRow ? "stock" : snapshot.pair ? "other" : "memecoin";
+    const kind: BandMeta["kind"] = laneOfPool(app, o.address, snapshot, { stock: screen?.stock || basisRow });
     (state.bandMeta ??= {})[execution.opened.address] = {
       pool: o.address,
       label: snapshot.label,
@@ -1762,6 +1870,18 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
       coverPct: coveragePct(snapshot.binStep, Math.max(op.binsBelowActive, op.binsAboveActive)),
       travelBins60m: screen?.flow?.range60mBins ?? null,
       predictedYieldPct: null,
+      // THE FORECAST HE DECIDED ON, exactly as the policy made it a moment ago (its own `earn`, not a
+      // recomputation): what the seat was expected to earn, the share of face it was priced at, and
+      // how much of the scout's reading was behind it. The lesson scores this number at the close,
+      // and the calibration is that score. It needs no scout, so the paper book starts producing
+      // calibration evidence from the next open. predictedYieldPct stays the seat check's, so the
+      // entry forecast is never overwritten by a later reading (src/index.ts, the seat check).
+      ...(() => {
+        const f = entryForecastOf(o.address);
+        return f
+          ? { entryYieldPct: Math.round(f.yieldPctPerDay * 100) / 100, entrySource: "policy", entryCoveredMin: screen?.flow?.coveredMin ?? null, entrySharePct: Math.round(f.sharePct * 100) / 100, entryYieldFactor: f.feeShare }
+          : {};
+      })(),
       ...(isAskExit(verdict.decision) ? { ask: true } : {}),
     };
   }
@@ -2259,15 +2379,30 @@ async function runIteration(app: App): Promise<void> {
         const widthBins = Math.max(1, upper - lower + 1);
         const y = seatYield({ seatQuote: seatSol / q.priceInSol, binsEachSide: Math.max(0, Math.floor((upper - lower) / 2)), activeBinId: o.snapshot.activeBinId, bins: o.snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote: flow.feesPerDayQuote240m, ownPerBinQuote: seatSol / q.priceInSol / widthBins });
         const line = fadeFactor * pEnvNow.minSeatYieldPct;
-        for (const p of o.positions) app.predictedYield.set(p.address, Math.round(y.yieldPctPerDay * 100) / 100);
-        heldMeme.push({ address: o.address, label: o.snapshot.label, yieldPctPerDay: y.yieldPctPerDay, openedAt: state.seatSince?.[o.address] ?? state.lastMoveByPool?.[o.address] ?? null, pinned: pinnedTickerOf(app, o.address, o.snapshot) !== null || !!pinnedPoolAt(app.pinned, o.address), capSol: riskLimits.maxPositionSol, heldSol: seatSol, feeSource: "flow-4h", stock: !!app.screen?.pools.find((sp) => sp.address === o.address)?.stock });
-        const streak = y.yieldPctPerDay < line ? (app.fadeStreak.get(o.address) ?? 0) + 1 : 0;
+        // THE CALIBRATION, on the seat check too (src/desk/learning.ts). The check reads the pool's
+        // fee pace over the band's share of the bins and compares it to a REALISED floor; the book
+        // says a seat comes in well under what it was forecast. So the reading meets the fade line
+        // calibrated. The factor is taken RELATIVE to the shipped 0.5, so an uncalibrated lane reads
+        // exactly what it reads today and a calibrated one can only ever read its seats LOWER.
+        const lane = laneOfPool(app, o.address, o.snapshot);
+        const cal = Math.min(1, factorFor(learnedState(), lane) / FEE_SHARE_DEFAULT);
+        const rawPct = y.yieldPctPerDay;
+        const calPct = rawPct * cal;
+        // THE FACE FIGURE is what is remembered, not the calibrated one. predictedYieldPct is the
+        // learners' fallback training label and src/desk/learning.ts scores it as taken whole
+        // (factor 1); storing the calibrated figure fed the knob its own output, and a simulated 60
+        // cycles of a seat truly earning 0.20 of face settled on sqrt(0.5 x truth) = 0.316 and then
+        // rang between 0.30 and 0.33 for ever. The calibration belongs where the number meets a
+        // floor, which is the fade line and the ranking below, and nowhere else.
+        for (const p of o.positions) app.predictedYield.set(p.address, Math.round(rawPct * 100) / 100);
+        heldMeme.push({ address: o.address, label: o.snapshot.label, yieldPctPerDay: calPct, openedAt: state.seatSince?.[o.address] ?? state.lastMoveByPool?.[o.address] ?? null, pinned: pinnedTickerOf(app, o.address, o.snapshot) !== null || !!pinnedPoolAt(app.pinned, o.address), capSol: riskLimits.maxPositionSol, heldSol: seatSol, feeSource: "flow-4h", stock: lane === "stock" });
+        const streak = calPct < line ? (app.fadeStreak.get(o.address) ?? 0) + 1 : 0;
         app.fadeStreak.set(o.address, streak);
         const openedAt = state.lastMoveByPool?.[o.address] ?? null;
         const ageOk = openedAt === null || now - openedAt >= rEnvNow.minAgeMin * 60_000;
-        console.log(`[cycle ${app.cycle} ${o.snapshot.label}] seat check: ${y.yieldPctPerDay.toFixed(2)}%/day on the ${seatSol.toFixed(2)} SOL seat from the pool's last ${flow.coveredMin} min (${flow.feesPerDayQuote240m.toFixed(3)} ${q.symbol}/day pool pace x ${y.sharePct.toFixed(1)}% of the band's bins)${streak ? `; under the fade line ${line.toFixed(2)}% for ${streak} cycle(s)` : ""}`);
-        if (!app.rotateOut && fadeFactor > 0 && seatFaded({ yieldPctPerDay: y.yieldPctPerDay, floorPct: pEnvNow.minSeatYieldPct, fadeFactor, streak, cyclesNeeded: fadeCycles, ageOk })) {
-          app.rotateOut = { pool: o.address, label: o.snapshot.label, reason: `its own flow faded: the seat reads ${y.yieldPctPerDay.toFixed(2)}%/day from the pool's last ${flow.coveredMin} min, under ${line.toFixed(2)}% for ${streak} cycles` };
+        console.log(`[cycle ${app.cycle} ${o.snapshot.label}] seat check: ${calPct.toFixed(2)}%/day on the ${seatSol.toFixed(2)} SOL seat from the pool's last ${flow.coveredMin} min (${flow.feesPerDayQuote240m.toFixed(3)} ${q.symbol}/day pool pace x ${y.sharePct.toFixed(1)}% of the band's bins reads ${rawPct.toFixed(2)}%/day, taken at ${cal.toFixed(2)} of that on what my ${lane} seats have come in at)${streak ? `; under the fade line ${line.toFixed(2)}% for ${streak} cycle(s)` : ""}`);
+        if (!app.rotateOut && fadeFactor > 0 && seatFaded({ yieldPctPerDay: calPct, floorPct: pEnvNow.minSeatYieldPct, fadeFactor, streak, cyclesNeeded: fadeCycles, ageOk })) {
+          app.rotateOut = { pool: o.address, label: o.snapshot.label, reason: `its own flow faded: the seat reads ${calPct.toFixed(2)}%/day from the pool's last ${flow.coveredMin} min (${rawPct.toFixed(2)}% face, taken at ${cal.toFixed(2)}), under ${line.toFixed(2)}% for ${streak} cycles` };
           console.log(`[cycle ${app.cycle}] seat check: rotating out ${o.snapshot.label} (${o.address.slice(0, 6)}): ${app.rotateOut.reason}`);
         }
       } catch {
@@ -2300,7 +2435,13 @@ async function runIteration(app: App): Promise<void> {
           const oneSided = binsForCover(snapshot.binStep, coverPct, riskLimits.maxBinWidth, 1);
           const seatSol = riskLimits.maxPositionSol * travelSizeMultiple(travelPct > 0 ? travelPct : null, pEnvNow.sizeRefTravelPct, pEnvNow.sizeMinMultiple);
           const y = seatYield({ seatQuote: seatSol / q.priceInSol, binsEachSide: Math.max(0, Math.floor((oneSided - 1) / 2)), activeBinId: snapshot.activeBinId, bins: snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote: flow.feesPerDayQuote240m });
-          ranked.push({ address: c.address, label: c.label, mint: c.baseMint, yieldPctPerDay: y.yieldPctPerDay, sharePct: y.sharePct, feesPerDayQuote: y.feesPerDayQuote, quoteSymbol: q.symbol, feeSource: "flow-4h", capSol: seatSol, stock: false });
+          // BOTH SIDES OF THE COMPARISON, or neither. The held seats above enter calibrated, so a
+          // challenger read at face would beat an identically earning seat by 1/cal: with the
+          // memecoin lane at 0.35 every held seat read 30% low, weakSeatRotation's bar fell 30% and
+          // the desk rotated out of seats it would have kept, paying rent and swap fees for no
+          // change in the world. The candidate is a memecoin band by construction (stock: false).
+          const calCand = Math.min(1, factorFor(learnedState(), "memecoin") / FEE_SHARE_DEFAULT);
+          ranked.push({ address: c.address, label: c.label, mint: c.baseMint, yieldPctPerDay: y.yieldPctPerDay * calCand, sharePct: y.sharePct, feesPerDayQuote: y.feesPerDayQuote, quoteSymbol: q.symbol, feeSource: "flow-4h", capSol: seatSol, stock: false });
         }
         if (ranked.length) {
           const env = { ...rEnvNow, minYieldPct: pEnvNow.minSeatYieldPct };
@@ -2434,24 +2575,8 @@ async function runIteration(app: App): Promise<void> {
   } catch {
     app.watched = [];
   }
-  // THE TUNER (src/learn/lessons.ts): the recent lessons may move one knob one step
-  if ((process.env.TUNING_FILE ?? "").trim()) {
-    try {
-      const dataDir = path.resolve(process.cwd(), config.dataDir);
-      const tfile = path.resolve(process.cwd(), process.env.TUNING_FILE!.trim());
-      const tuning = readTuning(tfile) ?? { history: [] };
-      const tenv = tuneEnv();
-      const penvNow = policyEnv();
-      const current = { volMultiple: penvNow.tunedVolMultiple ?? penvNow.volMultiple };
-      const change = tuneFromLessons(readLessons(path.join(dataDir, LESSONS_FILE), now - 24 * 3_600_000), current, tuning, tenv, now, paper ? "paper" : config.dryRun ? "dry-run" : "live");
-      if (change) {
-        writeTuning(tfile, { ...tuning, volMultiple: change.to, history: [...tuning.history, change] });
-        console.log(`[cycle ${app.cycle}] [tuning] band width multiple ${change.from} -> ${change.to}: ${change.why}`);
-      }
-    } catch (err) {
-      console.error(`[cycle ${app.cycle}] tuner failed: ${(err as Error).message}`);
-    }
-  }
+  // THE LEARNER (src/desk/learning.ts): the closed seats may move one knob one bounded step.
+  runLearning(app, now, paper);
   await runSkim(app);
   // THE LIVE FEED (src/publish/live.ts): the sites poll one small file; it is uploaded every cycle, with no rebuild.
   // Never awaited past 20 s and never fatal: the desk does not wait on a website.
@@ -2484,6 +2609,58 @@ function sleepInterruptible(ms: number): Promise<void> {
   });
 }
 
+/**
+ * THE LEARNER RUNNER. Once a cycle: read the closed seats over the calibration's window, ask the
+ * pure deciders what one step each knob argues for, apply at most one step per knob, journal every
+ * change with its evidence and write the state the policy reads back.
+ *
+ * Frozen (LEARN_FROZEN=true, or the per-knob switch) it still computes and still prints what it
+ * WOULD have changed, and writes nothing: a freeze costs him no evidence, only the move.
+ *
+ * It cannot reach a guard. The calibration is clamped to at most the 0.5 the code already uses and
+ * the pool penalty to [0.25, 1], and both are applied through paths that only ever tighten.
+ */
+function runLearning(app: App, now: number, paper: PaperBook | null): void {
+  try {
+    if (!learning) openLearning(paper);
+    const { files } = learning!;
+    let state = learning!.state;
+    const mode = files.mode;
+    const env = learnEnv(process.env);
+    const lessons = readLessons(path.join(path.resolve(process.cwd(), config.dataDir), LESSONS_FILE), now - Math.max(env.calWindowH, env.poolWindowH) * 3_600_000);
+    const reentryMin = seatRankingEnv().reentryMin;
+    const proposed: LearningChange[] = [];
+    for (const lane of LANES) {
+      const reading = calibrationReading(lessons, lane, mode, env, now);
+      if (reading.target === null) {
+        if (app.cycle % 12 === 1) console.log(`[cycle ${app.cycle}] [learning] ${lane}: ${reading.why}`);
+        continue;
+      }
+      const c = calibrationChange(reading, state, env, now, mode);
+      if (c) proposed.push(c);
+      else if (app.cycle % 12 === 1) console.log(`[cycle ${app.cycle}] [learning] ${lane}: ${factorFor(state, lane).toFixed(2)} of face is where the evidence already points (${reading.why})`);
+    }
+    proposed.push(...poolPenaltyChanges(lessons, mode, state, env, now, reentryMin));
+    for (const c of proposed) {
+      const knob = c.knob === "calibration" ? "calibration" : "pools";
+      const what = c.knob === "calibration" ? `${c.lane} seat pricing ${c.from} -> ${c.to} of face` : `${c.label ?? c.pool} seat multiple ${c.from} -> ${c.to}`;
+      if (knobFrozen(process.env, knob)) {
+        console.log(`[cycle ${app.cycle}] [learning] FROZEN, so nothing moved: he would have taken ${what} because ${c.why} (n=${c.n}, ${c.windowH}h)`);
+        continue;
+      }
+      state = applyChange(state, c, env, reentryMin);
+      appendLearningChange(files.log, c);
+      writeLearning(files.state, state);
+      learning = { state, files };
+      clearLearningCache();
+      console.log(`[cycle ${app.cycle}] [learning] ${what}: ${c.why} (n=${c.n}, ${c.windowH}h, mode ${mode})`);
+    }
+    learning = { state, files };
+  } catch (err) {
+    console.error(`[cycle ${app.cycle}] [learning] failed, the shipped defaults stand: ${(err as Error).message}`);
+  }
+}
+
 async function main(): Promise<void> {
   const once = process.argv.includes("--once");
   // Paper mode never shares a process with a live key.
@@ -2497,6 +2674,7 @@ async function main(): Promise<void> {
     else console.log(`[paper] new book: ${pEnv.sol} SOL, ${pEnv.usdc} USDC`);
     savePaperBook(paper);
   }
+  openLearning(paper);
   // every RPC request carries a deadline (src/lib/timedFetch.ts): a node that never answers cannot hold the cycle
   const connection = rpcConnection(config.rpcUrl);
   const wallet = Wallet.fromConfig(connection);
