@@ -31,7 +31,7 @@ const FAMILIES: { family: string; blurb: string; tools: Tool[] }[] = [
   },
   {
     family: "Paid per call",
-    blurb: "USDC on Solana over x402, from your agent's own wallet; one payment, one call",
+    blurb: "not taking payments yet; once open, USDC on Solana over x402, from your agent's own wallet, one payment, one call",
     tools: [
       { name: "bands_pool_snapshot", returns: "One pool live from the chain: active bin, price, fees, and the bins around the price with their liquidity.", price: "$0.01 / call", tag: "paid" },
       { name: "bands_screen", returns: "The full ranked board of every DLMM pool with every measured column.", price: "$0.02 / call", tag: "paid" },
@@ -54,10 +54,11 @@ export function ToolCatalog() {
         <span className="eyebrow">Platform</span>
         <h2 className="tools__title">Tools your agent reads with.</h2>
         <p className="tools__sub">
-          The screener, the pool reads and the reasoning Mr Bands runs on, served over MCP at <code>{API_BASE || ""}/mcp</code>. Free tools need nothing. Paid tools answer 402 with a price in USDC;
+          The screener, the pool reads and the reasoning Mr Bands runs on, built as MCP tools at <code>{API_BASE || ""}/mcp</code>. Today they are served on his own host only: the public
+          endpoint opens during the AnsemHack Clawrena, and no paid call is live until it does. Once it is open, free tools need nothing, and paid tools answer 402 with a price in USDC;
           your agent pays on Solana, proves the payment was its own with a signature, and gets the data. No accounts, no keys, no subscriptions.{" "}
           <a className="tools__quickstart" href="/quickstart.html">
-            Quickstart: first paid call in five minutes ↗
+            Quickstart: how a paid call will work ↗
           </a>{" "}
           <a className="tools__quickstart" href={`${API_BASE}/integrate.md`}>
             integrate.md ↗

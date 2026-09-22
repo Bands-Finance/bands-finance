@@ -78,7 +78,7 @@ export function liveRunBeat(run: LiveRun, now: number, mode: string): Beat {
       <>
         <p>
           This was his own wallet on Solana, on real Meteora pools, from {dayOf(run.firstTs)} to {dayOf(run.lastTs)}. Then the desk was stopped and the wallet emptied.{" "}
-          {mode === "live" ? "It has been funded again, and the chapters above are the new run." : "He trades paper now, until the desk is funded again."}
+          {mode === "live" ? "It has been funded again, and the chapters above are the new run." : "He trades on paper now, and the live desk stays stopped."}
         </p>
       </>
     ),

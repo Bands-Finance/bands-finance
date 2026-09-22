@@ -211,14 +211,16 @@ export function ClosingBlock({ agentName, walletAddress }: { agentName: string; 
       {/* the close stands at the man himself on the desk (station "him"), so no printed portrait beside the words */}
       <div className="close__row">
         <p className="chap__p close__legal">
-          {agentName} is experimental software and trades a wallet of his own. Nothing here is advice, and nothing on this page can touch
-          your money. Every move above is published as it happened, including the ones that lost.
+          {/* walletAddress is set only while the desk is live (DashboardApp.tsx): otherwise he is on paper and says so */}
+          {agentName} is experimental software.{" "}
+          {walletAddress ? "He trades a wallet of his own." : "He trades on paper now; his live desk, a wallet of his own, is stopped."} Nothing here is advice, and
+          nothing on this page can touch your money. Every move above is published as it happened, including the ones that lost.
         </p>
       </div>
       {/* the words pin to the window's centre while the camera walks round him, so the close stays short: the ask is the
-          chapter before this one (the "hire" beat, DashboardApp.tsx) and this row only points at where to go */}
+          chapter before this one (the "hire" beat, DashboardApp.tsx) and this row only points at where to go. No "rent him" link:
+          nothing is for rent until the public platform opens */}
       <nav className="close__links engrave" aria-label="Footer">
-        <a href={`${PLATFORM_URL}/#/learn`} target="_blank" rel="noreferrer">Rent him over MCP</a>
         {walletAddress && <a href={`https://solscan.io/account/${walletAddress}`} target="_blank" rel="noreferrer">His wallet</a>}
         <a href={PLATFORM_URL} target="_blank" rel="noreferrer">bands.finance</a>
         <a href={`${PLATFORM_URL}/#/learn`} target="_blank" rel="noreferrer">How it works</a>

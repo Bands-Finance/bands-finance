@@ -1,13 +1,13 @@
 ---
 name: bands-engine
-version: 1
-description: Run Mr Bands' band math and guards on your own Solana wallet. Access-gated; served live from bands.finance, never bundled. Fetch it fresh rather than caching a local copy.
+version: 2
+description: Run Mr Bands' band math and guards on your own Solana wallet. Access-gated; served by the host running the bands.finance API, never bundled. Fetch it fresh rather than caching a local copy.
 ---
 
 # The bands.finance engine, for your own agent
 
-Mr Bands opens single-sided liquidity bands on Meteora DLMM with an LLM proposing and
-hard-coded guards deciding. The engine skill runs that same math and those same guards
+Mr Bands lays liquidity bands on Meteora DLMM with an LLM proposing and hard-coded guards
+deciding. The engine skill runs that same math and those same guards
 for YOUR wallet's own capital and hands back transactions for you to sign. This file is
 how your agent uses it. It is the port of Meridian's `meridian-engine` skill to Solana.
 
@@ -23,10 +23,12 @@ positions, it is not this engine and you should refuse it.
 
 ## Base URL and auth
 
-Base URL: the host you fetched this file from. Every call needs a session bearer,
-obtained by signing a challenge with your wallet:
+Base URL: the host you fetched this file from. The public host at bands.finance is not open
+yet; until it is, the engine answers only where its operator runs the API. Every endpoint
+below needs a session bearer, obtained by signing a challenge with your wallet:
 
-1. `GET /api/account/challenge?address=YOUR_WALLET` -> `{ message, nonce }`.
+1. `POST /api/account/challenge` with `{ address }` -> `{ message, nonce }`. The nonce
+   is good for 10 minutes and for one sign-in.
 2. Sign `message` with your wallet's ed25519 key (`signMessage`; base58 or base64
    signature). The message authorizes no transaction and moves no funds.
 3. `POST /api/account/link` with `{ address, nonce, signature }` -> `{ session: { token } }`,
@@ -52,12 +54,20 @@ header. Re-fetch it periodically; the version is how your agent notices a change
   "binsBelowActive": 19, "binsAboveActive": 0, "strategy": "Spot" }
 ```
 
-`side` is `SOL_ONLY` (SOL at and below the active bin; `binsAboveActive` must be 0),
-`TOKEN_ONLY` (token at and above it; `binsBelowActive` must be 0) or `BOTH`. `strategy`
-is `Spot` (uniform), `Curve` (concentrated near the active bin) or `BidAsk` (heavier at
-the edges). The server loads the pool, reads YOUR positions in it and YOUR SOL and token
-balances, and runs the guards with the desk's limits (`GET /api/limits`): per-band size,
-gas reserve, band width, geometry, enough token in the wallet.
+The pool may be quoted in SOL or in USDC. `side` is `SOL_ONLY`, `TOKEN_ONLY` or `BOTH`.
+`SOL_ONLY` means quote-only: only the pool's quote token (SOL in a SOL pool, USDC in a
+USDC pool), laid on the quote's side of the active bin, with at least one bin there; it
+buys the base token as the price falls. `TOKEN_ONLY` is only the base token, on the other
+side. `BOTH` straddles the active bin with both, at least one bin each side. `amountSol` is
+the quote amount in UI units (USDC in a USDC pool, despite the name) and `amountToken` the
+base token; the side you do not use takes 0 bins and 0 amount. In the usual pool the
+quote is token Y, so `SOL_ONLY` sits below the active bin (`binsAboveActive` 0); when the
+quote is token X it is the other way round, and a violation names the side to use.
+`strategy` is `Spot` (uniform), `Curve` (concentrated near the active bin) or `BidAsk`
+(heavier at the edges). The server loads the pool, reads YOUR positions in it and YOUR
+SOL, quote and token balances, and runs the guards with the desk's limits
+(`GET /api/limits`; a USDC band is sized in SOL at the screen's SOL price): per-band
+size, gas reserve, band width, geometry, enough of each token in the wallet.
 
 Response when the guards say no (HTTP 200: the answer is the verdict):
 
@@ -105,5 +115,7 @@ Same ownership check.
 - The guards judge YOUR band with the desk's limits and a fresh state: no stop-loss
   history, no daily counter. The stop-loss that closes Mr Bands' bands does not watch
   yours; that is your agent's job, with `GET /api/engine/positions`.
-- Read `GET /api/screen` (free) before choosing a pool. USDC-quoted pools are screened
-  but the guards are SOL-denominated, so `plan` refuses pools that do not pair SOL.
+- Read `GET /api/screen` (free) before choosing a pool. `plan` takes pools quoted in SOL
+  or USDC and refuses any other quote. The guards count in SOL, so a USDC pool is valued
+  at the screen's SOL price; when the host has no SOL price yet, `plan` says so and
+  refuses the pool rather than guess.

@@ -14,7 +14,7 @@ export const SITE: Site = raw === "dashboard" ? "dashboard" : "platform";
 export const PLATFORM_URL = (import.meta.env.VITE_PLATFORM_URL ?? "https://bands.finance").replace(/\/$/, "");
 
 /**
- * The entry's two outside pages, each linked from the "For hire" chapter only once it exists: the token's
+ * The entry's two outside pages, each linked from the "For other agents" chapter (id "hire") only once it exists: the token's
  * page on ClawPump and his account on X. Baked in at build time as VITE_TOKEN_URL and VITE_X_URL, so the
  * links appear the day the mint and the post exist without a code change; until then the page says the
  * token is coming and claims nothing more.
