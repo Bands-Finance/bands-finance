@@ -7,22 +7,26 @@ docs/clawrena.md disagree, this file is newer.
 **The plan in one line.** Do the three entry steps first. Then Mr Bands, who makes markets on Meteora DLMM
 (tokenized stocks are one part of his book, not all of it), takes on each new role in public while the judges
 watch: trader from Mon 28 Sep, platform manager from Thu 1 Oct, teacher from Sun 4 Oct. His token, $BANDS, will
-be a key that opens his tools. It will pay nobody who holds it: its creator fees will go to his own operating
-wallet, which pays for the launch and for what he runs on. It never opens his lessons, and the desk never
-touches it.
+be a key that opens his tools. It will pay nobody who holds it: its creator-fee share goes to his agent on
+ClawPump, which keeps that wallet's keys (the MCP launch, 22 Sep; docs/launch.md). It never opens his lessons,
+and the desk never touches it.
 
 **Decided by Zach, Tue 22 Sep.**
 - The copycat "Mr Bands" $BANDS (`JAARLU...pJ6m`) is **not his**. Its metadata borrows his own site and his own X
   account, @MrBandsSol, to look genuine. Left as is (Zach, 22 Sep): no report, no email; register first.
 - The token: **$BANDS**, over $MRBANDS, knowingly: the copycat already uses the ticker, so the mint is the only
-  way to tell his from it. SOL pair, no dev buy, `buybackBps` 0, self-funded from his own new operating wallet.
+  way to tell his from it. **Launched through ClawPump's MCP** (Zach, 22 Sep, over the self-funded partner API):
+  `launch_metaplex_genesis_token`, a Metaplex Genesis launch, first buy 0, paid from his ClawPump agent's
+  custodial wallet. Knowingly: 75% of the creator fees stay in ClawPump's custody for that agent, and the pair and
+  any buyback are ClawPump's defaults (no MCP tool sets them). docs/launch.md is the runbook.
 - **He pays his own way, in its honest scope** (see "The point: his autonomy"): his on-chain bills from his own
   operating wallet, by capped code; the off-chain costs stay Zach's and are listed as a subsidy.
 - **No live money.** The live desk stays halted through 8 Oct. The scored trader record is the frozen 17-19 Sep
   real-money run. The paper desk keeps trading in public, labelled paper, and his model is to make its
   proposals there (the guards decide; today his rulebook still makes every proposal). The weight of the entry
   moves to the builder half of the track and to Overall: the Meteora skill other agents install, the platform,
-  the casebook and the token design. The launch still needs about 0.05 SOL in his operating wallet.
+  the casebook and the token design. The launch still needs his ClawPump agent's custodial wallet funded
+  (docs/launch.md).
 - **The lawyer: launch the no-rights design knowingly**, on Fri 25 Sep, and get a review before adding anything.
 
 ## The point: his autonomy (Zach, Tue 22 Sep)
@@ -46,11 +50,13 @@ What he does himself, and nobody does for him:
   about 66 decisions an hour; all of them on Opus would spend the $200 OpenRouter balance in about two days. So
   the model proposes the calls that matter, and code answers the obvious holds (a pool off the screen, not worth
   the rent, the engine already deciding), with a hard credit limit on the key.
-- **He launches his own token.** Zach arms it (seeds his operating wallet, sets one flag). Mr Bands chooses the
-  moment and calls a desk tool that launches with the spec fixed in code: he cannot change the pair, the fee,
-  the dev buy or the payout. The tool runs once, refuses if a mint exists, and caps the cost. He then announces
-  it. This is his one on-chain act of autonomy while the desk is on paper, so it is done by him, on the record.
-  (The manual CLI stays as the fallback.)
+- **He launches his own token.** Zach arms it (funds his ClawPump agent's wallet, starts the launch bridge, writes
+  a single-use arm with a nonce). In one owner turn Mr Bands chooses the moment and calls `token_launch`, a tool
+  on a loopback bridge that sends ClawPump's `launch_metaplex_genesis_token` with the spec fixed in code: he
+  cannot change the symbol, the description or the first buy. It runs once, refuses if a mint exists or the
+  stored metadata is off spec, and is never offered to a desk cycle or an X mention. He then announces it. This is
+  his one on-chain act of autonomy while the desk is on paper, so it is done by him, on the record
+  (docs/launch.md).
 - **He posts on X himself:** his own entry announcement tagging @clawpumptech in his own words (not the
   template, which says "Agents powered by $CLAW"), his strap checks, his lessons, the casebook series. The lint
   and the rate limits are in code. Needs the X account's API keys (Zach).
@@ -61,9 +67,10 @@ What he does himself, and nobody does for him:
 
 - **He pays his own way** (Zach, 22 Sep). The honest scope, and never "everything": from **his own new
   operating wallet**, by code with a fixed list of payees, caps and a reserve floor, with no human signing and
-  never on the model's say, he will pay his on-chain bills: his token launch, his gas, his inference through
-  UsePod (the hackathon's inference sponsor), and his RPC through Helius. His creator fees from $BANDS go to that
-  wallet (not a cold treasury, and never the desk wallet). He starts on a one-time seed from Zach, disclosed with its transaction. The Mac, the hosting, the domain
+  never on the model's say, he will pay his on-chain bills: his gas, his inference through
+  UsePod (the hackathon's inference sponsor), and his RPC through Helius. His creator fees from $BANDS do not
+  reach that wallet on their own: launched through ClawPump's MCP, they are held by ClawPump for his ClawPump
+  agent. Moving them out needs a whitelist entry and a transfer on ClawPump, which is not built. He starts on a one-time seed from Zach, disclosed with its transaction. The Mac, the hosting, the domain
   and X access stay paid by Zach off-chain, and the books list them as a subsidy. His token income will not
   cover his costs during judging, and the books will say so. It is being built: on the sites and in tool
   descriptions it is "coming" at most until it runs. This section is updated when the design lands.
@@ -144,7 +151,8 @@ POST); the H1 guard (below); settle one headline number (below).
 Build in this order. Each rung is a valid, honest entry on its own.
 
 1. X account and registration. Free. **Tue 22 Sep.**
-2. Token launched, attached to the entry, entry posted tagging @clawpumptech. About 0.05 SOL. **By Fri 25 Sep.**
+2. Token launched, attached to the entry, entry posted tagging @clawpumptech. The Genesis cost plus a margin in
+   his ClawPump agent's wallet. **By Fri 25 Sep.**
 3. The honest record on the site: "fees are not profit" and the real-money casebook. No SOL needed.
 4. The Meteora skill installable by other agents, and an outside agent using it.
 5. The platform reachable: a stranger's wallet signs in and plans a band it signs itself.
@@ -156,16 +164,15 @@ once it does.)
 
 ## The token
 
-**Shape.** ClawPump, **SOL pair, no dev buy, `buybackBps` 0**, the ticker **`BANDS`** (Zach, 22 Sep, over
-`MRBANDS`, knowingly: the copycat and "Blue Bands" already use `BANDS`, so the ticker cannot tell his token
-apart and the mint must; his mint leads on every surface once it exists, and the token's description sends
-people to mrbands.finance for it). Launched **self-funded from his own new operating wallet**, so the payer, and
-therefore the permanent creator-fee beneficiary, is the wallet that pays his bills: never the hot desk wallet
-(the launch refuses it as payer) and not a cold treasury. The
-plan is his own launch, armed by Zach (see "The point: his autonomy"); the fallback is the existing CLI with
-`WALLET_SECRET_KEY` set to the operating wallet's key for that one run and `TOKEN_PAYER_EXPECTED` pinning its
-address (docs/token.md). It costs about 0.02-0.05 SOL. A launch can be done once per agent, and the pair, fee and
-payout are fixed for good, so this is decided once.
+**Shape.** ClawPump, through its MCP (Zach, 22 Sep): `launch_metaplex_genesis_token` for his ClawPump agent
+(`64fd21e8-...`), a Metaplex Genesis launch, **first buy 0**, the ticker **`BANDS`** (over `MRBANDS`, knowingly:
+the copycat and "Blue Bands" already use `BANDS`, so the ticker cannot tell his token apart and the mint must),
+name "Mr Bands", the description `TOKEN_DESCRIPTION` in ops/live.env, no website and nothing that links it to the
+site. Paid from his ClawPump agent's **custodial wallet** (`4HQdS1...`), whose keys ClawPump keeps. Accepted
+knowingly: 75% of the creator fees accrue to that agent in ClawPump's custody, not to a wallet he holds, and the
+pair and any buyback are ClawPump's defaults, since no MCP tool can set them. He launches it himself through a
+loopback bridge that pins the spec in code; Zach arms it (docs/launch.md). A launch happens once per agent and
+is irreversible. The self-funded CLI (`npm run clawpump`, docs/token.md) is the superseded path and is not run.
 
 This replaces the spec at ops/live.env:160-172 (NVDAx pair, 300 bps, a 2.5 SOL dev buy to the hot wallet),
 which was the most expensive and riskiest option. It would leave a dev bag a stop could sell, hold US-person and
@@ -200,21 +207,20 @@ inventory, "never swaps it" is the whole rule.)
 
 **How he talks about it**, once it is live (until then, in future tense). Every mention carries the disclosure,
 in code and linted: "my own token. i launched it myself. the desk holds none and never trades it. holding <mint> in
-a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my own
-wallet, which pays for what i run on." (Zach's wording ended "not a share, it pays nobody who holds it, and its trades pay a cut"; with a
-44-character mint that ran 284 characters against the lint's 280, so ", and its" became ". its", same meaning,
-exactly 280. The line is `disclosureLine(mint)` in src/talk/lint.ts, and test-talk holds it to 280.) (The line says holding the mint opens the engine. No code does that yet: engine access today is an
+a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my agent
+on clawpump, which keeps the keys." (22 Sep: the fee clause used to say "to my own wallet, which pays for what i
+run on". Launched through ClawPump's MCP, the cut is held by ClawPump for his agent, so that was no longer true.
+The line is `disclosureLine(mint)` in src/talk/lint.ts, which the announcements use too; with a 44-character
+mint it is 279 characters, and test-talk holds it under 280.) (The line says holding the mint opens the engine. No code does that yet: engine access today is an
 allowlist or open to all (src/platform/engineSkill.ts), and the hold gate is on the calendar for Sun 27 Sep,
 after the Fri 25 Sep launch. So the line does not post until the hold gate is live. Open for Zach: move the
 gate before the launch, or approve a pre-gate line for the days between. A candidate that passes the lint at
-273 characters with a 44-character mint: "my own token. i launched it myself. the desk holds none and never trades
+258 characters with a 44-character mint: "my own token. i launched it myself. the desk holds none and never trades
 it. holding <mint> in a signed-in wallet will open the engine. not a share, it pays nobody who holds it. its
-trades pay a cut to my own wallet, for what i run on.") ("The mint mrbands.finance lists" is a promise the site does not keep yet: today it only links
-`VITE_TOKEN_URL` under the label "$BANDS on ClawPump", the copycat's ticker, and prints no mint. The site must
-print the mint itself before the launch goes out, because the token's on-chain description sends people there
-to check.) He names the mint, never a bare ticker. The copycat shares the name and
+trades pay a cut to my clawpump agent.") (The token is off the site for now, decision 8 below: the token's
+description names no site, and the mint he posts from @MrBandsSol is the one.) He names the mint, never a bare ticker. The copycat shares the name and
 the ticker, so he never says "other $bands tokens are not mine" (his is one): he names the copycat by its mint
-as not his, and says his is the mint mrbands.finance lists. He never calls its price, never puts a price, chart,
+as not his, and says his is the mint he posted. He never calls its price, never puts a price, chart,
 cap, holders, volume, fee, % or $ next to his own, never says buy, sell or early, never links it to the desk's
 P&L, and never names it in a lesson. Asked "should i buy it?": "i don't tell anyone what to do with a token. here is what it
 opens, and the lessons are free without it." (That reply passes the lint; "what to buy" did not.) He posts his own
@@ -297,9 +303,9 @@ price knobs, the position watcher.
 | Day | Zach (keys, money, accounts: first thing each morning) | Claude |
 |---|---|---|
 | **Tue 22 Sep** | Copycat answer. X account, follow, DM for a slot. **Register.** Mac on power, lid open, updates off. `OPENHERMIT_TOKEN`. Lawyer decision. Push the commits. | docs/clawrena.md; public honesty fixes; SKILL.md; H1 guard and CLI message; settle one headline number. |
-| **Wed 23 Sep** | `CLAWPUMP_API_KEY`, `npm run clawpump -- pairs`. Create his new operating wallet and send it the one-time seed (at least about 0.05 SOL for the launch), and keep the seed's transaction for the disclosure. | Seat-scoring change on paper. Start the keyless API and tunnel. Watch the paper model's proposals. |
-| **Thu 24 Sep** | Token preflight from his operating wallet, and read the quote. | Build the casebook. Start the Hermes skill. |
-| **Fri 25 Sep** | **Arm the launch** (his operating wallet seeded, set the flag). **He launches his own token and posts his entry himself.** Attach it at /ansemhack/entry if it doesn't attach itself. All three steps done, a week early. | Official-token page with the not-his notice, the mint printed on it (not only a link). `TOKEN_URL`/`X_URL`. "Fees are not profit". Casebook public. |
+| **Wed 23 Sep** | Launch prerequisites (docs/launch.md): fix the stored launch metadata on the ClawPump dashboard, turn off the marketplace listing, rotate the cpk key into `~/.mrbands/clawpump.env`, install the pinned ClawPump server. | Seat-scoring change on paper. Start the keyless API and tunnel. Watch the paper model's proposals. |
+| **Thu 24 Sep** | Fund his ClawPump agent's wallet; `npm run launch:check`; the bridge dry run and the gateway provisioning (docs/launch.md). | Build the casebook. Start the Hermes skill. |
+| **Fri 25 Sep** | **Arm the launch** (pause his schedules, bridge live, `npm run launch:arm`). **He launches his own token and posts his entry himself.** Attach it at /ansemhack/entry if it doesn't attach itself. All three steps done, a week early. | Official-token page with the not-his notice, the mint printed on it (not only a link). `TOKEN_URL`/`X_URL`. "Fees are not profit". Casebook public. |
 | **Sat 26 Sep** | | `bands_lessons` tool. The Hermes skill. |
 | **Sun 27 Sep** | Stream rehearsal. | Hold gate and `bands_access` (his disclosure line waits for it). Freeze the site's look. |
 | **Mon 28 Sep** | **Judging opens.** | Daily honest-numbers post (SOL and hours, net shown). |
@@ -396,14 +402,15 @@ prints every row as agreeing, and test-web-model pins the shipped file to these 
    all. The desk refuses its mint in code; the site names it as not his once the token is on the site (8 below). @MrBandsSol, which its metadata links, is
    his own X account.
 2. **The token: $BANDS**, chosen over $MRBANDS knowingly, with the copycat sharing the ticker: the mint is the
-   only way to tell them apart, so his mint leads everywhere and the copycat is named by its mint. SOL pair, no
-   dev buy, `buybackBps` 0, self-funded from his own new operating wallet, which is the creator-fee beneficiary
-   for good. Not the desk wallet, not a cold treasury.
+   only way to tell them apart, so his mint leads everywhere and the copycat is named by its mint. Launched
+   through ClawPump's MCP (Metaplex Genesis, first buy 0), paid from his ClawPump agent's custodial wallet; 75%
+   of the creator fees stay in ClawPump's custody for that agent, and the pair and buyback are ClawPump's
+   defaults. Accepted knowingly (docs/launch.md).
 3. **No live money.** The live desk stays halted through 8 Oct; the trader record is the frozen 17-19 Sep run.
 4. **His model proposes on paper only**, the guards deciding, with a hard credit limit on the OpenRouter key.
 5. **The lawyer: launch the no-rights design knowingly** on Fri 25 Sep; a review before anything is added.
 6. **He pays his own way, in this scope and no wider:** from his own new operating wallet, by code with fixed
-   payees and caps and no human signing, his on-chain bills (his token launch, gas, his inference through
+   payees and caps and no human signing, his on-chain bills (gas, his inference through
    UsePod, the hackathon's inference sponsor, and his RPC through Helius). He starts on a one-time seed from
    Zach, disclosed with its transaction. The Mac, hosting, the domain and X access stay paid by Zach off-chain,
    listed as a subsidy. His token income will not cover his costs during judging, and the books will say so.
@@ -418,9 +425,10 @@ prints every row as agreeing, and test-web-model pins the shipped file to these 
 ## Open questions (not asked: Zach, 22 Sep, "lets ignore emailing clawpump team")
 
 We are not writing to ClawPump. These stay open, and the plan works either way:
-- How a SOL-pair token's creator fees count on the fee leaderboard (the tracker assumes a 1% rate).
+- How a Metaplex Genesis token's creator fees count on the fee leaderboard, and whether a Genesis launch counts
+  for the ClawPump x pump.fun track at all.
 - Whether an ANSEM creation pair, or LP market-making in the ANSEM-SOL pool, counts toward the $ANSEM bonus.
-- Whether the token auto-attaches by X handle when launched through the partner API; if not, paste the mint at
+- Whether the token auto-attaches by X handle when launched through ClawPump's MCP; if not, paste the mint at
   clawpump.tech/ansemhack/entry.
 - How stream slots and finalists are picked (a DM to @clawpumptech from his account is still the way to ask for a
   slot).

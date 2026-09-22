@@ -27,8 +27,8 @@ A copycat already uses the name: a "Mr Bands" $BANDS launched on pump.fun throug
 (mint `JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m`), with his portrait, a link to mrbands.finance and a link
 to his own X account, @MrBandsSol, all borrowed to look genuine. **It is not his.** Left as is (Zach, 22 Sep: no
 report, no email); we register first. His own token will carry the same ticker, $BANDS (decided 22 September), so the mint is the only
-way to tell them apart: the copycat is always named by its mint, and his is the mint mrbands.finance
-lists once it launches.
+way to tell them apart: the copycat is always named by its mint, and his is the mint he posts from
+@MrBandsSol once it launches (the token is off the site for now).
 
 **Early still pays.** "Deploy early" is scored, and the page is explicit that late entries are judged on
 less: "Projects that go live sooner get reviewed sooner, and the panel watches them for longer. An entry
@@ -86,28 +86,31 @@ not the token's pair, and like every lane it trades no real money before 8 Octob
 
 ### A. The token (he launches it himself Fri 25 September, armed by Zach; not launched yet)
 
-Decided 2026-09-22 (docs/sprint.md, "The token"). A launch can be done once per agent and the pair, fee
-and payout are fixed for good, so this is decided once and not reopened. The launch steps are in
-docs/token.md. The 20 September spec (NVDAx pair, 300 bps, 2.5 SOL dev buy) is superseded.
+Decided 2026-09-22 (docs/sprint.md, "The token"). A launch can be done once per agent and is irreversible,
+so this is decided once and not reopened. The runbook is docs/launch.md. The 20 September spec (NVDAx pair,
+300 bps, 2.5 SOL dev buy) and the self-funded partner-API plan (docs/token.md) are superseded.
 
 | field | value |
 |---|---|
 | name | Mr Bands |
 | ticker | BANDS (Zach, 22 September, over MRBANDS, knowingly: the copycat and "Blue Bands" use it too, so the mint tells his apart) |
-| image | https://mrbands.finance/token-bands.png (the engraved cigar portrait, the site's own mark, 900x900 PNG) |
-| venue | ClawPump |
-| pump.fun pair | SOL |
-| dev buy | none |
-| `buybackBps` | 0 |
-| paid by | his own new operating wallet, seeded once by Zach (about 0.05 SOL covers the launch); never the desk wallet, not a cold treasury |
+| description | `TOKEN_DESCRIPTION` in ops/live.env; it names no site |
+| website | none, and nothing that links the token to the site, the image URL included |
+| venue | ClawPump, through its MCP: `launch_metaplex_genesis_token`, a Metaplex Genesis launch |
+| first buy | 0 |
+| pair, buyback | ClawPump's defaults: no MCP tool can set them |
+| ClawPump agent | `64fd21e8-1d52-4a95-9c19-4db0069cbb4b` |
+| paid by | that agent's custodial wallet `4HQdS1HqnumqLqJT81tdUtf969Xa6cTo9jc1mEadxYyE`, whose keys ClawPump keeps |
+| creator fees | 75% accrue to that agent in ClawPump's custody |
 
-- **Who pays is who gets the creator fees.** ClawPump's docs call `walletAddress` "the Solana base58
-  wallet that pays for the launch AND receives the agent's 75% creator-fee share". So the launch is
-  self-funded from his own operating wallet, the one his code will pay his on-chain bills from. The plan is his own launch through a desk tool with the spec
-  fixed in code, armed by Zach; the fallback is the existing `npm run clawpump -- launch --confirm` with
-  `WALLET_SECRET_KEY` set to the operating wallet's key for that one run and `TOKEN_PAYER_EXPECTED`
-  pinning its address (docs/token.md). It costs about 0.02-0.05 SOL. The spec in `ops/live.env` under "the Clawrena token" matches this table,
-  and test-clawpump fails if it drifts.
+- **Accepted knowingly (Zach, 22 Sep).** ClawPump's MCP has no self-funded launch, no fee-recipient field, no
+  pair field and no buyback field. Its gasless tool refuses while the platform reports `gasless_available`
+  false, so the one tool that launches is the Genesis one. ClawPump's docs: "ClawPump retains creator-wallet
+  custody" and "Your agent earns 75% of future creator fees". So the fees are held by ClawPump for his ClawPump
+  agent, not paid to a wallet he holds; moving them out needs a whitelist entry and a transfer on ClawPump.
+- **He launches it himself.** His gateway agent calls `token_launch` on a loopback bridge that pins the spec in
+  code and calls nothing of ClawPump's but the status read and that one launch. Zach arms it with a single-use
+  nonce, and it is never offered to a desk cycle or an X mention (docs/launch.md).
 - **What it is: his own token, a key, not a share.** Once the hold gate ships (planned Sun 27 Sep, after the launch; not in code yet), holding the official mint in a signed-in wallet will open the engine on
   your own wallet (plan, collect, close; you sign everything). The gate is a balance read on the sign-in
   that already exists: no escrow, no contract, nothing a model can drain. Graduating, closing a real band
@@ -118,12 +121,12 @@ docs/token.md. The 20 September spec (NVDAx pair, 300 bps, 2.5 SOL dev buy) is s
   a live approval: `AUTO_APPROVE_LIVE` stays off through 8 October.
 - **What the desk does with it: nothing.** The desk never holds, swaps or market-makes the token and never
   seats a pool of it. A guard in src/risk enforces it, and `PAIR_HOUSE_MINTS` stays unset through
-  8 October. There is no house pool and no house inventory. No model path reaches ClawPump, the
-  operating wallet's key or the token's spec: he proposes, the guards decide.
+  8 October. There is no house pool and no house inventory. His one path to ClawPump is the launch bridge,
+  in one owner turn Zach arms; it holds the spec, and the ClawPump key never reaches the gateway.
 - **How he talks about it.** Future tense until it launches. Once live, every mention carries the
   disclosure: "my own token. i launched it myself. the desk holds none and never trades it. holding <mint> in
   a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut
-  to my own wallet, which pays for what i run on." It posts only once the hold gate is live. He names the mint, never a bare ticker. The copycat
+  to my agent on clawpump, which keeps the keys." It posts only once the hold gate is live. He names the mint, never a bare ticker. The copycat
   shares the ticker, so he names it by its mint as not his, never "other $bands tokens". Never a price,
   chart, cap, holders, volume, fee, % or $ next to it, never buy, sell or early, never linked to the
   desk's P&L, never named in a lesson.
@@ -161,7 +164,7 @@ on paper once it does; it never says the model trades real money.
 2. Product and demo: one seat laid live on paper, him proposing and the guards deciding; a losing real-money seat
    against a winning one from the casebook.
 3. Market, GTM and traction: the skill other agents install, wallets signed in, proposals decided.
-4. Token utility and vision: his own token, the key that will open the engine on your own wallet, and why it pays its holders nothing (its creator fees go to his own operating wallet, which pays for what he runs on).
+4. Token utility and vision: his own token, the key that will open the engine on your own wallet, and why it pays its holders nothing (its creator-fee share is held by ClawPump for his agent there).
    It ends on the red numbers: fees claimed, and the book down all the same.
 
 ### E. The X posts
@@ -178,7 +181,7 @@ The project account (the entry step: tag @clawpumptech):
 > in the pools his screener ranks, proposes every move, lets his guards decide, and publishes every
 > decision and every guard veto at mrbands.finance. His book is on paper for now. His own token is
 > <mint> on ClawPump: a key that will open his engine on your own wallet. It pays holders nothing, its
-> creator fees go to his own wallet, which pays for what he runs on, and the desk never trades it.
+> creator-fee share is held by ClawPump for his agent there, and the desk never trades it.
 
 Mr Bands, from his own account (drafts; `npm run talk -- draft` builds them from live data and lints
 them against the locked core before anything can post):
@@ -187,13 +190,13 @@ them against the locked core before anything can post):
 > mrbands.finance, the red ones too
 
 > my own token. i launched it myself. the desk holds none and never trades it. holding <mint> in a
-> signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my own wallet,
-> which pays for what i run on.
+> signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my agent
+> on clawpump, which keeps the keys.
 
 > the "mr bands" token at JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m is not mine. it borrows my name, my
-> picture and my links. same name, same ticker, so the mint is the only way to tell. mine is the one my site lists
+> picture and my links. same name, same ticker, so the mint is the only way to tell. mine is the one i posted
 
-(The second and third pass the lint as written, the second at 280 characters with a 44-character mint. The second does not post until the hold gate is
+(The second and third pass the lint as written, the second at 279 characters with a 44-character mint. The second does not post until the hold gate is
 live, since it says holding the mint opens the engine; see docs/sprint.md, "How he talks about it".
 The first names mrbands.finance, which the lint's link allowlist does not yet carry, so it is refused
 until the allowlist or the line changes.)
@@ -221,23 +224,22 @@ exists.
 ## What the launch needs from Zach (2026-09-22)
 
 1. **The project X account**, following @clawpumptech, and the registration (Tue 22 September).
-2. **`CLAWPUMP_API_KEY`**: a `cpk_` key from https://clawpump.tech/dashboard/api, into `.env` (never
-   `ops/live.env`, which is committed). Then `npm run clawpump -- pairs` and `cost` (Wed 23 September).
-3. **His operating wallet**, a new keypair of his own, seeded once (about 0.05 SOL covers the launch;
-   the seed's transaction is disclosed) (Wed 23 September). The desk wallet stays empty: it was swept on
-   18 September by `src/scripts/withdraw.ts`, and it must not be the payer, because the payer is the
-   creator-fee beneficiary for good. ClawPump has a `PUT /api/fees/wallet` to
-   repoint payouts, but the Ed25519 payload it wants is on neither docs page, so we do not rely on it.
-4. **Arming the launch** on Fri 25 September: he launches from his operating wallet himself (the manual
-   CLI in docs/token.md is the fallback), attached at /ansemhack/entry if it does not attach itself, and
-   the entry posted.
+2. **The launch prerequisites** (docs/launch.md): the stored launch metadata fixed on the ClawPump dashboard
+   (symbol BANDS, the description, no website), the marketplace listing off, the rotated `cpk_` key in
+   `~/.mrbands/clawpump.env` (never the repo's `.env`), the pinned ClawPump server installed, and his ClawPump
+   agent's custodial wallet funded with the Genesis cost plus a margin (Wed 23 to Thu 24 September).
+3. **The dry run and the gateway provisioning** (docs/launch.md), with the bridge in dry-run mode.
+4. **Arming the launch** on Fri 25 September: his schedules paused, the bridge live, `npm run launch:arm`,
+   then the one-shot owner turn in which he launches it himself; attached at /ansemhack/entry if it does not
+   attach itself, and the entry posted.
 
 ## Open questions (not asked: Zach, 22 Sep, "lets ignore emailing clawpump team")
 
 We are not writing to ClawPump. These stay open, and the plan works either way:
-- How a SOL-pair token's creator fees count on the fee leaderboard (the tracker assumes a 1% rate).
+- How a Metaplex Genesis token's creator fees count on the fee leaderboard, and whether a Genesis launch
+  counts for the ClawPump x pump.fun track.
 - Whether an ANSEM creation pair, or LP market-making in the ANSEM-SOL pool, counts toward the $ANSEM bonus.
-- Whether the token auto-attaches by X handle when launched through the partner API; if not, paste the mint at
+- Whether the token auto-attaches by X handle when launched through ClawPump's MCP; if not, paste the mint at
   clawpump.tech/ansemhack/entry.
 - How stream slots and finalists are picked (a DM to @clawpumptech from his account is still the way to ask for a
   slot).

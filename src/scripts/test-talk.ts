@@ -195,7 +195,9 @@ async function main(): Promise<void> {
     passes(`my own token. i launched it myself. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine. it is not a share of anything and pays nobody`, ctx);
     // his disclosure line (Zach, 22 Sep 2026): it says who the token pays, without a word the lint keeps away from it, under 280
     const line = lintMod.disclosureLine(MINT);
-    assert.equal(line, `my own token. i launched it myself. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my own wallet, which pays for what i run on.`);
+    assert.equal(line, `my own token. i launched it myself. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my agent on clawpump, which keeps the keys.`);
+    // 22 Sep: the cut is held by ClawPump for his agent, so the line no longer says his own wallet
+    assert.ok(!/my own wallet/.test(line), line);
     passes(line, ctx);
     // a real mint is 44 characters (43 above): the line still fits in 280
     const MINT44 = "BANDSm1ntXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump";
