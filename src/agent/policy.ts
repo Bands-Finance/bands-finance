@@ -80,6 +80,7 @@ import { pairEnv, pairHouseSeatSol, pairSeatSol, type PairEnv } from "../screene
 import { pairStockEnv, pairStockSeatSol, type PairStockEnv } from "../screener/pairStock";
 import { swapDepthWithin } from "../screener/seatYield";
 import { applyTuning, readTuningCached, tuneEnv } from "../learn/lessons";
+import { FEE_SHARE_DEFAULT, factorFor, learnEnv, readLearningCached, type Lane, type LearningState } from "../desk/learning";
 import { OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, quoteOf, type PoolSnapshot, type PositionSnapshot, type QuoteView } from "../tools/dlmm";
 import { jupiterEnv, meteoraOnlyRoutes } from "../tools/jupiter";
 import { bookEnv, type Book } from "../venues/env";
@@ -128,6 +129,17 @@ export interface PolicyEnv {
   sizeMinMultiple: number;
   /** the self-learning tuner's band width multiple (src/learn/lessons.ts), learned from memecoin seats and applied to pools that are not stocks; absent without a tuning file */
   tunedVolMultiple?: number;
+  /**
+   * THE CALIBRATION IN FORCE (src/desk/learning.ts): the share of a pool's face fee pace a seat is
+   * priced at, per lane. 0.5 is what the code has always used ("a band earns only while price is
+   * inside it") and is also the hard ceiling: a learned factor can only be lower, so a calibrated
+   * desk refuses MORE seats than today's, never fewer. Without a learning file every lane is 0.5
+   * and every number the policy prints is identical to today's.
+   */
+  feeShare: Record<Lane, number>;
+  /** how many lessons each lane's factor rests on, and the sentence it rests on; 0 and null while the shipped default stands */
+  feeShareN: Record<Lane, number>;
+  feeShareWhy: Partial<Record<Lane, string>>;
   /** the one-time cost of a seat (rent that never comes back plus the swap round trip) must be earned back inside this many hours (POLICY_MAX_PAYBACK_HOURS) */
   maxPaybackHours: number;
   /** a seat under this share of the book's max exposure is not worth its rent and attention (POLICY_MIN_SEAT_PCT) */
@@ -148,7 +160,38 @@ export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
   const base = policyEnvBase(env);
   // the self-learning tuner's knobs on top (TUNING_FILE, src/learn/lessons.ts), inside its bounds
   const file = (env.TUNING_FILE ?? "").trim();
-  return file ? applyTuning(base, readTuningCached(file), tuneEnv(env)) : base;
+  const tuned = file ? applyTuning(base, readTuningCached(file), tuneEnv(env)) : base;
+  return withLearnedFeeShare(tuned, env);
+}
+
+/**
+ * The learned share of face on top, from LEARN_FILE. A file learned on another desk's mode is
+ * refused by the reader, so a paper-learned number never rides into a live desk. Nothing here can
+ * raise a factor above FEE_SHARE_DEFAULT: learnEnv clamps calMax to it and this clamps again.
+ */
+function withLearnedFeeShare(base: PolicyEnv, env: NodeJS.ProcessEnv): PolicyEnv {
+  const file = (env.LEARN_FILE ?? "").trim();
+  if (!file) return base;
+  let state: LearningState | null = null;
+  try {
+    state = readLearningCached(file, (env.LEARN_MODE ?? "").trim() || "live");
+  } catch {
+    return base;
+  }
+  if (!state) return base;
+  const le = learnEnv(env);
+  const clamp = (v: number) => Math.min(le.calMax, Math.max(le.calMin, v));
+  const feeShare = { ...base.feeShare };
+  const feeShareN = { ...base.feeShareN };
+  const feeShareWhy: Partial<Record<Lane, string>> = { ...base.feeShareWhy };
+  for (const lane of ["memecoin", "stock", "other"] as const) {
+    const c = state.calibration[lane];
+    if (!c || !Number.isFinite(c.factor)) continue;
+    feeShare[lane] = clamp(factorFor(state, lane));
+    feeShareN[lane] = c.n;
+    feeShareWhy[lane] = c.why;
+  }
+  return { ...base, feeShare, feeShareN, feeShareWhy };
 }
 
 function policyEnvBase(env: NodeJS.ProcessEnv): PolicyEnv {
@@ -177,6 +220,9 @@ function policyEnvBase(env: NodeJS.ProcessEnv): PolicyEnv {
     maxPaybackHours: Math.max(0, num(env.POLICY_MAX_PAYBACK_HOURS, 24)),
     minScore: num(env.POLICY_MIN_SCORE, 20),
     book: bookEnv(env),
+    feeShare: { memecoin: FEE_SHARE_DEFAULT, stock: FEE_SHARE_DEFAULT, other: FEE_SHARE_DEFAULT },
+    feeShareN: { memecoin: 0, stock: 0, other: 0 },
+    feeShareWhy: {},
   };
 }
 
@@ -253,6 +299,13 @@ export const isPinnedStock = (o: Pick<Observation, "screen">): boolean => o.scre
 
 /** Whether this is a STOCK pair pool: our own STOCKx/SOL pool (src/screener/pairStock.ts). A stock pool is a stock pool: it straddles. */
 export const isStockPairPool = (o: Pick<Observation, "screen" | "engine" | "snapshot">): boolean => isPairPool(o) && (!!o.snapshot.pair?.stock || isStockPool(o));
+
+/**
+ * PURE. Which LANE a pool's seats are learned in, spelled the same way the lesson's `kind` is
+ * (src/index.ts, where the band's meta is written): a stock pool is the stock lane, our own pair
+ * pool is "other", everything else is the memecoin lane.
+ */
+export const laneOf = (o: Pick<Observation, "screen" | "engine" | "snapshot">): Lane => (isStockPool(o) || isStockPairPool(o) ? "stock" : o.snapshot.pair ? "other" : "memecoin");
 
 /** The lanes that admit by rule: they share the exemptions from the score, the new/wild flags and the 1h move. */
 const lanePool = (o: Pick<Observation, "screen" | "snapshot">): boolean => isLaunchPool(o) || isPairPool(o);
@@ -482,6 +535,14 @@ export interface SeatEarnings {
   /** rent that never comes back, plus the swap round trip on a straddle's token half */
   costUsd: number;
   paybackHours: number | null;
+  /** the lane this seat is learned in */
+  lane: Lane;
+  /** the share of the pool's face fee pace this forecast was taken at (0.5 shipped, less once the lane is calibrated) */
+  feeShare: number;
+  /** how many lessons that share rests on; 0 while the shipped default stands */
+  feeShareN: number;
+  /** the evidence sentence behind it, null while the shipped default stands */
+  feeShareWhy: string | null;
 }
 
 /**
@@ -489,7 +550,7 @@ export interface SeatEarnings {
  * the band, halved because a band earns only while price is inside it. Null when the screen did not
  * price the pool (no TVL or no fee figure) or the SOL price is unknown: an unknown is not a refusal.
  */
-export function seatEarnings(o: Observation, x: PolicyExtras, seatSol: number, sharePct: number, straddle: boolean): SeatEarnings | null {
+export function seatEarnings(o: Observation, x: PolicyExtras, seatSol: number, sharePct: number, straddle: boolean, pe: PolicyEnv = policyEnv()): SeatEarnings | null {
   const solPriceUsd = o.snapshot.solPriceUsd ?? null;
   const tvlUsd = o.screen?.tvlUsd ?? null;
   const feeToTvl = o.screen?.feeToTvl24hPct ?? null;
@@ -502,7 +563,14 @@ export function seatEarnings(o: Observation, x: PolicyExtras, seatSol: number, s
   const flowFeesPerDayUsd = flowPace !== null && flowPace !== undefined ? flowPace * q.priceInSol * solPriceUsd : null;
   if (flowFeesPerDayUsd === null && (!tvlUsd || feeToTvl === null || !Number.isFinite(feeToTvl))) return null;
   const poolFeesPerDayUsd = flowFeesPerDayUsd ?? (tvlUsd! * feeToTvl!) / 100;
-  const feesPerDayUsd = poolFeesPerDayUsd * (Math.min(sharePct, 50) / 100) * 0.5;
+  // THE CALIBRATION (src/desk/learning.ts). The literal 0.5 that stood here was a guess at how much
+  // of a pool's day a band spends in range. The book answered it: over the 17-19 Sep real-money run
+  // a seat came in at a median 0.40 of what was forecast for it, too high 48 times out of 52. So the
+  // share of face is the lane's learned one, 0.5 until enough seats have closed to move it and never
+  // above 0.5 whatever is learned. Day one is byte-identical to the old line.
+  const lane = laneOf(o);
+  const feeShare = Math.min(FEE_SHARE_DEFAULT, Math.max(0, pe.feeShare?.[lane] ?? FEE_SHARE_DEFAULT));
+  const feesPerDayUsd = poolFeesPerDayUsd * (Math.min(sharePct, 50) / 100) * feeShare;
   const seatUsd = seatSol * solPriceUsd;
   const yieldPctPerDay = (feesPerDayUsd / seatUsd) * 100;
   // Rent: only the part that does not come back on close is a cost. The refundable share differs by
@@ -515,8 +583,45 @@ export function seatEarnings(o: Observation, x: PolicyExtras, seatSol: number, s
   const swapUsd = straddle ? (seatUsd / 2) * (jupiterEnv().feePct / 100) * 2 : 0;
   const costUsd = rentUsd + swapUsd;
   const paybackHours = feesPerDayUsd > 0 ? costUsd / (feesPerDayUsd / 24) : null;
-  return { seatUsd, poolFeesPerDayUsd, sharePct, feesPerDayUsd, yieldPctPerDay, costUsd, paybackHours };
+  return { seatUsd, poolFeesPerDayUsd, sharePct, feesPerDayUsd, yieldPctPerDay, costUsd, paybackHours, lane, feeShare, feeShareN: pe.feeShareN?.[lane] ?? 0, feeShareWhy: pe.feeShareWhy?.[lane] ?? null };
 }
+
+/** PURE. What the hold reason says about the share of face it priced at, when a lane has been calibrated. */
+export const calibrationClause = (e: Pick<SeatEarnings, "feeShare" | "feeShareN" | "lane">): string =>
+  e.feeShareN > 0 ? `, priced at ${e.feeShare} of the pool's face pace off my last ${e.feeShareN} ${e.lane} seats` : "";
+
+/**
+ * THE FORECAST HE DECIDED ON, as he decided it. seatEarnings is called while the policy is making up
+ * its mind; the open that follows has to write down the very number that decided it, not a number
+ * recomputed a moment later off a moved price. So the last forecast per pool is kept here and taken
+ * at the open (src/index.ts). One entry per pool, overwritten each cycle, never read by a decision:
+ * a record, not a knob. The desk works one pool at a time in one process, so there is nothing to race.
+ */
+export interface EntryForecast {
+  /** what the seat was forecast to earn, percent a day */
+  yieldPctPerDay: number;
+  /** the share of the pool's face fee pace it was taken at */
+  feeShare: number;
+  feeShareN: number;
+  lane: Lane;
+  sharePct: number;
+  at: number;
+}
+const entryForecasts = new Map<string, EntryForecast>();
+
+export function rememberEntryForecast(pool: string, earn: SeatEarnings | null, at: number): void {
+  if (!earn || !Number.isFinite(earn.yieldPctPerDay)) {
+    entryForecasts.delete(pool);
+    return;
+  }
+  entryForecasts.set(pool, { yieldPctPerDay: earn.yieldPctPerDay, feeShare: earn.feeShare, feeShareN: earn.feeShareN, lane: earn.lane, sharePct: earn.sharePct, at });
+}
+
+/** The forecast the policy last made for this pool, if it made one this cycle. */
+export const entryForecastOf = (pool: string): EntryForecast | null => entryForecasts.get(pool) ?? null;
+
+/** Tests start from an empty desk. */
+export const clearEntryForecasts = (): void => entryForecasts.clear();
 
 /** The fee a swap pays: SWAP_FEE_PCT, or the pool's own base fee when routes are Meteora only (what the paper desk charges). */
 export const swapFeePctFor = (s: Pick<PoolSnapshot, "baseFeePct">, env: NodeJS.ProcessEnv = process.env): number => {
@@ -1106,13 +1211,16 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   // Is the seat worth taking? What it earns, against what it costs.
   const seatSolPreview = straddleHere ? (szPreview as StraddleSizing).seatSol : (szPreview as Sizing).amountSol;
   // a pinned stock is seated for the pairing, not for its yield: the earnings are reported, never a reason to pass
-  const earn = szPreview.none || pinned ? null : seatEarnings(o, x, seatSolPreview, szPreview.sharePct, straddleHere);
+  const earn = szPreview.none || pinned ? null : seatEarnings(o, x, seatSolPreview, szPreview.sharePct, straddleHere, env);
+  // THE FORECAST HE DECIDED ON. Kept so the open can write the exact number onto the band's meta,
+  // and the lesson can score it at the close: a recomputed forecast is a different forecast.
+  rememberEntryForecast(o.snapshot.address, earn, now);
   if (earn && env.minSeatYieldPct > 0 && earn.yieldPctPerDay < env.minSeatYieldPct) {
     return hold(
-      `No band in ${o.poolLabel} (${priceLine}). The seat would earn about $${r(earn.feesPerDayUsd, 2)} a day on $${r(earn.seatUsd, 0)}, ${r(earn.yieldPctPerDay, 2)}% a day, under the ${env.minSeatYieldPct}% floor: the pool pays $${r(earn.poolFeesPerDayUsd, 0)} a day and our share of the band would be ${r(earn.sharePct, 1)}%. ${poolClause(o, hot)}.`,
+      `No band in ${o.poolLabel} (${priceLine}). The seat would earn about $${r(earn.feesPerDayUsd, 2)} a day on $${r(earn.seatUsd, 0)}, ${r(earn.yieldPctPerDay, 2)}% a day, under the ${env.minSeatYieldPct}% floor: the pool pays $${r(earn.poolFeesPerDayUsd, 0)} a day, our share of the band would be ${r(earn.sharePct, 1)}%, and I take that pace at ${earn.feeShare} of face${earn.feeShareN > 0 && earn.feeShareWhy ? ` because ${earn.feeShareWhy}` : ` (the shipped share; ${earn.lane} seats have not taught me another yet)`}. ${poolClause(o, hot)}.`,
       clip(`${r(earn.yieldPctPerDay, 2)}% a day here. Not worth the rent.`),
       "not-worth",
-      `seat yield ${r(earn.yieldPctPerDay, 2)}%/day under the ${env.minSeatYieldPct}% floor`,
+      `seat yield ${r(earn.yieldPctPerDay, 2)}%/day under the ${env.minSeatYieldPct}% floor${calibrationClause(earn)}`,
     );
   }
   if (earn && env.maxPaybackHours > 0 && earn.paybackHours !== null && earn.paybackHours > env.maxPaybackHours) {

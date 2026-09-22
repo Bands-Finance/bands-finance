@@ -72,6 +72,22 @@
          daily and exposure budget; the desk policy and every guard still decide. Paper only: a live book also needs
          AUTO_APPROVE_LIVE=true and an AUTO_APPROVE_PROPOSERS allowlist, and ops/live.env sets neither. -->
     <key>AUTO_APPROVE_PROPOSALS</key><string>true</string>
+    <!-- SELF LEARNING (src/desk/learning.ts). He learns from his own closed seats on THIS book and writes what he
+         learned to data-live/learning.json, with one journalled row per change in data-live/learning.jsonl. Two knobs,
+         both multiples of 1 or less, both applied through paths that only ever tighten: the share of a pool's face fee
+         pace a seat is priced at (0.5 shipped, never higher, never under 0.1), and a per-pool seat multiple for pools
+         whose seats keep ending through the band (1 down to 0.25, which also stretches that pool's sit-out).
+         It may NEVER raise or loosen a risk limit or a guard. MAX_POSITION_SOL, MAX_TOTAL_EXPOSURE_SOL, the stop-loss,
+         the daily caps, the kill switch, the circuit and portfolio breakers and H1 stay exactly where they are set above.
+         Learning is ON here and the files default to DATA_DIR, on purpose: the old width tuner sat dark for a week
+         because its file variable was simply unset and nothing said so. The off switch is LEARN_FROZEN below, which is
+         loud and printed at boot; while frozen he still writes lessons and still logs what he would have changed.
+         The state file carries mode=paper and a live desk refuses to read it, so nothing learned on paper can ride
+         into a real-money book. Do NOT point this desk at data-mainnet: that is another desk's evidence. -->
+    <key>LEARN_FROZEN</key><string>false</string>
+    <key>LEARN_CAL_WINDOW_H</key><string>168</string>
+    <key>LEARN_CAL_MIN_N</key><string>20</string>
+    <key>LEARN_MIN_GAP_H</key><string>6</string>
     <!-- Mr Bands on OpenHermit (docs/openhermit.md): uncomment to have the agent on the gateway propose instead of
          the desk policy (the guards still decide; an unusable answer falls back to the desk policy). First put
          OPENHERMIT_TOKEN and PLATFORM_HOUSE_TOKEN in .env, then run the openhermit script's provision command for the
