@@ -337,16 +337,19 @@ export const payerExpectedOf = (env: NodeJS.ProcessEnv = process.env): string | 
 /**
  * The gate on actually launching: SOL leaves the treasury, and a token appears with Mr Bands' name on it.
  * The payer is the permanent creator-fee beneficiary, so it must be the treasury keypair pinned by
- * TOKEN_PAYER_EXPECTED and never the desk's hot wallet (EXPECTED_WALLET). Then DRY_RUN=false and --confirm,
+ * TOKEN_PAYER_EXPECTED and never the desk's hot wallet (EXPECTED_WALLET). The shape decided on 22 Sep holds in
+ * code, not in a reader's eye: no dev buy and the SOL pair, or no launch. Then DRY_RUN=false and --confirm,
  * and Zach says go in words first (docs/token.md).
  */
-export function launchRefusal(o: { dryRun: boolean; confirm: boolean; apiKey: string | null; agentId: string | null; ephemeralWallet: boolean; payer: string; payerExpected: string | null; deskWallet: string | null }): string | null {
+export function launchRefusal(o: { dryRun: boolean; confirm: boolean; apiKey: string | null; agentId: string | null; ephemeralWallet: boolean; payer: string; payerExpected: string | null; deskWallet: string | null; devBuySol: number; pumpPair: string }): string | null {
   if (!o.agentId) return "CLAWPUMP_AGENT_ID is not set";
   if (!o.apiKey) return "CLAWPUMP_API_KEY is not set (a cpk_ key from https://clawpump.tech/dashboard/api)";
   if (o.ephemeralWallet) return "no WALLET_SECRET_KEY: the launch fee must come from the treasury keypair";
   if (o.deskWallet && o.payer === o.deskWallet) return `the payer ${o.payer} is the desk wallet (EXPECTED_WALLET): launch from the treasury keypair, never the hot desk wallet`;
   if (!o.payerExpected) return "TOKEN_PAYER_EXPECTED is not set: pin the treasury address the launch pays from (creator fees go to the payer for good)";
   if (o.payer !== o.payerExpected) return `WALLET_SECRET_KEY derives to ${o.payer}, but TOKEN_PAYER_EXPECTED is ${o.payerExpected}: wrong key for the launch`;
+  if (o.devBuySol !== 0) return `TOKEN_DEV_BUY_SOL is ${o.devBuySol}: the decision of 22 Sep is no dev buy (0), so nobody, us included, starts with a bag`;
+  if (!isSolPair(o.pumpPair)) return `TOKEN_PUMP_PAIR is ${o.pumpPair}: the decision of 22 Sep is the SOL pair (unset, or SOL)`;
   if (o.dryRun) return "DRY_RUN is on: the wallet will not send the launch fee (set DRY_RUN=false for this command only, with Zach's go)";
   if (!o.confirm) return "pass --confirm to send the launch fee and mint the token";
   return null;

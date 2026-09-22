@@ -98,7 +98,7 @@ export function PoolsHead({ screen, maxActivePools }: PoolsHeadProps) {
   return (
     <section className="census reveal" id="screener" ref={ref} aria-label="The screener">
       <div className="census__head r-item" style={ri(0)}>
-        <span className="eyebrow">The screener · every 15 minutes · three venues</span>
+        <span className="eyebrow">The screener · every half hour · three venues</span>
         <h2 className="census__title">Every pool on the chain, ranked.</h2>
         <p className="census__sub">
           Mr Bands reads every{" "}

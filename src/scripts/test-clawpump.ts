@@ -174,8 +174,9 @@ async function main(): Promise<void> {
 
   console.log("the gate");
   await test("launchRefusal: every reason in order, and none when all hold", () => {
-    const ok = { dryRun: false, confirm: true, apiKey: "cpk_x", agentId: "a", ephemeralWallet: false, payer: TREASURY, payerExpected: TREASURY, deskWallet: DESK };
+    const ok = { dryRun: false, confirm: true, apiKey: "cpk_x", agentId: "a", ephemeralWallet: false, payer: TREASURY, payerExpected: TREASURY, deskWallet: DESK, devBuySol: 0, pumpPair: "SOL" };
     assert.equal(launchRefusal(ok), null);
+    assert.equal(launchRefusal({ ...ok, pumpPair: "wSOL" }), null, "wSOL is the SOL pair too");
     assert.match(launchRefusal({ ...ok, agentId: null })!, /CLAWPUMP_AGENT_ID/);
     assert.match(launchRefusal({ ...ok, apiKey: null })!, /CLAWPUMP_API_KEY/);
     assert.match(launchRefusal({ ...ok, ephemeralWallet: true })!, /WALLET_SECRET_KEY/);
@@ -183,6 +184,9 @@ async function main(): Promise<void> {
     assert.match(launchRefusal({ ...ok, payerExpected: null })!, /TOKEN_PAYER_EXPECTED is not set/);
     assert.match(launchRefusal({ ...ok, payer: "Other1111" })!, /derives to Other1111, but TOKEN_PAYER_EXPECTED is .*wrong key/);
     assert.equal(launchRefusal({ ...ok, deskWallet: null }), null, "no EXPECTED_WALLET set: the pin alone decides");
+    assert.match(launchRefusal({ ...ok, devBuySol: 2.5 })!, /TOKEN_DEV_BUY_SOL is 2\.5: the decision of 22 Sep is no dev buy/);
+    assert.match(launchRefusal({ ...ok, devBuySol: 0.001, dryRun: true })!, /no dev buy/, "a dev buy is refused before DRY_RUN is even read");
+    assert.match(launchRefusal({ ...ok, pumpPair: "NVDAx" })!, /TOKEN_PUMP_PAIR is NVDAx: the decision of 22 Sep is the SOL pair/);
     assert.match(launchRefusal({ ...ok, dryRun: true })!, /DRY_RUN is on/);
     assert.match(launchRefusal({ ...ok, confirm: false })!, /--confirm/);
   });

@@ -9,8 +9,9 @@ docs call the self-funded `walletAddress` "the Solana base58 wallet that pays fo
 agent's 75% creator-fee share", so the payer is the creator-fee beneficiary for as long as the token trades. A
 launch happens once per agent, and the pair, the fee and the payout are fixed for good.
 
-**What it is.** A key that opens the engine on your own wallet, not a share. It pays nobody: no buyback, no burn,
-no revenue share, no staking, no holder rewards, no airdrop. The desk never holds, swaps or market-makes it.
+**What it is.** A key that opens the engine on your own wallet, not a share. It pays nobody who holds it: no buyback, no burn,
+no revenue share, no staking, no holder rewards, no airdrop. Its creator fees go to the treasury that paid for
+the launch, which is his operator's, for as long as it trades. The desk never holds, swaps or market-makes it.
 
 **Cost.** The sprint budgets 0.02 to 0.05 SOL; `npm run clawpump -- cost` prints today's creation fee. Send the
 treasury about 0.05 SOL so the fee and a margin are covered (the launch refuses unless the wallet holds the quote
@@ -88,7 +89,8 @@ Mr Bands (MRBANDS) by <agent name>, agent <agent id>, pair SOL, dev buy 0 SOL, b
 ```
 
 Read it before going on. The payer must be the treasury address from step 1. Any line starting with WARNING
-(the desk wallet as payer, `TOKEN_PAYER_EXPECTED` unset or not matching, a dev buy above 0) means stop.
+(the desk wallet as payer, `TOKEN_PAYER_EXPECTED` unset or not matching, a dev buy above 0, a pair other than
+SOL) means stop. The launch refuses every one of them in code as well, but fix the setting rather than lean on it.
 
 **6. The launch (Fri 25 Sep).** The same, with `DRY_RUN=false` for this command only and `--confirm`:
 
@@ -122,7 +124,7 @@ post the entry from the project account. `npm run clawpump -- status` then shows
 ## What must NOT be done
 
 - **No dev buy.** `TOKEN_DEV_BUY_SOL` stays 0, and nobody sends `devBuyAmountUsd`. Nobody, us included, starts
-  with a bag.
+  with a bag. The launch refuses a dev buy above 0 and any pair but SOL (`launchRefusal`).
 - **No launch from the desk wallet.** The payer keeps the creator fees for good. The launch refuses the desk
   address, but do not work around it.
 - **No `PAIR_HOUSE_MINTS`.** It stays unset through 8 Oct. Set, it seats and market-makes the house token even
@@ -137,5 +139,5 @@ post the entry from the project account. `npm run clawpump -- status` then shows
 
 Every mention carries the disclosure (the lint enforces it; docs/sprint.md holds the current wording). Launched
 with this runbook, the true one is: "our own token, launched by my operator. the desk holds none and never trades
-it. holding <mint> in a signed-in wallet opens the engine. it is not a share of anything and pays nobody." He
+it. holding <mint> in a signed-in wallet opens the engine. not a share, it pays nobody who holds it, and its trades pay a cut to my operator's treasury." He
 names the mint, never a bare ticker, and says other $bands tokens are not his.

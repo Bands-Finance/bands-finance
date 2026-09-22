@@ -183,6 +183,9 @@ async function main(): Promise<void> {
     passes(`our own token, launched by my operator. the desk holds none and never trades it. holding ${MINT} in a signed in wallet opens the engine. it is not a share of anything and pays nobody`, ctx);
     passes("$mrbands is our own token, launched by my operator. it opens the engine on your own wallet", ctx);
     passes(`my own token. i launched it myself. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine. it is not a share of anything and pays nobody`, ctx);
+    // the wording in docs/sprint.md and docs/token.md: it says who the token pays, without a word the lint keeps away from it, under 280
+    passes(`our own token, launched by my operator. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine. not a share, it pays nobody who holds it, and its trades pay a cut to my operator's treasury.`, ctx);
+    passes(`my own token. i launched it myself. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine. not a share, it pays nobody who holds it, and its trades pay a cut to my operator's treasury.`, ctx);
     for (const bad of ["price", "chart", "market cap", "holders", "volume", "fees", "value", "up 20%", "$5", "buy", "sell", "early"]) {
       fails(`$mrbands is our own token, launched by my operator. ${bad}`, "house-token-price", ctx);
     }
@@ -209,6 +212,13 @@ async function main(): Promise<void> {
     passes("@mrbandssol is not me and has nothing to do with my operator");
     passes(`the token at ${COPY} isn't ours. ask my operator if in doubt`);
     passes("the other account has nothing to do with me");
+    // a stray "not my" or "never me" is not a denial: it has to say the copycat is not his
+    fails("go follow @mrbandssol, not my usual pick but the band is real.", "copycat");
+    fails("@mrbandssol never me without a band on.", "copycat");
+    fails(`${COPY} is not our first stop today, the chart looks alive.`, "copycat");
+    fails("@mrbandssol is not his first stop today", "copycat");
+    passes("@mrbandssol is not affiliated with us, and never was");
+    passes(`${COPY} is not his.`);
   });
 
   // ------------------------------------------------------------ env

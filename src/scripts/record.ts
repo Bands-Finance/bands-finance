@@ -62,7 +62,10 @@ function main(): void {
   console.log(`  claims          ${String(fees.claims).padStart(3)} rows   ${f4(fees.claimSol)} SOL   (of it ${f4(fees.claimCashSol)} paid in SOL, ${f4(fees.claimSol - fees.claimCashSol)} in tokens at the claim's mark)`);
   console.log(`  close fee legs  ${String(fees.closesWithFees).padStart(3)} rows   ${f4(fees.closeFeeSol)} SOL`);
   console.log(`  fees realised           ${f4(fees.totalSol)} SOL`);
-  console.log(`  check: equity.jsonl last feesClaimedSol ${f4(book.endFeesClaimedSol)} (${s4(book.endFeesClaimedSol - fees.totalSol)}; a claim after the last mark lands here and not there)`);
+  const late = rows.filter((r) => r.ts > book.endAt);
+  const lateFees = feeTally(late);
+  const lateWhat = `${lateFees.claims} claim(s), ${lateFees.closesWithFees} close fee leg(s)`;
+  console.log(`  check: equity.jsonl last feesClaimedSol ${f4(book.endFeesClaimedSol)} (${s4(book.endFeesClaimedSol - fees.totalSol)}; fees realised after the last mark, a claim or a close's fee leg, land here and not there: ${f4(lateFees.totalSol)} SOL in ${lateWhat})`);
   console.log(`  check: the journal has ${jClaims} executed claims; ${offJournal.length} ledger row(s) carry a signature the journal never saw (${offJournal.map((r) => `${r.mech} ${at(r.ts)}`).join(", ") || "none"})`);
 
   const cashEnd = book.startSol + rec.cashChangeSol;
@@ -73,8 +76,7 @@ function main(): void {
   console.log(`  end    ${f4(book.endSol)} SOL  ${at(book.endAt)}, with ${f4(book.endBandsSol)} still in a band and ${f4(book.endTokensSol)} in tokens, at the mark`);
   console.log(`  net on the marks       ${s4(book.changeSol)} SOL`);
   console.log(`  net in cash (ledger)   ${s4(rec.cashChangeSol)} SOL: every live row summed, the last band closed and its tokens sold, so the book ends at ${f4(cashEnd)} SOL, all SOL`);
-  console.log(`  between the two        ${s4(cashEnd - book.endSol)} SOL: what the band open at the last mark, the claim after it and ${f4(book.endTokensSol)} of tokens came to beyond their mark`);
-  const late = rows.filter((r) => r.ts > book.endAt);
+  console.log(`  between the two        ${s4(cashEnd - book.endSol)} SOL: what the band open at the last mark, the fees realised after it (${f4(lateFees.totalSol)} SOL in ${lateWhat}) and ${f4(book.endTokensSol)} of tokens came to beyond their mark`);
   if (late.length) console.log(`    rows after the last mark: ${late.map((r) => `${r.mech} ${at(r.ts)} ${s4(flowOf(r))}`).join(", ")}`);
   for (const c of cashChecks(points, rows)) console.log(`  check, all cash at ${at(c.t)}: the wallet read ${f4(c.walletSol)}, the ledger says ${f4(c.ledgerSol)} (${s4(c.gapSol)})`);
 

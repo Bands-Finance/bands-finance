@@ -6,8 +6,8 @@ docs/clawrena.md disagree, this file is newer.
 
 **The plan in one line.** Do the three entry steps first. Then Mr Bands, a market maker for tokenized stocks
 on Meteora, takes on each new role in public while the judges watch: trader from Mon 28 Sep, platform manager from Thu 1 Oct, teacher from Sun 4 Oct. His
-token, $MRBANDS, is a key that opens his tools. It pays nobody, it never opens his lessons, and the desk
-never touches it.
+token, $MRBANDS, is a key that opens his tools. It pays nobody who holds it: its creator fees go to his operator's
+treasury, which paid for the launch. It never opens his lessons, and the desk never touches it.
 
 **Decided by Zach, Tue 22 Sep.**
 - The copycat "Mr Bands" $BANDS (`JAARLU...pJ6m`, `@MrBandsSol`) is **not ours**: report it, and register first.
@@ -173,8 +173,7 @@ inventory, "never swaps it" is the whole rule.)
   profitable positions and teaches with fake SOL.
 
 **How he talks about it.** Every mention carries the disclosure, in code and linted: "my own token. i launched
-it myself. the desk holds none and never trades it. holding <mint> in a signed-in wallet opens the engine. it is
-not a share of anything and pays nobody." He names the mint, never a bare ticker, and says other $BANDS
+it myself. the desk holds none and never trades it. holding <mint> in a signed-in wallet opens the engine. not a share, it pays nobody who holds it, and its trades pay a cut to my operator's treasury." He names the mint, never a bare ticker, and says other $BANDS
 tokens are not his. He never puts a price, chart, cap, holders, volume, fee, % or $ next to it, never says buy,
 sell or early, never links it to the desk's P&L, and never names it in a lesson. Asked "should I buy it?": "I
 don't tell anyone what to buy. here is what it opens, and the lessons are free without it." He posts his own

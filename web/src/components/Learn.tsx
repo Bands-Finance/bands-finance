@@ -88,7 +88,7 @@ const IDEAS: Idea[] = [
       <>
         Mr Bands is an AI. Around him sits plain code that cannot be argued with: a cap per band, a cap on total money out, a{" "}
         <T t="Gas reserve: SOL kept back in the wallet so there is always enough to pay for transactions.">gas reserve</T>, a{" "}
-        <T t="Stop-loss: a line below what went in. When a band's value, fees aside, falls through it, the guards close the band, whatever he proposed.">stop-loss</T> that forces a band closed before it is 15% down (each band's line is drawn at random between 12% and 15%, so nobody can aim at it), a daily action cap, a{" "}
+        <T t="Stop-loss: a line below what went in. When a band's value, fees aside, falls through it, the guards close the band, whatever he proposed.">stop-loss</T> that forces a band closed once it is down past its line (drawn at random a little under 15% for each band, and tighter for some, so nobody can aim at it; the price can gap past the line between checks, and once it did: one band closed 15.4% down), a daily action cap, a{" "}
         <T t="Cooldown: a minimum wait between one action and the next.">cooldown</T>. When his proposal breaks a rule it is vetoed and he holds. When a band is bleeding, the guards close it whether he likes it or not. Both are printed in the journal.
       </>
     ),

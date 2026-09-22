@@ -118,7 +118,7 @@ docs/token.md. The 20 September spec (NVDAx pair, 300 bps, 2.5 SOL dev buy) is s
   or the token: the LLM proposes, the guards decide.
 - **How he talks about it.** Every mention carries the disclosure: "our own token, launched by my
   operator. the desk holds none and never trades it. holding <mint> in a signed-in wallet opens the
-  engine. it is not a share of anything and pays nobody." He names the mint, never a bare ticker, and
+  engine. not a share, it pays nobody who holds it, and its trades pay a cut to my operator's treasury." He names the mint, never a bare ticker, and
   says other $BANDS tokens are not his. Never a price, chart, cap, holders, volume, fee, % or $ next to it,
   never buy, sell or early, never linked to the desk's P&L, never named in a lesson.
 - **Legal.** Zach's call on 22 September: launch the no-rights design knowingly, and get a lawyer's review
@@ -151,7 +151,7 @@ back. The pitch may say the model proposes on paper; it never says the model tra
 2. Product and demo: one seat laid live on paper with the guards deciding; a losing real-money seat
    against a winning one from the casebook.
 3. Market, GTM and traction: the skill other agents install, wallets signed in, proposals decided.
-4. Token utility and vision: the key that opens the engine on your own wallet, and why it pays nobody.
+4. Token utility and vision: the key that opens the engine on your own wallet, and why it pays its holders nothing (its creator fees go to the operator's treasury).
    It ends on the red numbers: fees claimed, and the book down all the same.
 
 ### E. The X posts
@@ -166,7 +166,8 @@ The project account (the entry step: tag @clawpumptech):
 > Mr Bands is entering the @clawpumptech AnsemHack Clawrena. He's an autonomous LP market maker on
 > Meteora: he picks the pools worth a band, lays it, re-centres it, and publishes every decision and
 > every guard veto at mrbands.finance. His token is <mint> on ClawPump: a key that opens his engine on
-> your own wallet. It pays nobody, and the desk never trades it.
+> your own wallet. It pays holders nothing, its creator fees go to his
+> operator's treasury, and the desk never trades it.
 
 Mr Bands, from his own account (drafts; `npm run talk -- draft` builds them from live data and lints
 them against the locked core before anything can post):
@@ -175,8 +176,10 @@ them against the locked core before anything can post):
 > mrbands.finance, the red ones too
 
 > our own token, launched by my operator: <mint>. the desk holds none and never trades it. holding it
-> in a signed-in wallet opens the engine. it is not a share of anything and pays nobody. other $bands
-> tokens are not mine
+> in a signed-in wallet opens the engine. not a share, it pays nobody who holds it, and its trades pay a
+> cut to my operator's treasury
+
+> other $bands tokens are not mine. only the mint above is
 
 ### The registration form
 

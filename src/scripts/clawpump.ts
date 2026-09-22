@@ -65,7 +65,7 @@ async function main(): Promise<void> {
     const payerExpected = payerExpectedOf();
     const wallet = Wallet.fromConfig(connection, payerExpected ? { address: payerExpected, name: "TOKEN_PAYER_EXPECTED" } : undefined);
     const req: LaunchRequest = { agentId, agentName: config.agentName, walletAddress: wallet.keypair.publicKey.toBase58(), token };
-    // the creation pair: SOL, or a custom pair from ClawPump's live catalogue (the Clawrena entry is paired with NVDA)
+    // the creation pair: SOL by the decision of 22 Sep. A custom pair from ClawPump's live catalogue still quotes, but the launch refuses it
     if (!isSolPair(token.pumpPair)) {
       const catalogue = await client.pumpPairs();
       const pair = resolvePumpPair(catalogue.assets, token.pumpPair);
@@ -86,14 +86,15 @@ async function main(): Promise<void> {
     if (deskWallet && payer === deskWallet) console.log(`  WARNING: ${payer} is the desk wallet (EXPECTED_WALLET). The launch will refuse it: pay from the treasury keypair.`);
     if (!payerExpected) console.log("  WARNING: TOKEN_PAYER_EXPECTED is not set. The launch will refuse until it names the treasury address.");
     else if (payer !== payerExpected) console.log(`  WARNING: the key derives to ${payer}, but TOKEN_PAYER_EXPECTED is ${payerExpected}. Wrong key: the launch will refuse it.`);
-    if (token.devBuySol > 0) console.log(`  WARNING: TOKEN_DEV_BUY_SOL is ${token.devBuySol}. The decision of 22 Sep is no dev buy (0).`);
+    if (token.devBuySol !== 0) console.log(`  WARNING: TOKEN_DEV_BUY_SOL is ${token.devBuySol}. The decision of 22 Sep is no dev buy (0): the launch will refuse it.`);
+    if (!isSolPair(token.pumpPair)) console.log(`  WARNING: TOKEN_PUMP_PAIR is ${token.pumpPair}. The decision of 22 Sep is the SOL pair: the launch will refuse it.`);
     const q = await client.launchPreflight(req);
     console.log(`  quote: ${q.amountSol} SOL (${q.amountLamports} lamports) to ${q.payTo}, valid ${q.validForSeconds} s${q.creationFeeSol !== null ? `; creation fee ${q.creationFeeSol} SOL` : ""}${q.devBuySol ? `, dev buy ${q.devBuySol} SOL` : ""}${q.requestId ? ` (request ${q.requestId})` : ""}`);
     if (cmd === "quote") {
       console.log("  nothing paid, nothing minted: `npm run clawpump -- launch --confirm` with DRY_RUN=false does it");
       return;
     }
-    const refusal = launchRefusal({ dryRun: config.dryRun, confirm: rest.includes("--confirm"), apiKey: env.apiKey, agentId, ephemeralWallet: wallet.ephemeral, payer, payerExpected, deskWallet });
+    const refusal = launchRefusal({ dryRun: config.dryRun, confirm: rest.includes("--confirm"), apiKey: env.apiKey, agentId, ephemeralWallet: wallet.ephemeral, payer, payerExpected, deskWallet, devBuySol: token.devBuySol, pumpPair: token.pumpPair });
     if (refusal) {
       console.log(`  launch refused: ${refusal}`);
       process.exitCode = 2;

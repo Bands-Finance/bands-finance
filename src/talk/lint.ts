@@ -207,8 +207,18 @@ export const HOUSE_CASHTAGS: readonly string[] = ["mrbands", "bands"];
 /** The copycat's X handle, lowercased without "@" (its mint is COPYCAT_MINTS, src/risk/house.ts). */
 export const COPYCAT_HANDLES: readonly string[] = ["mrbandssol"];
 
-/** A sentence that says the copycat is not his: "not mine", "is not ours", "nothing to do with me", "not by us"... */
-export const NOT_HIS_RE = /\b(not|isn't|aren't|wasn't|never) (mine|ours|his|us|me|my|our|affiliated|official|from (me|us|him|my operator)|by (me|us|him|my operator))\b|\bnothing to do with (me|us|him)\b/;
+/**
+ * A sentence that says the copycat is not his: "not mine", "is not ours", "is not me", "not affiliated",
+ * "not by us", "nothing to do with me". The denial has to end its phrase (end of text, punctuation, or a
+ * following and/or/but), so "not my usual pick", "not our first stop" or "never me without a band" do not count.
+ */
+const WHO = "(?:me|us|him|my operator)";
+const PHRASE_END = "(?=\\s*(?:$|[^\\w\\s']|(?:and|or|but|nor)\\b))";
+export const NOT_HIS_RE = new RegExp(
+  `\\b(?:(?:not|isn't|aren't|wasn't|never) (?:mine|ours|his|official|affiliated(?: with ${WHO})?|(?:from|by) ${WHO})` +
+    `|(?:(?:is|are|was) not|isn't|aren't|wasn't) (?:me|us|him))${PHRASE_END}` +
+    `|\\bnothing to do with ${WHO}\\b`,
+);
 
 /** Hosts a link may point at (subdomains included). x.com only as x.com/<OPERATOR_HANDLE>. */
 export const LINK_ALLOWLIST: readonly string[] = ["bands.finance", "solscan.io", "meteora.ag"];
