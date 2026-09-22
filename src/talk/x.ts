@@ -12,9 +12,14 @@
  *                                          A "reply" must carry replyTo and nothing else may (never a top-level
  *                                          post by accident); one reply per mention, checked against x-posts.jsonl
  *                                          inside the rate lock; never a reply to his own post or handle.
- *   postReply(text, { tweetId, handle })   postTweet as a reply, always with replyTo: the only way engage.ts posts
+ *   postReply(text, { tweetId, handle })   postTweet as a reply, always with replyTo: the only way engage.ts posts.
+ *                                          excludeUserIds leaves the thread's other accounts out of the reply
+ *                                          (reply.exclude_reply_user_ids), so he never pings anyone who did not summon him
  *   getMentions(sinceId, { userId })       GET /2/users/{id}/mentions, one page of up to 100, oldest first, with the
- *                                          authors and referenced posts expanded; a failure is { ok: false }, never []
+ *                                          authors and referenced posts expanded; a failure is { ok: false }, never [].
+ *                                          untilId bounds it from above (a gap a failed page left behind)
+ *   noteUncertainReply(statePath, handle)  a reply that may have gone out (a crash after the POST): counted by the
+ *                                          limiter as one, under the rate lock
  *   getEngagement(ids)                     GET /2/tweets?ids=...&tweet.fields=public_metrics, behind the same gate
  *   screenMention(mention)                 whether a mention may get a reply at all (bots, scams, flagged
  *                                          accounts, link-only text, the per-account daily cap)
@@ -259,7 +264,8 @@ export function alreadyRepliedTo(statePath: string, tweetId: string, handle: str
 
 export interface PostOptions {
   type: XPostType;
-  replyTo?: { tweetId: string; handle: string } | null;
+  /** excludeUserIds: the accounts X would add to the reply's "Replying to" list that he leaves out (never the author) */
+  replyTo?: { tweetId: string; handle: string; excludeUserIds?: readonly string[] } | null;
   /**
    * The id of HIS OWN earlier post to continue as a thread (src/talk/announce.ts). Not a reply to anyone: no
    * reply screen, counted as an original post by the limiter. Self-threads are outside X's Feb 2026 limit on
@@ -332,7 +338,9 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
 
     const url = `${X_API_BASE}/2/tweets`;
     const inReplyTo = opts.replyTo?.tweetId ?? threadOf;
-    const body = { text, ...(inReplyTo ? { reply: { in_reply_to_tweet_id: inReplyTo } } : {}) };
+    // only when there is someone to leave out: a plain reply keeps its plain body
+    const exclude = [...new Set((opts.replyTo?.excludeUserIds ?? []).filter((id) => /^\d{1,20}$/.test(id)))];
+    const body = { text, ...(inReplyTo ? { reply: { in_reply_to_tweet_id: inReplyTo, ...(exclude.length ? { exclude_reply_user_ids: exclude } : {}) } } : {}) };
     let res: Response;
     try {
       res = await (deps.fetch ?? fetch)(url, {
@@ -464,6 +472,8 @@ export interface Mention {
   quotedAuthorId?: string;
   /** handles named in the body, lowercased, outside the leading reply-handle prefix X adds to a reply */
   bodyHandles?: string[];
+  /** the user ids of every account the post @mentions, prefix and body (entities.mentions[].id) */
+  mentionUserIds?: string[];
 }
 
 /**
@@ -545,8 +555,29 @@ export async function replyToMention(m: Mention, deps: XDeps = {}): Promise<Post
 }
 
 /** A reply to one mention: postTweet with type "reply" and replyTo always set. engage.ts never calls postTweet itself. */
-export function postReply(text: string, replyTo: { tweetId: string; handle: string }, deps: XDeps = {}): Promise<PostResult> {
+export function postReply(text: string, replyTo: { tweetId: string; handle: string; excludeUserIds?: readonly string[] }, deps: XDeps = {}): Promise<PostResult> {
   return postTweet(text, { type: "reply", replyTo }, deps);
+}
+
+/**
+ * A reply that may have gone out without being recorded (the engage process died after the POST and before it heard
+ * back): one provisional row in x-rate.json, so REPLIES_PER_DAY, REPLIES_PER_HOUR and MAX_REPLIES_PER_ACCOUNT count
+ * it. Under the rate lock, like a post. Returns false when the lock or the file could not be had (nothing written).
+ */
+export async function noteUncertainReply(statePath: string, handle: string, now: number, mentionId: string): Promise<boolean> {
+  const h = normalizeHandle(handle);
+  if (!h) return false;
+  const locked = await withLock(path.join(statePath, RATE_LOCK_FILE), () => {
+    try {
+      const rate = readRate(statePath);
+      rate.replies.push({ at: now, id: `uncertain:${mentionId}`, handle: h });
+      writeRate(statePath, rate, now);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  return locked.locked ? locked.value : false;
 }
 
 // ---------------------------------------------------------------- reading mentions
@@ -568,7 +599,7 @@ interface XTweet {
   in_reply_to_user_id?: string;
   referenced_tweets?: { type?: string; id?: string }[];
   display_text_range?: [number, number];
-  entities?: { mentions?: { username?: string; start?: number }[] };
+  entities?: { mentions?: { username?: string; start?: number; id?: string }[] };
 }
 interface XUser {
   id: string;
@@ -617,6 +648,8 @@ export function mentionsFromResponse(json: { data?: XTweet[]; includes?: { users
       ...(quoted?.author_id ? { quotedAuthorId: quoted.author_id } : {}),
       bodyHandles: bodyHandlesOf(text, { displayStart: tw.display_text_range?.[0] ?? null, mentions: tw.entities?.mentions ?? null }),
     };
+    const ids = [...new Set((tw.entities?.mentions ?? []).map((e) => String(e?.id ?? "")).filter((id) => /^\d{1,20}$/.test(id)))];
+    if (ids.length) m.mentionUserIds = ids;
     out.push(m);
   }
   return out.sort(byIdAsc);
@@ -627,7 +660,7 @@ export function mentionsFromResponse(json: { data?: XTweet[]; includes?: { users
  * A failure is { ok: false } with X's status, title and detail (a 429 carries x-rate-limit-reset as resetAt, ms);
  * it is NEVER an empty list, so a caller cannot mistake an outage for a quiet timeline and move its cursor.
  */
-export async function getMentions(sinceId: string | null, o: { userId: string; paginationToken?: string | null; maxResults?: number }, deps: XDeps = {}): Promise<MentionsResult> {
+export async function getMentions(sinceId: string | null, o: { userId: string; paginationToken?: string | null; maxResults?: number; untilId?: string | null }, deps: XDeps = {}): Promise<MentionsResult> {
   const envObj = deps.env ?? process.env;
   const gate = xGateProblem(talkEnv(envObj));
   if (gate) return { ok: false, status: null, reason: gate };
@@ -635,10 +668,12 @@ export async function getMentions(sinceId: string | null, o: { userId: string; p
   if (!creds) return { ok: false, status: null, reason: "dormant: credentials unreadable" };
   if (!/^\d{1,20}$/.test(o.userId)) return { ok: false, status: null, reason: "mentions: the user id is not an x user id" };
   if (sinceId !== null && !/^\d{1,20}$/.test(sinceId)) return { ok: false, status: null, reason: "mentions: since_id is not an x post id" };
+  if (o.untilId && !/^\d{1,20}$/.test(o.untilId)) return { ok: false, status: null, reason: "mentions: until_id is not an x post id" };
   // X takes 5 to 100; the engage loop asks for less when its day's read budget is nearly spent
   const max = Math.min(100, Math.max(5, Math.floor(Number.isFinite(o.maxResults) ? (o.maxResults as number) : 100)));
   const q: [string, string][] = [["max_results", String(max)]];
   if (sinceId) q.push(["since_id", sinceId]);
+  if (o.untilId) q.push(["until_id", o.untilId]);
   if (o.paginationToken) q.push(["pagination_token", o.paginationToken]);
   q.push(["tweet.fields", MENTION_TWEET_FIELDS], ["expansions", MENTION_EXPANSIONS], ["user.fields", MENTION_USER_FIELDS]);
   const url = `${X_API_BASE}/2/users/${o.userId}/mentions?${q.map(([k, v]) => `${percentEncode(k)}=${percentEncode(v)}`).join("&")}`;

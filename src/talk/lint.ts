@@ -252,7 +252,13 @@ const URL_RE = /\bhttps?:\/\/[^\s<>"']+/gi;
 const BARE_DOMAIN_RE = /(?<![\w@.$/-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s<>"']*)?/gi;
 const BASE58_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,88}\b/g;
 const EM_DASH_RE = /[‒–—―⸺⸻︱︲﹘]|--/;
-const INVISIBLE_RE = /[​-‏⁠-⁤﻿‪-‮­]/;
+/**
+ * Invisible and direction-control characters: every format character (\p{Cf}: zero-width spaces and joiners, the
+ * bidi embeddings and isolates U+2066 to U+2069, the Arabic letter mark, tag characters, the soft hyphen), the blank
+ * fillers that render as nothing (U+034F, the Hangul fillers, the braille blank), and a variation selector that does
+ * not follow an emoji. A lowercase English post never needs one, and one inside a word hides it from every word rule.
+ */
+const INVISIBLE_RE = /[\p{Cf}\u034F\u115F\u1160\u3164\uFFA0\u2800]|(?<!\p{Extended_Pictographic})[\uFE00-\uFE0F]/u;
 /**
  * Fullwidth and small-form ASCII look-alikes (U+FF01 to U+FF5E, U+FE50 to U+FE6B). X's twitter-text reads "\uFF20" as
  * an at-sign and "\uFF03" as a hashtag sign, so "\uFF20someone" really tags that account; a lowercase English post

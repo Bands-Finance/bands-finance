@@ -14,15 +14,19 @@
  *   with the same token, or a brain hold after a timeout or outage)   4 repliesOff (3 "not mentioned" 403s in a row)
  *   5 xGateProblem   6 an X hold (this loop's, or tick-state.json's backoffUntil, read-only: a 402 is account-wide)
  *   7 the day's read budget   8 engage.lock   9 whoAmI once per access token (must be X_HANDLE and SELF_USER_ID)
- *   10 getMentions since the cursor, 2 pages at most and never past the read budget; the first run seeds the cursor
- *   and answers nothing   11 new mentions join `pending`, the cursor moves, save   12 each pending mention, taken in
+ *   10 getMentions since the cursor, 2 pages at most and never past the read budget (a gap a failed later page left
+ *   behind is read first, on a pass of its own); the first run seeds the cursor with one read of 5 and answers
+ *   nothing   11 new mentions join `pending`, the cursor moves, save   12 a mention a dead pass left claimed is
+ *   finished (drafting: nothing went out; posting: unknown, and counted as a reply); each pending mention, taken in
  *   turn by author (one per account, oldest first, then each account's second): opt-out, classify and screen (a skip
- *   costs $0), the fixed answers (they spend no model call), caps (full: defer and end the pass; one account's own
- *   cap defers only its mention), claim, draftReply, vetReply, postReply   13 prune: pending past
- *   ENGAGE_MAX_AGE_HOURS is stale, handled past 7 days goes; save; release the lock.
+ *   costs $0), the fixed answers (they spend no model call; one fixed line goes out at most TEMPLATE_REPLIES_PER_DAY
+ *   times a day), caps (the reply or rate cap full: defer and end the pass; a model cap or one account's own cap
+ *   defers only that mention), the stop files again, claim, draftReply, vetReply, the stop files again, postReply
+ *   13 prune: pending past ENGAGE_MAX_AGE_HOURS is stale, handled past 7 days goes; save; release the lock.
  *
- * Holds. A failed POST never starts over on the next pass: a 402 (out of credits) holds X at once, a 429 waits for
- * its x-rate-limit-reset, a 5xx holds from the third in a row, and a mentions read that goes through clears none of
+ * Holds. A failed POST never starts over on the next pass: a 402 (out of credits), a 401 or a 403 other than "not
+ * mentioned" (the account or the app refused) hold X at once, a 429 waits for its x-rate-limit-reset, a 5xx holds
+ * from the third in a row, and a mentions read that goes through clears none of
  * it (only a reply that posts does). The vetted draft stays on its pending mention, so the retry after the hold
  * re-vets and posts it without asking the brain again. A brain timeout or outage holds the brain (10 minutes,
  * doubling to 2 hours) before the next X read, so an outage spends neither reads nor model calls.
@@ -37,13 +41,11 @@ import path from "node:path";
 import type { OpenHermitFailure } from "../agent/openhermit";
 import { BACKOFF_AFTER_FAILS, backingOff, backoff, backoffMinutes, DEFAULT_RETRY_BACKOFF_MIN } from "./guards";
 import { lintContextOf, normalizeHandle, talkEnv, type TalkEnv } from "./env";
-import { normalizeForMatch } from "./lint";
-import { INJECTION_RE } from "./drafts";
 import { withLock } from "./lock";
-import { classifyMention, isFarm, isHollow, looksLikeBot, massTag, optOutIn, SELF_USER_ID, vetReply, type MentionKind } from "./replyGuards";
+import { classifyMention, instructionIn, isFarm, isHollow, looksLikeBot, massTag, optOutIn, SELF_USER_ID, spelledDomainIn, vetReply, type MentionKind } from "./replyGuards";
 import { readTickState, tokenHashOf } from "./tick";
 import { blockedWordsIn } from "./wordguard";
-import { byIdAsc, DRAFTS_FILE, getMentions, linksInMentionBody, postReply, readPosts, readRate, rateProblem, screenMention, TALK_STOP_FILE, whoAmI, xGateProblem, type Mention, type XDeps } from "./x";
+import { byIdAsc, DRAFTS_FILE, getMentions, linksInMentionBody, noteUncertainReply, postReply, readPosts, readRate, rateProblem, screenMention, TALK_STOP_FILE, whoAmI, xGateProblem, type Mention, type XDeps } from "./x";
 import { COPYCAT_MINTS } from "../risk/house";
 
 // ---------------------------------------------------------------- the seam with src/talk/replyBrain.ts
@@ -78,6 +80,8 @@ export interface ReplyBrain {
   fixedAnswer?(input: ReplyInput, env: NodeJS.ProcessEnv): ReplyDraft | null;
   /** the fixed lines: a model reply is compared only against his earlier model replies */
   TEMPLATE_TEXTS?: readonly string[];
+  /** his reply rules and the prompt's instructions: a model reply that restates them is refused */
+  PROMPT_TEXTS?: readonly string[];
 }
 
 /**
@@ -95,6 +99,7 @@ export function loadReplyBrain(): ReplyBrain {
         REPLY_FACTS_NUMBERS: mod.REPLY_FACTS_NUMBERS ?? [],
         ...(typeof mod.fixedAnswer === "function" ? { fixedAnswer: mod.fixedAnswer } : {}),
         ...(Array.isArray(mod.TEMPLATE_TEXTS) ? { TEMPLATE_TEXTS: mod.TEMPLATE_TEXTS } : {}),
+        ...(Array.isArray(mod.PROMPT_TEXTS) ? { PROMPT_TEXTS: mod.PROMPT_TEXTS } : {}),
       };
   } catch {
     /* not installed */
@@ -129,6 +134,14 @@ export const HANDLED_KEEP_MS = 7 * DAY;
 export const ASKS_PER_AUTHOR_PER_DAY = 3;
 /** model asks in one pass: ENGAGE_REPLIES_PER_PASS times this */
 export const ASKS_PER_REPLY_PER_PASS = 2;
+/**
+ * Model runs one ask costs, counted against ENGAGE_MODEL_CALLS_PER_DAY: the reply turn, and the gateway's idle
+ * introspection, which runs his model over every session 10 minutes after its last turn whatever the agent's config
+ * says (docs/openhermit.md). Each mention is a fresh session, so each ask is two runs on the shared OpenRouter key.
+ */
+export const MODEL_RUNS_PER_ASK = 2;
+/** one fixed line goes out at most this many times a UTC day, to anyone (X: duplicated replies to many accounts are spam) */
+export const TEMPLATE_REPLIES_PER_DAY = 5;
 /** the first brain hold after a timeout or outage, doubling each one after, capped */
 export const BRAIN_HOLD_BASE_MIN = 10;
 export const BRAIN_HOLD_MAX_MIN = 120;
@@ -172,6 +185,11 @@ export interface EngageState {
   /** failed reply POSTs in a row (402, 429, 5xx, unreachable); only a reply that posts clears it */
   postFails: number;
   backoffUntil: number | null;
+  /**
+   * The mentions a failed later page left unread: newer than sinceId, older than untilId (the oldest one kept). The
+   * next pass reads them before anything else, so nothing is read twice and nothing is dropped.
+   */
+  gap: { sinceId: string; untilId: string } | null;
   /** brain timeouts and outages in a row, and the hold they started: no X read and no ask before it */
   brainFails: number;
   brainHoldUntil: number | null;
@@ -186,7 +204,7 @@ export interface EngageState {
   asksByAuthor: Record<string, number>;
 }
 
-export const emptyEngageState = (): EngageState => ({ version: 1, sinceId: null, confirmedUserId: null, confirmedHandle: null, tokenHash: null, identityRefused: null, pending: [], handled: {}, brainDown: null, transientFails: 0, postFails: 0, backoffUntil: null, brainFails: 0, brainHoldUntil: null, consecutive403: 0, repliesOff: null, day: "", reads: 0, modelCalls: 0, hollow: 0, asksByAuthor: {} });
+export const emptyEngageState = (): EngageState => ({ version: 1, sinceId: null, confirmedUserId: null, confirmedHandle: null, tokenHash: null, identityRefused: null, pending: [], handled: {}, brainDown: null, transientFails: 0, postFails: 0, backoffUntil: null, gap: null, brainFails: 0, brainHoldUntil: null, consecutive403: 0, repliesOff: null, day: "", reads: 0, modelCalls: 0, hollow: 0, asksByAuthor: {} });
 
 const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const sha = (s: string) => crypto.createHash("sha256").update(s).digest("hex").slice(0, 16);
@@ -363,8 +381,9 @@ export function screenForReply(m: Mention, c: ScreenContext, queuedAt = c.now): 
   if (bot) return { skip: `bot: ${bot}` };
   const screened = screenMention(m, { env: c.env, now });
   if (!screened.reply) return { skip: `screen: ${screened.reason}` };
-  if (linksInMentionBody(m.text).length) return { skip: "screen: carries a link" };
-  if (INJECTION_RE.test(normalizeForMatch(m.text))) return { skip: "screen: reads like an instruction (data, not a command)" };
+  if (linksInMentionBody(m.text).length || spelledDomainIn(m.text)) return { skip: "screen: carries a link" };
+  // read through invisible characters and look-alike letters ("ign\u200Bore previous instructions")
+  if (instructionIn(m.text)) return { skip: "screen: reads like an instruction (data, not a command)" };
   const blocked = [...blockedWordsIn(m.authorHandle), ...blockedWordsIn(m.authorName ?? ""), ...blockedWordsIn(m.text.replace(/@\w{1,15}/g, " "))];
   if (blocked.length) return { skip: `screen: blocked word (${[...new Set(blocked)].join(", ")})` };
   if (kind !== "reply-to-mine" && massTag(m, self)) return { skip: "screen: mass tag" };
@@ -386,8 +405,8 @@ export function screenForReply(m: Mention, c: ScreenContext, queuedAt = c.now): 
   // another account's parent goes to the brain too: it is screened like the mention (his own parent is his words)
   const { parentText, parentIsMine } = parentOf(m, c);
   if (!parentIsMine && parentText) {
-    if (linksInMentionBody(parentText).length) return { skip: "screen: the parent carries a link" };
-    if (INJECTION_RE.test(normalizeForMatch(parentText))) return { skip: "screen: the parent reads like an instruction (data, not a command)" };
+    if (linksInMentionBody(parentText).length || spelledDomainIn(parentText)) return { skip: "screen: the parent carries a link" };
+    if (instructionIn(parentText)) return { skip: "screen: the parent reads like an instruction (data, not a command)" };
     const pBlocked = blockedWordsIn(parentText.replace(/@\w{1,15}/g, " "));
     if (pBlocked.length) return { skip: `screen: blocked word in the parent (${[...new Set(pBlocked)].join(", ")})` };
     const pShill = shillIn(parentText, t);
@@ -506,9 +525,10 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
     st.backoffUntil = null;
   };
   /**
-   * A reply POST X refused (or never answered): its own counter. A 402 (out of credits, account-wide) holds at once,
-   * a 429 waits for its reset when X gives one, anything else holds from the third in a row; each hold doubles.
-   * Returns the minutes held (0 when none), or the reset.
+   * A reply POST X refused (or never answered): its own counter. A 402 (out of credits, account-wide), a 401 or a 403
+   * that is not "not mentioned" (the account or the app refused) hold at once, a 429 waits for its reset when X gives
+   * one, anything else holds from the third in a row; each hold doubles. Returns the minutes held (0 when none), or
+   * the reset.
    */
   const postFailed = (reason: string, resetAt?: number): string | null => {
     st.postFails += 1;
@@ -516,7 +536,7 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
       st.backoffUntil = Math.max(resetAt, st.backoffUntil ?? 0);
       return `waiting for x-rate-limit-reset at ${new Date(resetAt).toISOString().slice(11, 16)} utc`;
     }
-    const n = /^x api 402\b/.test(reason) ? Math.max(st.postFails, BACKOFF_AFTER_FAILS) : st.postFails;
+    const n = /^x api (401|402|403)\b/.test(reason) ? Math.max(st.postFails, BACKOFF_AFTER_FAILS) : st.postFails;
     const heldMin = backoffMinutes(n, retryMin);
     if (heldMin > 0) {
       st.backoffUntil = Math.max(now + heldMin * 60e3, st.backoffUntil ?? 0);
@@ -561,7 +581,52 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
     save();
   }
 
-  // 10. read, at most two pages; a failure moves nothing
+  /** a read X refused or never answered: the hold (a 429 waits for its reset), a line, and the pass ends */
+  const readFailed = (r: { status: number | null; reason: string; resetAt?: number }, after: string): EngageResult => {
+    let line: string;
+    if (r.status === 429 && typeof r.resetAt === "number" && r.resetAt > now) {
+      st.transientFails += 1;
+      st.backoffUntil = r.resetAt;
+      line = `read failed: ${r.reason}; waiting for x-rate-limit-reset at ${new Date(r.resetAt).toISOString().slice(11, 16)} utc; ${after}`;
+    } else {
+      const heldMin = feed("transient");
+      line = `read failed: ${r.reason}${heldMin ? `; holding x for ${heldMin} min` : ""}; ${after}`;
+    }
+    save();
+    logLine(t.statePath, now, line);
+    return result("read-failed", line);
+  };
+  /** new mentions join pending, oldest first (one already pending or handled is not added twice); how many were new */
+  const mergePending = (ms: readonly Mention[]): number => {
+    const known = new Set(st.pending.map((p) => p.id));
+    let added = 0;
+    for (const m of [...ms].sort(byIdAsc)) {
+      if (st.handled[m.id] || known.has(m.id)) continue;
+      st.pending.push({ ...m, queuedAt: now });
+      known.add(m.id);
+      added++;
+    }
+    st.pending.sort(byIdAsc);
+    return added;
+  };
+
+  // 10. read. The first run only seeds the cursor: one read at X's floor of 5, no second page, nothing answered
+  if (st.sinceId === null) {
+    const r = await getMentions(null, { userId: st.confirmedUserId!, maxResults: 5 }, xDeps);
+    if (!r.ok) return readFailed(r, "the cursor stays");
+    st.reads += r.resultCount;
+    readOk();
+    if (r.newestId) st.sinceId = r.newestId;
+    save();
+    const line = `seeded: cursor at ${st.sinceId ?? "none (no mentions yet)"}; nothing before it gets a reply`;
+    logLine(t.statePath, now, line);
+    return result("seeded", line);
+  }
+  // at most two pages, never past the day's read budget. A gap a failed later page left behind is read first, on a
+  // pass of its own, bounded by until_id: nothing is read twice and nothing is dropped
+  const gap = st.gap;
+  const since = gap ? gap.sinceId : st.sinceId;
+  const until = gap ? gap.untilId : null;
   const fetched: Mention[] = [];
   let newestId: string | null = null;
   let token: string | null = null;
@@ -573,20 +638,16 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
       if (token) truncated = true;
       break;
     }
-    const r = await getMentions(st.sinceId, { userId: st.confirmedUserId!, paginationToken: token, maxResults: Math.min(100, Math.max(5, left)) }, xDeps);
+    const r = await getMentions(since, { userId: st.confirmedUserId!, paginationToken: token, maxResults: Math.min(100, Math.max(5, left)), untilId: until }, xDeps);
     if (!r.ok) {
-      let line: string;
-      if (r.status === 429 && typeof r.resetAt === "number" && r.resetAt > now) {
-        st.transientFails += 1;
-        st.backoffUntil = r.resetAt;
-        line = `read failed: ${r.reason}; waiting for x-rate-limit-reset at ${new Date(r.resetAt).toISOString().slice(11, 16)} utc`;
-      } else {
-        const heldMin = feed("transient");
-        line = `read failed: ${r.reason}${heldMin ? `; holding x for ${heldMin} min` : ""}; the cursor stays`;
-      }
-      save();
-      logLine(t.statePath, now, line);
-      return result("read-failed", line);
+      if (!fetched.length) return readFailed(r, "the cursor stays");
+      // a later page failed: the pages before it were read (and counted), so they are kept, and what lies older than
+      // the oldest kept becomes the gap the next pass reads first; a gap read leaves the cursor where it is
+      const oldest = [...fetched].sort(byIdAsc)[0].id;
+      const added = mergePending(fetched);
+      st.gap = { sinceId: since, untilId: oldest };
+      if (!gap && newestId) st.sinceId = newestId;
+      return readFailed(r, `kept ${added} mention(s) from the page before it; the older ones are read next pass`);
     }
     st.reads += r.resultCount;
     if (page === 0) newestId = r.newestId;
@@ -596,23 +657,11 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
     if (page === MENTION_PAGES - 1) truncated = true;
   }
   readOk();
-  if (st.sinceId === null) {
-    if (newestId) st.sinceId = newestId;
-    save();
-    const line = `seeded: cursor at ${st.sinceId ?? "none (no mentions yet)"}; ${fetched.length} earlier mention(s) get no reply`;
-    logLine(t.statePath, now, line);
-    return result("seeded", line);
-  }
-  // 11. merge into pending, oldest first; the cursor moves
-  const known = new Set(st.pending.map((p) => p.id));
-  for (const m of fetched.sort(byIdAsc)) {
-    if (st.handled[m.id] || known.has(m.id)) continue;
-    st.pending.push({ ...m, queuedAt: now });
-    known.add(m.id);
-  }
-  st.pending.sort(byIdAsc);
-  if (newestId) st.sinceId = newestId;
-  if (truncated) logLine(t.statePath, now, `more mentions since the cursor than ${MENTION_PAGES} pages or the read budget allow: the oldest past that were not read`);
+  // 11. merge into pending, oldest first; the cursor moves (after a gap read it is already ahead, and stays)
+  mergePending(fetched);
+  if (gap) st.gap = null;
+  else if (newestId) st.sinceId = newestId;
+  if (truncated) logLine(t.statePath, now, `more mentions ${gap ? "in the gap" : "since the cursor"} than ${MENTION_PAGES} pages or the read budget allow: the oldest past that were not read`);
   save();
 
   // 12. each pending mention, in turn by author (byAuthorTurn)
@@ -621,6 +670,10 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
   let skipped = 0;
   let deferred = 0;
   let stopReason: string | null = null;
+  /** a model cap that held a mention back (the pass goes on for the fixed lines behind it) */
+  let modelHeld: string | null = null;
+  /** reply POSTs tried this pass, whatever X answered: the per-pass cap and the spacing count these */
+  let posts = 0;
   const recentReplies = () => readPosts(t.statePath).filter((p) => p.type === "reply").slice(-50).map((p) => p.text);
   let asksThisPass = 0;
   const asksPerPass = t.engageRepliesPerPass * ASKS_PER_REPLY_PER_PASS;
@@ -644,6 +697,30 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
     optOuts = readOptOuts(t.statePath);
   } catch (err) {
     return result("error", `${ENGAGE_OPTOUT_FILE} cannot be read (${(err as Error).message.slice(0, 80)}); not replying`);
+  }
+  /** TALK_STOP or ENGAGE_STOP, looked for again before each claim and each POST: a stop touched mid-pass holds the rest */
+  const stopFile = (): string | null => [TALK_STOP_FILE, ENGAGE_STOP_FILE].find((f) => fs.existsSync(path.join(t.statePath, f))) ?? null;
+
+  // a pass that died mid-mention left it claimed and still pending. "drafting" never reached X: it is finished, and
+  // x-mentions.jsonl says why. "posting" may have: it is finished as unknown, which the conversation caps count as a
+  // reply, and (unless x-posts.jsonl holds the reply) the limiter gets a provisional row, so the day's, the hour's and
+  // the account's caps count it too. It is never posted again (at most once).
+  for (const p of [...st.pending]) {
+    const was = st.handled[p.id]?.outcome;
+    if (was !== "drafting" && was !== "posting") continue;
+    if (was === "drafting") {
+      finish(p, "skip: interrupted mid-pass while drafting; nothing was posted", null);
+      skipped++;
+      continue;
+    }
+    const landed = readPosts(t.statePath).find((r) => r.type === "reply" && r.replyTo === p.id);
+    if (landed) {
+      finish(p, `posted ${landed.id}`, null, "found in x-posts.jsonl after an interrupted pass", landed.id);
+      continue;
+    }
+    const noted = await noteUncertainReply(t.statePath, p.authorHandle, now, p.id);
+    finish(p, "unknown: interrupted mid-pass after the post was sent; it may have gone out", null, noted ? "counted by the limiter as a reply" : "x-rate.json could not take the provisional row");
+    skipped++;
   }
 
   // every pending mention is screened first (it costs $0), so a skip is never left behind a cap; then the ones that
@@ -702,14 +779,26 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
       }
     }
     const asks = !m.draft && !fixed;
-    // d. caps, without spending: full means defer (it stays pending) and the pass ends; one account's own cap
-    // defers only its mention, so it never silences him for everyone else
+    // the same fixed line goes to at most TEMPLATE_REPLIES_PER_DAY mentions a UTC day, whoever asks (X: duplicated
+    // replies to many accounts are spam); past that the mention is skipped, never carried into the next day
+    const line = m.draft?.source === "template" ? m.draft.text : fixed?.kind === "reply" && fixed.source === "template" ? fixed.text : null;
+    if (line !== null) {
+      const sent = readPosts(t.statePath).filter((p) => p.type === "reply" && p.text.trim() === line.trim() && utcDay(Date.parse(p.at)) === utcDay(now)).length;
+      if (sent >= TEMPLATE_REPLIES_PER_DAY) {
+        finish(m, `skip: this fixed line went out ${sent} times today (${TEMPLATE_REPLIES_PER_DAY} a day)`, sc.kind);
+        skipped++;
+        continue;
+      }
+    }
+    // d. caps, without spending. The reply cap (each POST tried counts, whatever X answered) and the rate caps defer
+    // every mention and end the pass. A model cap defers only a mention that would ask, so a fixed line behind it still
+    // goes out; one account's own cap defers only its mention, so it never silences him for everyone else
     let capped: string | null = null;
-    let authorCapped: string | null = null;
-    if (replied >= t.engageRepliesPerPass) capped = `${replied} replies this pass, ENGAGE_REPLIES_PER_PASS is ${t.engageRepliesPerPass}`;
-    else if (asks && st.modelCalls >= t.engageModelCallsPerDay) capped = `${st.modelCalls} model calls today, ENGAGE_MODEL_CALLS_PER_DAY is ${t.engageModelCallsPerDay}`;
-    else if (asks && asksThisPass >= asksPerPass) capped = `${asksThisPass} model asks this pass (ENGAGE_REPLIES_PER_PASS times ${ASKS_PER_REPLY_PER_PASS})`;
-    else if (asks && (st.asksByAuthor[author] ?? 0) >= ASKS_PER_AUTHOR_PER_DAY) authorCapped = `${st.asksByAuthor[author]} model asks for @${normalizeHandle(m.authorHandle) ?? m.authorHandle} today (${ASKS_PER_AUTHOR_PER_DAY} a day)`;
+    let heldOne: string | null = null;
+    if (posts >= t.engageRepliesPerPass) capped = `${posts} replies tried this pass, ENGAGE_REPLIES_PER_PASS is ${t.engageRepliesPerPass}`;
+    else if (asks && st.modelCalls + MODEL_RUNS_PER_ASK > t.engageModelCallsPerDay) heldOne = modelHeld = `${st.modelCalls} model calls today (${MODEL_RUNS_PER_ASK} an ask), ENGAGE_MODEL_CALLS_PER_DAY is ${t.engageModelCallsPerDay}`;
+    else if (asks && asksThisPass >= asksPerPass) heldOne = modelHeld = `${asksThisPass} model asks this pass (ENGAGE_REPLIES_PER_PASS times ${ASKS_PER_REPLY_PER_PASS})`;
+    else if (asks && (st.asksByAuthor[author] ?? 0) >= ASKS_PER_AUTHOR_PER_DAY) heldOne = `${st.asksByAuthor[author]} model asks for @${normalizeHandle(m.authorHandle) ?? m.authorHandle} today (${ASKS_PER_AUTHOR_PER_DAY} a day)`;
     else {
       let rate: string | null;
       try {
@@ -717,17 +806,23 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
       } catch (err) {
         rate = `x-rate.json cannot be read (${(err as Error).message.slice(0, 60)})`;
       }
-      if (rate && /replies to @/.test(rate)) authorCapped = rate;
+      if (rate && /replies to @/.test(rate)) heldOne = rate;
       else capped = rate;
     }
-    if (authorCapped) {
-      // it stays pending for a later pass (or goes stale), and the next account is asked
+    if (heldOne) {
+      // it stays pending for a later pass (or goes stale), and the next mention is taken
       deferred++;
       continue;
     }
     if (capped) {
       deferred += st.pending.length;
       stopReason = `deferred: ${capped}`;
+      break;
+    }
+    const stopped = stopFile();
+    if (stopped) {
+      deferred += st.pending.length;
+      stopReason = `stopped: ${stopped} appeared mid-pass`;
       break;
     }
     // e. claim
@@ -745,7 +840,7 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
       }
       // a template answers without asking; anything else asked the gateway (a timeout may still have been billed)
       if (draft.kind === "down" || draft.source !== "template") {
-        st.modelCalls += 1;
+        st.modelCalls += MODEL_RUNS_PER_ASK;
         asksThisPass += 1;
         st.asksByAuthor[author] = (st.asksByAuthor[author] ?? 0) + 1;
       }
@@ -779,7 +874,7 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
     }
     // g. the guards decide, a kept draft included; a refused draft is final and never falls back to posting
     const tokenMint = (env.TOKEN_MINT ?? "").trim() || null;
-    const refused = vetReply(draft.text, { mention: { text: m.text, parentText: sc.parentText }, source: draft.source, recentReplies: recentReplies(), allowedNumbers: brain.REPLY_FACTS_NUMBERS, tokenMint, lint: lintContextOf(t), templateTexts: brain.TEMPLATE_TEXTS ?? [] });
+    const refused = vetReply(draft.text, { mention: { text: m.text, parentText: sc.parentText }, source: draft.source, recentReplies: recentReplies(), allowedNumbers: brain.REPLY_FACTS_NUMBERS, tokenMint, lint: lintContextOf(t), templateTexts: brain.TEMPLATE_TEXTS ?? [], promptTexts: brain.PROMPT_TEXTS ?? [] });
     if (refused) {
       appendLine(t.statePath, DRAFTS_FILE, JSON.stringify({ at: new Date(now).toISOString(), type: "reply", text: draft.text, reason: `vet: ${refused.rule}: ${refused.detail}`, replyTo: m.id, replyToHandle: normalizeHandle(m.authorHandle) }));
       finish(m, `refused: ${refused.rule}`, sc.kind, refused.detail);
@@ -787,11 +882,21 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
       continue;
     }
     const kept: KeptDraft = { text: draft.text, source: draft.source, ...(draft.template ? { template: draft.template } : {}) };
-    // h. post, at most once
-    if (replied > 0) await (deps.sleep ?? defaultSleep)(REPLY_SPACING_MS);
+    // h. post, at most once, 5 s after the pass's last POST whatever X answered it, and not once a stop file is there
+    if (posts > 0) await (deps.sleep ?? defaultSleep)(REPLY_SPACING_MS);
+    const stopNow = stopFile();
+    if (stopNow) {
+      putBack(m, kept);
+      deferred += st.pending.length;
+      stopReason = `stopped: ${stopNow} appeared mid-pass`;
+      break;
+    }
     st.handled[m.id] = { ...st.handled[m.id], outcome: "posting" };
     save();
-    const r = await postReply(draft.text, { tweetId: m.id, handle: m.authorHandle }, xDeps);
+    // everyone else the post names (its reply prefix and its body) is left out of his reply: he answers the author only
+    const exclude = (m.mentionUserIds ?? []).filter((id) => id !== m.authorId && id !== selfId);
+    const r = await postReply(draft.text, { tweetId: m.id, handle: m.authorHandle, ...(exclude.length ? { excludeUserIds: exclude } : {}) }, xDeps);
+    posts++;
     if (r.posted) {
       st.consecutive403 = 0;
       postOk();
@@ -810,8 +915,9 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
       }
       continue;
     }
-    if (/^x api (402|429|5\d\d)\b/.test(reason)) {
-      // X said no, so nothing went out: it goes back with its vetted draft and waits for the hold
+    if (/^x api (401|402|403|429|5\d\d)\b/.test(reason)) {
+      // X said no, so nothing went out: it goes back with its vetted draft and waits for the hold. A 401 or a 403 other
+      // than "not mentioned" is the account or the app refused, not this mention: held at once, like a 402
       const held = postFailed(reason, r.resetAt);
       putBack(m, kept);
       stopReason = `${reason.slice(0, 160)}${held ? `; ${held}` : ""}`;
@@ -845,7 +951,7 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
   }
   for (const [id, h] of Object.entries(st.handled)) if (now - h.at > HANDLED_KEEP_MS) delete st.handled[id];
   save();
-  const detail = `${replied} replied, ${skipped} skipped, ${st.pending.length} pending${stopReason ? `; ${stopReason}` : ""}`;
+  const detail = `${replied} replied, ${skipped} skipped, ${st.pending.length} pending${stopReason ? `; ${stopReason}` : modelHeld ? `; deferred: ${modelHeld}` : ""}`;
   logLine(t.statePath, now, `pass: ${detail}`);
   return result("ran", detail, { replied, skipped, deferred });
 }
@@ -976,7 +1082,7 @@ export async function previewMentions(mentions: readonly Mention[], deps: { env?
       row(`skip (${draft.source}): ${draft.why}`);
       continue;
     }
-    const refused = vetReply(draft.text, { mention: { text: m.text, parentText: sc.parentText }, source: draft.source, recentReplies: recent, allowedNumbers: brain.REPLY_FACTS_NUMBERS, tokenMint: (env.TOKEN_MINT ?? "").trim() || null, lint: lintContextOf(t), templateTexts: brain.TEMPLATE_TEXTS ?? [] });
+    const refused = vetReply(draft.text, { mention: { text: m.text, parentText: sc.parentText }, source: draft.source, recentReplies: recent, allowedNumbers: brain.REPLY_FACTS_NUMBERS, tokenMint: (env.TOKEN_MINT ?? "").trim() || null, lint: lintContextOf(t), templateTexts: brain.TEMPLATE_TEXTS ?? [], promptTexts: brain.PROMPT_TEXTS ?? [] });
     row(refused ? `refused: ${refused.rule}: ${refused.detail}` : `would reply (${draft.source})`, draft.text);
   }
   return out;

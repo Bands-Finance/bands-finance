@@ -32,10 +32,11 @@
  *   X_REPLIES                only the literal "true" (with X_LIVE and his brain) lets the engage loop reply
  *                            (src/talk/engage.ts); anything else leaves it off and spending nothing
  *   ENGAGE_READS_PER_DAY     mention posts read per UTC day, counted from X's result_count (default 300)
- *   ENGAGE_MODEL_CALLS_PER_DAY  asks of his brain per UTC day; templates make none (default 60)
+ *   ENGAGE_MODEL_CALLS_PER_DAY  model runs per UTC day (default 60): each ask of his brain is two, the reply turn and
+ *                            the gateway's idle introspection; templates make none
  *   ENGAGE_HOLLOW_PER_DAY    hollow mentions ("nice innovation") that may reach the brain per UTC day (default 10)
  *   ENGAGE_MAX_AGE_HOURS     a mention older than this is stale and gets no reply (default 6)
- *   ENGAGE_REPLIES_PER_PASS  replies one engage pass may post (default 3)
+ *   ENGAGE_REPLIES_PER_PASS  reply POSTs one engage pass may try, whatever X answers (default 3)
  *   ENGAGE_DENY_HANDLES      handles the engage loop never answers, besides clawpumptech (comma list)
  *   X_API_KEY / X_API_SECRET / X_ACCESS_TOKEN / X_ACCESS_SECRET
  *                            OAuth 1.0a user context for POST /2/tweets. Never logged: TalkEnv only says

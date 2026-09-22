@@ -27,8 +27,10 @@
   Try it offline: npx tsx src/scripts/talk.ts engage preview <saved mentions response.json> [--no-model]
 
   Caps (env keys in .env; defaults in src/talk/env.ts): REPLIES_PER_DAY 40, REPLIES_PER_HOUR 10,
-  MAX_REPLIES_PER_ACCOUNT 3, ENGAGE_REPLIES_PER_PASS 3, ENGAGE_READS_PER_DAY 300, ENGAGE_MODEL_CALLS_PER_DAY 60,
-  ENGAGE_HOLLOW_PER_DAY 10, ENGAGE_MAX_AGE_HOURS 6. A poll that returns nothing is not billed.
+  MAX_REPLIES_PER_ACCOUNT 3, ENGAGE_REPLIES_PER_PASS 3 (reply POSTs tried), ENGAGE_READS_PER_DAY 300,
+  ENGAGE_MODEL_CALLS_PER_DAY 60 (model runs: 2 an ask, the turn and the gateway's idle introspection),
+  ENGAGE_HOLLOW_PER_DAY 10, ENGAGE_MAX_AGE_HOURS 6; one fixed line at most 5 times a day. A poll that returns
+  nothing is not billed.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

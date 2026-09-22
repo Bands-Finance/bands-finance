@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { buildSystemPrompt } from "../agent/persona";
 import type { JournalEntry } from "../journal";
-import { agentInstructions, DENIED_TOOLS, ensureToolPolicy, toolPolicyRows, houseTokenFrom, instructionsForDesk, MCP_SERVERS, mcpServerRow, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, pickNewest, providerOf, rowAudience, settingsFromEnv } from "./openhermit";
+import { agentInstructions, DENIED_TOOLS, ensureToolPolicy, toolPolicyRows, houseTokenFrom, instructionsForDesk, MCP_SERVERS, mcpServerRow, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, pickNewest, providerOf, rowAudience, runnerAction, settingsFromEnv } from "./openhermit";
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -199,6 +199,21 @@ test("the tool policy denies web, session, memory-read and doc tools to every ca
   for (const t of ["web_fetch", "web_search", "session_read", "session_list", "memory_recall", "fetch_full_history"]) assert.ok(rows.some((r) => r.resourceKey === t && r.effect === "deny" && r.grants[0].type === "any"), t);
   assert.ok(!rows.some((r) => /^mcp__|bands_|\*/.test(r.resourceKey)), "no bands_* tool, and no prefix that could reach one");
   assert.ok(!rows.some((r) => /^memory_(add|update|delete)$/.test(r.resourceKey)), "the gateway's own memory writes stay");
+});
+
+test("the runner: hydrated when stopped; restarted for a model or instruction change, never for the tool policy alone", () => {
+  assert.equal(runnerAction("stopped", { modelChanged: false, instructionsChanged: false }), "start");
+  assert.equal(runnerAction("running", { modelChanged: true, instructionsChanged: false }), "restart");
+  assert.equal(runnerAction("running", { modelChanged: false, instructionsChanged: true }), "restart");
+  // the runner reads its policy rows every turn: a restart would only cut a desk turn in flight
+  assert.equal(runnerAction("running", { modelChanged: false, instructionsChanged: false }), null);
+});
+
+test("the rows name his architect only as his architect", () => {
+  const rows = agentInstructions(buildSystemPrompt(limits, "__POOL__"), "paper");
+  for (const [k, v] of Object.entries(rows)) assert.ok(!/\bzach|louz|loubert/i.test(v), `${k}`);
+  assert.match(rows.identity, /Your architect and advisor is a human who builds what you need and holds the keys/);
+  assert.match(rows.rules, /never his name and never his handle/);
 });
 
 async function policyWrites(): Promise<void> {

@@ -131,8 +131,14 @@ model change and it writes only what differs. It refuses to start, before it tou
    (OpenRouter) the newest `anthropic/claude-<family>*` on OpenRouter where the family is the desk's
    `MODEL` (`claude-opus-5` today, so opus) or (Anthropic) the desk's `MODEL` itself; the script prints
    what it chose. At Anthropic the agent must already hold an `ANTHROPIC_API_KEY` secret.
-   Memory introspection is turned off: one decision a cycle is not a conversation, and the introspection
-   would run a second model every few turns to write memories nobody reads.
+   Memory introspection is asked off (`memory.introspection.enabled: false`): one decision a cycle is not a
+   conversation. The gateway does not honour that flag on its idle path today: every session gets one
+   introspection run on the agent's main model 10 minutes after its last turn (`scheduleIdleSummary` in
+   `apps/agent/src/agent-runner.ts` never reads `enabled`), with memory write tools the tool policy does not
+   reach. So each desk session and each talk-loop mention session (`x-mention-<id>`) costs a second model run on
+   the shared OpenRouter key, and the talk loop counts each ask as two against `ENGAGE_MODEL_CALLS_PER_DAY`. The
+   fixes are upstream (return early when `enabled` is false, a fleet-wide change for the Meridian side to review) or
+   a separate gateway agent for the talk loop's mentions, so their introspection never writes the desk's memory.
 3. **The instructions.** `identity`, `soul` and `rules` are cut from the desk's own system prompt with
    the per-pool clause removed: who he is and how DLMM, the screener and the engine work go to
    `identity`; the voice to `soul`; the rules that never bend, the decision order, the hard limits and
@@ -152,8 +158,9 @@ model change and it writes only what differs. It refuses to start, before it tou
    overwritten by the first provision after this change.
    The gateway keeps the header in Postgres (`mcp_servers.headers`) and shows only its key name over the
    agent API; the admin API returns it whole, as it does for the Meridian rows.
-5. **The runner.** The agent is started, or restarted when its config or instructions changed so the
-   new rows are read.
+5. **The runner.** The agent is started, or restarted when its model or instructions changed so the
+   new rows are read (`runnerAction`). The tool policy alone never restarts it: the runner reads its policy
+   rows on every turn, and a restart stops a desk turn in flight and drops its MCP connections.
 
 `status` prints the gateway health, the agent row (enabled, runner running or stopped), the model, the
 first line of each instruction row, and the MCP servers enabled for him with whether an auth header is
