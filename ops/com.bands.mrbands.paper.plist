@@ -35,11 +35,12 @@
     <key>DRY_RUN</key><string>true</string>
     <key>PAPER_SOL</key><string>100</string>
     <key>PAPER_USDC</key><string>10000</string>
-    <key>BOOK</key><string>stocks</string>
-    <!-- Tokenized stocks and nothing else (Zach, 22 Sep: "we need to make sure we are trading tokenized stocks").
-         BOOK=stocks puts stocks first; STOCKS_ONLY=true refuses every token that is not one, on every seat path
-         (src/screener/memeFloor.ts memeRefusal). Bands already held in anything else are still managed out. -->
-    <key>STOCKS_ONLY</key><string>true</string>
+    <!-- Tokenized stocks are one part of the book, not all of it (Zach, 22 Sep: "I dont want our own focus to be
+         exclusively tokenized stocks, thats just one component"). The Meteora stock lane (on by default,
+         src/screener/meteoraStocks.ts) seats up to METEORA_STOCK_MAX_POOLS=3 stock pools first; the other seats go to
+         the general picker under the memecoin floors (MEME_*). It was 5 of 6 before 22 Sep. BOOK=stocks (stocks into every seat) and STOCKS_ONLY=true
+         (nothing but stocks) both exist and are off. -->
+    <key>METEORA_STOCK_MAX_POOLS</key><string>3</string>
     <key>LAUNCH_LANE</key><string>false</string>
     <key>PAIR_LANE</key><string>false</string>
     <key>MEME_MIN_AGE_HOURS</key><string>720</string>
@@ -62,8 +63,6 @@
     <key>PAIR_QUOTE</key><string>USDC</string>
     <key>PAIR_STOCK_LANE</key>
     <string>false</string>
-    <key>METEORA_STOCK_MAX_POOLS</key>
-    <string>5</string>
     <key>PAIR_STOCK_PINNED_TICKERS</key><string>NVDA</string>
     <key>SWAP_DEXES</key><string>Meteora DLMM</string>
     <key>SERVE_PORT</key><string>3100</string>

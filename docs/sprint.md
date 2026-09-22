@@ -67,16 +67,21 @@ it says the book is paper.
 
 ## How we say what he does
 
-Every description of how Mr Bands makes markets names **tokenized stocks** (Zach, 22 Sep). The facts it rests
-on, all true today:
-- He makes markets in **tokenized stocks on Meteora DLMM**: xStocks (NVDAx, PLTRx, GMEx) and Backpack-issued
-  stocks (MU, SKHY, SPCX), quoted in SOL or USDC. Meteora lists about 1,300 RWA pools; stocks were 93 of the top
-  100 by volume on 22 Sep ($20.6M a day).
-- He lays **two-sided bands (straddles)**, half the quote and half the stock, around the price, so he earns on
-  every trade in either direction, and he **hedges the stock half short on Backpack's stock perps** where one is
-  listed.
-- His book is **stocks only** by code (`STOCKS_ONLY`), on paper through 8 Oct; his real-money record is 17-19 Sep.
-- Never "he trades memecoins" (not since 22 Sep), never a return or a rate, and "paper" is said where it applies.
+Every description of how Mr Bands makes markets includes **tokenized stocks as one part of his book, not
+all of it** (Zach, 22 Sep: "I don't want our own focus to be exclusively tokenized stocks, that's just one
+component"). The facts it rests on, all true today:
+- He makes markets on **Meteora DLMM**: he lays bands of liquidity around the price and earns the pool's fees
+  on the trades that cross them, across the pools his screener ranks, with limits in code and every decision
+  public.
+- One part of that book is **tokenized stocks**: xStocks (NVDAx, PLTRx, GMEx) and Backpack-issued stocks (MU,
+  SKHY, SPCX), quoted in SOL or USDC. There he lays **two-sided bands (straddles)**, half the quote and half the
+  stock, so he earns on trades in either direction, and he **hedges the stock half short on Backpack's stock
+  perps** where one is listed. Meteora lists about 1,300 RWA pools; stocks were 93 of the top 100 by volume on
+  22 Sep ($20.6M a day).
+- The paper book reserves up to 3 of his 6 seats for stocks (`METEORA_STOCK_MAX_POOLS=3`); the rest go to the
+  pools his screener ranks best that pass the memecoin floors. On paper through 8 Oct; his real-money record is
+  17-19 Sep.
+- Never a return or a rate, and "paper" is said where it applies.
 
 ## Dates that decide everything
 
@@ -193,8 +198,9 @@ working in public on paper.
 - **The real-money record, frozen and honest.** 17-19 Sep: 329 signed transactions, 0 errors, 0 guard
   violations, every decision journalled. Fees claimed against a book that finished down. "Fees are not profit"
   on mrbands.finance, from the equity series only (see "One headline number").
-- **The paper desk, trading in public**, clearly labelled paper: it already runs alone (straddles, breakers that
-  survive a blind pool, the kill switch scoped per desk, the rule-based proposal approver).
+- **The paper desk, trading in public**, clearly labelled paper: it already runs alone (breakers that survive a
+  blind pool, the kill switch scoped per desk, the rule-based proposal approver), with tokenized stocks as one
+  part of the book (hedged straddles, up to 3 of 6 seats) and the screener's best pools as the rest.
 - **The model decides on paper.** `OPENHERMIT_TOKEN` goes into `.env` on Tue 22 Sep, with a hard credit limit on
   the OpenRouter key itself (there is no spend cap in the code). Success is a non-zero LLM share on
   /api/status and rationales that pass the lint. Rollback: `DECIDER=policy`. The pitch says "the model proposes,
