@@ -32,7 +32,7 @@ import {
   type GatewayLike,
   type PolicySeen,
 } from "../launch/gateway";
-import { writeArm } from "../launch/files";
+import { clearInflight, inflightFileFor, writeArm, writeInflight } from "../launch/files";
 import { CLAWPUMP_AGENT_ID, CLAWPUMP_AGENT_WALLET, TOKEN_DESCRIPTION } from "../launch/spec";
 import { scheduleLaunch } from "../launch/gateway";
 
@@ -383,6 +383,10 @@ async function main(): Promise<void> {
       await assert.rejects(scheduleLaunch(gw, arm, () => undefined), /still active/);
       assert.ok(!fake.log.some((r) => r.method === "POST"));
       fake.schedules.get("s1")!.status = "paused";
+      // an unsettled earlier launch blocks the schedule too
+      writeInflight(inflightFileFor(arm), "live");
+      await assert.rejects(scheduleLaunch(gw, arm, () => undefined), /never settled/);
+      assert.ok(clearInflight(inflightFileFor(arm)));
       const logs: string[] = [];
       const id = await scheduleLaunch(gw, arm, (l) => logs.push(l));
       const s = fake.schedules.get(id)!;

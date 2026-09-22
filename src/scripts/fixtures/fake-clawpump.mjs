@@ -3,9 +3,9 @@
 // real server's write tools, which nothing may ever call (the tests assert it). No network: everything comes from and
 // goes to two files the test names in the env.
 //
-//   FAKE_CP_STATE    JSON {status, agent, automations, runs, launch: {mode, delayMs, mint}}; read on every call, and
-//                    written when a launch lands a mint
-//                    launch.mode: ok | isError-with-mint | isError-no-mint | crash
+//   FAKE_CP_STATE    JSON {status, agent, automations, runs, launch: {mode, delayMs, mint}, statusDelayMs}; read on
+//                    every call, and written when a launch lands a mint; statusDelayMs slows get_launch_status
+//                    launch.mode: ok | isError-with-mint | isError-no-mint | refused-image | crash
 //   FAKE_CP_CALLS    JSONL: one {event:"start", envKeys, argv} line, then one {tool, args} line per call
 //   FAKE_CP_VARIANT  changed-schema | no-launch-tool | status-not-readonly: a server that is not the pinned one
 import fs from "node:fs";
@@ -41,6 +41,8 @@ const server = new McpServer({ name: "clawpump-agents", version: "0.1.27" });
 
 server.tool("get_launch_status", "fake", { agent_id: z.string().optional() }, VARIANT === "status-not-readonly" ? WRITE : RO, async (args) => {
   record({ tool: "get_launch_status", args });
+  const delay = readState().statusDelayMs;
+  if (delay) await sleep(delay);
   return json(statusOf(readState()));
 });
 server.tool("get_agent", "fake", { agent_id: z.string().optional() }, RO, async (args) => {
@@ -80,6 +82,7 @@ if (VARIANT !== "no-launch-tool") {
     const s = readState();
     if (s.status.agent.token_mint) return json({ error: "This agent already has a launched token.", already_launched: true, token_mint: s.status.agent.token_mint }, true);
     const l = s.launch ?? { mode: "ok" };
+    if (l.mode === "refused-image") return json({ error: "A token image is required before launching a Metaplex Genesis token.", agent: s.status.agent }, true);
     if (l.delayMs) await sleep(l.delayMs);
     if (l.mode === "crash") process.exit(3);
     const land = () => {

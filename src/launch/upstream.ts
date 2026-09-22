@@ -160,11 +160,14 @@ export interface ToolResult {
 export class Upstream {
   private client: Client | null = null;
   private connecting: Promise<Client> | null = null;
+  /** set by close(): from then on nothing spawns a child again */
+  private closed = false;
 
   constructor(private readonly opts: UpstreamOptions) {}
 
   /** Connects (once; again after the child exits) and checks the child is the pinned server. */
   async connect(): Promise<Client> {
+    if (this.closed) throw new Error("the ClawPump client is closed");
     if (this.client) return this.client;
     if (this.connecting) return this.connecting;
     this.connecting = this.open().finally(() => {
@@ -196,6 +199,10 @@ export class Upstream {
       await client.close().catch(() => undefined);
       throw err;
     }
+    if (this.closed) {
+      await client.close().catch(() => undefined);
+      throw new Error("the ClawPump client is closed");
+    }
     this.client = client;
     return client;
   }
@@ -209,7 +216,13 @@ export class Upstream {
     return { isError: r.isError === true, text: content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("\n") };
   }
 
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  /** Stops the child for good: a later call or connect throws instead of spawning a new one. */
   async close(): Promise<void> {
+    this.closed = true;
     const c = this.client;
     this.client = null;
     if (c) await c.close().catch(() => undefined);

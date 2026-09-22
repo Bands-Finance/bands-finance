@@ -6,6 +6,10 @@
  *                       every desk process and the platform server load that one into process.env.
  *   bands-launch.arm    {nonce, expiresAt}, written by `npm run launch:arm`. The launch needs it, its nonce, and an
  *                       unexpired time; it is renamed to bands-launch.arm.used before the upstream call (single use).
+ *   bands-launch.inflight  {since, pid, mode}, written by the bridge just before it sends the launch call and removed
+ *                       only when it sees a mint or a definite ClawPump refusal. While it exists the bridge refuses
+ *                       every launch, across restarts; only `npm run launch:arm -- --clear-inflight`, after a look at the
+ *                       ClawPump dashboard, removes it.
  *   launch-audit.jsonl  one line per bridge tool call: tool, time, outcome, mint. Never a header, a key or a token.
  *
  * Nothing here reads process.env for a secret, and nothing here prints one.
@@ -170,6 +174,66 @@ export function consumeArm(file: string): ArmRead & { usedPath?: string } {
   }
   const r = readArm(used);
   return r.ok ? { ...r, usedPath: used } : r;
+}
+
+// ---------------------------------------------------------------------------------------------
+// the in-flight marker
+// ---------------------------------------------------------------------------------------------
+
+/** The marker that sits next to an arm file: bands-launch.arm -> bands-launch.inflight. */
+export function inflightFileFor(armFile: string): string {
+  return armFile.endsWith(".arm") ? `${armFile.slice(0, -".arm".length)}.inflight` : `${armFile}.inflight`;
+}
+export const DEFAULT_INFLIGHT_FILE = inflightFileFor(DEFAULT_ARM_FILE);
+
+export interface Inflight {
+  since: string;
+  pid?: number;
+  mode?: string;
+}
+
+/**
+ * Writes the marker (mode 600, exclusive: it fails when one is already there). Throws with the reason; the caller
+ * then sends nothing.
+ */
+export function writeInflight(file: string, mode: string, now = Date.now()): Inflight {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const m: Inflight = { since: new Date(now).toISOString(), pid: process.pid, mode };
+  const fd = fs.openSync(file, "wx", 0o600);
+  try {
+    fs.writeSync(fd, JSON.stringify(m) + "\n");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return m;
+}
+
+/** The marker, or null when there is none. Anything unreadable there still counts as a launch in flight. */
+export function readInflight(file: string): Inflight | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return { since: "unknown (the marker is unreadable)" };
+  }
+  try {
+    const m = JSON.parse(text) as Partial<Inflight>;
+    return { since: typeof m.since === "string" ? m.since : "unknown", ...(typeof m.pid === "number" ? { pid: m.pid } : {}), ...(typeof m.mode === "string" ? { mode: m.mode } : {}) };
+  } catch {
+    return { since: "unknown (the marker is malformed)" };
+  }
+}
+
+/** Removes the marker, if any. True when there was one. */
+export function clearInflight(file: string): boolean {
+  try {
+    fs.unlinkSync(file);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Removes the arm, if any. True when there was one. */

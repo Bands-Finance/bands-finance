@@ -17,11 +17,19 @@ his gateway agent (mr-bands, an owner turn only)
 ```
 
 - **The bridge** serves two tools. `token_launch_status` is read-only. `token_launch` takes
-  `{confirm: true, nonce}` and, in order: checks the arm file and its nonce; re-reads the launch status and
-  refuses on a mint or on stored metadata that is off spec; renames the arm to `.used`; sends the one launch
-  call with the spec fixed in code; answers within 45 s ("submitted, outcome pending" if ClawPump is still
-  working, never "failed"); re-reads the status after any error, because the Genesis tool can report an error
-  after the token launched; and writes one line per call to `~/.mrbands/launch-audit.jsonl`.
+  `{confirm: true, nonce}` and, in order: refuses while the in-flight marker exists (below); checks the arm file
+  and its nonce; re-reads the launch status (10 s at most, or it refuses and keeps the arm) and refuses on a mint
+  or on stored metadata that is off spec; writes the in-flight marker and renames the arm to `.used`; sends the
+  one launch call with the spec fixed in code; answers within 45 s of the request's arrival ("submitted, outcome
+  pending" if ClawPump is still working, never "failed"), well inside the gateway's 60 s; re-reads the status
+  after any error, because the Genesis tool can report an error after the token launched; and writes one line
+  per call to `~/.mrbands/launch-audit.jsonl`.
+- **The in-flight marker** (`~/.mrbands/bands-launch.inflight`, mode 600) is written just before the launch call
+  and removed only when the bridge sees a mint, or ClawPump refuses before sending anything (no image, no
+  credits, bad arguments). It survives a Ctrl-C, a crash and a restart. While it exists the bridge refuses every
+  launch, `launch:arm` refuses to arm, and `schedule-launch` refuses to schedule, so a launch still settling on
+  ClawPump's side can never be followed by a second one. Only you remove it, after the dashboard check:
+  `npm run launch:arm -- --clear-inflight`.
 - **Its secrets** live in `~/.mrbands/clawpump.env` (mode 600): the ClawPump key and the bridge's bearer. The
   bridge refuses to start if the file is looser. The repo's `.env` is not used: every desk process and the
   platform server load that one.
@@ -152,7 +160,7 @@ Then `npm run launch:gateway -- resume-schedules`.
 
 1. `npm run launch:check`: no mint, the spec matches, the wallet can pay.
 2. `npm run launch:gateway -- pause-schedules`.
-3. Stop the dry-run bridge (Ctrl-C) and start it live: `npm run launch:bridge -- --live`. The gateway's client
+3. Stop the dry-run bridge (Ctrl-C; it has no launch in flight) and start it live: `npm run launch:bridge -- --live`. The gateway's client
    is stateless against it, so no reload is needed; `npm run launch:gateway -- provision` again is harmless if
    his tools are missing.
 4. `npm run launch:arm -- --minutes 20`.
@@ -162,11 +170,19 @@ Then `npm run launch:gateway -- resume-schedules`.
 The answers he can get:
 - **launched, mint `<mint>`**: done.
 - **submitted, outcome pending**: ClawPump is still working. He calls `token_launch_status` until it shows the
-  mint. Do not re-arm.
-- **error-no-mint**: the call failed and the status shows no mint. Look at the ClawPump dashboard before
-  anything else. Re-arm only when both say nothing launched.
-- **unknown**: the status could not be read. Treat it as pending.
-- **refused**: nothing was sent. The message says why.
+  mint. Do not re-arm, and do not stop the bridge: a Ctrl-C while a launch is in flight only prints a warning,
+  and the bridge exits by itself once the launch settles. A second Ctrl-C forces it; the marker then stays.
+- **error-no-mint**: ClawPump answered with an error and the status shows no mint. If it was a definite refusal
+  (nothing sent) the marker is gone and you may fix the cause and re-arm. Otherwise (a 5xx, say) the marker
+  stays: a Genesis launch can take a while to show.
+- **unknown**: the call ended without ClawPump's answer (the connection closed, a timeout, a forced stop) or
+  the status could not be read. Treat it as pending; the marker stays.
+- **refused**: nothing was sent. The message says why. "may still be in flight" means the marker is there.
+
+**Clearing the marker.** Only when the dashboard (https://agents.clawpump.tech/dashboard) shows no token and no
+launch in progress for his agent, and `npm run launch:check` shows no `token_mint`, some minutes after the
+last audit line: `npm run launch:arm -- --clear-inflight`, then re-arm. If either shows a token, do not clear
+it: the launch happened.
 
 `hermit schedules runs <id> --agent mr-bands` shows the turn; the bridge's terminal and the audit show the call.
 
@@ -184,7 +200,7 @@ The answers he can get:
 ## 6. Teardown (the same day)
 
 ```sh
-# Ctrl-C the bridge
+# Ctrl-C the bridge (it will not stop while a launch is in flight)
 npm run launch:gateway -- teardown          # disable for mr-bands, delete the row, the secret, the launch rows
 npm run launch:gateway -- resume-schedules
 npm run launch:arm -- --disarm              # if an arm is still there

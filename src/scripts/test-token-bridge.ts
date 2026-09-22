@@ -11,10 +11,10 @@ import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { GATEWAY_LAUNCH_TOOL, GATEWAY_STATUS_TOOL, launchPrompt, parseArmArgs } from "../launch/arm";
-import { PENDING_MESSAGE, parseBridgeArgs, startBridge, type Bridge, type BridgeOptions } from "../launch/bridge";
+import { armUnlessInflight, GATEWAY_LAUNCH_TOOL, GATEWAY_STATUS_TOOL, launchPrompt, parseArmArgs } from "../launch/arm";
+import { definiteRefusal, PENDING_MESSAGE, parseBridgeArgs, startBridge, type Bridge, type BridgeOptions } from "../launch/bridge";
 import { CHECK_CALLS, readiness } from "../launch/check";
-import { armProblem, assertPrivateFile, bearerMatches, constantTimeEqual, consumeArm, parseEnvFile, readArm, readSecrets, writeArm } from "../launch/files";
+import { armProblem, assertPrivateFile, bearerMatches, clearInflight, constantTimeEqual, consumeArm, inflightFileFor, parseEnvFile, readArm, readInflight, readSecrets, writeArm, writeInflight } from "../launch/files";
 import {
   BRIDGE_LAUNCH_TOOL,
   BRIDGE_STATUS_TOOL,
@@ -81,6 +81,10 @@ interface Case {
   audit: string;
   state: string;
   calls: string;
+  inflight: string;
+  /** merges top-level fields (statusDelayMs, launch) into the fake's state file */
+  patchState(patch: Record<string, unknown>): void;
+  starts(): number;
   setState(status: Record<string, unknown>, launch?: Record<string, unknown>): void;
   callLog(): Array<{ tool?: string; args?: Record<string, unknown>; event?: string; envKeys?: string[]; argv?: string[]; apiKeyLength?: number }>;
   upstreamCalls(tool: string): number;
@@ -95,6 +99,13 @@ function newCase(status = goodStatus(), launch: Record<string, unknown> = { mode
     audit: path.join(dir, "launch-audit.jsonl"),
     state: path.join(dir, "state.json"),
     calls: path.join(dir, "calls.jsonl"),
+    inflight: path.join(dir, "bands-launch.inflight"),
+    patchState(patch) {
+      fs.writeFileSync(c.state, JSON.stringify({ ...JSON.parse(fs.readFileSync(c.state, "utf8")), ...patch }));
+    },
+    starts() {
+      return c.callLog().filter((l) => l.event === "start").length;
+    },
     setState(s, l = launch) {
       fs.writeFileSync(c.state, JSON.stringify({ status: s, agent: { id: CLAWPUMP_AGENT_ID, status: "stopped", is_public: true, accepting_bids: true }, automations: [], runs: [], launch: l }));
     },
@@ -515,6 +526,7 @@ async function main(): Promise<void> {
       assert.match(String(again.body.message), /not armed/);
     });
     assert.ok(!fs.existsSync(c.arm) && fs.existsSync(`${c.arm}.used`));
+    assert.ok(!fs.existsSync(c.inflight), "a dry run writes no in-flight marker");
     assert.equal(c.upstreamCalls(UPSTREAM_LAUNCH_TOOL), 0);
   });
   await test("live: one launch call with the pinned arguments byte for byte; the arm is .used before it; the mint reported; single use", async () => {
@@ -575,27 +587,140 @@ async function main(): Promise<void> {
     });
     assert.equal(c.upstreamCalls(UPSTREAM_LAUNCH_TOOL), 1);
   });
-  await test("isError and no mint: 'error-no-mint', never retried, the arm spent", async () => {
+  await test("isError and no mint (a 502): 'error-no-mint', never retried, the arm spent, the in-flight marker KEPT, a fresh arm refused", async () => {
     const c = newCase(goodStatus(), { mode: "isError-no-mint", mint: MINT });
     const arm = armFor(c);
     await withBridge(c, { live: true }, async (_b, client) => {
       const r = await callJson(client, BRIDGE_LAUNCH_TOOL, { confirm: true, nonce: arm.nonce });
       assert.equal(r.body.outcome, "error-no-mint");
       assert.equal(r.body.mint, null);
-      assert.match(String(r.body.message), /arms it again/);
+      assert.match(String(r.body.message), /clears the in-flight marker/);
+      assert.ok(fs.existsSync(c.inflight), "a 502 may have reached the launch endpoint: the marker stays");
+      // a fresh arm written behind the CLI's back is still refused by the bridge, before any status read
+      const reads = c.upstreamCalls("get_launch_status");
+      const arm2 = writeArm(c.arm, 10);
+      const again = await callJson(client, BRIDGE_LAUNCH_TOOL, { confirm: true, nonce: arm2.nonce });
+      assert.equal(again.body.outcome, "refused");
+      assert.match(String(again.body.message), /may still be in flight/);
+      assert.ok(fs.existsSync(c.arm), "the refusal keeps the fresh arm");
+      assert.equal(c.upstreamCalls("get_launch_status"), reads);
+      const s = await callJson(client, BRIDGE_STATUS_TOOL);
+      assert.ok((s.body.bridge as { unsettledLaunchMarker: unknown }).unsettledLaunchMarker, "the status shows the marker");
     });
     assert.equal(c.upstreamCalls(UPSTREAM_LAUNCH_TOOL), 1);
-    assert.ok(fs.existsSync(`${c.arm}.used`));
+    assert.ok(fs.existsSync(`${c.arm}.used`) || fs.existsSync(c.arm));
+    // the CLI will not arm on top of it; --clear-inflight (after the dashboard) lets it
+    assert.throws(() => armUnlessInflight(c.arm, 10), /never settled.*clear-inflight/s);
+    assert.ok(clearInflight(c.inflight));
+    assert.ok(armUnlessInflight(c.arm, 10).nonce.length === 32);
   });
-  await test("the child dies mid-launch: the status is read again from a fresh child and the answer says there is no mint", async () => {
+  await test("a definite ClawPump refusal (no image): 'error-no-mint' and the marker removed, since nothing was sent", async () => {
+    const c = newCase(goodStatus(), { mode: "refused-image", mint: MINT });
+    const arm = armFor(c);
+    await withBridge(c, { live: true }, async (_b, client) => {
+      const r = await callJson(client, BRIDGE_LAUNCH_TOOL, { confirm: true, nonce: arm.nonce });
+      assert.equal(r.body.outcome, "error-no-mint");
+      assert.match(String(r.body.message), /refused the launch before sending it/);
+    });
+    assert.ok(!fs.existsSync(c.inflight));
+    assert.equal(c.upstreamCalls(UPSTREAM_LAUNCH_TOOL), 1);
+  });
+  await test("definiteRefusal: ClawPump's pre-send refusals and validation errors only; a 5xx, a closed connection and a timeout are not", () => {
+    for (const t of [
+      '{"error": "A token image is required before launching a Metaplex Genesis token."}',
+      '{"error": "This agent already has a launched token."}',
+      "Payment required: Insufficient credits. Check your balance",
+      "Rate limited: Too many requests.",
+      "Access denied: nope.",
+      "MCP error -32602: Input validation error: Invalid arguments for tool launch_metaplex_genesis_token",
+    ])
+      assert.ok(definiteRefusal(t), t);
+    for (const t of ['{"error": "Server error (502): The ClawPump backend is experiencing issues. Try again shortly."}', "MCP error -32000: Connection closed", "MCP error -32001: Request timed out", "Network error: socket hang up", '{"error": "Token launch completed, but Metaplex Genesis status is pending."}'])
+      assert.ok(!definiteRefusal(t), t);
+  });
+  await test("the child dies mid-launch: 'unknown' (never 'error-no-mint'), treated as pending, the marker kept", async () => {
     const c = newCase(goodStatus(), { mode: "crash", mint: MINT });
     const arm = armFor(c);
     await withBridge(c, { live: true }, async (_b, client) => {
       const r = await callJson(client, BRIDGE_LAUNCH_TOOL, { confirm: true, nonce: arm.nonce });
-      assert.ok(["error-no-mint", "unknown"].includes(String(r.body.outcome)), JSON.stringify(r.body));
-      assert.notEqual(r.body.outcome, "launched");
+      assert.equal(r.body.outcome, "unknown", JSON.stringify(r.body));
+      assert.match(String(r.body.message), /may still land/);
     });
     assert.equal(c.upstreamCalls(UPSTREAM_LAUNCH_TOOL), 1);
+    assert.ok(fs.existsSync(c.inflight));
+  });
+  await test("a stop while the launch is pending, then a restart and a fresh arm: 'unknown', no child after close, and NO second launch", async () => {
+    const c = newCase(goodStatus(), { mode: "ok", mint: MINT, delayMs: 4000 });
+    const arm = armFor(c);
+    const b1 = await startBridge(bridgeOpts(c, { live: true, responseDeadlineMs: 500 }));
+    const cl1 = await connect(b1.url);
+    const r1 = await callJson(cl1, BRIDGE_LAUNCH_TOOL, { confirm: true, nonce: arm.nonce });
+    assert.equal(r1.body.outcome, "pending");
+    assert.ok(b1.inFlightSince());
+    await cl1.close();
+    await b1.close();
+    await b1.idle();
+    assert.equal(c.starts(), 1, "settling after close spawned no new ClawPump child");
+    assert.ok(fs.existsSync(c.inflight), "the marker outlives the bridge");
+    const audit1 = fs.readFileSync(c.audit, "utf8");
+    assert.match(audit1, /settled after pending: unknown/);
+    assert.ok(!/error-no-mint/.test(audit1), audit1);
+
+    const arm2 = writeArm(c.arm, 10);
+    await withBridge(c, { live: true, responseDeadlineMs: 500 }, async (_b, client) => {
+      const r2 = await callJson(client, BRIDGE_LAUNCH_TOOL, { confirm: true, nonce: arm2.nonce });
+      assert.equal(r2.body.outcome, "refused");
+      assert.match(String(r2.body.message), /may still be in flight/);
+    });
+    assert.equal(c.upstreamCalls(UPSTREAM_LAUNCH_TOOL), 1, "one launch call, ever");
+    assert.ok(fs.existsSync(c.arm), "the fresh arm is not consumed");
+  });
+  await test("a slow status read: the answer clock starts at arrival; a status read past its cap is refused inside the deadline, arm kept, nothing sent", async () => {
+    const c = newCase();
+    c.patchState({ statusDelayMs: 1500 });
+    const arm = armFor(c);
+    await withBridge(c, { live: true, responseDeadlineMs: 2000, precheckStatusTimeoutMs: 800 }, async (_b, client) => {
+      const t0 = Date.now();
+      const r = await callJson(client, BRIDGE_LAUNCH_TOOL, { confirm: true, nonce: arm.nonce });
+      const took = Date.now() - t0;
+      assert.ok(took < 2000, `answered in ${took} ms`);
+      assert.equal(r.body.outcome, "refused");
+      assert.match(String(r.body.message), /in time.*arm is kept/);
+    });
+    assert.ok(fs.existsSync(c.arm) && !fs.existsSync(`${c.arm}.used`));
+    assert.ok(!fs.existsSync(c.inflight));
+    assert.equal(c.upstreamCalls(UPSTREAM_LAUNCH_TOOL), 0);
+  });
+  await test("a slow status read and a slow launch: 'pending' within the deadline measured from arrival, not after the status read", async () => {
+    const c = newCase(goodStatus(), { mode: "ok", mint: MINT, delayMs: 6000 });
+    c.patchState({ statusDelayMs: 1500 });
+    const arm = armFor(c);
+    await withBridge(c, { live: true, responseDeadlineMs: 2000, precheckStatusTimeoutMs: 1800 }, async (b, client) => {
+      const t0 = Date.now();
+      const r = await callJson(client, BRIDGE_LAUNCH_TOOL, { confirm: true, nonce: arm.nonce });
+      const took = Date.now() - t0;
+      assert.equal(r.body.outcome, "pending", JSON.stringify(r.body));
+      assert.ok(took < 2300, `answered in ${took} ms, past the 2000 ms deadline`);
+      await b.idle();
+      const after = await callJson(client, BRIDGE_STATUS_TOOL);
+      assert.equal(after.body.token_mint, MINT);
+    });
+    assert.equal(c.upstreamCalls(UPSTREAM_LAUNCH_TOOL), 1);
+    assert.ok(!fs.existsSync(c.inflight), "a mint removes the marker");
+  });
+  await test("the marker file: next to the arm, mode 600, exclusive; unreadable counts as in flight", () => {
+    const c = newCase();
+    assert.equal(inflightFileFor(c.arm), c.inflight);
+    assert.equal(inflightFileFor("/x/y"), "/x/y.inflight");
+    assert.equal(readInflight(c.inflight), null);
+    writeInflight(c.inflight, "live");
+    assert.equal(fs.statSync(c.inflight).mode & 0o777, 0o600);
+    assert.throws(() => writeInflight(c.inflight, "live"), /EEXIST/);
+    fs.writeFileSync(c.inflight, "not json");
+    assert.match(readInflight(c.inflight)!.since, /malformed/);
+    assert.ok(clearInflight(c.inflight) && !clearInflight(c.inflight));
+    assert.equal(parseArmArgs(["--clear-inflight"]).clearInflight, true);
+    assert.throws(() => parseArmArgs(["--clear-inflight", "--disarm"]), /separate steps/);
   });
   await test("a slow launch: the gateway is answered 'submitted, outcome pending' inside the deadline, never 'failed'; the outcome lands in the status and the audit", async () => {
     const c = newCase(goodStatus(), { mode: "ok", mint: MINT, delayMs: 1500 });
@@ -619,6 +744,7 @@ async function main(): Promise<void> {
     });
     assert.equal(c.upstreamCalls(UPSTREAM_LAUNCH_TOOL), 1);
     assert.match(fs.readFileSync(c.audit, "utf8"), /settled after pending: launched/);
+    assert.ok(!fs.existsSync(c.inflight), "the mint removed the marker");
   });
   await test("the whole run's files, answers and logs carry no key and no bridge token", async () => {
     const logs: string[] = [];

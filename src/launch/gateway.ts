@@ -36,7 +36,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { GATEWAY_LAUNCH_TOOL, GATEWAY_STATUS_TOOL, LAUNCH_SERVER_ID, launchPrompt } from "./arm";
-import { DEFAULT_ARM_FILE, DEFAULT_SECRETS_FILE, MRBANDS_DIR, readArm, readSecrets } from "./files";
+import { DEFAULT_ARM_FILE, DEFAULT_SECRETS_FILE, inflightFileFor, MRBANDS_DIR, readArm, readInflight, readSecrets } from "./files";
 import { BRIDGE_LAUNCH_TOOL, BRIDGE_STATUS_TOOL } from "./spec";
 
 export { GATEWAY_LAUNCH_TOOL, GATEWAY_STATUS_TOOL, LAUNCH_SERVER_ID };
@@ -426,11 +426,13 @@ export async function resumeSchedules(raw: GatewayLike, file: string, log: (line
 /**
  * The one-shot owner turn (docs/launch.md, "The launch turn"): a "once" schedule on mr-bands, created with the admin
  * bearer, so it runs as his owner (the gateway's earliest owner). Its prompt is launchPrompt with the armed nonce,
- * read from the arm file here. Refuses unless the arm is readable and has at least five minutes left, and unless
+ * read from the arm file here. Refuses while the bridge's in-flight marker exists, unless the arm is readable and has at least five minutes left, and unless
  * every other schedule on mr-bands is paused (no other owner turn runs in the window). Never prints the nonce.
  */
 export async function scheduleLaunch(raw: GatewayLike, armFile: string, log: (line: string) => void, now = Date.now()): Promise<string> {
   const gw = guarded(raw);
+  const marker = readInflight(inflightFileFor(armFile));
+  if (marker) throw new Error(`not scheduled: an earlier launch call never settled (in flight since ${marker.since}); check the ClawPump dashboard, then npm run launch:arm -- --clear-inflight only if it shows no launch`);
   const arm = readArm(armFile);
   if (!arm.ok) throw new Error(`not scheduled: ${arm.reason} (npm run launch:arm first)`);
   if (Date.parse(arm.arm.expiresAt) - now < 5 * 60_000) throw new Error(`not scheduled: the arm expires at ${arm.arm.expiresAt}, under five minutes from now; re-arm`);

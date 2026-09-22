@@ -5,17 +5,26 @@
  *
  *   token_launch_status   read-only: get_launch_status for his ClawPump agent, URL query strings stripped, plus
  *                         whether the spec matches, whether the launch is armed, and any launch in flight.
- *   token_launch          {confirm: true, nonce}: in order,
+ *   token_launch          {confirm: true, nonce}: in order, all inside one answer clock that starts when the
+ *                         request arrives,
+ *                         (0) no in-flight marker (~/.mrbands/bands-launch.inflight) may exist: an earlier launch
+ *                             call that never settled, in this process or one before a restart, blocks every
+ *                             launch until Zach checks the dashboard and runs `launch:arm -- --clear-inflight`;
  *                         (a) the arm file (~/.mrbands/bands-launch.arm, mode 600) must exist, match the nonce in
  *                             constant time, and be unexpired;
- *                         (b) get_launch_status is read again: no mint may exist, and the stored metadata must
+ *                         (b) get_launch_status is read again, reconnect included, within PRECHECK_STATUS_TIMEOUT_MS
+ *                             (past it: refused, the arm kept): no mint may exist, and the stored metadata must
  *                             match the pinned spec exactly (src/launch/spec.ts specProblems);
- *                         (c) the arm is renamed to .used BEFORE the upstream call (single use);
+ *                         (c) the in-flight marker is written, then the arm is renamed to .used, both BEFORE the
+ *                             upstream call (single use; the marker outlives a stop, a crash or a restart);
  *                         (d) launch_metaplex_genesis_token is called once with the pinned arguments and a long
- *                             upstream timeout, but the gateway is answered within about 45 s: a launch still
- *                             running is "submitted, outcome pending; call token_launch_status", never "failed";
+ *                             upstream timeout, but the gateway is answered within RESPONSE_DEADLINE_MS of the
+ *                             request's arrival: a launch still running is "submitted, outcome pending; call
+ *                             token_launch_status", never "failed";
  *                         (e) on an error or an isError result, get_launch_status is read again and the answer says
- *                             whether a mint now exists (the Genesis tool reports isError even after a launch);
+ *                             whether a mint now exists (the Genesis tool reports isError even after a launch). A
+ *                             thrown error (the connection closed, a timeout) is "unknown", never "error-no-mint".
+ *                             The marker is removed only on a mint or a definite ClawPump refusal (nothing sent);
  *                         (f) every call appends a line to ~/.mrbands/launch-audit.jsonl (tool, time, outcome, mint).
  *
  * The names sit outside bands_*, so the talk loop's tripwire (src/talk/replyBrain.ts parseReply) voids any X-mention
@@ -33,7 +42,23 @@ import type { AddressInfo } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { appendAudit, armProblem, bearerMatches, consumeArm, DEFAULT_ARM_FILE, DEFAULT_AUDIT_FILE, DEFAULT_INSTALL_DIR, DEFAULT_SECRETS_FILE, readArm, readSecrets, type AuditLine } from "./files";
+import {
+  appendAudit,
+  armProblem,
+  bearerMatches,
+  clearInflight,
+  consumeArm,
+  DEFAULT_ARM_FILE,
+  DEFAULT_AUDIT_FILE,
+  DEFAULT_INSTALL_DIR,
+  DEFAULT_SECRETS_FILE,
+  inflightFileFor,
+  readArm,
+  readInflight,
+  readSecrets,
+  writeInflight,
+  type AuditLine,
+} from "./files";
 import {
   BRIDGE_LAUNCH_TOOL,
   BRIDGE_STATUS_TOOL,
@@ -54,8 +79,13 @@ import { pinnedEntry, Upstream } from "./upstream";
 
 export const BRIDGE_HOST = "127.0.0.1";
 export const BRIDGE_PORT = 3140;
-/** The gateway's MCP client gives up at 60 s (the SDK default); the bridge answers well inside it. */
+/**
+ * The gateway's MCP client gives up at 60 s (the SDK default, OpenHermit's mcp-client.ts passes no timeout); the
+ * bridge answers within this many ms of the request's ARRIVAL, status read and reconnect included.
+ */
 export const RESPONSE_DEADLINE_MS = 45_000;
+/** The pre-launch status read (b), a child reconnect included, gets at most this; past it the launch is refused, the arm kept. */
+export const PRECHECK_STATUS_TIMEOUT_MS = 10_000;
 /** How long the bridge itself waits on ClawPump for the launch call (its apiFetch has no timeout of its own). */
 export const UPSTREAM_TIMEOUT_MS = 15 * 60_000;
 export const STATUS_TIMEOUT_MS = 30_000;
@@ -86,6 +116,7 @@ export interface BridgeOptions {
   responseDeadlineMs?: number;
   upstreamTimeoutMs?: number;
   statusTimeoutMs?: number;
+  precheckStatusTimeoutMs?: number;
   log?: (line: string) => void;
 }
 
@@ -101,12 +132,23 @@ export interface Bridge {
   url: string;
   port: number;
   live: boolean;
+  /** when the launch in flight in this process started, or null */
+  inFlightSince(): string | null;
   /** resolves when no launch is in flight (tests) */
   idle(): Promise<void>;
   close(): Promise<void>;
 }
 
 type Obj = Record<string, unknown>;
+
+/**
+ * ClawPump said no before it sent anything, so no launch can be under way: the pinned server's own pre-checks (an image
+ * is needed; a token already exists), its 402/403/429 messages, and an argument validation error. Anything else,
+ * a 5xx above all, may have reached the launch endpoint. PURE.
+ */
+export function definiteRefusal(text: string): boolean {
+  return /A token image is required|already has a launched token|\b(Payment required|Rate limited|Access denied):|MCP error -32602|Invalid arguments for tool|Input validation error/i.test(text);
+}
 
 function text(data: unknown, isError = false) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }], ...(isError ? { isError: true } : {}) };
@@ -144,6 +186,8 @@ export async function startBridge(opts: BridgeOptions = {}): Promise<Bridge> {
   const deadlineMs = opts.responseDeadlineMs ?? RESPONSE_DEADLINE_MS;
   const upstreamTimeoutMs = opts.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS;
   const statusTimeoutMs = opts.statusTimeoutMs ?? STATUS_TIMEOUT_MS;
+  const precheckTimeoutMs = Math.min(statusTimeoutMs, opts.precheckStatusTimeoutMs ?? PRECHECK_STATUS_TIMEOUT_MS);
+  const inflightFile = inflightFileFor(armFile);
 
   const secrets = readSecrets(secretsFile, true);
   const cfg: LaunchConfig = checkLaunchConfig({ imageUrl: secrets.imageUrl, twitter: secrets.twitter });
@@ -173,10 +217,13 @@ export async function startBridge(opts: BridgeOptions = {}): Promise<Bridge> {
   // one launch at a time, in this process; the arm's rename is the cross-process claim
   let inFlight: { since: string; done: Promise<void> } | null = null;
   let last: LaunchReport | null = null;
+  /** set by close(): no status read (and so no child) after it */
+  let closed = false;
 
-  const readStatus = async (): Promise<{ ok: true; status: Obj } | { ok: false; reason: string }> => {
+  type StatusRead = { ok: true; status: Obj } | { ok: false; reason: string };
+  const readStatusOnce = async (timeoutMs: number): Promise<StatusRead> => {
     try {
-      const r = await upstream.call(UPSTREAM_STATUS_TOOL, { agent_id: CLAWPUMP_AGENT_ID }, statusTimeoutMs);
+      const r = await upstream.call(UPSTREAM_STATUS_TOOL, { agent_id: CLAWPUMP_AGENT_ID }, timeoutMs);
       if (r.isError) return { ok: false, reason: redact(r.text).slice(0, 300) };
       const parsed = JSON.parse(r.text) as unknown;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, reason: "get_launch_status did not return an object" };
@@ -185,20 +232,58 @@ export async function startBridge(opts: BridgeOptions = {}): Promise<Bridge> {
       return { ok: false, reason: redact((err as Error).message).slice(0, 300) };
     }
   };
+  /** get_launch_status, the whole of it (a child reconnect included) bounded by timeoutMs; never after close(). */
+  const readStatus = async (timeoutMs = statusTimeoutMs): Promise<StatusRead> => {
+    if (closed || upstream.isClosed) return { ok: false, reason: "the bridge is shutting down" };
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<StatusRead>((r) => (timer = setTimeout(() => r({ ok: false, reason: `get_launch_status gave no answer within ${timeoutMs} ms` }), timeoutMs)));
+    try {
+      return await Promise.race([readStatusOnce(timeoutMs), late]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  /** Settled for good: a mint, or ClawPump refused before sending anything. Only then does the marker go. */
+  const markerOff = (why: string) => {
+    if (clearInflight(inflightFile)) log(`in-flight marker removed: ${why}`);
+  };
+  const markerKept = `The bridge refuses any other launch until your architect checks the ClawPump dashboard and clears the in-flight marker.`;
 
   const mode = live ? "live" : "dry-run";
 
-  /** (e): after an error or an isError result, the status decides what is said. */
-  const afterError = async (detail: string): Promise<LaunchReport> => {
+  /**
+   * (e): after an error or an isError result, the status decides what is said.
+   *   thrown      the call never got ClawPump's answer (the connection closed, a timeout): "unknown", marker kept
+   *   answered    ClawPump answered isError, not a definite refusal: "error-no-mint" if no mint shows, marker kept
+   *   definite    ClawPump refused before sending anything (definiteRefusal): "error-no-mint", marker removed
+   */
+  const afterError = async (detail: string, kind: "thrown" | "answered" | "definite"): Promise<LaunchReport> => {
     const st = await readStatus();
-    if (!st.ok) return { ok: false, outcome: "unknown", mint: null, message: `the launch call returned an error and the status could not be read (${st.reason}). Call token_launch_status before saying anything.`, upstream: detail };
-    const mint = mintOf(st.status);
-    if (mint) return { ok: true, outcome: "launched", mint, message: `launched: the launch call reported an error, but the status shows mint ${mint}.`, upstream: detail };
+    const mint = st.ok ? mintOf(st.status) : null;
+    if (mint) {
+      markerOff(`the status shows mint ${mint}`);
+      return { ok: true, outcome: "launched", mint, message: `launched: the launch call reported an error, but the status shows mint ${mint}.`, upstream: detail };
+    }
+    if (kind === "definite") {
+      markerOff("ClawPump refused the launch before sending it");
+      return {
+        ok: false,
+        outcome: "error-no-mint",
+        mint: null,
+        message: `ClawPump refused the launch before sending it, and no mint shows. The arm is used: nothing more happens unless your architect arms it again. Say nothing public about it.`,
+        upstream: detail,
+      };
+    }
+    if (kind === "thrown") {
+      return { ok: false, outcome: "unknown", mint: null, message: `the launch call ended without ClawPump's answer, so the launch may still land. Treat it as pending: call token_launch_status and say nothing until it shows a mint. ${markerKept}`, upstream: detail };
+    }
+    if (!st.ok) return { ok: false, outcome: "unknown", mint: null, message: `the launch call returned an error and the status could not be read (${st.reason}). Treat it as pending: call token_launch_status before saying anything. ${markerKept}`, upstream: detail };
     return {
       ok: false,
       outcome: "error-no-mint",
       mint: null,
-      message: `the launch call returned an error and the status shows no mint as of ${new Date().toISOString()}. The arm is used: nothing more happens unless your architect arms it again. Say nothing public about it.`,
+      message: `the launch call returned an error and the status shows no mint as of ${new Date().toISOString()}; a launch can take a while to show. The arm is used. ${markerKept} Say nothing public about it.`,
       upstream: detail,
     };
   };
@@ -209,19 +294,32 @@ export async function startBridge(opts: BridgeOptions = {}): Promise<Bridge> {
     try {
       r = await p;
     } catch (err) {
-      return afterError(redact((err as Error).message).slice(0, 300));
+      const detail = redact((err as Error).message).slice(0, 300);
+      return afterError(detail, definiteRefusal(detail) ? "definite" : "thrown");
     }
-    if (r.isError) return afterError(redact(r.text).slice(0, 300));
+    if (r.isError) {
+      const detail = redact(r.text).slice(0, 300);
+      return afterError(detail, definiteRefusal(r.text) ? "definite" : "answered");
+    }
     const st = await readStatus();
     const mint = st.ok ? mintOf(st.status) : null;
-    if (mint) return { ok: true, outcome: "launched", mint, message: `launched: mint ${mint}. token_launch_status shows it.` };
-    return { ok: false, outcome: "no-mint-after-success", mint: null, message: "the launch call returned success but the status shows no mint yet. Call token_launch_status; say nothing until it shows a mint." };
+    if (mint) {
+      markerOff(`the status shows mint ${mint}`);
+      return { ok: true, outcome: "launched", mint, message: `launched: mint ${mint}. token_launch_status shows it.` };
+    }
+    return { ok: false, outcome: "no-mint-after-success", mint: null, message: `the launch call returned success but the status shows no mint yet. Call token_launch_status; say nothing until it shows a mint. ${markerKept}` };
   };
 
   const refuse = (reason: string): LaunchReport => ({ ok: false, outcome: "refused", mint: null, message: `refused: ${reason}` });
 
-  const launch = async (nonce: string): Promise<LaunchReport> => {
+  /** t0: when the request arrived. Everything, the status read and a reconnect included, answers by t0 + deadlineMs. */
+  const launch = async (nonce: string, t0: number): Promise<LaunchReport> => {
+    const deadline = t0 + deadlineMs;
+    if (closed) return refuse("the bridge is shutting down");
     if (inFlight) return refuse(`a launch is already in flight since ${inFlight.since}; call token_launch_status`);
+    // (0) an earlier launch call that never settled, in this process or one before a restart
+    const marker = readInflight(inflightFile);
+    if (marker) return refuse(`a launch may still be in flight since ${marker.since}: an earlier launch call never settled. Call token_launch_status and do not call token_launch again; your architect clears this only after checking the ClawPump dashboard`);
     // (a) the arm: present, private, this nonce, unexpired
     const arm = readArm(armFile);
     if (!arm.ok) return refuse(arm.reason);
@@ -233,16 +331,30 @@ export async function startBridge(opts: BridgeOptions = {}): Promise<Bridge> {
     inFlight = { since: new Date().toISOString(), done };
     let handedOff = false;
     try {
-      // (b) the stored state, read again right now
-      const st = await readStatus();
-      if (!st.ok) return refuse(`could not read the launch status: ${st.reason}`);
+      // (b) the stored state, read again right now, bounded so the answer still comes inside the deadline
+      const st = await readStatus(Math.max(1, Math.min(precheckTimeoutMs, deadline - Date.now())));
+      if (!st.ok) return refuse(`could not read the launch status in time (${st.reason}); nothing was sent and the arm is kept: try again`);
+      if (Date.now() >= deadline) return refuse("the status read used up the time to answer; nothing was sent and the arm is kept: try again");
       const problems = specProblems(st.status, cfg);
       if (problems.length) return refuse(`the launch status does not match the pinned spec: ${problems.join("; ")}`);
-      // (c) single use: claimed before anything is sent
+      // (c) the durable marker, then the arm claimed; both before anything is sent
+      if (live) {
+        try {
+          writeInflight(inflightFile, mode);
+        } catch (err) {
+          return refuse(`the in-flight marker could not be written (${redact((err as Error).message).slice(0, 160)}); nothing was sent and the arm is kept`);
+        }
+      }
       const used = consumeArm(armFile);
-      if (!used.ok) return refuse(used.reason);
+      if (!used.ok) {
+        if (live) clearInflight(inflightFile);
+        return refuse(used.reason);
+      }
       const usedBad = armProblem(used.arm, nonce);
-      if (usedBad) return refuse(`the arm changed while it was checked (${usedBad}); it is used now: re-arm`);
+      if (usedBad) {
+        if (live) clearInflight(inflightFile);
+        return refuse(`the arm changed while it was checked (${usedBad}); it is used now: re-arm`);
+      }
 
       const args = launchArguments(cfg);
       if (!live) {
@@ -254,7 +366,7 @@ export async function startBridge(opts: BridgeOptions = {}): Promise<Bridge> {
       const outcome = settle(upstream.call(UPSTREAM_LAUNCH_TOOL, args, upstreamTimeoutMs));
       const PENDING = Symbol("pending");
       let timer: NodeJS.Timeout | undefined;
-      const raced = await Promise.race([outcome, new Promise<typeof PENDING>((r) => (timer = setTimeout(() => r(PENDING), deadlineMs)))]);
+      const raced = await Promise.race([outcome, new Promise<typeof PENDING>((r) => (timer = setTimeout(() => r(PENDING), Math.max(0, deadline - Date.now()))))]);
       clearTimeout(timer);
       if (raced === PENDING) {
         handedOff = true;
@@ -296,7 +408,8 @@ export async function startBridge(opts: BridgeOptions = {}): Promise<Bridge> {
         const st = await readStatus();
         const arm = readArm(armFile);
         const armed = arm.ok && Date.parse(arm.arm.expiresAt) > Date.now();
-        const bridge = { mode, armed, ...(armed && arm.ok ? { armExpiresAt: arm.arm.expiresAt } : {}), inFlightSince: inFlight?.since ?? null, lastLaunch: last };
+        const marker = readInflight(inflightFile);
+        const bridge = { mode, armed, ...(armed && arm.ok ? { armExpiresAt: arm.arm.expiresAt } : {}), inFlightSince: inFlight?.since ?? marker?.since ?? null, unsettledLaunchMarker: marker ? { since: marker.since } : null, lastLaunch: last };
         if (!st.ok) {
           audit({ tool: BRIDGE_STATUS_TOOL, outcome: "status unreadable", mint: null, mode, detail: st.reason });
           return text({ ok: false, error: `could not read the launch status: ${st.reason}`, bridge }, true);
@@ -316,9 +429,10 @@ export async function startBridge(opts: BridgeOptions = {}): Promise<Bridge> {
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       },
       async ({ nonce }) => {
+        const t0 = Date.now();
         let rep: LaunchReport;
         try {
-          rep = await launch(nonce);
+          rep = await launch(nonce, t0);
         } catch (err) {
           rep = { ok: false, outcome: "unknown", mint: null, message: `the bridge hit an error (${redact((err as Error).message).slice(0, 200)}). Call token_launch_status before saying anything.` };
         }
@@ -373,10 +487,13 @@ export async function startBridge(opts: BridgeOptions = {}): Promise<Bridge> {
     url: `http://${BRIDGE_HOST}:${port}/mcp`,
     port,
     live,
+    inFlightSince: () => inFlight?.since ?? null,
     idle: async () => {
       while (inFlight) await inFlight.done;
     },
     close: async () => {
+      if (inFlight) log(`closing with a launch in flight since ${inFlight.since}: its outcome will read "unknown" and the in-flight marker stays`);
+      closed = true;
       await new Promise<void>((r) => {
         httpServer.close(() => r());
         httpServer.closeAllConnections();
@@ -413,9 +530,25 @@ async function main(): Promise<void> {
   const opts = parseBridgeArgs(process.argv.slice(2));
   const bridge = await startBridge(opts);
   console.log(`launch bridge up: ${bridge.url} · ${bridge.live ? "LIVE: token_launch calls ClawPump" : "DRY RUN: token_launch checks everything and calls nothing (--live for the real one)"}`);
+  let asked = false;
   const stop = async () => {
+    const since = bridge.inFlightSince();
+    if (since && !asked) {
+      asked = true;
+      console.error(
+        `\n!! A LAUNCH IS IN FLIGHT since ${since}. NOT stopping: stopping now would cut ClawPump off mid-launch.\n` +
+          `!! The bridge exits by itself once the launch settles. A second Ctrl-C forces it; the in-flight marker then stays and\n` +
+          `!! every launch is refused until you check the ClawPump dashboard and run: npm run launch:arm -- --clear-inflight\n`,
+      );
+      await bridge.idle();
+      await bridge.close();
+      process.exit(0);
+    }
+    if (since) console.error(`!! forced stop with a launch in flight since ${since}: the in-flight marker stays. Check the dashboard before anything else.`);
     await bridge.close();
-    process.exit(0);
+    // let the cut-off launch write its "unknown" line to the audit
+    await Promise.race([bridge.idle(), new Promise((r) => setTimeout(r, 2000))]);
+    process.exit(since ? 1 : 0);
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
