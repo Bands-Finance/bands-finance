@@ -8,6 +8,8 @@ import { OpenHermitError, OpenHermitReply, SessionMessage, AskOptions, balancedE
 import { COPYCAT_MINTS } from "../risk/house";
 import { lintText, linksIn, weightedLength, describeViolations } from "../talk/lint";
 import { talkEnv, lintContextOf } from "../talk/env";
+import { tokenAskIn, vetReply } from "../talk/replyGuards";
+import { blockedWordsIn } from "../talk/wordguard";
 import {
   brainProblem,
   brainTokenHash,
@@ -17,6 +19,7 @@ import {
   parseReply,
   PROMPT_TEXTS,
   REPLY_FACTS_NUMBERS,
+  REPLY_MEMORY_TOOLS,
   REPLY_RULES as BRAIN_REPLY_RULES,
   REPLY_TEMPLATES,
   replyFactsOf,
@@ -381,6 +384,81 @@ async function main(): Promise<void> {
     const rows = agentInstructions(buildSystemPrompt(limits, "__POOL__"), "paper");
     for (const [k, v] of Object.entries(rows)) assert.ok(!/\bzach|louz|loubert/i.test(v), `${k} names nobody`);
     assert.match(rows.soul, /only ever \\?"my architect\\?", never named/);
+  });
+
+  console.log("the review of 22 Sep, third round");
+  // the eight LP questions that borrow a token word, each with a plain answer a model could give
+  const LP: [string, string][] = [
+    ["how much sol do you deploy per band?", "i deploy what the engine sizes for each band, never past its hard limits, on a paper book."],
+    ["when do you launch a new band after a rebalance?", "a new band launches once the old range closes and the engine clears the pool again, on paper."],
+    ["do you deploy both sides of the range?", "sometimes both sides, sometimes sol only: the screen picks the shape per pool, on the paper book."],
+    ["did you get rugged on any pool?", "no pool on my paper book has pulled its liquidity out from under a band so far."],
+    ["which token pairs do you lp on meteora?", "sol pairs on meteora dlmm, picked by the screen each cycle, all on paper."],
+    ["is the dlmm pool contract audited?", "meteora runs the dlmm program. i read each pool, i don't audit its contract, and my book is paper."],
+    ["how do devs plug into the engine?", "devs read the engine through its tools, the same reads i make, all from a paper book."],
+    ["do you avoid pools with a mint authority still on?", "yes. when a mint authority is still on, the screen skips that pool, and my paper book never sits there."],
+  ];
+  // the eight that ask about HIS token, and the fixed line each gets
+  const HIS: [string, string][] = [
+    ["wen token?", "tokenPrelaunch"],
+    ["do you have a token?", "tokenPrelaunch"],
+    ["is $bands yours?", "tokenPrelaunch"],
+    ["whats the ca", "tokenPrelaunch"],
+    ["contract address?", "tokenPrelaunch"],
+    ["is that coin yours", "tokenPrelaunch"],
+    ["when are you launching your coin", "tokenPrelaunch"],
+    ["is JAARLU... yours", "copycat"],
+  ];
+  await test("an LP question that borrows deploy, launch, contract, mint, devs, rug or 'token pairs' goes to the model, and its plain answer passes vetReply", async () => {
+    for (const [q, a] of LP) {
+      assert.equal(fixedAnswer(mention(q), ENV), null, `${q}: no fixed line`);
+      assert.equal(fixedAnswer(mention(`@MrBandsSol ${q}`), ENV), null, `${q}: no fixed line with the handle`);
+      assert.equal(tokenAskIn(`@MrBandsSol ${q}`), null, `${q}: not a question about his token`);
+      const ask = fakeAsk(() => ({ text: okJson("2099911112222333444", a) }));
+      const d = await draftReply(mention(q), { env: ENV, askImpl: ask.impl });
+      assert.equal(ask.calls.length, 1, `${q}: the model is asked`);
+      assert.deepEqual(d, { kind: "reply", text: a, source: "model" }, q);
+      const refused = vetReply(a, { mention: { text: `@MrBandsSol ${q}`, parentText: null }, source: "model", recentReplies: [], allowedNumbers: REPLY_FACTS_NUMBERS, tokenMint: null, lint: lintCtx, templateTexts: [], promptTexts: PROMPT_TEXTS });
+      assert.equal(refused, null, `${q}: ${JSON.stringify(refused)}`);
+    }
+    // in the loop, "rugged" is still one of the word guard's scam words: the screen skips that mention before any route
+    assert.deepEqual(blockedWordsIn("did you get rugged on any pool?"), ["rugged"]);
+  });
+  await test("a question about HIS token, ca, contract address, coin, $bands or the copycat still gets its fixed line, and the model is never asked", async () => {
+    const ask = fakeAsk(() => ({ text: okJson("2099911112222333444", "yep, that was me.") }));
+    for (const [q, name] of HIS) {
+      assert.equal(tpl(q), name, q);
+      assert.equal(tpl(`@MrBandsSol ${q}`), name, `${q} with the handle`);
+      const d = await draftReply(mention(q), { env: ENV, askImpl: ask.impl });
+      assert.ok(d.kind === "reply" && d.source === "template" && d.template === name, `${q}: ${JSON.stringify(d)}`);
+      // a model reply to it would be refused whatever it says
+      assert.equal(vetReply("yes.", { mention: { text: `@MrBandsSol ${q}`, parentText: null }, source: "model", recentReplies: [], allowedNumbers: [], tokenMint: null })?.rule, "token-topic", q);
+    }
+    assert.equal(ask.calls.length, 0, "never asked");
+    // after launch they wait for zach, the copycat's denial aside
+    for (const [q, name] of HIS) assert.equal(tpl(q, {}, ENV_LAUNCHED), name === "copycat" ? "copycat" : "skip: token line awaits zach", q);
+  });
+  await test("the narrowing keeps the other token asks: launch, dev, mint, rug and a generic plural", () => {
+    for (const q of ["are you launching anything?", "launch date?", "wen launch", "did u launch bands?", "r u the dev of bands", "the dev of bands, is that you?", "whats your mint", "mint address?", "mint?", "is bands a rug?", "are you going to rug us?", "did you deploy a contract for it?"]) assert.equal(tpl(q), "tokenPrelaunch", q);
+    // a generic plural still names no token of his: skipped, and the model is not asked
+    for (const q of ["which tokens do you lp?", "not interested in memecoins, what about stocks?"]) assert.match(String(tpl(q)), /^skip: a token topic/, q);
+    // asking about his practice is not asking for a call; "would you lp" still is
+    for (const q of ["which pools do you lp in?", "do you size by volatility?", "do you enter at the active bin?"]) assert.equal(tpl(q), null, q);
+    for (const q of ["would you lp sol-usdc right now?", "should i lp here?", "do you hold sol?"]) assert.equal(tpl(q), "price", q);
+  });
+  await test("a model reply may say deploy, launch, contract, mint and devs; it still never claims a token or talks one", () => {
+    const vet = (text: string) => vetReply(text, { mention: { text: "@MrBandsSol how do bands work?", parentText: null }, source: "model", recentReplies: [], allowedNumbers: [], tokenMint: null })?.rule ?? null;
+    for (const ok of ["i deploy both sides when the screen says so, on paper.", "a band launches when the engine clears a pool, on paper.", "i read the pool contract before a band goes in, on paper.", "a mint authority left on keeps a pool off my paper book.", "devs can read the engine's calls through its tools."]) assert.equal(vet(ok), null, ok);
+    for (const no of ["yes, i launched it.", "i deployed it on pump.", "launching soon, stay close.", "the dev wallet is clean.", "here's the contract address, on paper.", "the mint address is not out yet.", "my launch is close.", "the coin is mine", "we minted it last week."]) assert.equal(vet(no), "token-topic", no);
+  });
+  await test("a reply turn may read his memory and this conversation; another session, a write or a web tool voids it", () => {
+    const good = `{"mention":"${id}","reply":"hi on paper"}`;
+    assert.deepEqual([...REPLY_MEMORY_TOOLS], ["memory_get", "memory_list", "memory_recall", "fetch_full_history"]);
+    for (const tool of REPLY_MEMORY_TOOLS) assert.equal(parseReply(good, id, [{ tool }, { tool: "mcp__bands-paper__bands_limits" }]).kind, "reply", tool);
+    for (const tool of ["session_list", "session_read", "session_summary", "memory_add", "memory_update", "memory_delete", "working_memory_update", "web_fetch", "web_search", "session_send"]) {
+      const d = parseReply(good, id, [{ tool: "memory_recall" }, { tool }]);
+      assert.equal(d.kind === "skip" && d.source, "contract", tool);
+    }
   });
 
   console.log(process.exitCode ? "reply brain: FAILED" : `reply brain: ${passed} passed`);

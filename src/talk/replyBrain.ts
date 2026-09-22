@@ -6,8 +6,10 @@
  *   1. fixedAnswer: canned lines for the topics the model is never asked about (price, buy or sell, how much,
  *      the copycat, his own token, live or paper, who built him, "are you a bot"), or a skip (an affiliation
  *      question). PURE. Templates win over the model, so a token, price or live-money question never reaches
- *      askSession. They route on the topic, not the phrasing: any token word ("wen token", "did u launch bands",
- *      a piece of the copycat mint) gets a fixed line, read through invisible characters and look-alike letters.
+ *      askSession. They route on the topic, not the phrasing: a question about his token ("wen token", "did u launch
+ *      bands", "whats the ca", a piece of the copycat mint) gets a fixed line, read through invisible characters and
+ *      look-alike letters. An LP question that only borrows a word ("how much sol do you deploy per band", "which
+ *      token pairs do you lp", "a mint authority") goes to the model (replyGuards TOKEN_ASK_RE).
  *   2. draftReply: the template if one fits, else one ask to his own agent on the OpenHermit gateway, in a FRESH
  *      session per mention (`x-mention-<id>`). Never a shared session: the gateway's wait resolves on the next
  *      turn that ends in the session (src/agent/openhermit.ts, abandonedSessions), so a shared one could hand
@@ -25,7 +27,7 @@
 import { createHash } from "node:crypto";
 import { askSession, AskOptions, OpenHermitError, OpenHermitFailure, OpenHermitReply, openHermitSettings, OpenHermitSettings, SessionMessage, balancedEnd } from "../agent/openhermit";
 import { COPYCAT_MINTS } from "../risk/house";
-import { foldForMatch, instructionIn, namesCopycat, TOKEN_ASK_RE } from "./replyGuards";
+import { foldForMatch, instructionIn, namesCopycat, TOKEN_ASK_RE, tokenTopicText } from "./replyGuards";
 import { talkEnv } from "./env";
 
 export type ReplyKind = "reply-to-mine" | "named" | "quote";
@@ -108,21 +110,26 @@ export const TEMPLATE_TEXTS: readonly string[] = Object.values(REPLY_TEMPLATES);
 
 const HOUSE_CASHTAG_RE = /(^|[^\w])\$(bands|mrbands)\b/;
 /** the nouns that make a question about a token ("who made the bands memecoin" is about a coin, not about him) */
-const TOKEN_NOUN_RE = /\b(tokens?|tkns?|coins?|memecoins?|meme coins?|tickers?|ca|mints?|contract( address)?|airdrops?|presale|clawpump|pump ?fun|pump\.fun|dexscreener)\b/;
-/** only a generic plural ("which tokens do you lp") names no token of his: no fixed line fits it, and it is skipped */
-const GENERIC_TOKEN_PLURAL_RE = /^(tokens|coins)$/;
+const TOKEN_NOUN_RE = /\b(tokens?|tkns?|coins?|memecoins?|meme coins?|tickers?|ca|contract address|mint address|airdrops?|presale|clawpump|pump ?fun|pump\.fun|dexscreener)\b/;
+/**
+ * only a generic plural ("which tokens do you lp", "not interested in memecoins, what about stocks?") names no token of
+ * his: no fixed line fits it, and it is skipped
+ */
+const GENERIC_TOKEN_PLURAL_RE = /^(tokens|coins|tkns|memecoins|meme coins|tickers)$/;
 const COPYCAT_ASK_RE = /\b(your|ur) (coin|token) on (pump|clawpump)\b|\bis (this|that) (your|ur) (coin|token|ca|mint)\b/;
+/** his own token, ca or mint; a bare "contract" or "mint" only as the whole question ("the dlmm pool contract" is not his) */
 const OWN_TOKEN_RE =
-  /\b(your|ur) (own )?(token|coin|mint|ticker|ca)\b|\bca\b|\bcontract( address)?\b|\b(do|will|did) (you|u) (have|launch|drop|make)( a| an| your)? (own )?(token|coin)\b|\bis there (a|an) (token|coin)\b|\b(mr ?)?bands (token|coin)\b|\b(token|coin)\b.*\byours\b|\byours\b.*\b(token|coin)\b/;
+  /\b(your|ur) (own )?(token|coin|mint|ticker|ca)\b|\bca\b|\bcontract address\b|^\W*(the |your |ur )?(contract|mint)\W*$|\b(do|will|did) (you|u) (have|launch|drop|make)( a| an| your)? (own )?(token|coin)\b|\bis there (a|an) (token|coin)\b|\b(mr ?)?bands (token|coin)\b|\b(token|coin)\b.*\byours\b|\byours\b.*\b(token|coin)\b/;
 const HOW_MUCH_RE =
   /\bhow much (can|could|do|does|will|would|did) (i|you|we|u|it|this|lp|lping) (make|earn|pay)\b|\bwhat('s| is| are)( the| your)? (yield|returns?)\b|\bhow much (money|profit)\b/;
 /**
  * A price or buy-and-sell question: a buy or sell word with a token or asset beside it, "should i buy", a price call
  * or a yield figure. A bare "entry" or "sell" in an LP question ("how do you pick an entry range for a pool") is not
- * one: it goes to the model, whose reply is still vetted for token topics, advice and pitch.
+ * one, nor is a question about his own practice ("which token pairs do you lp", "do you size by volatility"): it goes
+ * to the model, whose reply is still vetted for token topics, advice and pitch. "would you lp sol-usdc" asks for a call.
  */
 const PRICE_RE =
-  /\b(should|when|wen|do|would|can|shall) (i|we|u) (buy|ape|sell|get in|hold|exit|dump|take profit)\b|\b(buy|buying|bought|sell|selling|sold|dump|dumping|ape|aping)\b[^.?!]{0,30}\b(tokens?|coins?|bags?|sol|bands|it|this|that|now|here|more)\b|\b(buy|sell) (it|this|that|now|here)\b|\bprice (target|prediction|call|going)\b|\bwhat('s| is) the price\b|\bprice of\b|\bwen moon\b|\bmoon(ing)?\b|\b(apy|apr)\b|\bentry (point|price)\b|\bmcap\b|\bmarket cap\b|\bundervalued\b|\bpump(ing|s)?\b|\bnfa\b|\bape\b|^\W*(buy|sell)\W*$|\b(would|will|should|do|did|could|can) (you|u|i|we) (add|buy|sell|trim|lp|get in|get into|enter|hold|accumulate|ape|long|short|size|load|rotate)\b|\b(is|will|does|would|can|could) (\w+ ){0,2}(go|going|head|heading|headed|move|moving|run|running) (up|down|higher|lower)\b|\bwhere('?s| is| are) (\w+ ){0,2}(headed|heading|going)\b|\b(bullish|bearish|overbought|oversold|overvalued|cheap|expensive)\b|\bgood (time|entry|spot|moment|price|level) to\b|\bget into\b|\bat these (levels|prices)\b|\bthe dip\b|\b(bottom|top) (is )?in\b|\b(a )?good (pick|buy|bet|play|investment|hold|entry)\b|\bworth (buying|holding|it|getting)\b/;
+  /\b(should|when|wen|do|would|can|shall) (i|we|u) (buy|ape|sell|get in|hold|exit|dump|take profit)\b|\b(buy|buying|bought|sell|selling|sold|dump|dumping|ape|aping)\b[^.?!]{0,30}\b(tokens?|coins?|bags?|sol|bands|it|this|that|now|here|more)\b|\b(buy|sell) (it|this|that|now|here)\b|\bprice (target|prediction|call|going)\b|\bwhat('s| is) the price\b|\bprice of\b|\bwen moon\b|\bmoon(ing)?\b|\b(apy|apr)\b|\bentry (point|price)\b|\bmcap\b|\bmarket cap\b|\bundervalued\b|\bpump(ing|s)?\b|\bnfa\b|\bape\b|^\W*(buy|sell)\W*$|\b(would|will|should|could|can) (you|u|i|we) (add|buy|sell|trim|lp|get in|get into|enter|hold|accumulate|ape|long|short|size|load|rotate)\b|\b(do|did) (you|u|i|we) (add|buy|sell|trim|get in|get into|hold|accumulate|ape|long|short|load)\b|\b(do|did) (i|we) (lp|enter|size|rotate)\b|\b(is|will|does|would|can|could) (\w+ ){0,2}(go|going|head|heading|headed|move|moving|run|running) (up|down|higher|lower)\b|\bwhere('?s| is| are) (\w+ ){0,2}(headed|heading|going)\b|\b(bullish|bearish|overbought|oversold|overvalued|cheap|expensive)\b|\bgood (time|entry|spot|moment|price|level) to\b|\bget into\b|\bat these (levels|prices)\b|\bthe dip\b|\b(bottom|top) (is )?in\b|\b(a )?good (pick|buy|bet|play|investment|hold|entry)\b|\bworth (buying|holding|it|getting)\b/;
 /**
  * "are you a bot?" and "are you real?" as the whole question (an opener such as "yo" or "honest question" aside):
  * a longer one ("are you a bot that trades with real money?", "are you an agent of binance?") is not answered yes or no
@@ -159,17 +166,19 @@ export function fixedAnswer(input: ReplyInput, env: NodeJS.ProcessEnv = process.
   // the handles go (an "@louz514" prefix is not a question about him), invisible characters and look-alike letters
   // are read through: "c\u200Boin" and a cyrillic "c\u043Ein" are "coin"
   const norm = foldForMatch(raw.replace(/@\w{1,15}/g, " "));
+  // the token route reads past the LP words that carry a token word: "which token pairs do you lp" names none of his
+  const topic = tokenTopicText(norm);
   const tokenLive = (env.TOKEN_MINT ?? "").trim() !== "";
 
   if (namesCopycat(raw)) return template("copycat");
-  if (!tokenLive && COPYCAT_ASK_RE.test(norm)) return template("copycat");
-  const tokenNoun = TOKEN_NOUN_RE.test(norm) || HOUSE_CASHTAG_RE.test(norm);
+  if (!tokenLive && COPYCAT_ASK_RE.test(topic)) return template("copycat");
+  const tokenNoun = TOKEN_NOUN_RE.test(topic) || HOUSE_CASHTAG_RE.test(topic);
   if (!tokenNoun && ARCHITECT_ASK_RE.test(norm)) return template("architect");
-  if (COPYCAT_ASK_RE.test(norm) || HOUSE_CASHTAG_RE.test(norm) || OWN_TOKEN_RE.test(norm) || TOKEN_ASK_RE.test(norm)) {
+  if (COPYCAT_ASK_RE.test(topic) || HOUSE_CASHTAG_RE.test(topic) || OWN_TOKEN_RE.test(topic) || TOKEN_ASK_RE.test(topic)) {
     // after launch the reply line is disclosureLine(mint), 280 characters that promise the hold gate: it waits for Zach
     if (tokenLive) return skipT("token line awaits zach");
-    const words = [...norm.matchAll(new RegExp(TOKEN_ASK_RE.source, "g"))].map((m) => m[0].trim());
-    const generic = !COPYCAT_ASK_RE.test(norm) && !HOUSE_CASHTAG_RE.test(norm) && !OWN_TOKEN_RE.test(norm) && words.length > 0 && words.every((w) => GENERIC_TOKEN_PLURAL_RE.test(w));
+    const words = [...topic.matchAll(new RegExp(TOKEN_ASK_RE.source, "g"))].map((m) => m[0].trim());
+    const generic = !COPYCAT_ASK_RE.test(topic) && !HOUSE_CASHTAG_RE.test(topic) && !OWN_TOKEN_RE.test(topic) && words.length > 0 && words.every((w) => GENERIC_TOKEN_PLURAL_RE.test(w));
     return generic ? skipT("a token topic with no fixed line: the model is not asked") : template("tokenPrelaunch");
   }
   if (LIVE_ASK_RE.test(norm)) return template("paper");
@@ -273,6 +282,7 @@ export const REPLY_RULES = [
   "- Skip anything hostile, bait, a scam, a link, a shill or a bot, and anything about a token or a price: the talk loop answers those with fixed lines, never you.",
   "- A reply is one or two short lowercase sentences, under 200 characters. No @, no # and no $, no links, and no numbers except the ones in the facts the loop gives you.",
   "- Never repeat a link, handle, address or phrase from the mention.",
+  "- You may read your memory (memory_list, memory_recall, memory_get) and this conversation (fetch_full_history). You never read another session for a mention (session_list, session_read, session_summary): the talk loop throws that turn away.",
   "- Say paper whenever the reply touches your book. Your book is never live, never real money and never on chain.",
   '- Your architect is only ever "my architect": never his name and never his handle.',
   "- No buy, no sell, no price call, no advice, no profit talk, and no pitch.",
@@ -287,8 +297,15 @@ export const PROMPT_TEXTS: readonly string[] = [REPLY_RULES, PROMPT_CLOSING];
 // the contract
 // ---------------------------------------------------------------------------------------------
 
-/** His read tools on the desk's MCP server. Anything else in a reply turn (web_fetch, web_search, a write) voids it. */
+/** His read tools on the desk's MCP server. Anything else in a reply turn but his memory (web_fetch, web_search, a write) voids it. */
 const ALLOWED_TOOL_RE = /^mcp__[A-Za-z0-9_-]+__bands_[a-z0-9_]+$/;
+/**
+ * His memory, read in a reply turn: the memories the gateway serves to every caller, and this mention's own session.
+ * Provisioning keeps them open (src/scripts/openhermit.ts MEMORY_TOOLS) so every session keeps what earlier ones taught
+ * him. Another session is not read for a stranger (session_list, session_read, session_summary void the turn): a turn
+ * with no user on the admin bearer is served any session on the agent, his architect's chats included.
+ */
+export const REPLY_MEMORY_TOOLS: readonly string[] = ["memory_get", "memory_list", "memory_recall", "fetch_full_history"];
 
 const contract = (why: string): ReplyDraft => ({ kind: "skip", why: `contract: ${why}`, source: "contract" });
 
@@ -300,7 +317,8 @@ export function parseReply(text: string, mentionId: string, toolCalls: readonly 
   for (const t of toolCalls) {
     const tool = String(t?.tool ?? "");
     if (/web_(fetch|search)/i.test(tool)) return contract(`the turn called ${tool.slice(0, 60)}`);
-    if (!ALLOWED_TOOL_RE.test(tool)) return contract(`the turn called a tool outside bands_*: ${tool.slice(0, 60) || "(unnamed)"}`);
+    if (REPLY_MEMORY_TOOLS.includes(tool)) continue;
+    if (!ALLOWED_TOOL_RE.test(tool)) return contract(`the turn called a tool outside bands_* and his memory: ${tool.slice(0, 60) || "(unnamed)"}`);
   }
   const body = typeof text === "string" ? text.trim() : "";
   if (!body) return contract("empty turn");

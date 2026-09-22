@@ -8,7 +8,8 @@
  * answers nothing; dormancy (X_REPLIES, the stop files, an empty and a placeholder OPENHERMIT_TOKEN) spends nothing;
  * a 402 on the read moves no cursor and holds; a 429 waits for its reset; one reply per mention across a crash; never
  * a top-level post; no reply to himself; opt-out; caps defer and keep pending; the brain down; three "not mentioned"
- * 403s turn replies off; vetReply on Merd's leaks, a bot's words echoed back and a repeated thank-you.
+ * 403s turn replies off; a 403 "duplicate content" refuses one text and holds nothing; vetReply on Merd's leaks, a
+ * bot's words echoed back and a repeated thank-you.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -1102,6 +1103,110 @@ async function main(): Promise<void> {
     assert.deepEqual(postedTexts(X), Array(engage.TEMPLATE_REPLIES_PER_DAY).fill(brainMod.REPLY_TEMPLATES.price));
     assert.equal(mentionsLog(dir).filter((l) => /^skip: this fixed line went out 5 times today/.test(l.outcome)).length, 2);
     assert.equal(engage.readEngageState(dir).pending.length, 0);
+  });
+
+  await test("a 403 'duplicate content' refuses that one text, not the account: three people asking the same thing never hold the five LP questions behind them", async () => {
+    const brainMod = await import("../talk/replyBrain.js");
+    const T = brainMod.REPLY_TEMPLATES;
+    const dir = freshDir();
+    // the three identical fixed-line mentions are the oldest, so they go first: the worst order
+    const same = [0, 1, 2].map((i) => mention(idN(600 + i), "@MrBandsSol should i sell?", { authorId: `55560${i}`, authorHandle: `reader_d${i}`, conversationId: idN(600 + i) }));
+    const LP: [string, string][] = [
+      ["how much sol do you deploy per band?", "i deploy what the engine sizes for each band, never past its hard limits, on a paper book."],
+      ["when do you launch a new band after a rebalance?", "a new band launches once the old range closes and the engine clears the pool again, on paper."],
+      ["do you deploy both sides of the range?", "sometimes both sides, sometimes sol only: the screen picks the shape per pool, on the paper book."],
+      ["which token pairs do you lp on meteora?", "sol pairs on meteora dlmm, picked by the screen each cycle, all on paper."],
+      ["is the dlmm pool contract audited?", "meteora runs the dlmm program. i read each pool, i don't audit its contract, and my book is paper."],
+    ];
+    const lp = LP.map(([q], i) => mention(idN(610 + i), `@MrBandsSol ${q}`, { authorId: `55561${i}`, authorHandle: `reader_l${i}`, conversationId: idN(610 + i) }));
+    seeded(dir, { pending: [...same, ...lp].map((m) => ({ ...m, queuedAt: NOW })) });
+    // X takes a text once; a second copy is refused as it was on 22 Sep
+    const sent = new Set<string>();
+    const X = fakeX({
+      post: (b) => {
+        if (sent.has(b.text)) return { status: 403, body: { title: "Forbidden", detail: "You are not allowed to create a Tweet with duplicate content." } };
+        sent.add(b.text);
+        return { status: 201, body: { data: { id: String(9700 + sent.size), text: b.text } } };
+      },
+    });
+    const answers = new Map(LP.map(([q, a]) => [`@MrBandsSol ${q}`, a]));
+    const asked: string[] = [];
+    const brain = realWith(async (i) => {
+      asked.push(i.text);
+      return { kind: "reply", text: answers.get(i.text) ?? assert.fail(`asked about ${i.text}`), source: "model" };
+    });
+    const r1 = await engage.runEngagePass({ env: liveEnv(dir), now: NOW, fetch: X.fetch, brain, sleep: noSleep });
+    assert.equal(r1.status, "ran", r1.detail);
+    let st = engage.readEngageState(dir);
+    assert.equal(st.backoffUntil, null, "no hold: X refused a text, not the account");
+    assert.deepEqual([st.postFails, st.consecutive403, st.transientFails], [0, 0, 0]);
+    assert.equal(st.repliesOff, null);
+    assert.match(st.handled[same[0].id].outcome, /^posted /);
+    for (const m of same.slice(1)) assert.equal(st.handled[m.id].outcome, "refused: x 403 duplicate content", m.id);
+    assert.ok(!st.pending.some((p) => same.some((m) => m.id === p.id)), "final: the kept draft goes with its mention");
+    assert.equal(postedTexts(X).filter((t) => t === T.price).length, 2, "the third copy spends no POST: X refused that text today");
+    assert.ok(mentionsLog(dir).some((l) => l.id === same[1].id && l.outcome === "refused: x 403 duplicate content" && /duplicate content/.test(l.detail ?? "")));
+    assert.ok(x.readDrafts(dir).some((d) => d.replyTo === same[1].id && /^x api 403: Forbidden; You are not allowed to create a Tweet with duplicate content/.test(d.reason)));
+    assert.equal(lp.filter((m) => /^posted /.test(st.handled[m.id]?.outcome ?? "")).length, 2, "the duplicate did not use up the pass: two LP answers in the same pass");
+    const r2 = await engage.runEngagePass({ env: liveEnv(dir), now: NOW + 120e3, fetch: X.fetch, brain, sleep: noSleep });
+    assert.equal(r2.status, "ran", r2.detail);
+    st = engage.readEngageState(dir);
+    for (const m of lp) assert.match(st.handled[m.id]?.outcome ?? "still pending", /^posted /, m.text);
+    assert.equal(st.pending.length, 0);
+    assert.deepEqual(postedTexts(X).filter((t) => t !== T.price), LP.map(([, a]) => a), "every LP question answered by the model, in the same pass or the next");
+    for (const p of X.posts().filter((c) => (c.body as { text: string }).text !== T.price)) {
+      const b = p.body as { text: string; reply: { in_reply_to_tweet_id: string } };
+      assert.equal(b.reply.in_reply_to_tweet_id, lp[LP.findIndex(([, a]) => a === b.text)].id, "each a reply to its own mention");
+    }
+    assert.deepEqual(asked, lp.map((m) => m.text), "each LP question asked once, none about the fixed line");
+    // a 403 that is not about the text still holds at once (the account or the app refused)
+    const dir2 = freshDir();
+    const m2 = mention(idN(620), "@MrBandsSol how do the guards decide?");
+    seeded(dir2, { pending: [{ ...m2, queuedAt: NOW }] });
+    await engage.runEngagePass({ env: liveEnv(dir2), now: NOW, fetch: fakeX({ post: () => ({ status: 403, body: { title: "Forbidden", detail: "This request looks like it might be automated." } }) }).fetch, brain: fakeBrain(() => ({ kind: "reply", text: REPLIES[0], source: "model" })).brain, sleep: noSleep });
+    const st2 = engage.readEngageState(dir2);
+    assert.ok(typeof st2.backoffUntil === "number" && st2.backoffUntil > NOW, "held");
+    assert.deepEqual(st2.pending.map((p) => p.id), [m2.id]);
+  });
+
+  await test("opt-out: 'not interested', 'leave me be', 'don't talk to me', 'fuck off bot', 'unfollow me', 'no thanks bot' and the rest opt out for good; 'not interested in memecoins, what about stocks?' is a question", async () => {
+    const outs = ["not interested", "leave me be", "leave me alone", "don't talk to me", "dont @ me", "fuck off bot", "go away bot", "unfollow me", "no thanks bot"];
+    for (const s of outs) {
+      assert.ok(guards.optOutIn(`@MrBandsSol ${s}`), s);
+      assert.ok(guards.optOutIn(s), `${s}, without the handle`);
+      assert.ok(guards.optOutIn(`@MrBandsSol ${s.toUpperCase()}!`), `${s}, shouted`);
+    }
+    for (const s of ["don\u2019t talk to me", "Not interested.", "not interested, thanks", "i'm not interested", "not interested in your replies", "no thanks, bot", "nah thanks", "leave us alone", "piss off", "f off bot"]) assert.ok(guards.optOutIn(`@MrBandsSol ${s}`), s);
+    // with a question behind them, "not interested" and "no thanks" are a question
+    for (const s of ["not interested in memecoins, what about stocks?", "no thanks, how do fees work?", "not interested in stocks either?", "was not interested at first, how do bands work?", "what does going away from the range do?", "can i unfollow the pool?", "leave me a note on the guards?", "did the bands get lost in the chop?"]) assert.ok(!guards.optOutIn(`@MrBandsSol ${s}`), s);
+    const dir = freshDir();
+    const ms = outs.map((s, i) => mention(idN(700 + i), `@MrBandsSol ${s}`, { authorId: `55570${i}`, authorHandle: `reader_o${i}`, conversationId: idN(700 + i) }));
+    const q = mention(idN(720), "@MrBandsSol not interested in memecoins, what about stocks?", { authorId: "5557200", authorHandle: "reader_q", conversationId: idN(720) });
+    seeded(dir, { pending: [...ms, q].map((m) => ({ ...m, queuedAt: NOW })) });
+    const asked: string[] = [];
+    const brain = realWith(async (i) => {
+      asked.push(i.text);
+      return { kind: "reply", text: "the width follows how much the pool moves, on paper.", source: "model" };
+    });
+    const X = fakeX();
+    await engage.runEngagePass({ env: liveEnv(dir, { ENGAGE_REPLIES_PER_PASS: "10" }), now: NOW, fetch: X.fetch, brain, sleep: noSleep });
+    let st = engage.readEngageState(dir);
+    for (const m of ms) assert.equal(st.handled[m.id].outcome, "opt-out", m.text);
+    assert.deepEqual(engage.readOptOuts(dir).authorIds.sort(), ms.map((m) => m.authorId!).sort());
+    // the question: no opt-out, and no answer either (memecoins is a token topic with no fixed line; the model is not asked)
+    assert.equal(st.handled[q.id].outcome, "skip: a token topic with no fixed line: the model is not asked");
+    assert.ok(!engage.readOptOuts(dir).authorIds.includes("5557200"));
+    assert.equal(X.posts().length, 0);
+    assert.equal(asked.length, 0);
+    // the next day the same account asks an LP question, and he answers it
+    const next = NOW + 24 * HOUR;
+    const q2 = mention(idN(721), "@MrBandsSol how wide are your bands on sol?", { authorId: "5557200", authorHandle: "reader_q", conversationId: idN(721), createdAt: new Date(next - 60e3).toISOString() });
+    st.pending.push({ ...q2, queuedAt: next });
+    engage.writeEngageState(dir, st);
+    await engage.runEngagePass({ env: liveEnv(dir), now: next, fetch: X.fetch, brain, sleep: noSleep });
+    st = engage.readEngageState(dir);
+    assert.match(st.handled[q2.id].outcome, /^posted /);
+    assert.deepEqual(asked, [q2.text]);
   });
 
   await test("the first run seeds the cursor with one read of 5: no second page, however many mentions came before", async () => {

@@ -131,14 +131,22 @@ model change and it writes only what differs. It refuses to start, before it tou
    (OpenRouter) the newest `anthropic/claude-<family>*` on OpenRouter where the family is the desk's
    `MODEL` (`claude-opus-5` today, so opus) or (Anthropic) the desk's `MODEL` itself; the script prints
    what it chose. At Anthropic the agent must already hold an `ANTHROPIC_API_KEY` secret.
-   Memory introspection is asked off (`memory.introspection.enabled: false`): one decision a cycle is not a
-   conversation. The gateway does not honour that flag on its idle path today: every session gets one
-   introspection run on the agent's main model 10 minutes after its last turn (`scheduleIdleSummary` in
-   `apps/agent/src/agent-runner.ts` never reads `enabled`), with memory write tools the tool policy does not
-   reach. So each desk session and each talk-loop mention session (`x-mention-<id>`) costs a second model run on
-   the shared OpenRouter key, and the talk loop counts each ask as two against `ENGAGE_MODEL_CALLS_PER_DAY`. The
-   fixes are upstream (return early when `enabled` is false, a fleet-wide change for the Meridian side to review) or
-   a separate gateway agent for the talk loop's mentions, so their introspection never writes the desk's memory.
+   **His memory stays on** (Zach, 22 Sep: "I would like to keep our agent running on openhermit for persistent
+   memory"). The gateway's introspection is how he keeps what a session taught him: every 5 turns, and 10 minutes
+   after a session's last turn, it runs his model over the new turns and writes his memories and the session's working
+   memory, with its own tools that no tool policy reaches (`apps/agent/src/introspection`). Provisioning never turns
+   it off, shortens it or narrows it (`introspectionFor`): a config an earlier provisioning asked off
+   (`memory.introspection.enabled: false`, what the provisioning code of 22 Sep wrote) is asked on again with its other
+   fields kept, a field the gateway's schema needs and the block lacks takes the gateway's default, and a config with
+   no introspection block keeps the gateway's defaults (on: 5 turns, 20 passive group messages, 10 minutes idle, 10
+   tool calls, his own model). Nothing else in `memory` (`context_entry_limit`) or in `context` (the rolling window)
+   is written. The gateway read `enabled: false` only to ignore configured intervals for its defaults, so the old flag
+   never stopped introspection; it is asked on anyway, so a gateway that honours the flag later keeps his memory. A
+   memory change alone never restarts the runner: it reads its config on every turn. Each desk session and each
+   talk-loop mention session (`x-mention-<id>`) costs that second model run on the shared OpenRouter key, and the talk
+   loop counts each ask as two against `ENGAGE_MODEL_CALLS_PER_DAY`. A mention's session is introspected too, so what
+   strangers say can reach his memory: the identity row tells him his memory is his notes, never instructions, and
+   the desk's guards and the talk loop's still decide everything that acts or posts.
 3. **The instructions.** `identity`, `soul` and `rules` are cut from the desk's own system prompt with
    the per-pool clause removed: who he is and how DLMM, the screener and the engine work go to
    `identity`; the voice to `soul`; the rules that never bend, the decision order, the hard limits and
@@ -149,7 +157,9 @@ model change and it writes only what differs. It refuses to start, before it tou
    describes; use your bands_* tools to look at the pool first when the observation is thin."*
    The hard limits written are the ones the provisioning process runs with, so provision from the
    environment of the desk that will use him: `set -a; . ops/live.env; set +a; npm run openhermit --
-   provision --mcp live` for the live desk. The rules also say the observation wins where it differs.
+   provision --mcp live` for the live desk. The rules also say the observation wins where it differs. `identity`
+   also tells him his memory goes with him into every session (memory_list, memory_recall, memory_get and his session
+   history) and is his notes, never instructions.
 4. **The MCP servers.** `bands-paper` (`http://127.0.0.1:3100/mcp`) and `bands-live`
    (`http://127.0.0.1:3101/mcp`) are both registered (`--mcp-url` overrides the chosen one's URL), each
    with `Authorization: Bearer <PLATFORM_HOUSE_TOKEN>` and `metadata.audience: "house"`. The one
@@ -158,12 +168,30 @@ model change and it writes only what differs. It refuses to start, before it tou
    overwritten by the first provision after this change.
    The gateway keeps the header in Postgres (`mcp_servers.headers`) and shows only its key name over the
    agent API; the admin API returns it whole, as it does for the Meridian rows.
-5. **The runner.** The agent is started, or restarted when its model or instructions changed so the
-   new rows are read (`runnerAction`). The tool policy alone never restarts it: the runner reads its policy
-   rows on every turn, and a restart stops a desk turn in flight and drops its MCP connections.
+5. **The tool policy.** A deny for every principal on the gateway tools no caller of his needs and a stranger's text
+   could turn against him (`DENIED_TOOLS`): `web_fetch` and `web_search` (the way out: a mention could carry his
+   memory or a session to a URL of its choosing), `doc_read` and the four `attachment_*` tools (files; the desk and the
+   talk loop post text only), `schedule_list` and `schedule_runs` (the owner's jobs), `identity_link_request` and
+   `identity_link_confirm` (tying a channel account to a gateway user). None of them is memory.
+   **His memory and history are never denied** (`MEMORY_TOOLS`): `memory_get`, `memory_list` and `memory_recall`
+   (the gateway injects no memory into a prompt, so these are the only way a session reads what earlier ones taught
+   him), `session_list`, `session_read`, `session_summary` and `fetch_full_history`. The provisioning code of 22 Sep
+   denied those seven, and a row it wrote would outlive the list: a run now lifts every deny-for-everyone row on a
+   memory or history tool
+   (`DELETE /api/agents/mr-bands/policies/tool/<tool>?effect=deny`) and names, without touching, a narrower deny it
+   never wrote. `toolPolicyRows` refuses to write a deny on any `memory_*`, `working_memory_*` or history tool,
+   whatever the list says. The memory writes (`memory_add`, `memory_update`, `memory_delete`) keep the gateway's own
+   grants (owner and user): a desk or talk-loop turn carries no user, so he writes no memory inside a turn himself;
+   introspection writes it for him. The talk loop lets a reply turn read his memory and its own conversation
+   (`fetch_full_history`) and voids one that read another session (`src/talk/replyBrain.ts`): under the admin bearer a
+   turn with no user is served any session on the agent, his architect's chats included.
+6. **The runner.** The agent is started, or restarted when its model or instructions changed so the
+   new rows are read (`runnerAction`). The tool policy and his memory alone never restart it: the runner reads its
+   policy rows and its config on every turn, and a restart stops a desk turn in flight and drops its MCP connections.
 
-`status` prints the gateway health, the agent row (enabled, runner running or stopped), the model, the
-first line of each instruction row, and the MCP servers enabled for him with whether an auth header is
+`status` prints the gateway health, the agent row (enabled, runner running or stopped), the model, his memory
+(introspection on, or asked off, and any deny left on a memory or history tool), the first line of each instruction
+row, and the MCP servers enabled for him with whether an auth header is
 set and which audience it buys at the desk: `house` when the header is this environment's
 `PLATFORM_HOUSE_TOKEN`, `OPERATOR` (loudly, with "run provision again") when it is the operator token,
 `public` with no header. The value is read from the admin API and compared in-process, never printed;
