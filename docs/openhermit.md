@@ -129,7 +129,7 @@ model change and it writes only what differs. It refuses to start, before it tou
 2. **The model.** `config.model = { provider, model, max_tokens: 4096 }`. The provider is `--provider`,
    else `OPENHERMIT_PROVIDER`, else `openrouter`. The model is `--model`, else `OPENHERMIT_MODEL`, else
    (OpenRouter) the newest `anthropic/claude-<family>*` on OpenRouter where the family is the desk's
-   `MODEL` (`claude-opus-5` today, so opus) or (Anthropic) the desk's `MODEL` itself; the script prints
+   `MODEL` (`claude-opus-5.5` today, so opus) or (Anthropic) the desk's `MODEL` itself; the script prints
    what it chose. At Anthropic the agent must already hold an `ANTHROPIC_API_KEY` secret.
    **His memory stays on** (Zach, 22 Sep: "I would like to keep our agent running on openhermit for persistent
    memory"). The gateway's introspection is how he keeps what a session taught him: every 5 turns, and 10 minutes

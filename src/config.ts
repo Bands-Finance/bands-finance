@@ -11,7 +11,7 @@ const Raw = z.object({
   RPC_URL: z.string().default("https://api.mainnet-beta.solana.com"),
   WALLET_SECRET_KEY: z.string().default(""),
   ANTHROPIC_API_KEY: z.string().default(""),
-  MODEL: z.string().default("claude-opus-5"),
+  MODEL: z.string().default("claude-opus-5.5"),
   DRY_RUN: z.string().default("true"),
   POOL_ADDRESS: z.string().default(""),
   AUTO_DEPLOY: z.string().default("false"),
