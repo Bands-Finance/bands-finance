@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import { useReveal } from "../hooks/useReveal";
+import { Learned } from "./Learned";
 import "./Learn.css";
 
 const ri = (n: number) => ({ "--ri": n }) as CSSProperties;
@@ -97,8 +98,9 @@ const IDEAS: Idea[] = [
 
 /**
  * "Learn": the plain-language explainer for people who came to understand
- * Mr Bands, not to read a table. Six ideas, then two doors: the ranked pools
- * and the journal where the ideas play out.
+ * Mr Bands, not to read a table. Six ideas, then what he has learned since
+ * (Learned.tsx, fed by web/public/learned.json), then two doors: the ranked
+ * pools and the journal where the ideas play out.
  */
 export function Learn() {
   const ref = useReveal<HTMLElement>();
@@ -122,6 +124,8 @@ export function Learn() {
           </article>
         ))}
       </div>
+
+      <Learned />
 
       <div className="learn__foot r-item" style={ri(IDEAS.length + 1)}>
         <a href="#/pools">See every pool ranked →</a>

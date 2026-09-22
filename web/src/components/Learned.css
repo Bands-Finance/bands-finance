@@ -1,0 +1,96 @@
+/* What he learned — the knobs his own record has moved, the evidence under each one, and the line
+   naming what learning may never touch. Shares the site's tokens and the reveal animation.
+   Losses are not shrunk: every end reason is one row at one size, wins and losses alike. */
+.learned {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: clamp(40px, 7vw, 84px) clamp(20px, 5vw, 40px) clamp(24px, 4vw, 48px);
+  border-top: 1px solid var(--bands-line, rgba(255, 255, 255, 0.08));
+}
+
+.learned__head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 68ch;
+}
+.learned__eyebrow { --eyebrow-tracking: 0.16em; --eyebrow-color: var(--bands-lime); }
+.learned__badges { display: flex; flex-wrap: wrap; gap: 8px; }
+.learned__badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--bands-dim, rgba(255, 255, 255, 0.6));
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+.learned__badge--book { color: var(--bands-lime); border-color: rgba(255, 122, 26, 0.35); }
+.learned__badge--frozen { color: #7fd4ff; border-color: rgba(127, 212, 255, 0.4); }
+.learned__title {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(24px, 3.6vw, 34px);
+  line-height: 1.08;
+  letter-spacing: -0.015em;
+  color: var(--bands-text);
+  margin: 2px 0 0;
+  text-wrap: balance;
+}
+.learned__sub { font-size: 15px; line-height: 1.6; color: var(--bands-dim, rgba(255, 255, 255, 0.68)); margin: 0; }
+
+.learned__stat {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  margin: 28px 0 8px;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.learned__stat-n { font-family: var(--font-mono); font-size: clamp(34px, 6vw, 52px); line-height: 1; color: var(--bands-lime); }
+.learned__stat-w { font-size: 14px; line-height: 1.55; color: var(--bands-dim, rgba(255, 255, 255, 0.7)); max-width: 62ch; }
+
+.learned__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin: 18px 0; }
+.learned__knob { border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 14px; padding: 16px 18px; }
+.learned__knob-title { font-size: 13px; font-weight: 600; margin: 0 0 6px; color: var(--bands-text); }
+.learned__lane { font-family: var(--font-mono); font-size: 12px; color: var(--bands-dim, rgba(255, 255, 255, 0.6)); }
+.learned__factor { font-family: var(--font-mono); font-size: 30px; line-height: 1.1; color: var(--bands-text); }
+.learned__factor--default { color: var(--bands-dim, rgba(255, 255, 255, 0.55)); }
+.learned__knob-why { font-size: 13px; line-height: 1.55; color: var(--bands-dim, rgba(255, 255, 255, 0.7)); margin: 6px 0 0; }
+.learned__knob-bound { font-size: 12px; line-height: 1.5; color: var(--bands-dim, rgba(255, 255, 255, 0.5)); margin: 8px 0 0; }
+.learned__frozen { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #7fd4ff; }
+
+.learned__h3 { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; margin: 0 0 10px; color: var(--bands-text); }
+.learned__none { font-size: 14px; line-height: 1.6; color: var(--bands-dim, rgba(255, 255, 255, 0.6)); margin: 0; }
+.learned__journal { margin: 22px 0; }
+.learned__rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.learned__row {
+  display: grid;
+  grid-template-columns: 110px minmax(180px, 1fr) minmax(0, 2fr) 160px;
+  gap: 12px;
+  align-items: baseline;
+  padding: 10px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.learned__when, .learned__n { font-family: var(--font-mono); font-size: 12px; color: var(--bands-dim, rgba(255, 255, 255, 0.55)); }
+.learned__what { color: var(--bands-text); }
+.learned__why { color: var(--bands-dim, rgba(255, 255, 255, 0.72)); }
+
+.learned__ends { margin: 22px 0; }
+.learned__endlist { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+.learned__endlist li { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; }
+.learned__end-n { font-family: var(--font-mono); font-size: 20px; color: var(--bands-text); }
+.learned__end-w { font-size: 13px; line-height: 1.45; color: var(--bands-dim, rgba(255, 255, 255, 0.68)); }
+
+.learned__never { font-size: 13px; line-height: 1.6; color: var(--bands-dim, rgba(255, 255, 255, 0.55)); margin: 20px 0 0; max-width: 78ch; }
+
+@media (max-width: 720px) {
+  .learned__row { grid-template-columns: 1fr; gap: 4px; }
+  .learned__stat { flex-direction: column; gap: 8px; }
+}
