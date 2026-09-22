@@ -14,36 +14,36 @@ const T = ({ t, children }: { t: string; children: ReactNode }) => (
 
 /** What each screener flag means, in plain words. Used as chip titles here and in the table. */
 export const FLAG_GLOSS: Record<string, string> = {
-  thin: "thin: under about $20k of liquidity in the pool",
+  thin: "thin: under about $20k of liquidity",
   new: "new: under 24 hours old",
-  hot: "hot: fees look great because the price is moving fast, which is exactly when a band gets run over",
+  hot: "hot: the price is moving fast, so bands get run over",
   volatile: "volatile: the price swung hard in the last day",
-  "one-sided": "one-sided: almost all the liquidity sits on one side of the price",
-  "adaptive-fee": "adaptive fee: the venue adds a variable fee on top of the base when the price moves, so the base fee understates what traders pay",
+  "one-sided": "one-sided: almost all the liquidity on one side",
+  "adaptive-fee": "adaptive fee: a variable fee on top of the base",
 };
 
 /** Fee markers on the board: where a pool's 24h fee figure came from. */
-export const FEES_MARK_GLOSS = "* measured from on-chain fee counters; ° reported by the venue's API; unmarked: volume × base fee";
+export const FEES_MARK_GLOSS = "* measured on-chain; ° the venue's figure; unmarked: volume × base fee";
 
 export const VENUE_ORDER: Venue[] = ["meteora-dlmm", "raydium-clmm", "orca-whirlpool"];
 export const VENUE_LABEL: Record<Venue, string> = { "meteora-dlmm": "Meteora", "raydium-clmm": "Raydium", "orca-whirlpool": "Orca" };
 export const VENUE_GLOSS: Record<Venue, string> = {
-  "meteora-dlmm": "Meteora DLMM: the money sits in small price steps called bins. Read straight from Solana. The only venue Mr Bands trades, for now.",
-  "raydium-clmm": "Raydium CLMM: concentrated liquidity in ticks of one basis point. Read from Raydium's public API. Shown, not traded.",
-  "orca-whirlpool": "Orca Whirlpools: concentrated liquidity in ticks of one basis point. Read from Orca's public API. Shown, not traded.",
+  "meteora-dlmm": "Meteora DLMM: read from Solana. The only venue he trades.",
+  "raydium-clmm": "Raydium CLMM: read from Raydium's API. Shown, not traded.",
+  "orca-whirlpool": "Orca Whirlpools: read from Orca's API. Shown, not traded.",
 };
 export const ISSUER_LABEL: Record<StockIssuer, string> = { xstocks: "xStocks", backpack: "Backpack", ondo: "Ondo", unknown: "unverified" };
 export const ISSUER_GLOSS: Record<StockIssuer, string> = {
-  xstocks: "issued by Backed as an xStock: a token backed one-to-one by the listed share",
-  backpack: "issued by Backpack Securities: a token backed one-to-one by the listed share",
-  ondo: "issued by Ondo Global Markets: a token backed by the listed share",
-  unknown: "the symbol looks like a stock but the mint belongs to no known issuer: treat it as a lookalike",
+  xstocks: "xStock by Backed, backed one-to-one by the share",
+  backpack: "Backpack Securities, backed one-to-one by the share",
+  ondo: "Ondo Global Markets, backed by the share",
+  unknown: "no known issuer: a lookalike",
 };
 
 /** Old snapshots carry no venue: they are Meteora boards. */
 export const venueOf = (p: Pick<ScreenedPool, "venue">): Venue => p.venue ?? "meteora-dlmm";
 export const stepOf = (p: Pick<ScreenedPool, "stepBps" | "binStep">): number => p.stepBps ?? p.binStep;
-export const stepGloss = (v: Venue) => (v === "meteora-dlmm" ? "bin step: how wide each price step is" : "tick spacing: how wide each price step is, in basis points");
+export const stepGloss = (v: Venue) => (v === "meteora-dlmm" ? "bin step: the width of each price step" : "tick spacing: the width of each price step");
 export function poolUrl(p: Pick<ScreenedPool, "address" | "venue">): string {
   switch (venueOf(p)) {
     case "raydium-clmm":
@@ -98,21 +98,20 @@ export function PoolsHead({ screen, maxActivePools }: PoolsHeadProps) {
   return (
     <section className="census reveal" id="screener" ref={ref} aria-label="The screener">
       <div className="census__head r-item" style={ri(0)}>
-        <span className="eyebrow">The screener · every half hour · three venues</span>
+        <span className="eyebrow">The screener · every half hour</span>
         <h2 className="census__title">Every pool on the chain, ranked.</h2>
         <p className="census__sub">
-          Mr Bands reads every{" "}
-          <T t={VENUE_GLOSS["meteora-dlmm"]}>Meteora DLMM</T> pool straight from Solana, pulls every{" "}
-          <T t={VENUE_GLOSS["raydium-clmm"]}>Raydium CLMM</T> and <T t={VENUE_GLOSS["orca-whirlpool"]}>Orca Whirlpool</T> from their public APIs, keeps the ones that traded in the last day, and scores them all the same way: fees earned per dollar of{" "}
-          <T t="Liquidity is the money sitting in a pool, ready to be traded against.">liquidity</T> first, marked down for being thin, new, wild, or one-sided. One board, so he can see where the money is, including the{" "}
-          <T t="Tokenized stocks: tokens backed one-to-one by a listed share (NVDAx, TSLAx, SPYx), issued by xStocks or Backpack Securities and traded in ordinary pools.">tokenized stocks</T>. He works the top of the Meteora rows and nothing else, on paper today: stocks take up to 3 of his 6 seats, and the rest go to the best-ranked pools.
+          Every <T t={VENUE_GLOSS["meteora-dlmm"]}>Meteora DLMM</T>,{" "}
+          <T t={VENUE_GLOSS["raydium-clmm"]}>Raydium CLMM</T> and <T t={VENUE_GLOSS["orca-whirlpool"]}>Orca Whirlpool</T> pool, scored by fees per dollar of{" "}
+          <T t="Liquidity is the money sitting in a pool, ready to be traded against.">liquidity</T> and marked down for thin, new, wild or one-sided. He works the top Meteora rows on paper,{" "}
+          <T t="Tokenized stocks: tokens backed one-to-one by a listed share, issued by xStocks or Backpack Securities.">tokenized stocks</T> among them.
         </p>
       </div>
 
       <div className="census__stats r-item" style={ri(1)}>
         <div className="census__stat">
           <span className="census__stat-value">{scanned.toLocaleString()}</span>
-          <span className="census__stat-label">{multi ? `pools scanned · ${venues.length} venues` : "pools scanned on-chain"}</span>
+          <span className="census__stat-label">{multi ? `pools scanned · ${venues.length} venues` : "pools scanned"}</span>
           {multi && (
             <span className="census__stat-sub">
               {VENUE_ORDER.filter((v) => venues.some((x) => x.venue === v)).map((v) => `${VENUE_LABEL[v]} ${venues.find((x) => x.venue === v)!.scanned.toLocaleString()}`).join(" · ")}
@@ -156,7 +155,7 @@ export function PoolsHead({ screen, maxActivePools }: PoolsHeadProps) {
       </div>
 
       <p className="pools-gloss r-item" style={ri(3)}>
-        Flags: <b>thin</b> = under about $20k of liquidity · <b>new</b> = under 24 hours old · <b>hot</b> = fees look great because the price is moving fast, which is exactly when a band gets run over · <b>volatile</b> = the price swung hard in the last day · <b>one-sided</b> = almost all the liquidity sits on one side · <b>adaptive-fee</b> = the venue adds a variable fee on top of the base when the price moves. Fees marked <b>*</b> are measured from on-chain fee counters; <b>°</b> come from the venue's API; the rest are volume × base fee. Dot: green means no flags, cream means flagged, grey means thin or new.
+        Dot: green no flags, cream flagged, grey thin or new.
       </p>
     </section>
   );

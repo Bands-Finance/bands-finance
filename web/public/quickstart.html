@@ -3,15 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>bands.finance quickstart: how a paid call will work</title>
+    <title>bands.finance quickstart</title>
     <meta
       name="description"
-      content="Not open yet: the public endpoint is coming for the AnsemHack Clawrena. Once it opens, point your agent at bands.finance's MCP endpoint, pay per call in USDC on Solana over x402, and read the screener and pool data Mr Bands trades on. No accounts, no API keys."
+      content="Not open yet. Pay per call in USDC on Solana over x402. No accounts, no keys."
     />
     <meta property="og:type" content="article" />
     <meta property="og:site_name" content="bands.finance" />
-    <meta property="og:title" content="bands.finance quickstart: how a paid call will work" />
-    <meta property="og:description" content="Not open yet: the public endpoint is coming for the AnsemHack Clawrena. Then it will be pay per call in USDC on Solana over x402 for the screener and pool data Mr Bands runs on. No accounts, no API keys." />
+    <meta property="og:title" content="bands.finance quickstart" />
+    <meta property="og:description" content="Not open yet. Pay per call in USDC on Solana over x402. No accounts, no keys." />
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <meta name="theme-color" content="#060606" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -109,16 +109,13 @@
   <body>
     <div class="wrap">
       <p class="crumb"><a href="/">bands.finance</a> / quickstart</p>
-      <h1>How your agent's first paid call will work.</h1>
+      <h1>Your agent's first paid call.</h1>
       <p class="lede">
-        bands.finance will sell the screener and pool data Mr Bands makes markets on to autonomous agents. There will
-        be no accounts, no API keys, and nothing to sign up for: your agent calls a tool, receives a price, pays it in USDC
-        on Solana, proves the payment is its own with one signature, and gets the data. About five minutes, start to
-        first answer.
+        No accounts, no keys: your agent calls a tool, pays in USDC on Solana, proves it with one signature, and gets
+        the data.
       </p>
       <div class="note">
-        Not open yet. These tools run today on Mr Bands' own host, and the public endpoint is coming for the AnsemHack
-        Clawrena. Until then no paid call is live and nothing here takes a real payment. This page is how it will work.
+        Not open yet. Nothing here takes a payment.
       </div>
       <div class="chips">
         <span class="chip chip--live">payment is the auth</span>
@@ -130,24 +127,22 @@
       <h2><span class="step-n">01</span> What you need</h2>
       <dl class="facts">
         <dt>a wallet</dt>
-        <dd>Any Solana keypair your agent controls, holding a few dollars of USDC and a little SOL for fees.</dd>
+        <dd>a Solana keypair with some USDC and SOL</dd>
         <dt>network</dt>
-        <dd><code>solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp</code> (mainnet-beta, as a CAIP-2 id)</dd>
+        <dd><code>solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp</code> (mainnet-beta, CAIP-2)</dd>
         <dt>USDC mint</dt>
         <dd><code>EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v</code> (6 decimals)</dd>
         <dt>explorer</dt>
         <dd><a href="https://solscan.io" rel="noreferrer">solscan.io</a></dd>
         <dt>endpoint</dt>
-        <dd>the <code>/mcp</code> route of the host running Mr Bands' API. Locally that is <code>http://localhost:3000/mcp</code> after <code>npm run serve</code>; the public host is whatever this site's API is pointed at. <code>GET /integrate.md</code> on that host is the full guide.</dd>
+        <dd><code>/mcp</code> on the API host; locally <code>http://localhost:3000/mcp</code> after <code>npm run serve</code>. <code>GET /integrate.md</code> there is the full guide.</dd>
         <dt>runtime</dt>
         <dd>Node 18+, <code>npm i @solana/web3.js @solana/spl-token tweetnacl @modelcontextprotocol/sdk</code></dd>
       </dl>
 
       <h2><span class="step-n">02</span> How the rail works</h2>
       <p>
-        Call a priced tool with no payment attached and the server answers <strong>HTTP 402</strong> with formal
-        terms: the price in USDC raw units (6&nbsp;decimals), the payee's USDC token account, the network, and the
-        exact message to sign as proof:
+        A priced call with no payment gets <strong>HTTP 402</strong> and the terms:
       </p>
       <pre><code>{"x402Version":1,
  "accepts":[{
@@ -166,18 +161,12 @@
   "note":"Sign the message above with the wallet that SENT the USDC ..."
  }}</code></pre>
       <p>
-        Your agent pays with an SPL <code>TransferChecked</code> of <code>maxAmountRequired</code> USDC to
-        <code>payTo</code>, then signs <code>signMessage</code> with <code>&lt;your payment tx signature&gt;</code>
-        replaced by the real one, and retries the same call with an <code>X-PAYMENT</code> header:
-        <code>base64({"signature":"…","proofSignature":"…"})</code>. The server fetches the transaction, sums the
-        USDC that reached the payee, reads who owned the sending token account, and checks the proof against
-        that owner. Three rules: the transfer must cover the price, be confirmed within the last
-        <strong>15 minutes</strong>, and <strong>one transaction buys exactly one call</strong>: signatures are
-        burned after use, replays are rejected. The proof signature is what makes a payment yours; a transaction
-        signature alone is public the moment it lands.
+        Send <code>maxAmountRequired</code> USDC to <code>payTo</code>, sign <code>signMessage</code> with the real tx
+        signature in it, and retry with an <code>X-PAYMENT</code> header: <code>base64({"signature":"…","proofSignature":"…"})</code>.
+        The transfer must cover the price, be under <strong>15 minutes</strong> old, and <strong>buys one call</strong>.
       </p>
 
-      <h2><span class="step-n">03</span> The whole client, ~60 lines</h2>
+      <h2><span class="step-n">03</span> The whole client</h2>
       <pre><code><span class="k">import</span> { Client } <span class="k">from</span> <span class="s">"@modelcontextprotocol/sdk/client/index.js"</span>;
 <span class="k">import</span> { StreamableHTTPClientTransport } <span class="k">from</span> <span class="s">"@modelcontextprotocol/sdk/client/streamableHttp.js"</span>;
 <span class="k">import</span> { Connection, Keypair, PublicKey, Transaction, sendAndConfirmTransaction } <span class="k">from</span> <span class="s">"@solana/web3.js"</span>;
@@ -228,38 +217,32 @@
 <span class="c">// first paid call: the full ranked board, $0.02</span>
 console.log(<span class="k">await</span> paidCall(<span class="s">"bands_screen"</span>));</code></pre>
 
-      <h2><span class="step-n">04</span> What's on the shelf</h2>
+      <h2><span class="step-n">04</span> The tools</h2>
       <table>
-        <thead><tr><th>tool</th><th>what your agent gets</th><th>price</th></tr></thead>
+        <thead><tr><th>tool</th><th>returns</th><th>price</th></tr></thead>
         <tbody>
-          <tr><td>bands_pool_score</td><td>one pool's score, flags, fee source and fee/TVL, with the numbers behind them</td><td>$0.05</td></tr>
-          <tr><td>bands_screen</td><td>the full ranked board of every DLMM pool with every measured column</td><td>$0.02</td></tr>
-          <tr><td>bands_pool_snapshot</td><td>one pool live from the chain: active bin, price, fees, the bins around the price</td><td>$0.01</td></tr>
+          <tr><td>bands_pool_score</td><td>one pool's score, flags, fee source and fee/TVL</td><td>$0.05</td></tr>
+          <tr><td>bands_screen</td><td>the full ranked board, every column</td><td>$0.02</td></tr>
+          <tr><td>bands_pool_snapshot</td><td>one pool live from the chain: active bin, price, fees, bins</td><td>$0.01</td></tr>
         </tbody>
       </table>
       <p style="margin-top: 10px">
-        Free, no payment needed: <code>bands_list_pools</code> (the top 50 screened pools), <code>bands_limits</code>
-        (the guards' limits), <code>bands_agent_thoughts</code> (Mr Bands' latest decisions and reasoning),
-        <code>bands_propose_band_action</code> (argue for a band on his book; his rules in code or the approval key decide it, and the guards judge it again).
+        Free: <code>bands_list_pools</code>, <code>bands_limits</code>, <code>bands_agent_thoughts</code>,
+        <code>bands_propose_band_action</code>.
       </p>
 
-      <h2><span class="step-n">05</span> Verify everything</h2>
+      <h2><span class="step-n">05</span> Verify</h2>
       <p>
-        Every payment you make is a public transaction, and so was every move of Mr Bands' one real-money run
-        (17-19 Sep 2026); his book today is paper. <code>GET /api/revenue</code> on the API host shows the payee account the 402 quotes and what the tools
-        have earned, folded from the ledger. If a payment fails verification you get the reason in plain text:
-        <code>payment tx already used</code>, <code>payment tx too old</code>, <code>insufficient payment</code>,
-        or <code>signature does not match the wallet that sent this payment</code>.
+        <code>GET /api/revenue</code> shows the payee and what the tools have earned. A failed payment returns the reason:
+        <code>payment tx already used</code>, <code>payment tx too old</code>, <code>insufficient payment</code>, or
+        <code>signature does not match the wallet that sent this payment</code>.
       </p>
       <div class="note">
-        Rather run the engine than read it? Signed-in wallets with access get the same band math and guards on their
-        own capital: the API returns an unsigned transaction, your wallet signs it. <code>GET /api/engine/skill</code>
-        on the API host is the guide, and the panel on the main page does it by hand.
+        Signed-in wallets with access can run the engine on their own capital: <code>GET /api/engine/skill</code>.
       </div>
 
       <footer>
-        bands.finance · Mr Bands makes markets on Solana and shows his work ·
-        <a href="/">bands.finance</a> · payment rail: x402 over USDC on Solana · <code>/integrate.md</code> on the API host is the full integration doc.
+        <a href="/">bands.finance</a> · x402 over USDC on Solana · <code>/integrate.md</code> is the full doc.
       </footer>
     </div>
   </body>

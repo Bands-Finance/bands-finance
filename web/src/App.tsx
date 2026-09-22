@@ -36,8 +36,8 @@ function routeFromHash(h: string): Route {
 }
 
 const TITLES: Record<Route, string> = {
-  home: "bands.finance · Mr Bands, an agent that makes markets on Meteora",
-  pools: "Every pool on the chain, ranked · bands.finance",
+  home: "bands.finance · Mr Bands makes markets on Meteora",
+  pools: "Every pool, ranked · bands.finance",
   learn: "How it works · bands.finance",
   agents: "Agents · bands.finance",
   me: "Your Mr Bands · bands.finance",
@@ -158,7 +158,7 @@ export default function App() {
             <section className="app__desk" aria-label="What he sees">
               <div className="app__desk-head">
                 <h2 className="app__desk-title">What he sees</h2>
-                <p className="app__desk-sub">The pool as it looked at his last check: money parked at each price step, and the price with his band drawn on it.</p>
+                <p className="app__desk-sub">The pool at his last check, with his band drawn on the price.</p>
               </div>
               {selected.pools.length > 1 && (
                 <div className="filters">

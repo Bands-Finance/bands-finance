@@ -78,42 +78,42 @@ interface ConsoleEntry {
 }
 
 const START_LINES = [
-  "1. He reads the pool: price, the bins around it, his wallet, his open bands.",
-  "2. He proposes one move: open, close, claim fees, move, or hold. Today it comes from his own rulebook.",
-  "3. The guards decide, in plain code.",
-  "4. If they say yes, the move runs: on paper, against the paper book; when live, the wallet builds, simulates and sends the transaction.",
-  "5. All of it lands in this journal. Type 'guards', 'bands', 'pools', 'last' or 'help'.",
+  "1. He reads the pool: price, bins, wallet, open bands.",
+  "2. He proposes one move: open, close, claim, move, or hold.",
+  "3. The guards decide.",
+  "4. A yes runs on paper, or live through the wallet.",
+  "5. It lands in this journal. Type 'help' for more.",
 ];
 
 const HELP_LINES = [
-  "start   · walk through one decision cycle",
-  "guards  · the hard limits around him, in numbers",
-  "bands   · every band he has open right now",
-  "pools   · the top five pools on his screen",
-  "last    · his newest decision, and why",
+  "start   · one decision cycle",
+  "guards  · the limits, in numbers",
+  "bands   · his open bands",
+  "pools   · the top five on his screen",
+  "last    · his newest decision",
   "help    · this list",
 ];
 
 function guardLines(limits: RiskLimits | null): string[] {
-  if (!limits) return ["limits not loaded right now. the guards still run in code on his side; this page just cannot show the numbers."];
+  if (!limits) return ["limits not loaded; the guards still run."];
   return [
-    "the guards are plain code, not a prompt. they can veto him or pull him out:",
+    "plain code. it can veto him or pull him out:",
     `no single band bigger than ${limits.maxPositionSol} SOL`,
     `no more than ${limits.maxTotalExposureSol} SOL out in bands at once`,
-    `${limits.gasReserveSol} SOL always kept back in the wallet for gas`,
-    `stop-loss: a band down ${limits.stopLossPct}% is closed, whatever he says`,
+    `${limits.gasReserveSol} SOL kept back for gas`,
+    `stop-loss: a band down ${limits.stopLossPct}% is closed`,
     `no band wider than ${limits.maxBinWidth} bins`,
     `at most ${limits.maxTxPerDay} actions a day`,
     `at least ${Math.round(limits.minSecondsBetweenActions / 60)} minutes between actions`,
     `a deposit is abandoned past ${limits.maxSlippagePct}% slippage`,
-    `he may not open if price moved more than ${limits.maxPriceMovePctPerCycle}% in one cycle`,
+    `no new band after a move over ${limits.maxPriceMovePctPerCycle}% in one cycle`,
   ];
 }
 
 function bandLines(entries: JournalEntry[]): string[] {
   const book = bookOf(entries);
   if (book.bands.length === 0) {
-    const out = ["flat · no band on the book right now"];
+    const out = ["flat · no band on the book"];
     if (book.lastExit) out.push(`last exit: “${book.lastExit.headline}”`);
     return out;
   }
@@ -239,8 +239,8 @@ function DeskInner({ entries, status, limits, screen, agentName, id }: DeskProps
       <div className="app__desk-head">
         <h2 className="app__desk-title">Watch {agentName} work</h2>
         <p className="app__desk-sub">
-          His journal, {demo ? <Gloss term="demo">a scripted demo</Gloss> : status.mode === "paper" ? <Gloss term="paper">paper traded</Gloss> : "live"}. Every line below is a real decision he wrote, with the numbers he was looking at when he wrote it. He proposes; the{" "}
-          <Gloss term="guards">guards</Gloss> decide; the wallet does only what the guards allow. Type <code>start</code> in the console to walk through one cycle.
+          His journal, {demo ? <Gloss term="demo">a scripted demo</Gloss> : status.mode === "paper" ? <Gloss term="paper">paper traded</Gloss> : "live"}: he proposed, the{" "}
+          <Gloss term="guards">guards</Gloss> decided. Type <code>start</code> below.
         </p>
       </div>
 
@@ -260,13 +260,13 @@ function DeskInner({ entries, status, limits, screen, agentName, id }: DeskProps
 
         <div className="term__body" ref={bodyRef}>
           <p className="term__boot">
-            {agentId} v0.1 · strategy: concentrated-liquidity <Gloss term="band">bands</Gloss> · venue: Meteora DLMM (Solana) · proposes every 5 min per pool · screens every pool every 30 min · mode:{" "}
+            {agentId} v0.1 · <Gloss term="band">bands</Gloss> on Meteora DLMM · every 5 min per pool · mode:{" "}
             {status.mode === "dry-run" ? <Gloss term="dryRun">{status.short}</Gloss> : status.mode === "paper" ? <Gloss term="paper">{status.short}</Gloss> : demo ? <Gloss term="demo">{status.short}</Gloss> : status.short}
           </p>
 
           {blocks.length === 0 && (
             <p className="term__line term__line--dim">
-              // quiet right now · {agentName} speaks every 5 minutes, once per pool he works · most cycles are a hold, and a hold is a decision too
+              // quiet · {agentName} speaks every 5 minutes · most cycles are a hold
             </p>
           )}
 
@@ -331,7 +331,7 @@ function DeskInner({ entries, status, limits, screen, agentName, id }: DeskProps
             </div>
           ))}
 
-          <p className="term__hint">// read-only console. new here? type 'start'. 'help' lists every command.</p>
+          <p className="term__hint">// read-only console. type 'start' or 'help'.</p>
           <form
             className="term__input-row"
             onSubmit={(e) => {
