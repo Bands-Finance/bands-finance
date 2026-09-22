@@ -30,7 +30,7 @@ import { COPYCAT_MINTS } from "../risk/house";
 import type { TalkData } from "./data";
 import { lintContextOf, talkEnv, type TalkEnv } from "./env";
 import { lintText, mentionsHouseToken, type LintContext, type LintRule } from "./lint";
-import { postTweet, whoAmI, xGateProblem, type XDeps } from "./x";
+import { postTweet, TALK_STOP_FILE, whoAmI, xGateProblem, type XDeps } from "./x";
 
 export const ANNOUNCE_KINDS = ["intro", "entry", "token", "follow"] as const;
 export type AnnounceKind = (typeof ANNOUNCE_KINDS)[number];
@@ -229,6 +229,8 @@ export async function announce(kind: string, deps: AnnounceDeps): Promise<Announ
   const envObj = deps.env ?? process.env;
   const t: TalkEnv = talkEnv(envObj);
   const now = deps.now ?? Date.now();
+  // the stop file halts every path: checked here before anything, and again by postTweet before each part
+  if (fs.existsSync(path.join(t.statePath, TALK_STOP_FILE))) return { status: "refused", kind: k, reason: `stopped: ${TALK_STOP_FILE} is in ${t.statePath}; nothing is posted` };
 
   let state: AnnouncementState;
   try {

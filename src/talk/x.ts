@@ -41,6 +41,17 @@ export const POSTS_FILE = "x-posts.jsonl";
 export const DRAFTS_FILE = "x-drafts.jsonl";
 /** held around read-rate, post, write-rate so two processes can never both post on the same rate state */
 export const RATE_LOCK_FILE = "x-rate.lock";
+/** present in TALK_STATE_PATH: nothing is posted, by any path (the loop, an announcement, a manual post) */
+export const TALK_STOP_FILE = "TALK_STOP";
+
+/**
+ * A refusal worth trying again later: X down or rate-limited (5xx, 429), out of pay-per-use balance (402),
+ * unreachable, the rate lock busy, the limiter full, or the stop file. The posting loop does not count a
+ * draft with such a reason as used (`retry: true`); a lint refusal or a dormant draft stays used.
+ */
+export function retryableReason(reason: string): boolean {
+  return /^(stopped:|x api unreachable|x api (402|429|5\d\d)\b|rate: )/.test(reason);
+}
 
 /** the draft types, plus the posting loop's own event posts (src/talk/tick.ts) and "announce": his one-off posts (src/talk/announce.ts), each posted once */
 export type XPostType = DraftType | "open" | "close" | "daily" | "milestone" | "announce";
@@ -71,6 +82,8 @@ export interface XDraftRecord {
   replyToHandle?: string | null;
   /** the posting loop's stable event key, when the loop wrote it */
   key?: string;
+  /** the refusal was transient (retryableReason): the loop may try this key again */
+  retry?: boolean;
 }
 
 export interface XDeps {
@@ -243,7 +256,7 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
   const now = deps.now ?? Date.now();
   const replyToHandle = opts.replyTo ? normalizeHandle(opts.replyTo.handle) : null;
   const draft = (reason: string, violations?: LintViolation[]): PostResult => {
-    const row: XDraftRecord = { at: new Date(now).toISOString(), type: opts.type, text, reason, ...(violations?.length ? { violations } : {}), ...(opts.replyTo ? { replyTo: opts.replyTo.tweetId, replyToHandle } : {}), ...(opts.key ? { key: opts.key } : {}) };
+    const row: XDraftRecord = { at: new Date(now).toISOString(), type: opts.type, text, reason, ...(violations?.length ? { violations } : {}), ...(opts.replyTo ? { replyTo: opts.replyTo.tweetId, replyToHandle } : {}), ...(opts.key ? { key: opts.key } : {}), ...(opts.key && retryableReason(reason) ? { retry: true } : {}) };
     try {
       appendJsonl(t.statePath, DRAFTS_FILE, row);
     } catch {
@@ -252,6 +265,8 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
     return { posted: false, reason, ...(violations?.length ? { violations } : {}) };
   };
 
+  const stopped = () => fs.existsSync(path.join(t.statePath, TALK_STOP_FILE));
+  if (stopped()) return draft(`stopped: ${TALK_STOP_FILE} is in ${t.statePath}; nothing is posted`);
   const lint = lintText(text, lintContextOf(t));
   if (!lint.ok) return draft(`lint: ${describeViolations(lint.violations)}`, lint.violations);
   if (opts.replyTo) {
@@ -279,6 +294,7 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
     }
     const limited = rateProblem(rate, t, now, replyToHandle);
     if (limited) return draft(limited);
+    if (stopped()) return draft(`stopped: ${TALK_STOP_FILE} appeared; nothing is posted`);
 
     const url = `${X_API_BASE}/2/tweets`;
     const inReplyTo = opts.replyTo?.tweetId ?? threadOf;

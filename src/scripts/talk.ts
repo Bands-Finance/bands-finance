@@ -12,7 +12,7 @@
  *   npx tsx src/scripts/talk.ts use <bit-id> <landed|flopped>
  *   npx tsx src/scripts/talk.ts reflect
  *   npx tsx src/scripts/talk.ts drift
- *   npx tsx src/scripts/talk.ts tick [--force strap|daily|lesson|stack]   the posting loop, one tick (src/talk/tick.ts)
+ *   npx tsx src/scripts/talk.ts tick [--force strap|daily|lesson|stack]   the posting loop, one tick (src/talk/tick.ts); --force only previews
  *   npx tsx src/scripts/talk.ts check                                     which account the X keys sign in as (a read)
  *   npx tsx src/scripts/talk.ts announce <intro|entry|token|follow> [--preview]
  *
