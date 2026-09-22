@@ -190,7 +190,7 @@ announcements, not a hold-back: a judge who looks on 28 Sep should already find 
 Decided: no live money. So the scored record is what already happened, told straight, and the trader keeps
 working in public on paper.
 
-- **The real-money record, frozen and honest.** 17-19 Sep: 329 signed transactions, 0 errors, 0 guard
+- **The real-money record, frozen and honest.** 17-19 Sep: 293 signed transactions (295 with the hand close), 0 errors, 0 guard
   violations, every decision journalled. Fees claimed against a book that finished down. "Fees are not profit"
   on mrbands.finance, from the equity series only (see "One headline number").
 - **The paper desk, trading in public**, clearly labelled paper: it already runs alone (straddles, breakers that
@@ -290,17 +290,66 @@ price knobs, the position watcher.
 - **Split the work by owner.** Zach's list each morning is keys, money and accounts. Code waits on it, not the
   other way round.
 
-## One headline number (settle before anything posts)
+## One headline number (settled 22 Sep)
 
-The sources disagree, and a judge who adds them up will notice:
-- Fees claimed on 17-19 Sep: 7.91 SOL in 111 claims (the earlier brief) against 6.60 SOL in 110 claims
-  (recomputed from web/public/live-run.json at claim-time value).
-- Net: the book went 19.79 to 19.68 SOL (about -0.11; -0.18 on another cut) against the per-seat lessons, which
-  sum to +1.12 SOL (+0.65 on the 56 live seats). The open band at the end and the tokens left over are the
-  likely gap.
+`npm run record` (src/scripts/record.ts, read-only) recomputes all of it from data-mainnet and
+web/public/live-run.json, and its walk from the per-seat sum to the cash closes to the last 0.0000 SOL.
 
-Until it is reconciled, public figures come from the equity series and nothing else, and the casebook prints
-the gap if it can't be closed.
+**The figures every page and post uses, for the real-money run of 17-19 Sep:**
+- **Fees: 7.91 SOL**, realised to the wallet in 111 claims and the fee legs of 52 closes, each valued at
+  its own mark when it landed. Source: data-mainnet/ledger.jsonl (`feeSol` on collect and close rows);
+  equity.jsonl's last `feesClaimedSol` says the same to the hundredth. About 3.27 SOL of it came as tokens,
+  sold later at whatever they fetched, so it is a fee figure, never a profit figure.
+- **Net: -0.08 SOL.** The book went from 19.79 SOL to 19.71 SOL, all SOL once the last band was closed and
+  its tokens sold (19 Sep 01:44Z), before the withdrawal's own account rent and transfer. At its best
+  23.50 (18 Sep 06:13Z), at its worst 19.29 (17 Sep 13:31Z). Source: data-mainnet/ledger.jsonl, every live
+  row's cash summed from the start in data-mainnet/equity.jsonl. Why this and not the site's -0.11: the
+  equity series' last mark (19.68, 19 Sep 01:40Z) still had 3.18 SOL in an open band at its mark; the
+  ledger has that band closed. The two cuts are the same book 4 minutes apart, and the ledger matches the
+  wallet read to 0.0000 SOL at all three moments the book was all cash (17 Sep 12:44Z, 18 Sep 22:28Z,
+  19 Sep 00:51Z). If a page shows the marks instead, it says "19.68 at the last mark, with 3.18 SOL still
+  in a band".
+
+**Why the per-seat sum says +1.12 and the book -0.08**, line by line (SOL):
+
+| | |
+|---|---|
+| +1.12 | the per-seat sum as lessons.jsonl holds it (59 seats; +0.65 on the 56 tagged live, +0.47 on 3 written before the tag). Recomputing every lesson with today's accounting changes none of them. |
+| -9.79 | tokens a seat handed back and left unsold, counted in its net at its close's mark (43 seats). Value, not cash. |
+| +7.43 | the next seat re-laid 7.43 SOL of them (at its open's mark) and was charged for them (4 seats) |
+| +0.61 | swap cash from selling leftovers beyond any one seat's share (18 swap rows) |
+| (-1.75) | so the three lines above net to -1.75: leftover tokens were counted at 9.79 and were worth 8.04 when re-laid or sold. That is the per-seat sum's overstatement. |
+| +0.64 | the 8 seats opened before lessons were kept (17 Sep 10:34Z to 13:26Z), with their share of the swaps: never in the per-seat sum |
+| -0.08 | the band open when the desk stopped (19 Sep 01:19Z to 01:44Z, closed by hand): no lesson |
+| **-0.08** | **the ledger's cash change: 19.79 to 19.71** (unexplained 0.0000) |
+
+So the gap closes. The per-seat sum is right for comparing seats and wrong for adding up: it values
+leftover tokens at the close's mark and they fell before they were sold. The casebook shows per-seat nets
+beside this total and says so; it never sums them into a result.
+
+Retired: 6.60 SOL in 110 claims (the journal's pending-fee estimate over the site's claim rows, one claim
+short, and without the close fee legs); "7.91 SOL in 111 claims" (the figure is right, but it is 111 claims
+plus the fee legs of 52 closes); -0.18 matches no cut from start to end (the book's first five minutes
+went 19.79 to 19.61, when the stock halves were bought and marked at the pool).
+
+**What the site shows today, checked against this** (web/ is another builder's; not edited here):
+- **Net: -0.11 SOL, 19.79 to 19.68** (live-run.json points, LiveRun.tsx "Stopped with"). Disagrees: the
+  last mark with 3.18 SOL still in a band. Either show 19.71 / -0.08, or label it as the last mark.
+- **"Fees claimed +7.91"**: agrees to the hundredth (7.9093 at the last mark against 7.9126; the 0.0034 is
+  the fee leg of the hand close after it).
+- **"claimed on 110 claims"** and **"110 claims" in Moves, 204 moves**: disagree. The journal and the
+  ledger have 111. live-run.json is missing one executed claim: GP/SOL, 18 Sep 00:58:36Z
+  (id `2026-09-18T00:58:36.503Z-12-64JeeF`, signature `59nhBz...xT99K`, 0.1033 SOL). With it: 205 moves.
+- **Transactions 292**: disagrees. The journal signed 293 (the same missing claim); the ledger has 295
+  with the hand close and its sale. This file's own "329 signed transactions" (Role 1) matches no source
+  here; Role 1 now says 293 (295 with the hand close).
+- **"5 failed"** (live-run.json `failed`): the journal has 4 executed moves that failed (2 re-lays, 1 claim,
+  1 open). Worth a look by whoever regenerates the file, and Role 1's "0 errors" needs to say what it
+  counts (no failed transaction on chain, or no failed move) before it is posted.
+- **The sentence** "Fees paid him 7.91 SOL ...; price moves and the cost of moving took 8.01 back"
+  (LiveRun.tsx): the arithmetic holds on the marks, but about 3.27 of the 7.91 were tokens valued when
+  claimed, so "paid him" reads as cash it was not. Suggest "earned 7.91 SOL in fees, valued when claimed".
+- Start 19.79, peak 23.50, low 19.29, 39 hours: agree.
 
 ## Decisions (Zach, Tue 22 Sep)
 
