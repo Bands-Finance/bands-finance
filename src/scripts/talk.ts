@@ -12,6 +12,7 @@
  *   npx tsx src/scripts/talk.ts use <bit-id> <landed|flopped>
  *   npx tsx src/scripts/talk.ts reflect
  *   npx tsx src/scripts/talk.ts drift
+ *   npx tsx src/scripts/talk.ts announce <intro|entry|token|follow> [--preview]
  *
  * `post` goes through src/talk/x.ts: while X is dormant it prints the draft and why it was not posted.
  */
@@ -24,6 +25,7 @@ import { approveProposal, readPersonality, recordUse, vetoProposal } from "../ta
 import { driftCheck, reflect } from "../talk/reflect";
 import { strapOf, windowLabel, fmtAge } from "../talk/strap";
 import { getEngagement, postTweet, readPosts } from "../talk/x";
+import { runAnnounce } from "../talk/announce-cli";
 
 const HOUR = 3600e3;
 const out = (s = "") => console.log(s);
@@ -186,8 +188,10 @@ async function main(): Promise<number> {
       for (const f of report.flags) out(`  ${f.postId}  ${f.rule}: ${f.detail}`);
       return report.ok ? 0 : 2;
     }
+    case "announce":
+      return runAnnounce(args, t, now, out);
     default:
-      out("usage: talk.ts strap | draft <strap|rebalance|stack|chop|lesson> [topic] | lint \"<text>\" | post <type> [topic] | proposals | approve <id> --operator <handle> | veto <id> --operator <handle> --reason \"<r>\" | use <bit-id> <landed|flopped> | reflect | drift");
+      out("usage: talk.ts strap | draft <strap|rebalance|stack|chop|lesson> [topic] | lint \"<text>\" | post <type> [topic] | proposals | approve <id> --operator <handle> | veto <id> --operator <handle> --reason \"<r>\" | use <bit-id> <landed|flopped> | reflect | drift | announce <intro|entry|token|follow> [--preview]");
       return cmd ? 2 : 0;
   }
 }
