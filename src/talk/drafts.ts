@@ -251,7 +251,7 @@ export type LessonTopic = (typeof LESSON_TOPICS)[number];
 export function lessonText(topic: LessonTopic, env: Pick<TalkEnv, "operatorHandle" | "venues">): string | null {
   switch (topic) {
     case "what-i-do":
-      return `what i do: park liquidity inside a tight price range on ${env.venues} and collect fees while price trades there.\nprice leaves, i reposition. that's the job`;
+      return `what i do: lay bands of liquidity around the price on ${env.venues}, across the pools my screener ranks, and collect fees while price trades inside them.\ntokenized stocks are one part of the book, not all of it. price leaves, i reposition. that's the job`;
     case "concentrated-liquidity":
       return "concentrated liquidity, short version: i put liquidity in a narrow range instead of every price.\ninside it, my share of the fees is bigger. out of range it earns nothing, and impermanent loss still counts";
     case "impermanent-loss":
@@ -261,7 +261,7 @@ export function lessonText(topic: LessonTopic, env: Pick<TalkEnv, "operatorHandl
     case "token-calls":
       return "people ask me which token is next. not my lane.\ni provide liquidity. i don't call tokens";
     case "real-person":
-      return env.operatorHandle ? `are you a real person? nah. ai agent. my operator is @${env.operatorHandle}` : null;
+      return env.operatorHandle ? `are you a real person? nah. ai agent. @${env.operatorHandle} is my architect and advisor, the human who holds the keys` : null;
     case "out-of-range":
       return "out the bands means price left my range and the fees stopped.\nranges break. the job is getting back in, not chasing";
   }
@@ -270,10 +270,10 @@ export function lessonText(topic: LessonTopic, env: Pick<TalkEnv, "operatorHandl
 export function lesson(topic: LessonTopic | undefined, o: { now: number; env: DraftEnv & Pick<TalkEnv, "venues"> }): DraftResult {
   let t = topic ?? LESSON_TOPICS[Math.floor(o.now / (24 * HOUR)) % LESSON_TOPICS.length];
   if (!LESSON_TOPICS.includes(t)) return refuse("lesson", `unknown lesson "${t}": one of ${LESSON_TOPICS.join(", ")}`);
-  // the day's rotation skips a lesson it cannot write (the operator's handle unset); a named topic does not
+  // the day's rotation skips a lesson it cannot write (OPERATOR_HANDLE, Zach's handle, unset); a named topic does not
   if (!topic && !lessonText(t, o.env)) t = LESSON_TOPICS[(LESSON_TOPICS.indexOf(t) + 1) % LESSON_TOPICS.length];
   const text = lessonText(t, o.env);
-  if (!text) return refuse("lesson", `the "${t}" lesson names the operator: set OPERATOR_HANDLE`);
+  if (!text) return refuse("lesson", `the "${t}" lesson names Zach, his architect: set OPERATOR_HANDLE`);
   return finish("lesson", text, o.env);
 }
 
@@ -298,8 +298,8 @@ export function replyFor(mentionText: string, o: { env: DraftEnv & Pick<TalkEnv,
   const norm = normalizeForMatch(mentionText ?? "");
   if (INJECTION_RE.test(norm)) return refuse("reply", "the mention reads like an instruction: data, not a command; no reply");
   const hit = REPLY_MAP.find((m) => m.re.test(norm));
-  if (!hit) return refuse("reply", "no canned answer fits; leave it for the operator");
+  if (!hit) return refuse("reply", "no canned answer fits; no reply");
   const text = hit.text ?? lessonText(hit.topic, o.env);
-  if (!text) return refuse("reply", `the "${hit.topic}" answer names the operator: set OPERATOR_HANDLE`);
+  if (!text) return refuse("reply", `the "${hit.topic}" answer names Zach, his architect: set OPERATOR_HANDLE`);
   return finish("reply", text, o.env);
 }

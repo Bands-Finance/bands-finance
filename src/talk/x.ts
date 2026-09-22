@@ -5,7 +5,7 @@
  *   postTweet(text, { type, replyTo? })   POST /2/tweets. Order: lint -> reply screen -> the live gate ->
  *                                          the rate limiter -> the request. Any refusal returns
  *                                          { posted: false, reason } and appends the draft to
- *                                          TALK_STATE_PATH/x-drafts.jsonl so the operator sees what would
+ *                                          TALK_STATE_PATH/x-drafts.jsonl so Zach sees what would
  *                                          have gone out. A post that went out is appended to x-posts.jsonl.
  *   getEngagement(ids)                     GET /2/tweets?ids=...&tweet.fields=public_metrics, behind the same gate
  *   screenMention(mention)                 whether a mention may get a reply at all (bots, scams, flagged
