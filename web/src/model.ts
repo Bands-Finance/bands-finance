@@ -56,13 +56,13 @@ export function sideWords(side: string, quote: QuoteView): string {
   return quote.symbol === "SOL" ? w : w.replace(/^SOL\b/, quote.symbol);
 }
 export const GLOSS = {
-  band: "A band is a slice of price Mr Bands puts liquidity into: SOL, or in a tokenized stock's pool both the quote and the stock. Every trade that crosses it pays him a fee.",
-  inRange: "In range means the current price is inside the band, so it is earning right now.",
-  bin: "Pools on Meteora cut price into small steps called bins. A band is a run of bins.",
-  dryRun: "Dry run: he proposes and the guards decide exactly as they would live, the wallet builds and simulates the transaction, and nothing is broadcast.",
-  paper: "Paper trading: real pools, real prices, a pretend wallet. Every band, fee and hedge below is marked against the live market, and no transaction is ever sent.",
-  demo: "Demo data: a seeded five-hour example of how he proposes and the guards decide, not a real run.",
-  guards: "Plain code around whatever proposes his moves: caps, a stop-loss, a cooldown. It decides: it can veto him or pull him out, and it prints why.",
+  band: "A band is a slice of price Mr Bands puts liquidity into. Every trade that crosses it pays him a fee.",
+  inRange: "In range: the price is inside the band, so it is earning.",
+  bin: "Meteora cuts price into small steps called bins. A band is a run of bins.",
+  dryRun: "Dry run: he proposes, the guards decide, the wallet builds each transaction and sends none.",
+  paper: "Paper trading: real pools, live prices, a pretend wallet. No transaction is sent.",
+  demo: "Demo: a seeded example of how he proposes and the guards decide, not a real run.",
+  guards: "Plain code around what proposes his moves: caps, a stop-loss, a cooldown. It can veto him or pull him out, and it prints why.",
 };
 
 /* ---------- verdicts ---------- */
@@ -134,8 +134,8 @@ function intentOf(e: JournalEntry, d: JournalEntry["decision"]): string {
     const q = quoteOf(e.pool);
     const amount = o.amountSol > 0 ? (q.symbol === "SOL" ? fmtSol(o.amountSol, 2) : `${o.amountSol.toFixed(2)} ${q.symbol}`) : `${o.amountToken} ${e.wallet.tokenSymbol}`;
     // the ask exit: the token a closed band handed back, laid over the price to be bought out at the pool's fee rather than sold into it
-    if (d.exitAsk) return `${amount} as an ask just over the price (sold on at the pool's fee, not into it), ${width} bins wide (about ${pct.toFixed(1)}% of price)`;
-    return `${amount} as ${sideWords(o.side, q)}, ${width} bins wide (about ${pct.toFixed(1)}% of price)`;
+    if (d.exitAsk) return `${amount} as an ask just over the price, ${width} bins wide (${pct.toFixed(1)}% of price)`;
+    return `${amount} as ${sideWords(o.side, q)}, ${width} bins wide (${pct.toFixed(1)}% of price)`;
   }
   if (d.action === "CLOSE_POSITION" || d.action === "CLAIM_FEES") {
     return d.positionAddress ? `band ${d.positionAddress.slice(0, 4)}…${d.positionAddress.slice(-4)}` : "every band";
@@ -647,15 +647,15 @@ export function statusOf(newestFirst: JournalEntry[], now: number, demo: boolean
   const ago = ageMs === null ? "" : ageMs < 90e3 ? "a minute ago" : ageMs < 3600e3 ? `${Math.round(ageMs / 60e3)} min ago` : ageMs < 86400e3 ? `${Math.round(ageMs / 3600e3)} h ago` : `${Math.round(ageMs / 86400e3)} d ago`;
   const span = latest && newestFirst.length ? (() => { const first = new Date(newestFirst[newestFirst.length - 1].ts).getTime(); const h = (lastTs! - first) / 3600e3; return h < 48 ? `${Math.round(h)} hours` : `${Math.round(h / 24)} days`; })() : "";
   if (mode === "demo") {
-    return { mode, lastTs, ageMs, short: "demo", sentence: `This is a scripted demo: ${span} of simulated decisions in ${latest?.pool.label ?? "one pool"}, written to show how Mr Bands proposes and the guards decide. No wallet, no real money, nothing sent to Solana.` };
+    return { mode, lastTs, ageMs, short: "demo", sentence: `A scripted demo: ${span} of simulated decisions in ${latest?.pool.label ?? "one pool"}. No wallet, no money.` };
   }
   if (mode === "paper") {
-    return { mode, lastTs, ageMs, short: "paper", sentence: `Paper trading: Mr Bands is working real pools at live prices with a pretend wallet. Bands, fees and hedges are marked against the market; nothing is sent to Solana. Last decision ${ago}.` };
+    return { mode, lastTs, ageMs, short: "paper", sentence: `Paper trading: real pools, live prices, a pretend wallet. Last decision ${ago}.` };
   }
   if (mode === "dry-run") {
-    return { mode, lastTs, ageMs, short: "dry run", sentence: `Rehearsal mode: Mr Bands is deciding on a real pool with a wallet that sends nothing. Every transaction is built and simulated, never broadcast. Last decision ${ago}.` };
+    return { mode, lastTs, ageMs, short: "dry run", sentence: `Rehearsal: a real pool, a wallet that sends nothing. Last decision ${ago}.` };
   }
-  return { mode, lastTs, ageMs, short: "live", sentence: `Live: Mr Bands is trading a small wallet of his own on Solana. Every action below links to its transaction. Last decision ${ago}.` };
+  return { mode, lastTs, ageMs, short: "live", sentence: `Live: his own wallet on Solana. Last decision ${ago}.` };
 }
 
 /* ---------- actions: what he actually did ---------- */
