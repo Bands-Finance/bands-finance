@@ -23,6 +23,36 @@
     3. Read a day of data-talk/x-drafts.jsonl.
     4. Add X_LIVE=true to .env, or uncomment the X_LIVE pair below and bootout + bootstrap this job.
        Only the literal "true" turns posting on. To turn it off again, remove it (or touch data-talk/TALK_STOP).
+
+  Cadence (src/talk/tick.ts planTick defaults; an env key here or in .env overrides one, 0 turns it off). The values
+  come from Merd's record (Zach's earlier agent, 296 live posts): structure and rhythm, never his words.
+    POSTS_PER_DAY             6    loop posts and dry drafts per UTC day (Merd's realized median was 5)
+    TALK_MIN_GAP_MIN          90   minutes between two loop posts
+    TALK_GAP_JITTER_MIN       45   an event post (close, open, strap, milestone) waits the gap plus 0..45 minutes, the
+                                   number fixed by its key (a strap's by the time its change was first seen), so the
+                                   15-minute tick over a flat floor does not print the same gap every time (78% of
+                                   Merd's same-day gaps sat within 230-250 min); the daily, the lesson and the stack
+                                   keep the plain gap
+    TALK_WINDOW_POSTS / HOURS 2/6  at most 2 posts in any rolling 6 hours; the daily numbers pass it, everything
+                                   else waits
+    TALK_NIGHT_POSTS          2    before TALK_DAY_START_UTC (12) at most 2 posts that day; no quiet hours
+    TALK_EVENT_POSTS_PER_DAY  4    close, open, strap and milestone share 4 of the 6 slots; the daily and the lesson
+                                   keep 2; a losing close is exempt (a loss is never the thing that stays quiet)
+    TALK_OPEN_POSTS_PER_DAY   2    opens' share of the event slots (an open not posted is counted by the daily)
+    constants, not env:            at most 2 event posts about one pool a day, at most 2 strap posts a day
+    TALK_DAILY_HOUR_UTC       14   the daily numbers, which outrank the event kinds from this hour until they go and
+                                   pass the window; only the min gap holds them (a post at 13:50 holds them to 15:20)
+    TALK_LESSON_HOUR_UTC      18   the lesson from a closed seat
+    TALK_STACK_HOUR_UTC       15   the Monday stack
+    TALK_LOOP_MILESTONE_SOL   10   the fee milestone step (tick-state milestoneN is 3: the next post is the 40 sol step)
+    TALK_RETRY_BACKOFF_MIN    60   after 3 transient X refusals in a row (402, 429, 5xx, unreachable) the tick does not
+                                   call X for 60 min, doubling to 360, one line in talk.log per hold (Merd retried one
+                                   402 every 15 min for 14 hours and lost 81 posts). On the calendar, not in code:
+                                   check the X pay-per-use balance weekly, keep the Mac on mains with automatic
+                                   installs off.
+  A day under these values: the daily from 14:00 UTC on the first tick the gap allows (up to 90 min later when a
+  post went just before), a lesson from 18 UTC when a seat closed, 2-4 event posts
+  spread by the window and the jitter, nights capped at 2, 3-5 posts on a typical day and 6 only on a busy one.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
