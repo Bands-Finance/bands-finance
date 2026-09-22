@@ -11,6 +11,13 @@
  *   screenMention(mention)                 whether a mention may get a reply at all (bots, scams, flagged
  *                                          accounts, link-only text, the per-account daily cap)
  *   replyToMention(mention)                screen, pick a canned answer (src/talk/drafts.ts replyFor), post
+ *   verifyCredentials()                    GET /2/users/me: the handle the keys sign in as. The one call NOT behind
+ *                                          X_LIVE (a read that changes nothing; `talk.ts check`); needs the four keys
+ *
+ * The rate file's read, the post and the rate file's write run under TALK_STATE_PATH/x-rate.lock (src/talk/lock.ts),
+ * so two processes can never both pass the limiter on the same state. The posting loop (src/talk/tick.ts) passes an
+ * event `key` that lands in the post or draft record; its dry records in x-posts.jsonl carry `dry: true` and
+ * readPosts leaves them out (they are not posts).
  *
  * Rate limits, persisted in TALK_STATE_PATH/x-rate.json (temp + rename): POSTS_PER_DAY original posts per UTC
  * day, REPLIES_PER_HOUR replies per rolling hour, MAX_REPLIES_PER_ACCOUNT replies to one account per UTC day.
@@ -26,13 +33,17 @@ import { lintContextOf, normalizeHandle, talkEnv, X_CREDENTIAL_KEYS, type TalkEn
 import { replyFor, type DraftType } from "./drafts";
 import { describeViolations, linkAllowed, linksIn, lintText, normalizeForMatch, SCAM_BAIT_PATTERNS, KEY_REQUEST_PATTERNS, type LintViolation } from "./lint";
 import { flaggedHandles, readPersonality, suspiciousHandle } from "./personality";
+import { withLock } from "./lock";
 
 export const X_API_BASE = "https://api.x.com";
 export const RATE_FILE = "x-rate.json";
 export const POSTS_FILE = "x-posts.jsonl";
 export const DRAFTS_FILE = "x-drafts.jsonl";
+/** held around read-rate, post, write-rate so two processes can never both post on the same rate state */
+export const RATE_LOCK_FILE = "x-rate.lock";
 
-export type XPostType = DraftType;
+/** the draft types, plus the posting loop's own event posts (src/talk/tick.ts) */
+export type XPostType = DraftType | "open" | "close" | "daily" | "milestone";
 
 export interface XPostRecord {
   id: string;
@@ -44,6 +55,10 @@ export interface XPostRecord {
   replyToHandle?: string | null;
   /** running bit ids the post used */
   bits?: string[];
+  /** the posting loop's stable event key (src/talk/tick.ts), for its 7-day dedupe */
+  key?: string;
+  /** true on the loop's record of a draft that did not go out (X dormant): never a real post; readPosts skips it */
+  dry?: boolean;
 }
 
 export interface XDraftRecord {
@@ -54,6 +69,8 @@ export interface XDraftRecord {
   violations?: LintViolation[];
   replyTo?: string | null;
   replyToHandle?: string | null;
+  /** the posting loop's stable event key, when the loop wrote it */
+  key?: string;
 }
 
 export interface XDeps {
@@ -185,7 +202,10 @@ export function readJsonl<T>(statePath: string, file: string): T[] {
   return out;
 }
 
-export const readPosts = (statePath: string) => readJsonl<XPostRecord>(statePath, POSTS_FILE);
+/** Posts that went out. The loop's dry records (`dry: true`) are not posts and are left out. */
+export const readPosts = (statePath: string) => readJsonl<XPostRecord>(statePath, POSTS_FILE).filter((p) => !p.dry);
+/** Everything in x-posts.jsonl, the loop's dry records included (the loop's dedupe and daily count read this). */
+export const readPostLog = (statePath: string) => readJsonl<XPostRecord>(statePath, POSTS_FILE);
 export const readDrafts = (statePath: string) => readJsonl<XDraftRecord>(statePath, DRAFTS_FILE);
 
 /** Why the rate limiter refuses this post, or null. */
@@ -207,6 +227,8 @@ export interface PostOptions {
   type: XPostType;
   replyTo?: { tweetId: string; handle: string } | null;
   bits?: string[];
+  /** the posting loop's stable event key, carried into the post or draft record */
+  key?: string;
 }
 
 export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {}): Promise<PostResult> {
@@ -215,7 +237,7 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
   const now = deps.now ?? Date.now();
   const replyToHandle = opts.replyTo ? normalizeHandle(opts.replyTo.handle) : null;
   const draft = (reason: string, violations?: LintViolation[]): PostResult => {
-    const row: XDraftRecord = { at: new Date(now).toISOString(), type: opts.type, text, reason, ...(violations?.length ? { violations } : {}), ...(opts.replyTo ? { replyTo: opts.replyTo.tweetId, replyToHandle } : {}) };
+    const row: XDraftRecord = { at: new Date(now).toISOString(), type: opts.type, text, reason, ...(violations?.length ? { violations } : {}), ...(opts.replyTo ? { replyTo: opts.replyTo.tweetId, replyToHandle } : {}), ...(opts.key ? { key: opts.key } : {}) };
     try {
       appendJsonl(t.statePath, DRAFTS_FILE, row);
     } catch {
@@ -236,41 +258,76 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
   if (gate) return draft(gate);
   const creds = xCredentials(envObj);
   if (!creds) return draft("dormant: credentials unreadable");
-  let rate: RateState;
-  try {
-    rate = readRate(t.statePath);
-  } catch (err) {
-    return draft(`rate: ${RATE_FILE} cannot be read (${(err as Error).message.slice(0, 80)}); not posting`);
-  }
-  const limited = rateProblem(rate, t, now, replyToHandle);
-  if (limited) return draft(limited);
+  // read-rate, post, write-rate under one lock: two processes can never both pass the limiter on the same state
+  const locked = await withLock(path.join(t.statePath, RATE_LOCK_FILE), () => postLocked(creds));
+  return locked.locked ? locked.value : draft(`rate: another post holds ${RATE_LOCK_FILE}; not posting`);
 
-  const url = `${X_API_BASE}/2/tweets`;
-  const body = { text, ...(opts.replyTo ? { reply: { in_reply_to_tweet_id: opts.replyTo.tweetId } } : {}) };
+  async function postLocked(creds: OAuthCredentials): Promise<PostResult> {
+    let rate: RateState;
+    try {
+      rate = readRate(t.statePath);
+    } catch (err) {
+      return draft(`rate: ${RATE_FILE} cannot be read (${(err as Error).message.slice(0, 80)}); not posting`);
+    }
+    const limited = rateProblem(rate, t, now, replyToHandle);
+    if (limited) return draft(limited);
+
+    const url = `${X_API_BASE}/2/tweets`;
+    const body = { text, ...(opts.replyTo ? { reply: { in_reply_to_tweet_id: opts.replyTo.tweetId } } : {}) };
+    let res: Response;
+    try {
+      res = await (deps.fetch ?? fetch)(url, {
+        method: "POST",
+        headers: { authorization: oauthHeader({ method: "POST", url, creds, nonce: deps.nonce?.(), timestamp: Math.floor(now / 1000) }), "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return draft(`x api unreachable: ${(err as Error).name}`);
+    }
+    let json: { data?: { id?: string }; title?: string; detail?: string } = {};
+    try {
+      json = (await res.json()) as typeof json;
+    } catch {
+      /* not json */
+    }
+    if (!res.ok || !json.data?.id) return draft(`x api ${res.status}${json.title ? `: ${String(json.title).slice(0, 80)}` : ""}`);
+    const id = String(json.data.id);
+    if (replyToHandle) rate.replies.push({ at: now, id, handle: replyToHandle });
+    else rate.posts.push({ at: now, id });
+    writeRate(t.statePath, rate, now);
+    const record: XPostRecord = { id, text, type: opts.type, at: new Date(now).toISOString(), replyTo: opts.replyTo?.tweetId ?? null, replyToHandle, ...(opts.bits?.length ? { bits: opts.bits } : {}), ...(opts.key ? { key: opts.key } : {}) };
+    appendJsonl(t.statePath, POSTS_FILE, record);
+    return { posted: true, id };
+  }
+}
+
+// ---------------------------------------------------------------- credential check
+
+export type VerifyResult = { ok: true; username: string; matchesXHandle: boolean | null } | { ok: false; reason: string };
+
+/**
+ * GET /2/users/me: which account the four credentials sign in as. The ONE network call here that X_LIVE does not
+ * gate: it is a read that changes nothing on X, so the operator can check the keys before turning posting on. It
+ * needs only the four credentials; it never posts, and it reports the handle, never a key.
+ */
+export async function verifyCredentials(deps: XDeps = {}): Promise<VerifyResult> {
+  const envObj = deps.env ?? process.env;
+  const t = talkEnv(envObj);
+  if (t.missingXCredentials.length) return { ok: false, reason: `missing ${t.missingXCredentials.join(", ")}` };
+  const creds = xCredentials(envObj);
+  if (!creds) return { ok: false, reason: "credentials unreadable" };
+  const url = `${X_API_BASE}/2/users/me`;
   let res: Response;
   try {
-    res = await (deps.fetch ?? fetch)(url, {
-      method: "POST",
-      headers: { authorization: oauthHeader({ method: "POST", url, creds, nonce: deps.nonce?.(), timestamp: Math.floor(now / 1000) }), "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    res = await (deps.fetch ?? fetch)(url, { method: "GET", headers: { authorization: oauthHeader({ method: "GET", url, creds, nonce: deps.nonce?.(), timestamp: Math.floor((deps.now ?? Date.now()) / 1000) }) } });
   } catch (err) {
-    return draft(`x api unreachable: ${(err as Error).name}`);
+    return { ok: false, reason: `x api unreachable: ${(err as Error).name}` };
   }
-  let json: { data?: { id?: string }; title?: string; detail?: string } = {};
-  try {
-    json = (await res.json()) as typeof json;
-  } catch {
-    /* not json */
-  }
-  if (!res.ok || !json.data?.id) return draft(`x api ${res.status}${json.title ? `: ${String(json.title).slice(0, 80)}` : ""}`);
-  const id = String(json.data.id);
-  if (replyToHandle) rate.replies.push({ at: now, id, handle: replyToHandle });
-  else rate.posts.push({ at: now, id });
-  writeRate(t.statePath, rate, now);
-  const record: XPostRecord = { id, text, type: opts.type, at: new Date(now).toISOString(), replyTo: opts.replyTo?.tweetId ?? null, replyToHandle, ...(opts.bits?.length ? { bits: opts.bits } : {}) };
-  appendJsonl(t.statePath, POSTS_FILE, record);
-  return { posted: true, id };
+  const json = (await res.json().catch(() => ({}))) as { data?: { username?: string }; title?: string };
+  if (!res.ok) return { ok: false, reason: `x api ${res.status}${json.title ? `: ${String(json.title).slice(0, 80)}` : ""}` };
+  const username = normalizeHandle(json.data?.username ?? null);
+  if (!username) return { ok: false, reason: "x api answered without a valid username" };
+  return { ok: true, username, matchesXHandle: t.xHandle ? t.xHandle === username : null };
 }
 
 export interface Engagement {

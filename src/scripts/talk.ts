@@ -12,10 +12,12 @@
  *   npx tsx src/scripts/talk.ts use <bit-id> <landed|flopped>
  *   npx tsx src/scripts/talk.ts reflect
  *   npx tsx src/scripts/talk.ts drift
+ *   npx tsx src/scripts/talk.ts tick [--force strap|daily|lesson|stack]   the posting loop, one tick (src/talk/tick.ts)
+ *   npx tsx src/scripts/talk.ts check                                     which account the X keys sign in as (a read)
  *
  * `post` goes through src/talk/x.ts: while X is dormant it prints the draft and why it was not posted.
  */
-import "../config";
+import { config } from "../config";
 import { talkEnv, lintContextOf, type TalkEnv } from "../talk/env";
 import { loadTalkData, stackFiguresOf, strapInputOf, type TalkData } from "../talk/data";
 import { chopAppreciation, lesson, LESSON_TOPICS, rebalanceNote, stackUpdate, strapCheck, type DraftResult, type LessonTopic } from "../talk/drafts";
@@ -23,7 +25,8 @@ import { lintText } from "../talk/lint";
 import { approveProposal, readPersonality, recordUse, vetoProposal } from "../talk/personality";
 import { driftCheck, reflect } from "../talk/reflect";
 import { strapOf, windowLabel, fmtAge } from "../talk/strap";
-import { getEngagement, postTweet, readPosts } from "../talk/x";
+import { getEngagement, postTweet, readPosts, verifyCredentials } from "../talk/x";
+import { FORCE_KINDS, runTick, type ForceKind } from "../talk/tick";
 
 const HOUR = 3600e3;
 const out = (s = "") => console.log(s);
@@ -186,8 +189,31 @@ async function main(): Promise<number> {
       for (const f of report.flags) out(`  ${f.postId}  ${f.rule}: ${f.detail}`);
       return report.ok ? 0 : 2;
     }
+    case "tick": {
+      const force = flag(args, "force");
+      if (force !== null && !(FORCE_KINDS as readonly string[]).includes(force)) {
+        out(`usage: tick [--force ${FORCE_KINDS.join("|")}]`);
+        return 2;
+      }
+      const r = await runTick({ env: process.env, paperDesk: config.dryRun, now, force: force as ForceKind | null });
+      out(`${new Date(now).toISOString()} tick ${r.status}: ${r.detail}`);
+      if (r.pick) out(`  ${r.pick.kind} ${r.pick.key}\n${r.pick.text.replace(/^/gm, "  | ")}`);
+      for (const n of r.plan?.notes ?? []) if (r.status !== "idle") out(`  note: ${n}`);
+      return r.status === "error" ? 1 : 0;
+    }
+    case "check": {
+      const r = await verifyCredentials({ env: process.env, now });
+      if (!r.ok) {
+        out(`check failed: ${r.reason}`);
+        return 2;
+      }
+      out(`the x keys sign in as @${r.username}`);
+      out(r.matchesXHandle === null ? "X_HANDLE is not set" : r.matchesXHandle ? `matches X_HANDLE (@${t.xHandle})` : `does NOT match X_HANDLE (@${t.xHandle})`);
+      out(`posting is ${t.xLive ? "LIVE (X_LIVE=true)" : "off (X_LIVE is not \"true\"): ticks only draft"}`);
+      return r.matchesXHandle === false ? 2 : 0;
+    }
     default:
-      out("usage: talk.ts strap | draft <strap|rebalance|stack|chop|lesson> [topic] | lint \"<text>\" | post <type> [topic] | proposals | approve <id> --operator <handle> | veto <id> --operator <handle> --reason \"<r>\" | use <bit-id> <landed|flopped> | reflect | drift");
+      out("usage: talk.ts strap | draft <strap|rebalance|stack|chop|lesson> [topic] | lint \"<text>\" | post <type> [topic] | proposals | approve <id> --operator <handle> | veto <id> --operator <handle> --reason \"<r>\" | use <bit-id> <landed|flopped> | reflect | drift | tick [--force strap|daily|lesson|stack] | check");
       return cmd ? 2 : 0;
   }
 }
