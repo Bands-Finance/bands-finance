@@ -20,9 +20,16 @@ never touches it.
 
 ## The point: his autonomy (Zach, Tue 22 Sep)
 
-"The whole purpose of the Clawrena hackathon is to showcase the agent's autonomous abilities." So the rule
-for every item below: **Zach supplies keys, accounts and money and sets the limits, then steps back. Every
-act a judge can see is Mr Bands'.** The live book stays on paper by decision, which makes this rule matter
+"The whole purpose of the Clawrena hackathon is to showcase the agent's autonomous abilities." And: "I am only
+the architect and advisor for Mr Bands; essentially I'm a Mr Bands employee." So the rule for every item below:
+**Mr Bands runs the project. Zach, his architect and advisor, builds what he needs and holds what an agent
+cannot hold in his own name (accounts, keys, the hardware, the legal side), then steps back. Every call, and
+every act a judge can see, is Mr Bands'.**
+
+The story is told that way everywhere: Mr Bands is the founder; Zach works for him. Two facts sit under it in
+the fine print, because a claim never outruns the truth: the human who holds the keys and the legal
+responsibility is Zach (the token page and the site's small print say so), and X's automated-account label links
+Mr Bands' account to Zach's as its manager, as X's rules require. The live book stays on paper by decision, which makes this rule matter
 more: with no real-money trading, the autonomy judges can see is the autonomy he performs in public himself.
 
 What he does himself, and nobody does for him:
@@ -146,9 +153,9 @@ inventory, "never swaps it" is the whole rule.)
 - Graduation by explanation, not profit, is the reverse of the incumbent LP school, which graduates only
   profitable positions and teaches with fake SOL.
 
-**How he talks about it.** Every mention carries the disclosure, in code and linted: "our own token, launched
-by my operator. the desk holds none and never trades it. holding <mint> in a signed-in wallet opens the engine.
-it is not a share of anything and pays nobody." He names the mint, never a bare ticker, and says other $BANDS
+**How he talks about it.** Every mention carries the disclosure, in code and linted: "my own token. i launched
+it myself. the desk holds none and never trades it. holding <mint> in a signed-in wallet opens the engine. it is
+not a share of anything and pays nobody." He names the mint, never a bare ticker, and says other $BANDS
 tokens are not his. He never puts a price, chart, cap, holders, volume, fee, % or $ next to it, never says buy,
 sell or early, never links it to the desk's P&L, and never names it in a lesson. Asked "should I buy it?": "I
 don't tell anyone what to buy. here is what it opens, and the lessons are free without it." He posts his own
@@ -215,7 +222,8 @@ winners. We don't compete on curriculum; we are the casebook they can't be.
   test. No engine grant is attached (adding graduates to the allowlist needs a restart per graduate, and
   rebuilding a closed position is 1-2 days).
 - **The "59 real seats" series**, drafted to the lint from day one, posted from the project account.
-- **The stream script:** team; one seat laid live with the guards deciding; a losing seat against a winning one;
+- **The stream script:** the team (Mr Bands is the founder; Zach, his architect and advisor, works for him, and
+  says so on camera); one seat laid live with the guards deciding; a losing seat against a winning one;
   traction; the token gate. It ends on the red numbers.
 - The advisor chat stays off. As written it is a personal strategist that suggests sizing, which breaks his
   third hard rule. It gets recast as a describer, with linted replies, after 8 Oct.
