@@ -2284,7 +2284,7 @@ async function runIteration(app: App): Promise<void> {
       const snapshot = await venue.snapshot(pool, 10, { solPriceUsd });
       if (paper) {
         // The paper bands of this pool, marked against the live snapshot (fees accrue here).
-        const positions = markPool(paper, snapshot, { now: Date.now(), fees: paperFeeSource(app, address), solPriceUsd });
+        const positions = markPool(paper, snapshot, { now: Date.now(), fees: paperFeeSource(app, address), solPriceUsd, flow: app.flow.get(address) ?? null });
         savePaperBook(paper);
         observed.push({ address, venue, pool, snapshot, raw: [], positions });
       } else {

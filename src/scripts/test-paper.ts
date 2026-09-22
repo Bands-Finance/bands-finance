@@ -266,6 +266,28 @@ async function main(): Promise<void> {
     const usdc = paper.accrueFees(band(), s, { now: now + 1200e3, fees: { fees24hUsd: 8640, volume24hUsd: null }, solPriceUsd: null }, "USDC");
     assert.ok(usdc.feeQuote > 0, "a USDC quote needs no SOL price");
   });
+  await test("fees from the flow scout: our share of what traded through our own bins; the day figure only as a fallback, capped at 3x the scout's pool pace", () => {
+    const now = T0 + 1200e3;
+    const s = snapAt(260);
+    const b = band();
+    const flow = { asOf: now - 60e3, coveredMin: 120, ours15mQuote: 0.09, feesPerDayQuote240m: 5, band: { lowerBinId: b.lowerBinId, upperBinId: b.upperBinId } };
+    const acc = paper.accrueFees(b, s, { now, fees: { fees24hUsd: 8640, volume24hUsd: null }, solPriceUsd: 100, flow }, "SOL");
+    assert.equal(acc.basis, "flow");
+    near(acc.feeQuoteTotal, (0.09 / 900) * acc.shareOfBand * acc.dtSec, 1e-12, "our share of the fees in our bins, no halving, no day figure");
+    // the volume died: nothing traded through our bins, so nothing accrues, whatever the day figure says
+    const dead = paper.accrueFees(b, s, { now, fees: { fees24hUsd: 8640, volume24hUsd: null }, solPriceUsd: 100, flow: { ...flow, ours15mQuote: 0 } }, "SOL");
+    assert.equal(dead.basis, "flow");
+    assert.equal(dead.feeQuoteTotal, 0);
+    // a reading of another band, a stale one, one under 15 minutes of coverage, or none about a band: the day figure stands
+    for (const f of [{ ...flow, band: { lowerBinId: b.lowerBinId - 1, upperBinId: b.upperBinId } }, { ...flow, asOf: now - 11 * 60e3 }, { ...flow, coveredMin: 10 }, { ...flow, band: null }]) {
+      assert.equal(paper.accrueFees(b, s, { now, fees: { fees24hUsd: 8640, volume24hUsd: null }, solPriceUsd: 100, flow: f }, "SOL").basis, "24h");
+    }
+    // the fallback's day figure is capped at 3x the scout's pace for the whole pool: 5 SOL a day at $100 is $500, so $1,500, not $8,640
+    const capped = paper.accrueFees(b, s, { now, fees: { fees24hUsd: 8640, volume24hUsd: null }, solPriceUsd: 100, flow: { ...flow, band: null } }, "SOL");
+    near(capped.feesPerDayUsd, 1500, 1e-9);
+    // out of range with a reading: nothing
+    assert.equal(paper.accrueFees(b, snapAt(262), { now, fees: null, solPriceUsd: 100, flow }, "SOL").feeQuoteTotal, 0);
+  });
   await test("claim: the accrued fees move to the wallet, the band's fees zero, feesClaimedSol tallies", () => {
     paper.markPool(book, s260, { now: T0 + 1800e3, fees: null, solPriceUsd: 100 });
     const b = band();

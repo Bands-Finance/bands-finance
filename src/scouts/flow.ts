@@ -388,6 +388,8 @@ export interface FlowContext {
   lastPrice: number | null;
   lastSwapAt: number | null;
   largest15m: { volumeQuote: number; dir: "buy" | "sell" } | null;
+  /** the band the scout measured "ours" against (its PoolMeta.band); a paper mark uses ours only when this is its own band */
+  band?: { lowerBinId: number; upperBinId: number } | null;
 }
 
 /** A pool's file entry as the desk's context. Pure. */
@@ -419,6 +421,7 @@ export function flowContextOf(p: FlowPool): FlowContext {
     lastPrice: p.lastPrice,
     lastSwapAt: p.lastSwapAt,
     largest15m: w15.largest ? { volumeQuote: w15.largest.volumeQuote, dir: w15.largest.dir } : null,
+    band: p.band ?? null,
   };
 }
 

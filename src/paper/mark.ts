@@ -24,6 +24,7 @@
  * arithmetic. With collectFeeMode "quote" every fee lands on the quote side.
  */
 import { binPrice } from "../tools/bins";
+import type { FlowContext } from "../scouts/flow";
 import { quoteMath, type BinRow, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
 import type { BandValue, PaperBand, PaperBook, PaperMark } from "./book";
 import { paperHedgeEquityUsd } from "./hedge";
@@ -47,10 +48,37 @@ export interface FeeSource {
 
 export interface MarkContext {
   now: number;
-  /** the pool's 24h figures from the screen (or the hot watch); null accrues nothing */
+  /** the pool's 24h figures from the screen (or the hot watch); the fallback when the flow scout has no reading of the band */
   fees: FeeSource | null;
   /** the screen's SOL price; a SOL-quoted pool cannot convert fees without it */
   solPriceUsd: number | null;
+  /**
+   * The flow scout's reading of the pool (src/scouts/flow.ts): the LP fees that printed in the band's own bins in the
+   * last 15 minutes. When it is about this band and fresh, fees accrue from it: our share of what really traded
+   * through our bins. Without it the 24h figure stands, and it kept booking a day of fees after the volume died
+   * (the 22 Sep test rounds: one MRVL/SOL band was credited 11.4x its pool's whole daily fees).
+   */
+  flow?: Pick<FlowContext, "asOf" | "coveredMin" | "ours15mQuote" | "feesPerDayQuote240m" | "band"> | null;
+}
+
+/** The scout's reading must be at most this old, and cover at least this many minutes, to price a mark. */
+export const FLOW_FEE_MAX_AGE_MS = 10 * 60_000;
+export const FLOW_FEE_MIN_COVER_MIN = 15;
+/** A 24h figure is capped at this multiple of the scout's own four-hour pace for the pool, when there is one. */
+export const DAY_FIGURE_MAX_VS_FLOW = 3;
+
+/**
+ * The fee pace in this band's own bins, quote units a second, from the scout's last 15 minutes: only when the scout
+ * measured "ours" against exactly this band, its reading is fresh, and it covers at least 15 minutes. Null
+ * otherwise (the 24h figure is then the fallback). PURE.
+ */
+export function flowFeeRate(band: Pick<PaperBand, "lowerBinId" | "upperBinId">, flow: MarkContext["flow"], now: number): number | null {
+  if (!flow || !flow.band) return null;
+  if (flow.band.lowerBinId !== band.lowerBinId || flow.band.upperBinId !== band.upperBinId) return null;
+  if (!(now - flow.asOf <= FLOW_FEE_MAX_AGE_MS)) return null;
+  if (flow.coveredMin === null || flow.coveredMin < FLOW_FEE_MIN_COVER_MIN) return null;
+  if (!(Number.isFinite(flow.ours15mQuote) && flow.ours15mQuote >= 0)) return null;
+  return flow.ours15mQuote / (15 * 60);
 }
 
 /** Price of the base token in quote units at a bin (under the band's price model): Y per X when the quote is Y, X per Y when it is X. */
@@ -149,6 +177,8 @@ export function feesPerDayUsd(fees: FeeSource | null, dynamicFeePct: number): nu
 }
 
 export interface FeeAccrual {
+  /** what priced the mark: the scout's fees in our bins, the pool's 24h figure, or a made pair's routing model */
+  basis: "flow" | "24h" | "pair";
   dtSec: number;
   inRange: boolean;
   shareOfBand: number;
@@ -172,17 +202,31 @@ export function accrueFees(band: PaperBand, s: MarkSnapshot, ctx: MarkContext, q
   // and the fees per day are the routing model's, not a screen figure the pool does not have.
   const pair = s.pair;
   const share = pair && pair.ourShare !== null ? Math.min(1, Math.max(0, pair.ourShare)) : shareOfBand(depositQuote, depthQuote);
-  const perDay = pair ? Math.max(0, pair.feesPerDayUsd) : feesPerDayUsd(ctx.fees, s.dynamicFeePct);
-  const base: Omit<FeeAccrual, "feeQuoteTotal" | "feeQuote" | "feeToken" | "note"> = { dtSec, inRange, shareOfBand: share, depthQuote, feesPerDayUsd: perDay };
-  if (!inRange || dtSec <= 0 || perDay <= 0) {
-    const why = !inRange ? "out of range: no fees" : perDay <= 0 ? (pair ? "the routing model sends no flow to our pool: nothing accrued" : "no 24h fee figure for this pool: nothing accrued") : null;
-    return { ...base, feeQuoteTotal: 0, feeQuote: 0, feeToken: 0, note: why };
-  }
-  const feeUsd = perDay * share * 0.5 * (dtSec / 86400);
+  // the scout's own reading of the fees in our bins, when it has one: what really traded through them, not a day figure
+  const flowRate = pair ? null : flowFeeRate(band, ctx.flow, ctx.now);
+  const toUsd = (quote: number): number | null => (quoteSymbol === "USDC" ? quote : ctx.solPriceUsd && ctx.solPriceUsd > 0 ? quote * ctx.solPriceUsd : null);
   let feeQuoteTotal: number;
-  if (quoteSymbol === "USDC") feeQuoteTotal = feeUsd;
-  else if (ctx.solPriceUsd && ctx.solPriceUsd > 0) feeQuoteTotal = feeUsd / ctx.solPriceUsd;
-  else return { ...base, feeQuoteTotal: 0, feeQuote: 0, feeToken: 0, note: "no SOL price to convert fees: nothing accrued" };
+  let base: Omit<FeeAccrual, "feeQuoteTotal" | "feeQuote" | "feeToken" | "note">;
+  if (flowRate !== null) {
+    const perDayOurs = toUsd(flowRate * 86400);
+    base = { basis: "flow", dtSec, inRange, shareOfBand: share, depthQuote, feesPerDayUsd: perDayOurs ?? 0 };
+    if (!inRange || dtSec <= 0) return { ...base, feeQuoteTotal: 0, feeQuote: 0, feeToken: 0, note: !inRange ? "out of range: no fees" : null };
+    feeQuoteTotal = flowRate * share * dtSec;
+  } else {
+    let perDay = pair ? Math.max(0, pair.feesPerDayUsd) : feesPerDayUsd(ctx.fees, s.dynamicFeePct);
+    // a day figure far above what the scout measured the whole pool earning is not believed: capped at 3x its pace
+    const poolPace = !pair && ctx.flow && ctx.flow.feesPerDayQuote240m !== null && ctx.flow.feesPerDayQuote240m !== undefined ? toUsd(ctx.flow.feesPerDayQuote240m) : null;
+    if (poolPace !== null && perDay > DAY_FIGURE_MAX_VS_FLOW * poolPace) perDay = DAY_FIGURE_MAX_VS_FLOW * poolPace;
+    base = { basis: pair ? "pair" : "24h", dtSec, inRange, shareOfBand: share, depthQuote, feesPerDayUsd: perDay };
+    if (!inRange || dtSec <= 0 || perDay <= 0) {
+      const why = !inRange ? "out of range: no fees" : perDay <= 0 ? (pair ? "the routing model sends no flow to our pool: nothing accrued" : "no 24h fee figure for this pool: nothing accrued") : null;
+      return { ...base, feeQuoteTotal: 0, feeQuote: 0, feeToken: 0, note: why };
+    }
+    const feeUsd = perDay * share * 0.5 * (dtSec / 86400);
+    if (quoteSymbol === "USDC") feeQuoteTotal = feeUsd;
+    else if (ctx.solPriceUsd && ctx.solPriceUsd > 0) feeQuoteTotal = feeUsd / ctx.solPriceUsd;
+    else return { ...base, feeQuoteTotal: 0, feeQuote: 0, feeToken: 0, note: "no SOL price to convert fees: nothing accrued" };
+  }
   // a made pair collecting in the quote only takes every fee on the quote side
   if (pair?.collectFeeMode === "quote") return { ...base, feeQuoteTotal, feeQuote: feeQuoteTotal, feeToken: 0, note: null };
   const feeQuote = feeQuoteTotal / 2;
