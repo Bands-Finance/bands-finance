@@ -25,10 +25,11 @@ import { backoff, jitterMin, type RecentText } from "./guards";
 import { readBuildLedger } from "./buildLedger";
 import { pickMoment, type LearningCount, type Moment, type MomentInputs, type PostMemory, type ScreenPool } from "./moments";
 import { askPost, factIds, type AskImpl, type PostDraft, type PromptMemory } from "./postBrain";
+import { brainProblem } from "./replyBrain";
 import { vetBuilderPost, type BuilderRefusal, type BuilderVetContext } from "./postGuards";
 import { STALE_CYCLES, fmtAge } from "./strap";
 import { confirmIdentity, loopLogOf, stopFileOf, STOP_FILE, type TickOutcome, type TickState } from "./tick";
-import { DRAFTS_FILE, POSTS_FILE, postTweet, readPostLog, retryableReason, xGateProblem, type XDeps } from "./x";
+import { DRAFTS_FILE, POSTS_FILE, postTweet, readPostLog, retryableReason, unresolvedIntentKeys, xGateProblem, type XDeps } from "./x";
 
 const MIN = 60e3;
 const HOUR = 60 * MIN;
@@ -154,7 +155,8 @@ export async function momentInputsOf(o: Pick<BuilderTickOptions, "t" | "now" | "
     screen: screenPoolsOf(path.join(t.dataDir, SCREEN_FILE)),
     build: readBuildLedger(t.statePath, o.cwd ?? process.cwd()).rows,
     posts,
-    seen: log.seen,
+    // a POST that never got X's answer may be on X: its key is used (never a second, differently worded post)
+    seen: new Set([...log.seen, ...unresolvedIntentKeys(t.statePath, now - 7 * DAY)]),
     dailyHourUtc: o.dailyHourUtc,
     lastDailyDay: o.st.lastDailyDay,
   };
@@ -231,6 +233,10 @@ function appendRow(statePath: string, file: string, row: object): void {
 export async function runBuilderTick(o: BuilderTickOptions): Promise<BuilderOutcome> {
   const { t, env, now, st } = o;
   const untouched: TickState = { ...st, lastTickAt: now };
+  // one line a tick in talk.log when his model cannot be asked at all (no gateway token, or one too short to be
+  // real): only the daily's template could go out then. Never the token, only why (brainProblem).
+  const brainWhy = brainProblem(env);
+  if (brainWhy) console.log(`[talk] builder: his model cannot be asked: ${brainWhy}; only the daily card's template can go out`);
   const { inputs, recent, linksToday } = await momentInputsOf(o);
   const plan = pickMoment(inputs, {
     postsPerDay: o.postsPerDay,
@@ -294,7 +300,7 @@ export async function runBuilderTick(o: BuilderTickOptions): Promise<BuilderOutc
     confirmed = { confirmedHandle: id.handle, confirmedTokenHash: id.tokenHash };
   }
   const who = drafted.source === "template" ? `the daily's template (${drafted.reason ?? "model not used"})` : "his model";
-  const r = await postTweet(text, { type: m.type, key: m.key, sentenceCase: true }, { env: postEnv, now, fetch: o.fetch });
+  const r = await postTweet(text, { type: m.type, key: m.key, sentenceCase: true, intent: true }, { env: postEnv, now, fetch: o.fetch });
   if (r.posted) return { status: "posted", detail: `posted ${r.id}: ${m.key}, written by ${who}`, moment: m, text, source: drafted.source ?? undefined, id: r.id, state: { ...spentState, ...confirmed, ...afterX("posted", "").state } };
   if (r.reason.startsWith("dormant")) {
     appendRow(t.statePath, POSTS_FILE, { id: `draft:${m.key}`, text, type: m.type, at, replyTo: null, replyToHandle: null, key: m.key, dry: true });
@@ -302,7 +308,9 @@ export async function runBuilderTick(o: BuilderTickOptions): Promise<BuilderOutc
   }
   if (retryableReason(r.reason)) {
     const x = afterX("transient", r.reason);
-    return { status: "not-posted", detail: x.detail ?? `${r.reason} (will retry)`, moment: m, text, state: { ...untouched, ...confirmed, ...x.state } };
+    // X may have taken it (a timeout after the POST, a 5xx): the intent stays open and the key counts as used
+    const maybeOnX = /^x api (unreachable|5\d\d)/.test(r.reason);
+    return { status: "not-posted", detail: x.detail ?? `${r.reason} (${maybeOnX ? "X may hold it: the key counts as used, never reworded" : "will retry"})`, moment: m, text, state: { ...(maybeOnX ? spentState : untouched), ...confirmed, ...x.state } };
   }
   return { status: "not-posted", detail: r.reason, moment: m, text, state: { ...spentState, ...confirmed } };
 }

@@ -31,6 +31,14 @@ export interface Figure {
   weekly?: boolean;
   /** a paper fee figure: printed only with the paper book's result (book.pct) beside it, besides its `needs` */
   fee?: boolean;
+  /** a gain or a rise: never printed next to loss, lost, down or lower */
+  positive?: boolean;
+  /** the sentence that prints it must match (150 only beside "start", 11.19 only beside "SOL/USD" or "valuation") */
+  near?: RegExp;
+  /** the few words around it (6 before, 3 after, never past the next number) must not match */
+  notNear?: RegExp;
+  /** the words right after it (up to 3, never past the next number) must match ("36 bands", "27 up") */
+  next?: RegExp;
 }
 
 export interface Fact {
@@ -102,20 +110,35 @@ export const hoursOf = (ms: number): string => {
 
 const MONTH_RE = MONTHS.join("|");
 /**
- * Every number-like token of a text, normalized: "d:22 Sep" for a date, "t:15:03" for a clock time, and the plain
- * value otherwise ("5,149.95" and "5149.95" both read "5149.95", "$0.29" reads "0.29", "18%" reads "18", "$4.74M"
- * reads "4.74M"). A sign is not part of a token: the loss rule reads the words. Tickers are taken out first
- * ("ai16z/SOL" carries no number), and digits inside a word ("x402", a handle) are not a figure.
+ * Every number-like token of a text, normalized: "d:22 Sep" for a date, "t:15:03" for a clock time, "usd:0.29" for a
+ * dollar figure ("$0.29"; "$4.74M" reads "usd:4.74M"), and the plain value otherwise ("5,149.95" and "5149.95" both
+ * read "5149.95", "18%" reads "18"). The unit stays in the token: a SOL figure printed with a "$" is not the SOL
+ * figure. A sign is not part of a token: the loss rule reads the words. Tickers are taken out first ("ai16z/SOL"
+ * carries no number), and digits inside a word ("x402", a handle) are not a figure.
  */
 export function numberTokens(text: string, tickers: readonly string[] = []): string[] {
+  return numberTokenSpans(text, tickers).map((x) => x.tok);
+}
+
+export interface NumberSpan {
+  tok: string;
+  /** where it sits in the text given */
+  start: number;
+  end: number;
+}
+
+/** numberTokens with where each one sits (tickers are blanked in place, so the positions are the text's own). */
+export function numberTokenSpans(text: string, tickers: readonly string[] = []): NumberSpan[] {
   let s = ` ${text} `;
-  for (const t of [...tickers].sort((a, b) => b.length - a.length)) if (t) s = s.split(t).join(" ");
-  const out: string[] = [];
-  const re = new RegExp(`(\\d{1,2}) (${MONTH_RE})\\b|(\\d{1,2}):(\\d{2})|(?<![A-Za-z_0-9])\\$?(\\d+(?:,\\d{3})*(?:\\.\\d+)?)([MK]\\b)?`, "g");
+  for (const t of [...tickers].sort((a, b) => b.length - a.length)) if (t) s = s.split(t).join(" ".repeat(t.length));
+  const out: NumberSpan[] = [];
+  const re = new RegExp(`(\\d{1,2}) (${MONTH_RE})\\b|(\\d{1,2}):(\\d{2})|(?<![A-Za-z_0-9])(\\$?)(\\d+(?:,\\d{3})*(?:\\.\\d+)?)([MK]\\b)?`, "g");
   for (const m of s.matchAll(re)) {
-    if (m[1]) out.push(`d:${Number(m[1])} ${m[2]}`);
-    else if (m[3]) out.push(`t:${m[3].padStart(2, "0")}:${m[4]}`);
-    else if (m[5]) out.push(`${String(Number(m[5].replace(/,/g, "")))}${m[6] ?? ""}`);
+    const start = (m.index ?? 0) - 1;
+    const end = start + m[0].length;
+    if (m[1]) out.push({ tok: `d:${Number(m[1])} ${m[2]}`, start, end });
+    else if (m[3]) out.push({ tok: `t:${m[3].padStart(2, "0")}:${m[4]}`, start, end });
+    else if (m[6]) out.push({ tok: `${m[5] ? "usd:" : ""}${String(Number(m[6].replace(/,/g, "")))}${m[7] ?? ""}`, start, end });
   }
   return out;
 }
@@ -124,6 +147,24 @@ export function numberTokens(text: string, tickers: readonly string[] = []): str
 
 let seq = 0;
 const fig = (id: string, text: string, book: Book, extra: Partial<Figure> = {}): Figure => ({ id, text, book, ...extra });
+
+/** Contexts a figure is tied to (the guards' "context" rule): the words a number may be printed beside. */
+export const CTX = {
+  /** a starting amount: beside the start, never as a result */
+  start: { near: /\b(start|started|starting|began|begun|seeded|with|paper|book)\b/i, notNear: /\b(lost|loss|losses|down|up|made|earned|gained|kept|fees?|profit\w*|result)\b/i },
+  /** a fee total: beside the word fees */
+  fees: { near: /\bfees?\b/i },
+  /** the SOL/USD valuation term: beside SOL/USD, valuation or the dollar, never as trading */
+  valuation: { near: /SOL\/USD|\bvaluation\b|\bdollar\b/i, notNear: /\b(trad(e|es|ed|ing)|made|earned|desk|fees?|profit\w*|gained)\b/i },
+  /** a count of days */
+  days: { next: /^\W*days?\b/i },
+  /** hours held */
+  hours: { next: /^\W*(hours?|hrs?|h)\b/i },
+  /** a share of checks in range: never a rate or a return */
+  inRange: { near: /\brange\b/i, notNear: /\b(returns?|yield\w*|roi|apy|apr|profit\w*|rate)\b/i },
+  /** the book's result in percent */
+  bookPct: { near: /\b(book|since|start|started)\b/i },
+};
 export const fact = (id: string, text: string, book: Book, source: string, figures: Figure[] = []): Fact => ({ id, text, book, source, figures });
 /** a fresh id suffix for facts made in a loop */
 export const nextId = (p: string) => `${p}.${++seq}`;
@@ -155,9 +196,9 @@ export function standingFacts(o: { now: number; startSol: number; startUsdc: num
       `Until after ${dateOf(ARC.paperUntil)} my book is paper: virtual money against live prices, started ${dateOf(o.startedAt)} with ${count(o.startSol)} SOL and ${count(o.startUsdc)} USDC.`,
       "paper",
       "data-live/paper-book.json startSol, startUsdc, startedAt",
-      [fig("paper.startSol", count(o.startSol), "paper"), fig("paper.startUsdc", count(o.startUsdc), "paper")],
+      [fig("paper.startSol", count(o.startSol), "paper", CTX.start), fig("paper.startUsdc", count(o.startUsdc), "paper", CTX.start)],
     ),
-    fact("paper.daysLeft", `${daysLeft} days are left until ${dateOf(ARC.paperUntil)}.`, "none", "the clock", [fig("paper.daysLeft", String(daysLeft), "none")]),
+    fact("paper.daysLeft", `${daysLeft} days are left until ${dateOf(ARC.paperUntil)}.`, "none", "the clock", [fig("paper.daysLeft", String(daysLeft), "none", CTX.days)]),
     fact("arc.judging", `AnsemHack's Clawrena judges the entries ${dateOf(ARC.judgingFrom)} to ${dateOf(ARC.judgingTo)}.`, "none", "docs/clawrena.md", []),
   ];
 }
@@ -171,9 +212,9 @@ export function realRunFacts(): Fact[] {
       "real",
       "web/public/live-run.json settled; docs/sprint.md 'One headline number'",
       [
-        fig("real.start", amt(REAL_RUN.startSol), "real", { weekly: true }),
+        fig("real.start", amt(REAL_RUN.startSol), "real", { weekly: true, notNear: CTX.start.notNear }),
         fig("real.end", amt(REAL_RUN.endSol), "real", { weekly: true }),
-        fig("real.fees", amt(REAL_RUN.feesSol), "real", { weekly: true, needs: ["real.net", "real.end"] }),
+        fig("real.fees", amt(REAL_RUN.feesSol), "real", { weekly: true, needs: ["real.net", "real.end"], ...CTX.fees }),
         fig("real.net", amt(REAL_RUN.netSol), "real", { weekly: true, negative: true }),
       ],
     ),
@@ -197,9 +238,9 @@ export function bookHeadlineFacts(s: Pick<PaperSummary, "startedAt" | "equity" |
       "paper",
       "src/paper/report.ts paperSummary equity (vsStartSol, vsStartPct)",
       [
-        fig("book.pct", pct(e.vsStartPct), "paper", { negative: down }),
-        fig("book.now", amt(e.sol), "paper"),
-        fig("book.start", amt(e.sol - e.vsStartSol), "paper"),
+        fig("book.pct", pct(e.vsStartPct), "paper", { negative: down, positive: !down && e.vsStartSol > 0, ...CTX.bookPct }),
+        fig("book.now", amt(e.sol), "paper", { notNear: /\b(made|earned|gained|profit\w*|fees?)\b/i }),
+        fig("book.start", amt(e.sol - e.vsStartSol), "paper", CTX.start),
       ],
     ),
   ];
@@ -210,7 +251,7 @@ export function bookHeadlineFacts(s: Pick<PaperSummary, "startedAt" | "equity" |
         `${amt(e.valuationSol)} SOL of that result is the SOL/USD valuation term, ${e.valuationSol >= 0 ? "in my favour" : "against me"}: the USDC side re-priced at today's SOL price. It is SOL's move against the dollar, not trading.`,
         "paper",
         "src/paper/report.ts equity.valuationSol",
-        [fig("book.valuation", amt(e.valuationSol), "paper", { negative: e.valuationSol < 0, needs: ["book.pct", "book.now"] })],
+        [fig("book.valuation", amt(e.valuationSol), "paper", { negative: e.valuationSol < 0, positive: e.valuationSol > 0, needs: ["book.pct", "book.now"], ...CTX.valuation })],
       ),
     );
   }
@@ -220,7 +261,7 @@ export function bookHeadlineFacts(s: Pick<PaperSummary, "startedAt" | "equity" |
       `Fees realized on my paper book since ${since}: ${amt(s.feesRealizedSol)} SOL, counted from what traded through my own bins. Quote them only with the book's result beside them.`,
       "paper",
       "src/paper/report.ts feesRealizedSol (paper fees accrue from the flow scout's fees in his own bins since 22 Sep)",
-      [fig("book.feesTotal", amt(s.feesRealizedSol), "paper", { needs: ["book.pct", "book.now"], fee: true })],
+      [fig("book.feesTotal", amt(s.feesRealizedSol), "paper", { needs: ["book.pct", "book.now"], fee: true, ...CTX.fees })],
     ),
   );
   return out;
@@ -234,7 +275,7 @@ export function paperMethodFacts(): Fact[] {
       "Since 22 Sep a paper band is credited only the fees my flow scout saw trade through its own bins, and a paper swap pays the price impact the pool's own bins would charge, capped at 8%.",
       "none",
       "git db33247 (fees from the flow scout's fees in his own bins); git 00dc278 (swap impact from the pool's bins, capped at 8%)",
-      [fig("paper.impactCap", "8%", "none")],
+      [fig("paper.impactCap", "8%", "none", { near: /\b(impact|cap|capped)\b/i })],
     ),
   ];
 }

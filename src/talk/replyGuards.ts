@@ -297,7 +297,7 @@ export function vetReply(text: string, ctx: VetContext): VetRefusal | null {
   const echo = selfEcho(raw);
   if (echo) return refuse("self-echo", `"${echo.slice(0, 60)}"`);
   // 8. the mention's words, handles, cashtags, addresses and links never come back out
-  const exemptAddr = new Set<string>([...COPYCAT_MINTS, ...(ctx.tokenMint ? [ctx.tokenMint] : [])]);
+  const exemptAddr = new Set<string>(ctx.tokenMint ? [ctx.tokenMint] : []);
   const lower = raw.toLowerCase();
   for (const src of [ctx.mention.text, ctx.mention.parentText ?? ""]) {
     if (!src) continue;
@@ -308,11 +308,11 @@ export function vetReply(text: string, ctx: VetContext): VetRefusal | null {
     const theirs = runsOf(echoWords(src), 5);
     for (const run of runsOf(echoWords(raw), 5)) if (theirs.has(run)) return refuse("echo", `shares "${run}" with the mention`);
   }
-  // 9. addresses: only his own mint, or the copycat's in a sentence that says it is not his
+  // 9. addresses: only his own mint. Another token's mint, whole or a piece of it, never (Zach, 22 Sep).
+  if (namesCopycat(raw)) return refuse("address", "another token's mint, or a piece of it");
   for (const m of raw.matchAll(BASE58_RE)) {
     const a = m[0];
     if (ctx.tokenMint && a === ctx.tokenMint) continue;
-    if (COPYCAT_MINTS.includes(a) && NOT_HIS_RE.test(normalizeForMatch(sentenceAt(raw, m.index ?? 0)))) continue;
     return refuse("address", `an address that is not his mint: ${a.slice(0, 8)}`);
   }
   // 10. what only a template may say

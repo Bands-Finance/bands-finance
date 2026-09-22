@@ -24,6 +24,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import { buildSystemPrompt } from "../agent/persona";
+import { copycatStreamFilter, redactCopycat } from "../risk/house";
 import { config, riskLimits } from "../config";
 import { readRecent, type JournalEntry, journalQuote } from "../journal";
 import { appendLedger, dataPath, readLedger } from "../lib/ledger";
@@ -56,9 +57,14 @@ function deEmDash(s: string): string {
   return s.replace(/\s*—\s*/g, ", ").replace(/ -- /g, ", ");
 }
 
-/** Strip em dashes from a streamed chunk (for the SSE forwarder). */
+/** Strip em dashes from a streamed chunk (for the SSE forwarder), and any piece of another token's mint. */
 export function sanitizeChunk(s: string): string {
-  return deEmDash(s);
+  return deEmDash(redactCopycat(s));
+}
+
+/** The whole reply as the thread keeps it: no em dash, and never another token's mint (Zach, 22 Sep). */
+export function sanitizeReply(s: string): string {
+  return deEmDash(redactCopycat(s)).trim();
 }
 
 // ---- persona ------------------------------------------------------------------------------------
@@ -337,7 +343,8 @@ export function userAgentHistory(wallet: string, limit = 200): ChatTurn[] {
   const rows = readLedger<Partial<ChatTurn>>(chatFile(wallet)).filter(
     (r): r is ChatTurn => !!r && (r.role === "user" || r.role === "assistant") && typeof r.content === "string" && typeof r.ts === "string",
   );
-  return rows.slice(-limit);
+  // An older thread may carry another token's mint: the site never shows it (Zach, 22 Sep).
+  return rows.slice(-limit).map((r) => ({ ...r, content: redactCopycat(r.content) }));
 }
 
 export interface EnsureResult {
@@ -504,12 +511,17 @@ export async function runUserTurn(
     arm();
     if (opts.onToken) {
       const stream = client(env.anthropicApiKey).messages.stream(params, { signal: ac.signal });
+      // A mint split across two deltas is still caught: the filter holds back a trailing base58 run.
+      const redact = copycatStreamFilter();
       stream.on("text", (delta) => {
         arm();
         acc += delta;
-        opts.onToken?.(sanitizeChunk(delta));
+        const out = redact.push(delta);
+        if (out) opts.onToken?.(deEmDash(out));
       });
       const final = await stream.finalMessage();
+      const tail = redact.flush();
+      if (tail) opts.onToken?.(deEmDash(tail));
       usage = final.usage;
       stopReason = final.stop_reason;
     } else {
@@ -519,7 +531,7 @@ export async function runUserTurn(
       acc = msg.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("");
     }
     clearTimeout(idleTimer);
-    const reply = deEmDash(acc).trim();
+    const reply = sanitizeReply(acc);
     recordTurn({ wallet, ok: reply.length > 0, model, inputTokens: inputTokensOf(usage), outputTokens: usage?.output_tokens ?? 0 });
     if (!reply) {
       // A clean exit with no text (a refusal with nothing to say, an empty message) is a failed turn.
@@ -536,7 +548,7 @@ export async function runUserTurn(
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[my-agent] turn failed (timeout=${timedOut}, hangup=${clientHungUp}, chars=${acc.length}):`, msg);
     recordTurn({ wallet, ok: false, model, inputTokens: inputTokensOf(usage), outputTokens: usage?.output_tokens ?? 0 });
-    const partial = deEmDash(acc).trim();
+    const partial = sanitizeReply(acc);
     if (partial) {
       appendChat(wallet, "user", text);
       appendChat(wallet, "assistant", partial);

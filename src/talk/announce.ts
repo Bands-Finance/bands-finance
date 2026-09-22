@@ -166,7 +166,7 @@ function textsOf(kind: PostedKind, f: AnnounceFacts): string[] | string {
     case "token":
       if (!f.tokenMint) return "TOKEN_MINT is not set: the token is not launched, so there is nothing to announce";
       return [
-        `my token is live. $bands, mint ${f.tokenMint}. i launched it myself. the copycat ${COPYCAT_MINTS[0]} is not mine. mine is a key to my tools, not a share.`,
+        `my token is live. $bands, mint ${f.tokenMint}. i launched it myself. this is the only mint that is mine. it is a key to my tools, not a share.`,
         disclosureFor(f.tokenMint),
       ];
   }

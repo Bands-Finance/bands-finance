@@ -25,6 +25,7 @@ import { cors } from "hono/cors";
 import { paperEnabled } from "./paper/env";
 import { config, riskLimits } from "./config";
 import { dataDir, readEquity, readRecent } from "./journal";
+import { redactCopycat, redactCopycatDeep } from "./risk/house";
 import { loadScreen } from "./screener";
 import { setSolPriceUsd } from "./tools/dlmm";
 import { engineRoutes } from "./engine/routes";
@@ -123,14 +124,14 @@ export function buildApp(): Hono {
 
   app.get("/api/health", (c) => c.json({ ok: true, now: new Date().toISOString(), mode: modeOf(), lastIterationAt: lastIterationAt() }));
 
-  app.get("/api/status", (c) => c.json(statusReport()));
+  app.get("/api/status", (c) => c.json(redactCopycatDeep(statusReport())));
 
   app.get("/api/journal", (c) => {
     const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 500), 1), 5000);
     const agent = c.req.query("agent");
     let entries = readRecent(limit);
     if (agent) entries = entries.filter((e) => (e.agent?.id ?? "mr-bands") === agent);
-    return c.json({ entries, generatedAt: new Date().toISOString() });
+    return c.json({ entries: redactCopycatDeep(entries), generatedAt: new Date().toISOString() });
   });
 
   app.get("/api/equity", (c) => {
@@ -141,7 +142,7 @@ export function buildApp(): Hono {
   app.get("/api/limits", (c) => c.json(riskLimits));
 
   // What he learned, on its own: the same block /api/status carries, for a caller that wants only this.
-  app.get("/api/learning", (c) => c.json(learningReport()));
+  app.get("/api/learning", (c) => c.json(redactCopycatDeep(learningReport())));
 
   app.get("/api/screen", (c) => {
     const screen = loadScreen();
@@ -159,7 +160,7 @@ export function buildApp(): Hono {
 
   app.get("/api/feed.md", (c) => {
     try {
-      return c.text(fs.readFileSync(path.join(dataDir(), "feed.md"), "utf8"));
+      return c.text(redactCopycat(fs.readFileSync(path.join(dataDir(), "feed.md"), "utf8")));
     } catch {
       return c.text("no journal yet\n", 404);
     }

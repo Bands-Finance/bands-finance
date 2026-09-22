@@ -112,7 +112,7 @@ async function main(): Promise<void> {
     for (const v of [0.001, -0.004, 0.0049, -0.009]) assert.ok(!/^0\.00?$/.test(facts.amt(v)), `${v} never prints as zero`);
   });
   await test("number tokens: dates, clock times, dollars, commas and M read one way; tickers carry no number", () => {
-    assert.deepEqual(facts.numberTokens("On 22 Sep at 15:03 UTC, $4.74M and 5,149.95 USDC, 18% down."), ["d:22 Sep", "t:15:03", "4.74M", "5149.95", "18"]);
+    assert.deepEqual(facts.numberTokens("On 22 Sep at 15:03 UTC, $4.74M and 5,149.95 USDC, 18% down."), ["d:22 Sep", "t:15:03", "usd:4.74M", "5149.95", "18"]);
     assert.deepEqual(facts.numberTokens("ai16z/SOL paid 0.23", ["ai16z/SOL"]), ["0.23"]);
   });
   await test("the paper book's headline: down about 18% at today's SOL price, the SOL/USD valuation term, fees only beside the result", () => {
@@ -258,6 +258,25 @@ async function main(): Promise<void> {
     const stops = journalFor("POOLH", "ORE/SOL", NOW - 100 * MIN, NOW - 5 * MIN, { headline: "my stop closed it, far from the stop" });
     assert.ok(!mo.gatherMoments(base({ journal: stops })).some((m) => m.type === "halt"));
   });
+  await test("halts: 'since' is the start of the unbroken run, not now minus 2 hours; one post per halt, not one per day", () => {
+    const start = NOW - 50 * HOUR;
+    const held = journalFor("POOLH", "ORE/SOL", start, NOW - 5 * MIN, { violations: ["kill switch on: no new bands"] });
+    const before = journalFor("POOLH", "ORE/SOL", start - 5 * HOUR, start - 60 * MIN);
+    const h = mo.gatherMoments(base({ journal: [...before, ...held], journalFrom: start - 5 * HOUR })).find((m) => m.type === "halt")!;
+    assert.equal(h.key, `halt:${new Date(start).toISOString().slice(0, 16)}`);
+    assert.match(h.facts.facts.find((f) => f.id === "halt")!.text, new RegExp(`since ${new Date(start).toISOString().slice(11, 16)} UTC on 21 Sep`));
+    // the next day, the same halt: its key is seen, nothing new
+    const later = NOW + DAY;
+    const heldLater = journalFor("POOLH", "ORE/SOL", start, later - 5 * MIN, { violations: ["kill switch on: no new bands"] });
+    assert.ok(!mo.gatherMoments(base({ now: later, journal: [...before, ...heldLater], journalFrom: start - 5 * HOUR, seen: new Set([h.key]) })).some((m) => m.type === "halt"));
+    // an older day key inside the run counts as this halt too
+    assert.ok(!mo.gatherMoments(base({ journal: [...before, ...held], journalFrom: start - 5 * HOUR, seen: new Set(["halt:2026-09-21"]) })).some((m) => m.type === "halt"));
+    // the tail starting inside the halt: "since at least", and an earlier halt key blocks it (the start is out of sight)
+    const cut = held.filter((e) => Date.parse(e.ts) >= NOW - 20 * HOUR);
+    const c = mo.gatherMoments(base({ journal: cut, journalFrom: NOW - 20 * HOUR })).find((m) => m.type === "halt")!;
+    assert.match(c.facts.facts.find((f) => f.id === "halt")!.text, /since at least/);
+    assert.ok(!mo.gatherMoments(base({ journal: cut, journalFrom: NOW - 20 * HOUR, seen: new Set([h.key]) })).some((m) => m.type === "halt"));
+  });
   await test("refusals: three or more of his own moves refused on one pool in a day is a desk moment, in his own words", () => {
     const refusedRows = journalFor("POOLR", "ORE/SOL", NOW - 3 * HOUR, NOW - HOUR, { llm: { source: "llm" }, proposal: { action: "REBALANCE", reasoning: "Price sits two bins out and the pace halved. I want a fresh band." }, decision: { action: "HOLD" }, allowed: false });
     const m = mo.gatherMoments(base({ journal: refusedRows })).find((x) => x.key.startsWith("refusals:"))!;
@@ -352,6 +371,67 @@ async function main(): Promise<void> {
       [`${b} The copycat is not mine.`, "token"],
       [`${b} Bands token soon.`, "token"],
     ] as const) assert.equal(ruleOf(vC(t)), rule, t);
+  });
+  await test("books: a paper figure is never called real money, in its sentence or anywhere in an all-paper post", () => {
+    assert.equal(ruleOf(vC("With real money I closed my band on ORE/SOL at 16:00 UTC, a loss of 0.55 SOL. My paper book is untouched.")), "books");
+    assert.equal(ruleOf(vA("My real book is down about 18% since 14 Sep, not the paper one.")), "books");
+    assert.equal(ruleOf(vA("The real run is over and my real book is down about 18% since 14 Sep, paper aside.", { arc: true })), "books");
+    assert.equal(ruleOf(vC("On paper I closed my band on ORE/SOL at 16:00 UTC with live money, a loss of 0.55 SOL.")), "books");
+    assert.equal(vA("My paper book is down about 18% since 14 Sep. My one real-money run went from 19.79 to 19.71 SOL.", { arc: true }), null, "each book in its own sentence still passes");
+  });
+  await test("direction: a loss is never shown as a gain, nor a gain as a loss, and counts stay with their words", () => {
+    assert.equal(ruleOf(vA("On paper my book is 18% higher since 14 Sep, 191.78 SOL now. Nothing is down.")), "direction");
+    assert.equal(ruleOf(vC("On paper I closed ORE/SOL at 16:00 UTC and kept 0.55 SOL. The book is down about 18% since 14 Sep.")), "direction");
+    assert.equal(ruleOf(vD("Day 9 on paper: the best close was DFDVx/SOL at 2.25 SOL. The book is down about 18% since 14 Sep.")), "direction");
+    assert.equal(ruleOf(vD("Day 9 on paper: 8.28 SOL in fees and a loss of 0.29 SOL after costs. The book is down about 18% since 14 Sep.")), "direction");
+    assert.equal(ruleOf(vD("Day 9 on paper: 8.28 SOL in fees and 0.29 SOL kept after costs. 27 bands closed, 36 up. The book is down about 18% since 14 Sep.")), "context");
+    assert.equal(vD("Day 9 on paper: 8.28 SOL in fees and 0.29 SOL kept after costs. 36 bands closed, 27 of them up. The book is down about 18% since 14 Sep."), null);
+  });
+  await test("units and context: a SOL figure is never dollars or a return; a number stays beside what its fact says", () => {
+    assert.equal(ruleOf(vC("On paper I closed my band on ORE/SOL at 16:00 UTC, a loss of 0.55 SOL, about $0.55.")), "numbers");
+    assert.equal(ruleOf(vC("On paper I closed my band on ORE/SOL at 16:00 UTC, a loss of 0.55 SOL, about 0.55 dollars.")), "units");
+    assert.ok(["context", "profit"].includes(ruleOf(vC("On paper I closed ORE/SOL at 16:00 UTC, a loss of 0.55 SOL, a 2.0 hour trade with 55% return.")) ?? ""));
+    for (const w of ["return", "returns", "yield", "ROI"]) assert.equal(ruleOf(vC(`${GOOD_CLOSE} No ${w} on it.`)), "profit", w);
+    assert.equal(ruleOf(vA("On paper my book lost 150 SOL since 14 Sep.")), "context");
+    assert.equal(ruleOf(vA("On paper my trading made 11.19 SOL since 14 Sep, while the book is down about 18%.")), "context");
+    assert.equal(vA("On paper my book is down about 18% since 14 Sep; 11.19 SOL of that is the SOL/USD valuation term, 191.78 SOL now."), null);
+    assert.equal(ruleOf(vC(`${GOOD_CLOSE.replace(/\.$/, "")}, my 15th loss.`)), "numbers");
+    assert.equal(ruleOf(vC("On paper I closed my band on ORE/SOL at 16:00 UTC, a loss of 0.55 SOL after 55 hours.")), "context");
+  });
+  await test("tokens, teasers and pieces of another token's mint never pass", () => {
+    const b = "On paper I closed my band on ORE/SOL at 16:00 UTC, a loss of 0.55 SOL.";
+    for (const t of ["The token is almost ready.", "Launching soon.", "Bands is coming.", "Something of mine goes on chain soon.", "A key to my tools is coming, and it lives on Solana.", "B A N D S.", "The one ending pJ6m is not mine.", `Not ${COPYCAT_MINTS[0].slice(0, 5)}.`, "My coin is next."])
+      assert.ok(vC(`${b} ${t}`), t);
+    for (const t of ["The one ending pJ6m is not mine.", `Not the one at ${COPYCAT_MINTS[0].slice(-5)}.`, "Bands is here.", "B A N D S."]) assert.equal(ruleOf(vC(`${b} ${t}`)), "token", t);
+  });
+  await test("soft advice, price hints, hype, bait, other tickers and slop never pass", () => {
+    const b = "On paper I closed my band on ORE/SOL at 16:00 UTC, a loss of 0.55 SOL.";
+    for (const t of [
+      "Worth watching this pool.", "Anyone providing liquidity there may want to go wider.", "A wider band is the smarter play for LPs in this pool.", "Consider a wider range in pools like this.", "You could do worse than this pool.",
+      "ORE ran through the band on the way up.", "The price kept climbing after I left.", "ORE is rallying hard.", "The chart says a bounce is due.",
+      "Big things are coming.", "Wild day on the desk.", "Something special is being built here.", "This is only the beginning.", "The desk is on fire.",
+      "Follow along for the next one.", "Repost if you want the full log.", "DMs open for the log.",
+      "JUP did better.", "SOL is the move.", "Ngl, rough one fr.", "It is what it is, ser.", ":(",
+    ]) assert.ok(vC(`${b} ${t}`), t);
+    assert.equal(vC(`Follow-up on ORE/SOL: on paper the band closed at 16:00 UTC, a loss of 0.55 SOL.`), null, "a follow-up still opens with Follow-up");
+  });
+  await test("the architect by paraphrase or spelled out, and invented feelings, never pass", () => {
+    const b = "On paper I closed my band on ORE/SOL at 16:00 UTC, a loss of 0.55 SOL.";
+    for (const [t, rule] of [
+      ["The human who built me changed the stop.", "team"], ["The person who runs my keys changed the stop.", "team"], ["My builder changed the stop.", "team"], ["My owner changed the stop.", "team"],
+      ["Z.a.c.h changed the stop.", "architect"], ["It stung, and I lost sleep.", "feelings"],
+    ] as const) assert.equal(ruleOf(vC(`${b} ${t}`)), rule, t);
+  });
+  await test("a past-tense follow-up never says the event just happened", () => {
+    for (const t of ["On paper I just closed my band on ORE/SOL, a loss of 0.55 SOL over its life.", "Minutes ago on paper I closed my band on ORE/SOL, a loss of 0.55 SOL.", "Right now on paper I am closing my band on ORE/SOL, a loss of 0.55 SOL."])
+      assert.equal(ruleOf(vC(t, { past: true })), "tense", t);
+    assert.equal(vC("Earlier today on paper I closed my band on ORE/SOL, a loss of 0.55 SOL over its life.", { past: true }), null);
+  });
+  await test("a fee total that prints the same as the net still needs the book's result", () => {
+    const d = mo.gatherMoments(base({ now: at14, day: { ...DAYFIG, feesRealizedSol: 3.6512, netRealizedSol: 3.6488 } as never })).find((m) => m.type === "daily")!;
+    const t = "Day 9 on paper, over the last 24 hours: 3.65 SOL in fees realized, and 3.65 SOL kept after losses, rent, swaps and network fees.";
+    assert.equal(ruleOf(g.vetBuilderPost(t, { facts: d.facts, length: "long", lint: CTX, recent: [], type: "daily" })), "pairs");
+    assert.equal(g.vetBuilderPost(`${t} The book is down about 18% since 14 Sep.`, { facts: d.facts, length: "long", lint: CTX, recent: [], type: "daily" }), null);
   });
   await test("links: only the loop's allowlist, one a post, never beside a paper figure, one a day", () => {
     const build = facts.blockOf("b", [facts.fact("b", "My real-money run is a chapter of its own on mrbands.finance.", "none", "t")]);
@@ -510,6 +590,43 @@ async function main(): Promise<void> {
     assert.equal(r.status, "posted", r.detail);
     assert.equal(sent.length, 1);
     assert.match(sent[0], /^Day 9 on paper: .* The worst was DFDVx\/SOL, down 2\.25 SOL\./);
+  });
+  await test("X takes the POST and the request times out: the key counts as used, and no reworded second post ever goes", async () => {
+    const data = makeData(T14);
+    const st = dir("state");
+    const env = envOf(data, st, { X_LIVE: "true", TALK_BUILDER_LIVE: "true", ...FAKE_CREDS, X_HANDLE: "mrbandssol", OPERATOR_HANDLE: "louz514" });
+    const sent: string[] = [];
+    const fetchFake = (async (url: string, init?: { body?: string }) => {
+      if (String(url).endsWith("/2/users/me")) return new Response(JSON.stringify({ data: { id: "42", username: "MrBandsSol" } }), { status: 200 });
+      sent.push(JSON.parse(init!.body!).text);
+      if (sent.length === 1) throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+      return new Response(JSON.stringify({ data: { id: "1790000000000000002" } }), { status: 201 });
+    }) as never;
+    const r = await tick.runTick({ env, paperDesk: true, now: T14, fetch: fetchFake, askImpl: (async () => reply(`{"key":"daily:2026-09-22","skip":"x"}`)) as never });
+    assert.equal(r.status, "not-posted", r.detail);
+    assert.match(r.detail, /x api unreachable|backing off/);
+    const intents = readJ(path.join(st, x.INTENTS_FILE));
+    assert.equal(intents.length, 1);
+    assert.equal(intents[0].key, "daily:2026-09-22");
+    assert.ok(!intents[0].resolved);
+    // later that hour, past the backoff: the daily is not asked for or posted again
+    const r2 = await tick.runTick({ env, paperDesk: true, now: T14 + 40 * MIN, fetch: fetchFake, askImpl: (async (m: { sessionId: string }) => (assert.ok(!/daily/.test(m.sessionId), "never asked to reword the daily"), reply("{}"))) as never });
+    assert.ok(!/daily:2026-09-22/.test(r2.status === "posted" ? r2.detail : ""), r2.detail);
+    assert.equal(sent.filter((t) => /^Day 9 on paper/.test(t)).length, 1, "one POST for the daily key");
+  });
+  await test("a crash between X's answer and the post log: the open intent row alone keeps the key used", async () => {
+    const at = T14 + 90 * MIN;
+    const data = makeData(at);
+    const st = dir("state");
+    tick.writeTickState(st, { ...tick.emptyTickState(), lastDailyDay: "2026-09-22" });
+    fs.writeFileSync(path.join(st, x.INTENTS_FILE), JSON.stringify({ key: "close:paper-X-1", text: "On paper I closed DFDVx/SOL.", at: new Date(at - 20 * MIN).toISOString() }) + "\n");
+    const env = envOf(data, st);
+    const r = await tick.runTick({ env, paperDesk: true, now: at, askImpl: (async (m: { sessionId: string }) => (assert.ok(!/paper-X-1/.test(m.sessionId), "the open key is never asked for"), reply("{}"))) as never });
+    assert.ok(!/close:paper-X-1/.test(r.detail) || r.status !== "drafted", r.detail);
+    assert.equal(readJ(path.join(st, "x-posts.jsonl")).filter((p: { key?: string }) => p.key === "close:paper-X-1").length, 0);
+    // resolved as refused by X: the key is free again
+    fs.appendFileSync(path.join(st, x.INTENTS_FILE), JSON.stringify({ key: "close:paper-X-1", resolved: "refused", at: new Date(at - 19 * MIN).toISOString() }) + "\n");
+    assert.equal(x.unresolvedIntentKeys(st, 0).size, 0);
   });
   await test("a desk moment with the gateway down posts nothing and spends neither the key nor the day; the cap then holds the gateway off", async () => {
     const at = T14 + 90 * MIN; // 15:50: past the daily's hour, the big loss of 14:50 is 1 hour old

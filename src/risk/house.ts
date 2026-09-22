@@ -65,3 +65,57 @@ export function housePoolViolation(pool: { address: string; label?: string; mint
   }
   return null;
 }
+
+// ---- no other token's mint on the websites (Zach, 22 Sep: "lets not disclose this on the website at all") ----
+
+const BASE58_RUN = /[1-9A-HJ-NP-Za-km-z]+/g;
+
+/**
+ * True when a base58 run is a piece of a copycat mint: the whole mint, any 6+ character piece of it, or a 4+
+ * character run it starts or ends with ("JAARLU...pJ6m" loses both halves).
+ */
+export function isCopycatPiece(run: string, mints: readonly string[] = COPYCAT_MINTS): boolean {
+  if (run.length < 4) return false;
+  return mints.some((m) => (run.length >= 6 && m.includes(run)) || m.startsWith(run) || m.endsWith(run));
+}
+
+/** PURE. Text with every copycat mint, or piece of one, cut out. Anything the sites or the platform chat print. */
+export function redactCopycat(text: string, mints: readonly string[] = COPYCAT_MINTS): string {
+  if (!text) return text;
+  return text.replace(BASE58_RUN, (run) => (isCopycatPiece(run, mints) ? "" : run));
+}
+
+/** PURE. A JSON value with redactCopycat applied to every string in it (keys stay). */
+export function redactCopycatDeep<T>(value: T, mints: readonly string[] = COPYCAT_MINTS): T {
+  if (typeof value === "string") return redactCopycat(value, mints) as unknown as T;
+  if (Array.isArray(value)) return value.map((v) => redactCopycatDeep(v, mints)) as unknown as T;
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = redactCopycatDeep(v, mints);
+    return out as T;
+  }
+  return value;
+}
+
+/**
+ * A streaming redactor for text that arrives in chunks (the platform chat's SSE): a mint split across two
+ * chunks is still caught, because a trailing base58 run is held back until the next chunk (or end) shows
+ * where it stops.
+ */
+export function copycatStreamFilter(mints: readonly string[] = COPYCAT_MINTS): { push(chunk: string): string; flush(): string } {
+  let pending = "";
+  return {
+    push(chunk: string): string {
+      const text = pending + chunk;
+      const m = /[1-9A-HJ-NP-Za-km-z]+$/.exec(text);
+      const cut = m ? m.index : text.length;
+      pending = text.slice(cut);
+      return redactCopycat(text.slice(0, cut), mints);
+    },
+    flush(): string {
+      const out = redactCopycat(pending, mints);
+      pending = "";
+      return out;
+    },
+  };
+}

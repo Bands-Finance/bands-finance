@@ -11,23 +11,31 @@
  *               all-lowercase post; no shouting outside the tickers and units the facts spell
  *   numbers     every number, date and clock time must be in the facts block (pre-rounded there); numbers written
  *               as words are refused; "0.00" is never printed
- *   books       a post printing a paper figure says "paper"; a real figure says "real"; both, each in its own sentence
- *   loss        a figure the facts mark negative is printed with "loss", "lost" or "down"
- *   pairs       a fee total is printed with the net it needs (the book's result beside the book's fees)
+ *   units       a SOL figure is never printed as dollars ("$0.55", "0.55 dollars"); the unit is part of the token
+ *   direction   a negative figure never beside a growth word (up, kept, best ...) and its sentence says loss, lost or
+ *               down; a positive one never beside loss, lost or down
+ *   context     a number sits where its fact puts it (150 beside the start, the SOL/USD term beside SOL/USD or
+ *               valuation and never as trading, "36 bands" and "27 up" not swapped, no ordinals)
+ *   books       a post printing a paper figure says "paper"; a real figure says "real"; both, each in its own sentence;
+ *               a paper figure's sentence never says real, and an all-paper post never says real at all
+ *   pairs       a fee total is printed with the net it needs (the book's result beside the book's fees), even when it
+ *               prints the same as another figure
  *   weekly      the real run's figures at most once in his last 14 posts, unless the moment is an arc post
  *   quotes      at most one quote, verbatim from the facts' journal lines
  *   tickers     a pair label exactly as the facts spell it
- *   tense       a past-tense follow-up carries no clock time
+ *   tense       a past-tense follow-up carries no clock time and never says just, right now or minutes ago
  *   words       advice, price direction, profit talk, hype and his journal's cliches; jargon (strap, seat, prints,
  *               stacked, re-centre) outside a quote; the architect, the operator, a team, "we"; any model or vendor
- *               name (META_RE); any mint address, the copycat, his token, a launch, ClawPump
+ *               name (META_RE); any mint address or a 4+ character piece of another token's, his token, a coin, a
+ *               launch, a teaser, "Bands" as a name, ClawPump; soft advice, price hints, hype, bait, slop, invented
+ *               feelings, the architect by paraphrase, any capitalised ticker the facts do not name
  *   links       only the loop's allowlist, one a post, never beside a paper figure, one a day
  *   repeat      0.5 meaningful-word overlap with any of his last 14 posts (a follow-up is exempt against the post it
  *               follows; the daily card, the fixed shape, is not compared)
  *   lint        lintText with the sentence-case rule in place of the lowercase one
  */
-import { COPYCAT_MINTS } from "../risk/house";
-import { allowedTokens, numberTokens, type Book, type FactsBlock } from "./facts";
+import { COPYCAT_MINTS, isCopycatPiece } from "../risk/house";
+import { allowedTokens, numberTokens, numberTokenSpans, type Book, type FactsBlock, type Figure } from "./facts";
 import { markersIn, selfEcho, tooSimilar, type RecentText } from "./guards";
 import { BANNED_PHRASES } from "./craft";
 import { lintText, linksIn, mentionsHouseToken, normalizeForMatch, weightedLength, type LintContext } from "./lint";
@@ -75,14 +83,45 @@ const BASE58_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/;
 
 /** Words that are hype, filler or an epigram in this voice, whatever the lint allows. */
 export const BUILDER_NEVER: readonly { re: RegExp; rule: string }[] = [
+  { rule: "token", re: /\b(the|a|my|our|his|new|one) token\b|\btoken (is|was|will|drop|sale|launch)\w*\b|\bcoins?\b|\blaunch\w*\b|\bon ?-?chain\b|\bcoming soon\b|\balmost ready\b|\bsomething (of mine|new)\b|\bkey to my tools\b|\bmint(s|ed)?\b|\bcopycat\b|\bimpostor\b|\bimposter\b|\bimpersonat\w*|\bclawpump\b|\bpump ?\.? ?fun\b|\b(my|our|his) (own )?(token|coin)\b|\btoken (launch|sale)\b|\blaunch(ed|ing)? (a|my|the) (token|coin)\b|\bticker\b|\bbands token\b|\bmrbands\b|\bholders?\b|\bairdrop\w*\b/ },
   { rule: "hype", re: /\b(gm|gn|lfg|wagmi|excited|exciting|thrilled|proud|journey|stay tuned|big news|game ?changer|amazing|incredible|insane|huge|massive|let'?s go|alpha|unlock(ed|s)?|revolution\w*|next level|buckle up|here'?s the thing|the best part|plot twist|spoiler)\b/ },
   { rule: "epigram", re: /\bthat'?s the (job|game|work|point|number the)\b|\bquiet days (are|is) the strategy\b|\bwhat i'?m building against\b|\bi post both numbers or neither\b|\bkeep(ing)? the powder dry\b|\bsitting in the chop\b|\bone band at a time\b|\bthe (market|pool) (always )?(decides|wins)\b|\bthat'?s how (it goes|this works)\b/ },
   { rule: "not-x-its-y", re: /\b(isn'?t|is not|wasn'?t|not) (just |only |about )?[a-z' ]{1,30}, (it'?s|it is|but)\b/ },
   { rule: "jargon", re: /\b(strap|straps|stacked|stacking|prints?|printed|seats?|re ?cent(re|er)(d|ed|ing|s)?|counted in( it)?|price sat)\b/ },
-  { rule: "profit", re: /\b(made|make|making|makes) money\b|\bup big\b|\bprofit(s|able)?\b|\bwin(s|ning|ner|ners)?\b|\bin the green\b|\bgains?\b|\b(best|record|biggest) (week|day|month|run|streak|result)s?\b|\bnot bad\b/ },
-  { rule: "team", re: /\b(we|we'?re|we'?ve|our|ours|my team|the team|my human|my architect|architect|my manager|manager|operator|my dev|my creator)\b/ },
-  { rule: "token", re: /\bmint(s|ed)?\b|\bcopycat\b|\bimpostor\b|\bimposter\b|\bimpersonat\w*|\bclawpump\b|\bpump ?\.? ?fun\b|\b(my|our|his) (own )?(token|coin)\b|\btoken (launch|sale)\b|\blaunch(ed|ing)? (a|my|the) (token|coin)\b|\bticker\b|\bbands token\b|\bmrbands\b|\bholders?\b|\bairdrop\w*\b/ },
+  { rule: "profit", re: /\breturns?\b|\byield(s|ed|ing)?\b|\broi\b|\b(made|make|making|makes) money\b|\bup big\b|\bprofit(s|able)?\b|\bwin(s|ning|ner|ners)?\b|\bin the green\b|\bgains?\b|\b(best|record|biggest) (week|day|month|run|streak|result)s?\b|\bnot bad\b/ },
+  { rule: "team", re: /\b(we|we'?re|we'?ve|our|ours|my team|the team|my human|my architect|architect|my manager|manager|operator|my dev|my creator)\b|\bhumans?\b|\bperson who\b|\bbuilders?\b|\bowners?\b|\bcreators?\b|\bmakers?\b|\bthe one who\b|\bkeys\b|\bbuilt me\b|\bruns me\b|\bmade me\b|\bbehind me\b|\bmy (dev|developer|boss|team|guy|partner)s?\b/ },
+  { rule: "feelings", re: /\b(stung|stings?|hurt|hurts|sleep|slept|nervous|scared|afraid|happy|sad|felt|feel|feels|feeling|worried|anxious|upset|glad|love|hate|painful|pain|gutted|relieved|frustrat\w*)\b/ },
+  { rule: "advice", re: /\bworth (watching|a look|a try|it)\b|\b(may|might) want\b|\bconsider\w*\b|\bsmart(er)? (play|move)\b|\byou (could|should|can|might)\b|\banyone (providing|lp'?ing|farming|in)\b|\blps? (should|could)\b|\bdo worse\b/ },
+  { rule: "price-direction", re: /\brall(y|ies|ied|ying)\b|\bclimb(s|ed|ing)?\b|\bbounce\w*\b|\bon the way (up|down)\b|\bmoon\w*\b|\bdump\w*\b|\bpump\w*\b|\bbreak ?out\b|\bthe chart\b|\bis due\b/ },
+  { rule: "hype", re: /\bcoming\b|\bspecial\b|\bbeginning\b|\bon fire\b|\bwild\b|\bthe move\b|\bbig things\b|\bsoon\b|\bstay close\b|\bwatch this\b/ },
+  { rule: "bait", re: /\bfollow(s|ed|ing)?\b(?![- ]up)|\brepost\w*\b|\bretweet\w*\b|\brt\b|\blikes?\b|\bdms?\b|\bdm'?s\b|\breply\b|\bcomment\w*\b|\bsubscribe\w*\b|\bnotifications?\b|\blink in bio\b/ },
+  { rule: "slop", re: /\bngl\b|\bfr\b|\bser\b|\btbh\b|\bimo\b|\blol\b|\blmao\b|\bit is what it is\b|\bvibes?\b|\bbased\b|\bcope\b|\bwen\b|\bnfa\b|\bdyor\b/ },
 ];
+
+/** Words that make a figure a gain or a rise; printed beside a loss, the direction is false. */
+export const GROWTH_RE = /\b(up|higher|kept|keep|keeps|gained|gain|gains|best|rose|risen|grew|grown|made|earned|added|ahead|positive|profit\w*|in (my )?favou?r)\b/i;
+/** Words that make a figure a loss or a fall. */
+export const LOSS_RE = /\b(loss|losses|lost|down|lower|fell|fallen|drop|dropped|negative|worst)\b/i;
+/** "real", "real money", "live money", "actual money": the real book's words. */
+const REAL_RE = /\breal\b|\b(live|actual) money\b/i;
+/** A past-tense follow-up never says the event just happened. */
+const PAST_NOW_RE = /\bjust\b|\bright now\b|\b(minutes|moments|seconds) ago\b|\bnow closing\b|\bthis minute\b|\bam (closing|opening|exiting|pulling)\b|\bi'?m (closing|opening|exiting|pulling)\b|\bas (we|i) speak\b/;
+
+/**
+ * The words around the k-th number: its sentence, up to 6 words before and 3 after, never past the numbers either
+ * side (so "27 bands closed, 36 up" gives 36 only "up").
+ */
+function windowOf(text: string, spans: readonly { start: number; end: number }[], k: number): { sentence: string; around: string; after: string } {
+  const sp = spans[k];
+  const sStart = Math.max(text.lastIndexOf(". ", sp.start - 1), text.lastIndexOf("\n", sp.start - 1), -1) + 1;
+  const dot = text.slice(sp.end).search(/[.!?](\s|$)|\n/);
+  const sEnd = dot < 0 ? text.length : sp.end + dot;
+  const lo = Math.max(sStart, k > 0 ? spans[k - 1].end : 0);
+  const hi = Math.min(sEnd, k + 1 < spans.length ? spans[k + 1].start : text.length);
+  const before = text.slice(lo, sp.start).split(/\s+/).filter(Boolean).slice(-6).join(" ");
+  const after = " " + text.slice(sp.end, hi).split(/\s+/).filter(Boolean).slice(0, 3).join(" ");
+  return { sentence: text.slice(sStart, sEnd), around: `${before} ${text.slice(sp.start, sp.end)}${after}`, after };
+}
 
 /** A sentence split that keeps decimals ("0.55 SOL") and tickers together. */
 const sentencesOf = (s: string): string[] =>
@@ -117,6 +156,7 @@ export function vetBuilderPost(text: string, ctx: BuilderVetContext): BuilderRef
   if (/#/.test(raw)) return refuse("symbols", "a #: no hashtags");
   if (/\$(?!\d)/.test(raw)) return refuse("symbols", "a $ not before a digit: no cashtags");
   if (/!/.test(raw)) return refuse("symbols", "an exclamation mark");
+  if (/(^|[\s(])[:;=8]['-]?[()DPpOo\/\\|\[\]]($|[\s.,)])|(^|\s)[xX][dD]($|[\s.,])|<3|\^_\^|\bT_T\b|-_-/.test(raw)) return refuse("symbols", "an emoticon");
   if (/\?/.test(raw)) return refuse("symbols", "a question mark: no questions put to the timeline");
 
   // quotes: at most one, verbatim from the facts' journal lines; the rest of the rules read the text without them
@@ -154,8 +194,31 @@ export function vetBuilderPost(text: string, ctx: BuilderVetContext): BuilderRef
   if (words) return refuse("numbers", `a number written as a word ("${words[0]}"): digits from the facts only`);
   const allowed = allowedTokens(f);
   const used = numberTokens(unquoted, f.tickers);
-  for (const tok of used) if (!allowed.has(tok)) return refuse("numbers", `${tok.replace(/^[dt]:/, "")} is not in the facts block`);
+  for (const tok of used) if (!allowed.has(tok)) return refuse("numbers", `${tok.replace(/^usd:/, "$").replace(/^[dt]:/, "")} is not in the facts block`);
   if (ctx.past && used.some((t) => t.startsWith("t:"))) return refuse("tense", "a clock time in a past-tense follow-up");
+  if (ctx.past) {
+    const now = normalizeForMatch(unquoted).match(PAST_NOW_RE);
+    if (now) return refuse("tense", `"${now[0]}" in a past-tense follow-up`);
+  }
+  if (/\d(st|nd|rd|th)\b/i.test(unquoted)) return refuse("numbers", "an ordinal: a count from the facts is never turned into a rank");
+
+  // 4b. each number where it sits: its unit, its direction and the words it is tied to
+  const spans = numberTokenSpans(unquoted, f.tickers);
+  for (let k = 0; k < spans.length; k++) {
+    const sp = spans[k];
+    const w = windowOf(unquoted, spans, k);
+    if (!sp.tok.startsWith("usd:") && /^\W*(dollars?|bucks|usd)\b/i.test(w.after)) return refuse("units", `${sp.tok} is not a dollar figure`);
+    const figs: Figure[] = allowed.get(sp.tok)?.figures ?? [];
+    if (!figs.length) continue;
+    const shown = sp.tok.replace(/^usd:/, "$");
+    if (figs.every((g) => g.negative)) {
+      if (GROWTH_RE.test(w.around)) return refuse("direction", `${shown} is a loss or a fall, printed beside "${w.around.match(GROWTH_RE)![0]}"`);
+      if (!LOSS_RE.test(w.sentence)) return refuse("loss", `${shown} is a loss or a fall and its sentence never says loss, lost or down`);
+    }
+    if (figs.every((g) => g.positive) && LOSS_RE.test(w.around)) return refuse("direction", `${shown} is a gain, printed beside "${w.around.match(LOSS_RE)![0]}"`);
+    const fits = (g: Figure) => (!g.near || g.near.test(w.sentence)) && (!g.notNear || !g.notNear.test(w.around)) && (!g.next || g.next.test(w.after));
+    if (!figs.some(fits)) return refuse("context", `${shown} is printed where its fact does not put it ("${w.around.trim().slice(0, 60)}")`);
+  }
 
   // 5. books, per sentence when both appear
   const sentences = sentencesOf(unquoted);
@@ -169,7 +232,10 @@ export function vetBuilderPost(text: string, ctx: BuilderVetContext): BuilderRef
   const hasPaper = perSentence.some((x) => x.books.includes("paper"));
   const hasReal = perSentence.some((x) => x.books.includes("real"));
   const saysPaper = (s: string) => /\bpaper\b/i.test(s);
-  const saysReal = (s: string) => /\breal\b/i.test(s);
+  const saysReal = (s: string) => REAL_RE.test(s);
+  // a paper figure is never called real money: not in its own sentence, and nowhere in a post with no real figure
+  for (const x of perSentence) if (x.books.includes("paper") && saysReal(x.s)) return refuse("books", `a paper figure in a sentence that says real: "${x.s.slice(0, 50)}"`);
+  if (hasPaper && !hasReal && saysReal(unquoted)) return refuse("books", "every figure is paper and the post says real");
   if (hasPaper && hasReal) {
     for (const x of perSentence) {
       if (x.books.includes("paper") && !saysPaper(x.s)) return refuse("books", `a paper figure in a sentence that does not say paper: "${x.s.slice(0, 50)}"`);
@@ -190,8 +256,8 @@ export function vetBuilderPost(text: string, ctx: BuilderVetContext): BuilderRef
   };
   for (const tok of used) {
     const figs = onlyFigs(tok);
-    if (figs.length && figs.every((g) => g.negative) && !/\b(loss|losses|lost|down)\b/i.test(unquoted)) return refuse("loss", `${tok} is a loss or a fall and the post never says loss, lost or down`);
-    if (figs.length && figs.every((g) => g.fee)) {
+    // a fee total that prints the same as another figure (fees 3.65, net 3.65) is still a fee total
+    if (figs.length && figs.some((g) => g.fee)) {
       const bookPct = [...allowed.values()].some((a) => a.figures.some((g) => g.id === "book.pct"));
       if (bookPct && !usedIds.has("book.pct")) return refuse("pairs", `${tok} is a paper fee figure: the paper book's result since the start goes beside it`);
     }
@@ -220,12 +286,21 @@ export function vetBuilderPost(text: string, ctx: BuilderVetContext): BuilderRef
   const meta = norm.match(META_RE);
   if (meta) return refuse("meta", `names the model, a vendor or the loop ("${meta[0]}")`);
   const folded = foldForMatch(raw);
-  const named = folded.match(ARCHITECT_NAME_RE);
+  // "Z.a.c.h", "Z a c h", "Z-a-c-h": the letters joined back before the name check
+  const joined = folded.replace(/\b(\w)(?:[.\s_*-]+(\w)\b)+/g, (m) => m.replace(/[.\s_*-]+/g, ""));
+  const named = folded.match(ARCHITECT_NAME_RE) ?? folded.replace(/[.*_-]/g, "").match(ARCHITECT_NAME_RE) ?? joined.match(ARCHITECT_NAME_RE);
   if (named) return refuse("architect", `names his architect ("${named[0]}")`);
   const op = (ctx.lint.operatorHandle ?? "").toLowerCase().replace(/[^a-z0-9_]/g, "");
   if (op && folded.replace(/_/g, " ").includes(op.replace(/_/g, " "))) return refuse("architect", "names the operator's handle");
   if (BASE58_RE.test(raw)) return refuse("token", "an address: no mint or wallet in a post");
-  if (COPYCAT_MINTS.some((m) => raw.includes(m.slice(0, 8)))) return refuse("token", "a piece of the copycat's mint");
+  for (const run of raw.match(/[1-9A-HJ-NP-Za-km-z]{4,}/g) ?? []) {
+    if (isCopycatPiece(run) || COPYCAT_MINTS.some((m) => run.length >= 4 && (m.toLowerCase().startsWith(run.toLowerCase()) || m.toLowerCase().endsWith(run.toLowerCase())))) return refuse("token", "a piece of another token's mint");
+  }
+  if (/\bb[\s.*_-]+a[\s.*_-]+n[\s.*_-]+d[\s.*_-]+s\b/i.test(unquoted) || /\bBANDS\b|\bBands\b/.test(unquoted.replace(/\bMr\.? Bands\b/g, "Mr"))) return refuse("token", "bands as a name or spelled out (his own name, Mr Bands, aside)");
+  // any other ticker in capitals: only the facts' tickers and the voice's own words
+  for (const w of unquoted.match(/\b[A-Z]{2,}\b/g) ?? []) {
+    if (!CAPS_OK.has(w) && !f.tickers.some((t) => t.split("/").includes(w)) && !factText.includes(w)) return refuse("ticker", `"${w}" is not a ticker the facts name`);
+  }
   if (mentionsHouseToken(raw, ctx.lint)) return refuse("token", "names his token");
   const blocked = blockedWordsIn(raw);
   if (blocked.length) return refuse("blocked-word", blocked.join(", "));

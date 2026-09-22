@@ -234,11 +234,11 @@ async function main(): Promise<void> {
     assert.ok(p.includes("\\u003c/data>"), "the mention's '<' escaped");
     assert.ok(!p.includes("<script>"));
     assert.ok(p.includes('"mention":"2099911112222333444"'));
-    assert.ok(p.includes(COPYCAT) && /not yours/.test(p), "the copycat as not his");
+    assert.ok(!p.includes(COPYCAT.slice(0, 5)) && !p.includes(COPYCAT.slice(-5)) && /not yours/.test(p), "another token as not his, and never its mint");
     assert.match(p, /paper/);
     assert.match(p, /no token of yours is live/);
-    // no book figures: outside the copycat mint and the mention id, the prompt holds no number
-    const stripped = p.replace(COPYCAT, "").replace(/2099911112222333444/g, "").replace(/\\u003c/g, "<");
+    // no book figures: outside the mention id, the prompt holds no number
+    const stripped = p.replace(/2099911112222333444/g, "").replace(/\\u003c/g, "<");
     assert.deepEqual(stripped.match(/\d+(\.\d+)?/g) ?? [], []);
     assert.deepEqual(REPLY_FACTS_NUMBERS, []);
     assert.match(factsText(replyFactsOf(ENV_LAUNCHED)), /your own token is live/);

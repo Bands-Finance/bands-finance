@@ -12,6 +12,7 @@
 import { put } from "@vercel/blob";
 import { riskLimits } from "../config";
 import { readEquity, readRecent } from "../journal";
+import { redactCopycatDeep } from "../risk/house";
 import { loadScreen } from "../screener";
 
 export const LIVE_FEED_PATH = "live.json";
@@ -59,7 +60,7 @@ export function trimEntries(entries: readonly unknown[]): unknown[] {
 }
 
 export function buildLiveFeed(o: { cycle?: number | null; entriesLimit?: number } = {}): LiveFeed {
-  const entries = trimEntries(readRecent(o.entriesLimit ?? 300));
+  const entries = redactCopycatDeep(trimEntries(readRecent(o.entriesLimit ?? 300)));
   const newest = entries[0] as { mode?: string } | undefined;
   return {
     generatedAt: new Date().toISOString(),

@@ -404,9 +404,11 @@ export function lintText(text: string, ctx: LintContext = {}): LintResult {
     scan(norm, HOUSE_PRICE_PATTERNS, "house-token-price", v);
   }
 
-  // the copycat: its mint or its handle only in a sentence that says it is not his
+  // another token's mint: never, whole or in part (Zach, 22 Sep: "never name any other token's mint anywhere")
+  if (COPYCAT_MINTS.some((m) => raw.includes(m) || raw.includes(m.slice(0, 6)) || raw.includes(m.slice(-6)))) v.push({ rule: "copycat", detail: "names another token's mint" });
+  // the copycat's handle only in a sentence that says it is not his
   for (const sentence of raw.split(/(?<=[.!?])\s+|\n+/)) {
-    const hit = COPYCAT_MINTS.find((m) => sentence.includes(m)) ?? COPYCAT_HANDLES.find((h) => new RegExp(`(^|[^\\w])@${h}\\b`, "i").test(sentence));
+    const hit = COPYCAT_HANDLES.find((h) => new RegExp(`(^|[^\\w])@${h}\\b`, "i").test(sentence));
     if (hit && !NOT_HIS_RE.test(normalizeForMatch(sentence))) v.push({ rule: "copycat", detail: `names the copycat (${hit}) without saying in the same sentence that it is not his` });
   }
 

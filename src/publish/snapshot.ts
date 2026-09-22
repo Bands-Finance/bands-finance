@@ -22,6 +22,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { riskLimits as processLimits } from "../config";
 import type { RiskLimits } from "../risk/limits";
+import { redactCopycatDeep } from "../risk/house";
 import { readEquity, readRecent, tailLines, type EquityPoint, type JournalEntry } from "../journal";
 import { readLearnedView } from "../status";
 import type { LearnedView } from "../learn/surface";
@@ -154,7 +155,7 @@ export function writeSnapshot(o: SnapshotOptions): SnapshotResult {
       book = "none";
     }
   }
-  put("journal.json", JSON.stringify({ entries, generatedAt }));
+  put("journal.json", JSON.stringify({ entries: redactCopycatDeep(entries), generatedAt }));
   put("equity.json", JSON.stringify({ points, generatedAt }));
   const limits = o.book === "paper" ? processLimits : limitsFrom(liveEnv, processLimits);
   put("limits.json", JSON.stringify(limits, null, 2));

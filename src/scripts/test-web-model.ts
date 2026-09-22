@@ -494,6 +494,46 @@ async function main() {
     }
   });
 
+  await test("the prompts the models actually receive carry no other token's mint, nor a piece of it", async () => {
+    const { COPYCAT_MINTS } = await import("../risk/house");
+    const { buildSystemPrompt } = await import("../agent/persona");
+    const { personaFor } = await import("../platform/myAgent");
+    const { riskLimits } = await import("../config");
+    const prompts = {
+      desk: buildSystemPrompt(riskLimits, "ORE/SOL"),
+      chat: personaFor("So11111111111111111111111111111111111111112", {} as never),
+    };
+    for (const [name, p] of Object.entries(prompts)) {
+      for (const m of COPYCAT_MINTS) {
+        assert.ok(!p.includes(m), `${name} prompt names another token's mint`);
+        assert.ok(!p.includes(m.slice(0, 5)) && !p.includes(m.slice(-5)), `${name} prompt carries a piece of another token's mint`);
+      }
+      assert.ok(!/copycat/i.test(p), `${name} prompt still talks about the copycat`);
+    }
+  });
+
+  await test("the chat's stream, its stored reply and the journal the sites read drop another token's mint, even split across chunks", async () => {
+    const { COPYCAT_MINTS, copycatStreamFilter, redactCopycat, redactCopycatDeep } = await import("../risk/house");
+    const { sanitizeChunk, sanitizeReply } = await import("../platform/myAgent");
+    const m = COPYCAT_MINTS[0]!;
+    const reply = `that one is not mine: ${m}. nor ${m.slice(0, 6)}... or ...${m.slice(-4)}. i will name mine when it launches.`;
+    const f = copycatStreamFilter();
+    let streamed = "";
+    for (let i = 0; i < reply.length; i += 7) streamed += f.push(reply.slice(i, i + 7));
+    streamed += f.flush();
+    for (const out of [streamed, sanitizeReply(reply), sanitizeChunk(reply), redactCopycat(reply)]) {
+      assert.ok(!out.includes(m.slice(0, 4)) && !out.includes(m.slice(-4)), out);
+      assert.match(out, /i will name mine when it launches\./);
+    }
+    // ordinary words and other addresses stay
+    assert.equal(redactCopycat("in the bands on ORE/SOL, pool So11111111111111111111111111111111111111112"), "in the bands on ORE/SOL, pool So11111111111111111111111111111111111111112");
+    const e = entry({ cycle: 3, min: 1, pool: "AAA", sol: 5, positions: [] });
+    const dirty = { ...e, headline: `closed, not ${m}` } as JournalEntry;
+    const [clean] = redactCopycatDeep([dirty]);
+    assert.equal(clean!.headline, "closed, not ");
+    assert.ok(!JSON.stringify(redactCopycatDeep(trimEntries([dirty]))).includes(m.slice(0, 6)));
+  });
+
   console.log(`\n${passed} web model tests passed`);
 }
 

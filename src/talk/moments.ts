@@ -31,7 +31,7 @@ import type { JournalEntry } from "../journal";
 import type { Lesson } from "../learn/lessons";
 import type { PaperClosed } from "../paper/book";
 import type { BuildRow } from "./buildLedger";
-import { amt, bookHeadlineFacts, blockOf, count, dateOf, fact, hoursOf, paperMethodFacts, pct, realRunFacts, standingFacts, timeOf, usd, type Fact, type FactsBlock, type Figure } from "./facts";
+import { amt, bookHeadlineFacts, blockOf, count, CTX, dateOf, fact, hoursOf, paperMethodFacts, pct, realRunFacts, standingFacts, timeOf, usd, type Fact, type FactsBlock, type Figure } from "./facts";
 import type { PostLength } from "./postGuards";
 import type { StackFigures } from "./strap";
 import { labelBlocked } from "./wordguard";
@@ -166,7 +166,7 @@ function block(key: string, i: MomentInputs, facts: Fact[], tickers: string[] = 
 }
 
 /** A paper fee figure: printed only with its net (needs) and with the book's result (the guards' fee rule). */
-const feeFig = (id: string, value: number, needs: string[]): Figure => fig(id, amt(value), "paper", { needs, fee: true });
+const feeFig = (id: string, value: number, needs: string[]): Figure => fig(id, amt(value), "paper", { needs, fee: true, ...CTX.fees });
 
 // ---------------------------------------------------------------- gatherers
 
@@ -183,11 +183,11 @@ function dailyMoment(i: MomentInputs): Moment | null {
   const worstLabel = worst ? tickerOf(worst.label) : null;
   const net = d.netRealizedSol;
   const figures: Figure[] = [
-    fig("daily.n", String(dayN), "paper"),
+    fig("daily.n", String(dayN), "paper", { near: /\bday\b/i }),
     feeFig("daily.fees", d.feesRealizedSol, ["daily.net"]),
-    fig("daily.net", amt(net), "paper", { negative: net < 0 }),
-    fig("daily.closed", count(d.closedBands), "paper"),
-    fig("daily.up", count(d.closedUp), "paper"),
+    fig("daily.net", amt(net), "paper", { negative: net < 0, positive: net > 0 }),
+    fig("daily.closed", count(d.closedBands), "paper", { next: /^\W*(bands?|closes?|closed)\b/i }),
+    fig("daily.up", count(d.closedUp), "paper", { next: /^(\W*\w+){0,2}?\W*up\b/i }),
   ];
   const lines = [
     `Day ${dayN} on paper, over the last 24 hours: ${amt(d.feesRealizedSol)} SOL in fees realized, and ${net >= 0 ? `${amt(net)} SOL kept` : `a net loss of ${amt(net)} SOL`} after losses, rent, swaps and network fees. ${count(d.closedBands)} bands closed, ${count(d.closedUp)} of them up.`,
@@ -251,7 +251,7 @@ function closeMoments(i: MomentInputs, notes: string[]): Moment[] {
     const fresh = age <= FRESH_MS;
     const earlier = [...i.posts].reverse().find((p) => i.now - p.at <= DAY && p.at < l.closedAt && p.text.toLowerCase().includes(label.toLowerCase()));
     const net = l.netSol;
-    const figures: Figure[] = [fig("close.net", amt(net), "paper", { negative: net < 0 }), fig("close.hours", hoursOf(l.closedAt - l.openedAt), "paper")];
+    const figures: Figure[] = [fig("close.net", amt(net), "paper", { negative: net < 0, positive: net > 0 }), fig("close.hours", hoursOf(l.closedAt - l.openedAt), "paper", CTX.hours)];
     const parts = [
       `On paper I closed my band on ${label}${fresh ? ` at ${timeOf(l.closedAt)}` : ` earlier (${dateOf(l.closedAt)})`} after ${hoursOf(l.closedAt - l.openedAt)} hours: ${net < 0 ? `a loss of ${amt(net)} SOL` : `net ${amt(net)} SOL`} for the band's whole life, rent and swaps included.`,
     ];
@@ -260,12 +260,12 @@ function closeMoments(i: MomentInputs, notes: string[]): Moment[] {
       parts.push(`${amt(l.feesSol)} SOL of fees came in while it was open; they are inside that result, not on top of it.`);
     }
     if (typeof l.inRangePct === "number") {
-      figures.push(fig("close.inrange", pct(l.inRangePct), "paper"));
+      figures.push(fig("close.inrange", pct(l.inRangePct), "paper", CTX.inRange));
       parts.push(`It was in range for ${pct(l.inRangePct)} of my checks.`);
     }
     parts.push(ENDINGS[l.endReason] ?? ENDINGS.close);
     if (typeof l.tokensLeftSol === "number" && Math.abs(l.tokensLeftSol) >= 0.005) {
-      figures.push(fig("close.tokensLeft", amt(l.tokensLeftSol), "paper"));
+      figures.push(fig("close.tokensLeft", amt(l.tokensLeftSol), "paper", { near: /\b(tokens?|hold|held)\b/i }));
       parts.push(`${amt(l.tokensLeftSol)} SOL of that result is tokens I still hold, counted at the close's price.`);
     }
     const facts: Fact[] = [fact("close", parts.join(" "), "paper", `data-live/lessons.jsonl ${l.position}`, figures), ...i.headline];
@@ -344,6 +344,9 @@ function refusalMoments(i: MomentInputs): Moment[] {
   return out;
 }
 
+/** halted rows further apart than this are two halts */
+export const HALT_BREAK_MS = 45 * MIN;
+
 /** a halt in force: the kill switch or a halt named in the entry (a band's own stop is not a halt: "STOP" in capitals only) */
 const isHalt = (text: string): boolean => /kill.?switch|\bhalt(ed|s)?\b/i.test(text) || /\bSTOP\b/.test(text);
 
@@ -351,11 +354,30 @@ function haltMoment(i: MomentInputs): Moment | null {
   const recent = i.journal.filter((e) => i.now - Date.parse(e.ts) <= 2 * HOUR && Date.parse(e.ts) <= i.now);
   const halted = recent.filter((e) => isHalt([...(e.violations ?? []), ...(e.overrides ?? []), e.headline ?? ""].join(" ")));
   if (halted.length < 6 || halted.length < recent.length / 2) return null;
-  const since = Date.parse(halted[0].ts);
+  // the start of the unbroken halted run across the whole journal tail, not the 2-hour window: halted rows no more
+  // than HALT_BREAK_MS apart (a desk writes one every cycle while it holds)
+  const all = i.journal.filter((e) => Date.parse(e.ts) <= i.now).sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+  const haltedTs = all.filter((e) => isHalt([...(e.violations ?? []), ...(e.overrides ?? []), e.headline ?? ""].join(" "))).map((e) => Date.parse(e.ts));
+  let since = haltedTs[haltedTs.length - 1];
+  for (let k = haltedTs.length - 2; k >= 0 && since - haltedTs[k] <= HALT_BREAK_MS; k--) since = haltedTs[k];
   if (i.now - since < 30 * MIN) return null;
-  const key = `halt:${utcDay(since)}`;
-  if (i.seen.has(key)) return null;
-  const facts = [fact("halt", `A halt has held my paper desk since ${timeOf(since)} on ${dateOf(since)}: it opens no new band while the halt is in force. Exits keep running.`, "none", "data-live/decisions.jsonl (kill-switch holds)", [])];
+  // the tail may start inside the halt: then "since at least", and the key still names this run's start as read
+  const atLeast = all.length > 0 && since - Date.parse(all[0].ts) <= HALT_BREAK_MS;
+  const key = `halt:${new Date(since).toISOString().slice(0, 16)}`;
+  // once per halt: a halt key already seen inside this run is this halt. The older day keys ("halt:2026-09-19")
+  // count for any day the run touches; when the tail starts inside the run, any earlier halt key counts too
+  // (the run's true start is out of sight, so it may be this one: fail closed)
+  for (const k of i.seen) {
+    if (!k.startsWith("halt:")) continue;
+    const stamp = k.slice(5);
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(stamp);
+    const from = Date.parse(day ? `${stamp}T00:00:00Z` : `${stamp}:00Z`);
+    const to = day ? from + DAY - 1 : from;
+    if (!Number.isFinite(from)) continue;
+    if (to >= since - HALT_BREAK_MS && from <= i.now) return null;
+    if (atLeast && to < since) return null;
+  }
+  const facts = [fact("halt", `A halt has held my paper desk since ${atLeast ? "at least " : ""}${timeOf(since)} on ${dateOf(since)}: it opens no new band while the halt is in force. Exits keep running.`, "none", "data-live/decisions.jsonl (kill-switch holds)", [])];
   return {
     key,
     type: "halt",

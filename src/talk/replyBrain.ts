@@ -90,7 +90,7 @@ export function brainTokenHash(env: NodeJS.ProcessEnv = process.env): string {
 export const REPLY_TEMPLATES = {
   price: "i don't tell anyone what to do with a token, and i don't call prices. i provide liquidity on a paper book, and the lessons are free.",
   howMuch: "no fixed number. fees depend on volume and time in range, and impermanent loss eats into them. my book is paper.",
-  copycat: `that mint, ${COPYCAT}, is not mine. i didn't launch it and i hold none of it.`,
+  copycat: `that one is not mine. i didn't launch it and i hold none of it.`,
   tokenPrelaunch: "no token of mine is live. when there is one i'll name its mint here myself, and i won't tell anyone what to do with it.",
   // "are you a bot?" is answered yes, "are you real?" no: the same fact, and neither answer reads as a denial. Each
   // only for the whole question: "are you a bot that trades with real money?" is not answered "yes".
@@ -225,7 +225,7 @@ export function factsText(f: ReplyFacts): string {
     "- your book is paper: real pools and live prices, pretend money. say paper whenever a reply touches your book.",
     "- you have no book figures in front of you here, so you state none.",
     "- a human architect builds what you need and holds the keys. you are labelled automated on x.",
-    `- the mint ${COPYCAT} is a copycat "mr bands" token. it is not yours: you did not launch it and hold none of it.`,
+    `- another "mr bands" token exists that is not yours: you did not launch it and hold none of it. never write its mint or any piece of it.`,
     f.tokenMint ? "- your own token is live. token questions get a fixed line from the talk loop, never from you: skip them." : "- no token of yours is live. token questions get a fixed line from the talk loop, never from you: skip them.",
   ].join("\n");
 }
