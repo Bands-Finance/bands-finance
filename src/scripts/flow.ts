@@ -45,10 +45,25 @@ interface Watch {
 
 const watches = new Map<string, Watch>();
 
+/**
+ * A pool that exists on the chain. The PAPER book works virtual pools too (the pair lanes' own
+ * pools, whose addresses read "pair-..."), and one of those in the list made getMultipleAccountsInfo
+ * throw "Non-base58 character" for the whole batch, so the paper scout read nothing at all. They are
+ * dropped here rather than in the desk: a scout reads the chain, and a virtual pool is not on it.
+ */
+const onChain = (p: PoolMeta): boolean => {
+  try {
+    void new PublicKey(p.address);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 function readLatest(): PoolMeta[] {
   try {
     const latest = JSON.parse(fs.readFileSync(path.join(dataDir, "latest.json"), "utf8"));
-    return poolsFromLatest(latest);
+    return poolsFromLatest(latest).filter(onChain);
   } catch {
     return [];
   }
@@ -58,7 +73,7 @@ function readLatest(): PoolMeta[] {
 function readWatch(): PoolMeta[] {
   try {
     const j = JSON.parse(fs.readFileSync(path.join(dataDir, "flow-watch.json"), "utf8")) as { pools?: PoolMeta[] };
-    return Array.isArray(j.pools) ? j.pools.filter((p) => p && typeof p.address === "string") : [];
+    return Array.isArray(j.pools) ? j.pools.filter((p) => p && typeof p.address === "string").filter(onChain) : [];
   } catch {
     return [];
   }
