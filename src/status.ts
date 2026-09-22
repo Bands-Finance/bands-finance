@@ -180,10 +180,14 @@ export function decisionSources(file: string, sinceMs: number, opts: { chunkByte
  *               never ride into the live desk unlabelled. Lessons live inside one DATA_DIR, so a
  *               lesson with no mode field (written before the field existed) is taken as the desk's.
  *   NO FACTOR WITHOUT ITS SAMPLE  every factor carries n, minSample and underSample. Under the
- *               sample the shipped default stands and the surface says so.
+ *               sample AND never moved, the shipped default stands and the surface says so. A knob
+ *               that HAS moved prints the number in force whatever the sample now reads: the desk is
+ *               pricing at it either way, and a page saying "it has not moved" beside the row that
+ *               moved it is the one thing the journal exists to prevent (lastMovedAt is the test).
  * Reads are bounded (the tail of each file) and read-only. Nothing here writes.
  * ------------------------------------------------------------------------------------------- */
 import { FEE_SHARE_DEFAULT, learnEnv } from "./desk/learning";
+import { forecastOf } from "./learn/lessons";
 import { freezeState } from "./learn/freeze";
 import { NEVER_TOUCHED, emptyLearnedView, type LearnMode, type LearnedChange, type LearnedFactor, type LearnedRatio, type LearnedSeat, type LearnedView } from "./learn/surface";
 
@@ -201,7 +205,17 @@ export const calibrationMinSample = (env: NodeJS.ProcessEnv = process.env): numb
 /** A pool penalty may not move under this many closed seats in the pool (LEARN_POOL_MIN_N). */
 export const poolMinSample = (env: NodeJS.ProcessEnv = process.env): number => learnEnv(env).poolMinN;
 
-/** One row of lessons.jsonl, as the surfaces need it. Fields the learner may not yet write are optional. */
+/**
+ * One row of lessons.jsonl, as the surfaces need it. Fields the learner may not yet write are optional.
+ *
+ * THE NAMES ARE THE WRITER'S (src/learn/lessons.ts lessonOf): `netSolExDrift` and `quoteDriftSol`.
+ * This used to declare `netExDriftSol` and `driftSol`, which nothing writes, so the decomposition was
+ * always null and his observation, the site panel and the free bands_lessons tool printed `netSol`
+ * alone: the one number every header in the package says must never be read alone. AMD/USDC's stop
+ * rendered as "net -6.014 SOL" where the row on disk says quoteDriftSol -6.346 and netSolExDrift
+ * +0.332 - the seat was up and the price was above the band. The old spellings are kept as fallbacks
+ * for any file that carries them.
+ */
 interface LessonRow {
   at?: number;
   mode?: string;
@@ -215,10 +229,27 @@ interface LessonRow {
   endReason?: string;
   feesSol?: number;
   netSol?: number;
+  /** the seat's net with the quote token's own move taken out, as lessonOf writes it */
+  netSolExDrift?: number | null;
+  /** the quote token's move against SOL over the seat's life, as lessonOf writes it */
+  quoteDriftSol?: number | null;
+  /** the spellings an older file may carry */
   netExDriftSol?: number | null;
   driftSol?: number | null;
   predictedYieldPct?: number | null;
+  /** what he forecast AT THE OPEN, the learners' training label */
+  entryYieldPct?: number | null;
   realizedYieldPctPerDay?: number | null;
+  /** an ask band (src/engine/askExit.ts): inventory being worked off, not a seat the desk chose */
+  ask?: boolean;
+}
+
+/** PURE. The drift-free net of a row, whichever spelling it carries; null when it carries neither. */
+function exDriftOf(r: LessonRow): number | null {
+  if (typeof r.netSolExDrift === "number") return r.netSolExDrift;
+  if (typeof r.netExDriftSol === "number") return r.netExDriftSol;
+  const drift = typeof r.quoteDriftSol === "number" ? r.quoteDriftSol : typeof r.driftSol === "number" ? r.driftSol : null;
+  return drift !== null && typeof r.netSol === "number" ? Math.round((r.netSol - drift) * 1e6) / 1e6 : null;
 }
 
 /**
@@ -273,16 +304,27 @@ function median(xs: number[]): number | null {
   return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-/** How his forecast has come in against what the seats realised. Null until a seat carries both. */
+/**
+ * How his forecast has come in against what the seats realised. Null until a seat carries both.
+ *
+ * SCORED THE WAY THE DESK SCORES IT: forecastOf (src/learn/lessons.ts) takes the entry forecast first
+ * and the last seat check only as a fallback, which is what calibrationReading counts. Reading
+ * predictedYieldPct alone gave this a different, usually smaller sample than the knob it describes, so
+ * every surface could say "not enough seats yet, 0 of the 20 it needs, so it has not moved" with the
+ * change row that moved it listed two lines below. It also drops the ask bands: an ask band is a
+ * closed seat's token being worked off over the price, not a seat the desk chose, and no learner
+ * counts one.
+ */
 export function forecastRatio(rows: LessonRow[]): LearnedRatio | null {
   const ratios: number[] = [];
   let tooHigh = 0;
   for (const r of rows) {
-    const p = r.predictedYieldPct;
+    if (r.ask) continue;
+    const f = forecastOf({ entryYieldPct: r.entryYieldPct ?? null, predictedYieldPct: r.predictedYieldPct ?? null });
     const a = r.realizedYieldPctPerDay;
-    if (typeof p !== "number" || !Number.isFinite(p) || p <= 0) continue;
+    if (!f) continue;
     if (typeof a !== "number" || !Number.isFinite(a)) continue;
-    const ratio = a / p;
+    const ratio = a / f.pct;
     ratios.push(ratio);
     if (ratio < 1) tooHigh++;
   }
@@ -301,9 +343,11 @@ const seatOf = (r: LessonRow): LearnedSeat => ({
   endReason: r.endReason ?? "unknown",
   feesSol: r.feesSol ?? 0,
   netSol: r.netSol ?? 0,
-  netExDriftSol:
-    typeof r.netExDriftSol === "number" ? r.netExDriftSol : typeof r.driftSol === "number" && typeof r.netSol === "number" ? r.netSol - r.driftSol : null,
-  predictedYieldPct: r.predictedYieldPct ?? null,
+  netExDriftSol: exDriftOf(r),
+  quoteDriftSol: typeof r.quoteDriftSol === "number" ? r.quoteDriftSol : typeof r.driftSol === "number" ? r.driftSol : null,
+  // the forecast the desk scores, entry first: what the seat check last said is the fallback, not the label
+  predictedYieldPct: forecastOf({ entryYieldPct: r.entryYieldPct ?? null, predictedYieldPct: r.predictedYieldPct ?? null })?.pct ?? null,
+  entryYieldPct: r.entryYieldPct ?? null,
   realizedYieldPctPerDay: r.realizedYieldPctPerDay ?? null,
 });
 
@@ -339,8 +383,11 @@ export function readLearnedView(opts: LearnedViewOptions): LearnedView {
   view.frozen = learnFrozen(opts.env ?? process.env);
 
   const rawLessons = readJsonlTail<LessonRow>(path.join(opts.dir, "lessons.jsonl"));
-  // lessons live inside one DATA_DIR, so a row with no mode is this desk's: the field is newer than the file
-  const lessons = rawLessons.filter((r) => r.mode === undefined || r.mode === opts.mode);
+  // lessons live inside one DATA_DIR, so a row with no mode is this desk's: the field is newer than the file.
+  // An ask band is a closed seat's token being worked off over the price (src/engine/askExit.ts), not a seat
+  // the desk chose: src/learn/view.ts filters them out of every count and so does this, or the same book
+  // reads "59 seats" on the site and "55 closed seats on record" in `npm run learning`.
+  const lessons = rawLessons.filter((r) => (r.mode === undefined || r.mode === opts.mode) && !r.ask);
   const refusedLessons: Record<string, number> = {};
   for (const r of rawLessons) if (r.mode !== undefined && r.mode !== opts.mode) refusedLessons[r.mode] = (refusedLessons[r.mode] ?? 0) + 1;
   // a change carries the book it was learned on, and a foreign book's number is refused outright

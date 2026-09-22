@@ -162,8 +162,11 @@ export function policyEnv(env: NodeJS.ProcessEnv = process.env): PolicyEnv {
   // number with no journal row, no minimum sample, no bounded step and no freeze switch behind it,
   // and nothing writes it any more, so an unset LEARN_WIDTH_TUNING leaves it out of every decision.
   // applyTuning and its bounds stay tested in src/learn/lessons.ts for the day the evidence changes.
+  // The desk's mode goes with it: ops/live.env points the halted live desk at a SHARED TUNING_FILE,
+  // and applyTuning's refusal of another desk's file is dead unless it is told whose desk this is. It
+  // was masked only by LEARN_WIDTH_TUNING being unset, which is an env flag, not a guard.
   const file = (env.LEARN_WIDTH_TUNING ?? "").trim().toLowerCase() === "true" ? (env.TUNING_FILE ?? "").trim() : "";
-  const tuned = file ? applyTuning(base, readTuningCached(file), tuneEnv(env)) : base;
+  const tuned = file ? applyTuning(base, readTuningCached(file), tuneEnv(env), (env.LEARN_MODE ?? "").trim() || "live") : base;
   return withLearnedFeeShare(tuned, env);
 }
 

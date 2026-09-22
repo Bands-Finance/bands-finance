@@ -207,14 +207,23 @@ export function formatLearned(v: LearnedView, budget = LEARNED_BUDGET_CHARS): st
   return out;
 }
 
-/** One knob, never printed without the sample it rests on. */
+/**
+ * One knob, never printed without the sample it rests on, and never printed as unmoved when it has
+ * moved. THE ORDER MATTERS: a knob that was journalled is what the desk is pricing at RIGHT NOW,
+ * whatever its sample reads today (a window empties, a threshold is raised, the seats that bought it
+ * age out). Under-sample used to win, so he could be shown "x0.50, the shipped default: not enough
+ * seats yet, 0 of the 20 it needs, so it has not moved" while the desk priced every seat at 0.45 and
+ * the change that made it was listed in the journal two lines below. So: moved first, with its
+ * evidence and its sample stated honestly; the default only while nothing has moved.
+ */
 function learnedFactorLine(f: LearnedFactor): string {
   const what = f.knob === "calibration" ? `${f.lane} forecast factor` : `this pool's size penalty`;
-  const state = f.underSample
-    ? `x${f.defaultFactor.toFixed(2)}, the shipped default: not enough seats yet, ${f.n} of the ${f.minSample} it needs, so it has not moved`
-    : f.lastMovedAt === null
-      ? `x${f.defaultFactor.toFixed(2)}, the shipped default: ${f.n} seats say it may move, and it has not moved yet`
-      : `x${f.factor.toFixed(2)} on ${f.n} seats (${f.why ?? "no evidence sentence was journalled"})`;
+  const state =
+    f.lastMovedAt !== null
+      ? `x${f.factor.toFixed(2)}, in force now on ${f.n} scored seat(s)${f.underSample ? `, which is under the ${f.minSample} a fresh move needs, so it stands where it was left` : ""} (${f.why ?? "no evidence sentence was journalled"})`
+      : f.underSample
+        ? `x${f.defaultFactor.toFixed(2)}, the shipped default: not enough seats yet, ${f.n} of the ${f.minSample} it needs, so it has not moved`
+        : `x${f.defaultFactor.toFixed(2)}, the shipped default: ${f.n} seats say it may move, and it has not moved yet`;
   return `- ${what}: ${state}${f.frozen ? " [frozen]" : ""}. It can only ever make a seat smaller.`;
 }
 

@@ -59,11 +59,21 @@ export interface CalEnv {
 }
 
 /**
- * LEARN_PACE_SEED's default: the median of (realised / forecast) x 0.5 / (in-range share) over the 39
- * priced, observed seats of the 17-19 Sep real-money run. It is a memecoin figure, it is frozen while
- * the book is paper, and docs/learning.md says both out loud.
+ * LEARN_PACE_SEED's default: the median of (realised / forecast) x (the share of face that forecast
+ * carried) / (in-range share) over the 39 priced, observed seats of the 17-19 Sep real-money run. It
+ * is a memecoin figure, it is frozen while the book is paper, and docs/learning.md says both out loud.
+ *
+ * THE SHARE OF FACE IS 1 FOR THOSE 39 SEATS, and the seed is the median read that way: 0.658, not the
+ * 0.329 this used to carry. Every one of them is scored against the SEAT CHECK's forecast, which takes
+ * the pool's face fee pace whole (src/desk/learning.ts forecastOf, and the test that asserts it); this
+ * module used to fall back to the shipped 0.5, which halves the pace and therefore halves the seed. The
+ * published second opinion came out about 2x low and disagreed with the desk's own target on the same
+ * book by exactly that factor: `npm run learning` on data-mainnet printed "in range 0.48 x pace 0.42 =
+ * 0.20" beside a target of 0.39. On the same footing it reads 0.485 x 0.658 = 0.32, which is the same
+ * answer the desk gets. The paper book only ever prints the second opinion, so the understated seed was
+ * what the public page showed.
  */
-export const PACE_SEED_1719_SEP = 0.33;
+export const PACE_SEED_1719_SEP = 0.66;
 
 export function calEnv(env: NodeJS.ProcessEnv = process.env): CalEnv {
   return {
@@ -148,7 +158,11 @@ export function calibrationFrom(lessons: readonly Lesson[], env: CalEnv, now: nu
       ? ewma(
           forPace.map((l) => {
             const f = forecastOf(l)!;
-            const factor = typeof l.entryYieldFactor === "number" && l.entryYieldFactor > 0 ? l.entryYieldFactor : env.base;
+            // THE SAME FOOTING AS THE DESK (src/desk/learning.ts forecastOf): an ENTRY forecast carries
+            // the share of face in force when it was made; a SEAT CHECK takes the pool's pace whole, so
+            // its factor is 1. Scoring a seat check at the shipped 0.5 halves the pace half and makes a
+            // second opinion that disagrees with the desk's own target by a factor of two.
+            const factor = f.source === "entry" ? (typeof l.entryYieldFactor === "number" && l.entryYieldFactor > 0 ? l.entryYieldFactor : env.base) : 1;
             return { at: l.at, v: (l.realizedYieldPctPerDay / f.pct) * factor / ((l.inRangePct as number) / 100) };
           }),
           now,
@@ -163,7 +177,7 @@ export function calibrationFrom(lessons: readonly Lesson[], env: CalEnv, now: nu
     const paceSource: "seed" | "live" = paceRaw === null ? "seed" : "live";
     const why = weak
       ? `${n} closed ${lane} seat${n === 1 ? "" : "s"} on the ${mode} book, under the ${env.minSample} a change needs: the shipped ${env.base} stands`
-      : `${n} closed ${lane} seats on the ${mode} book sat in range ${pct(inRangeFactor)} of their lives and captured ${pct(paceFactor)} of the pool's pace while they were${paceSource === "seed" ? " (the 17-19 Sep real-money figure, frozen while the book is paper)" : ` (${forPace.length} priced live seats)`}: a seat is worth ${r2(combined)} of the pool's day, not ${env.base}. ${windowH}h half-life`;
+      : `${n} closed ${lane} seats on the ${mode} book sat in range ${pct(inRangeFactor)} of their lives and captured ${pct(paceFactor)} of the pool's pace while they were${paceSource === "seed" ? " (the 17-19 Sep real-money figure, frozen while the book is paper)" : ` (${forPace.length} priced live seats)`}: ${r2(combined) >= env.base ? `a seat is worth every bit of the ${env.base} of the pool's day the shipped code already prices it at, which is the ceiling: nothing here can argue for more` : `a seat is worth ${r2(combined)} of the pool's day, not ${env.base}`}. ${windowH}h half-life`;
     out[lane] = { lane, inRangeFactor: r3(inRangeFactor), paceFactor: r3(paceFactor), combined: r2(combined), n, paceN: forPace.length, paceSource, weak, asOf, windowH, why };
   }
   return out;

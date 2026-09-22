@@ -415,6 +415,11 @@ export function readTuningCached(file: string, now = Date.now()): Tuning | null 
   return cache.t;
 }
 
+/** Tests and a script that has just written the file: the next read hits the disk. */
+export const clearTuningCache = (): void => {
+  cache = null;
+};
+
 /* ---------- the learning journal ---------- */
 
 /**

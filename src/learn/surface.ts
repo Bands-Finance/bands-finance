@@ -99,8 +99,12 @@ export interface LearnedSeat {
   netSol: number;
   /** the net with the quote's own move taken out; null when the lesson carries no decomposition */
   netExDriftSol: number | null;
-  /** what the seat was forecast to yield when it opened, percent a day */
+  /** the quote token's own move against SOL over the seat's life, SOL; null for a SOL-quoted seat */
+  quoteDriftSol: number | null;
+  /** the forecast the desk scores the seat against: what he decided at the open, else the last seat check */
   predictedYieldPct: number | null;
+  /** what he decided at the open specifically, when the seat carries one; null on the older rows */
+  entryYieldPct: number | null;
   /** what it actually yielded, percent a day */
   realizedYieldPctPerDay: number | null;
 }

@@ -52,7 +52,8 @@ import path from "node:path";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { config, riskLimits } from "./config";
 import { adviseProposal, decide, deciderOf, engineDecideResult, hasLlmCredentials, policyMayTradeLive, proposalDecideResult } from "./agent/decide";
-import { openHermitSettings } from "./agent/openhermit";
+import { openHermitAvailable, openHermitSettings } from "./agent/openhermit";
+import type { LearnMode } from "./learn/surface";
 import type { Decision } from "./agent/schema";
 import { entryForecastOf, policyDecide, policyEnv } from "./agent/policy";
 import { POSITION_RENT_SOL } from "./tools/dlmm";
@@ -87,7 +88,7 @@ import { buildLiveFeed, liveFeedOn, publishLiveFeed } from "./publish/live";
 import { appendLesson, endReasonOf, LESSONS_FILE, lessonLine, lessonOf, readLessons, type BandMeta } from "./learn/lessons";
 import {
   appendLearningChange, applyChange, calibrationChange, calibrationReading, clearLearningCache, emptyLearning, factorFor, knobFrozen, LANES, learnEnv, learnFiles, learningFrozen,
-  penaltyFor, poolPenaltyChanges, readLearning, sitOutMinFor, writeLearning, FEE_SHARE_DEFAULT, type LearningChange, type LearningState,
+  laneOf, poolPenaltyChanges, readLearning, reentryMinFor, seatCapSol, writeLearning, FEE_SHARE_DEFAULT, type Lane, type LearningChange, type LearningState,
 } from "./desk/learning";
 import { loadHotFileCached } from "./hot/store";
 import type { ScreenResult } from "./screener/types";
@@ -96,7 +97,7 @@ import { bookEnv, isTradableVenue, liveVenues, loadVenuePool, poolsWithPositions
 import { fetchPoolAnalytics } from "./tools/lpagent";
 import { Wallet } from "./tools/wallet";
 import { startServer } from "./server";
-import { noteDeploy, noteIteration, noteScreen } from "./status";
+import { noteDeploy, noteIteration, noteScreen, readLearnedView } from "./status";
 import { createDeployer } from "./publish/deploy";
 import { rpcConnection } from "./lib/timedFetch";
 import { basisForPool, basisForTicker, basisVerdict, refreshBasis, sessionClock, sessionWidthMultiplier, type BasisRow } from "./basis";
@@ -225,6 +226,26 @@ function openLearning(paper: unknown): void {
   clearLearningCache();
   const state = readLearning(files.state, mode, (why) => console.error(`[learning] ${why}`)) ?? emptyLearning(mode);
   learning = { state, files };
+}
+
+/**
+ * What he has learned, for one pool, as his observation renders it. The desk's own book and the
+ * desk's own mode, so a paper number can never be shown to a live desk as its own experience; his
+ * model is named as off while there is no gateway token, because a knob that moved by the rulebook
+ * must not read to him as something he reasoned. Never throws: a missing or torn file is no block.
+ */
+function learnedFor(address: string, label: string): ReturnType<typeof readLearnedView> | null {
+  try {
+    return readLearnedView({
+      dir: path.resolve(process.cwd(), config.dataDir),
+      // the mode openLearning settled on: the same book the desk is learning from this process
+      mode: (learning?.files.mode ?? deskMode(null)) as LearnMode,
+      modelOn: openHermitAvailable() && deciderOf() === "openhermit",
+      pool: { address, label },
+    });
+  } catch {
+    return null;
+  }
 }
 
 /** One line: what is learned, what it rests on, where it lives, and whether it may move. */
@@ -444,6 +465,22 @@ function perpMidForTicker(app: App, ticker: string): number | null {
   return app.perpMarks.get(row.perpSymbol)?.mid ?? row.perpMid ?? null;
 }
 
+/**
+ * THE LANE a pool's seat belongs to (src/desk/learning.ts LANES), spelled ONCE. The lesson's `kind`,
+ * the seat check's calibration and the policy's own laneOf have to answer this the same way: a seat
+ * priced with the memecoin factor whose lesson then teaches the "other" lane is a loop that never
+ * closes, and the seat check used to read `screen.stock ? "stock" : "memecoin"`, which has no "other"
+ * lane at all and called a pair pool and a Backpack basis row memecoins.
+ */
+function laneOfPool(app: App, address: string, snapshot: PoolSnapshot | null, hints?: { stock?: unknown; pinnedTicker?: string | null }): Lane {
+  const stock =
+    !!hints?.stock ||
+    !!app.screen?.pools.find((p) => p.address === address)?.stock ||
+    !!meteoraStockAt(app, address) ||
+    basisRowFor(address, snapshot, hints?.pinnedTicker ?? null) !== null;
+  return laneOf({ stock, pair: !!snapshot?.pair });
+}
+
 /** The basis row a pool reads: its own (a board pool), else its ticker's (a stock pair of ours is never on the board). */
 function basisRowFor(address: string, snapshot?: PoolSnapshot | null, pinnedTicker?: string | null): BasisRow | null {
   const own = basisForPool(address);
@@ -652,7 +689,7 @@ async function rankMeteoraSeats(app: App, withPositions: string[], funds: Set<"S
   // wanted back four minutes later at 1.95% on two swaps (2026-09-17)
   // a pool that keeps ending its seats through the band waits longer than the configured minimum before
   // it may be seated again (src/desk/learning.ts): the learned sit-out never shortens the human one
-  const satOut = (a: string) => !withPositions.includes(a) && sittingOut(state.rotatedOutAt?.[a], { reentryMin: Math.max(rEnv.reentryMin, sitOutMinFor(learnedState(), a)) }, now);
+  const satOut = (a: string) => !withPositions.includes(a) && sittingOut(state.rotatedOutAt?.[a], { reentryMin: reentryMinFor(rEnv.reentryMin, learnedState(), a) }, now);
   // while the scout runs, a candidate it has not read yet is watched, not seated: the venue's day figure
   // put MRVL/SOL at 139%/day on the seat during a scout backfill and the picker took it (2026-09-17)
   const unreadCandidate = (r: RankedSeat) => r.feeSource === "24h" && app.flow.size > 0 && !withPositions.includes(r.address);
@@ -903,7 +940,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // a pool the desk gave up for a better one sits out METEORA_STOCK_REENTRY_MIN before it can be picked again (ping-pong)
   const rotState = loadState();
   const rEnvPick = seatRankingEnv();
-  const satOutNow = (address: string) => sittingOut(rotState.rotatedOutAt?.[address], { reentryMin: Math.max(rEnvPick.reentryMin, sitOutMinFor(learnedState(), address)) }, Date.now());
+  const satOutNow = (address: string) => sittingOut(rotState.rotatedOutAt?.[address], { reentryMin: reentryMinFor(rEnvPick.reentryMin, learnedState(), address) }, Date.now());
   // THE CANDIDATE A ROTATION FREED A SEAT FOR goes first, before any lane, while it still passes every gate the board loop applies
   if (app.seatFor && seatsHeld() < ordinaryCap && !set.has(app.seatFor.address) && !takenTokens.has(app.seatFor.baseMint)) {
     const p = (app.screen?.pools ?? []).find((x) => x.address === app.seatFor!.address);
@@ -1582,7 +1619,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     // it multiplies the human-set cap, so it can only ever take a smaller seat than MAX_POSITION_SOL,
     // never a larger one, and it can never bench a pool. The guards are untouched: this is a size the
     // guards then judge, not a guard.
-    effectiveMaxPositionSol: riskLimits.maxPositionSol * view.sizeMultiplier * Math.min(1, penaltyFor(learnedState(), o.address)),
+    effectiveMaxPositionSol: seatCapSol(riskLimits.maxPositionSol, view.sizeMultiplier, learnedState(), o.address),
     stops,
     outOfRangeSec: oorSec,
     minOutOfRangeSec: moveSec,
@@ -1610,6 +1647,13 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     flow: offBoardFlow,
     portfolio,
     engine: engineObs,
+    // WHAT HE HAS LEARNED (src/status.ts readLearnedView, rendered by formatLearned). Everything else
+    // in the observation is the present tense: what the pool looks like, what the guards say, what he
+    // proposed. This is the one block that shows him an OUTCOME, built for THIS pool. Without it he
+    // is never told what a seat earned, and nothing he does can get better: the field was declared
+    // and rendered for a week while no caller ever set it, so the whole surface was inert. A read
+    // off disk, bounded and cached; a failure costs him the block, never the cycle.
+    learned: learnedFor(o.address, snapshot.label),
   };
   console.log(
     `${tag}${venueTag} active bin ${snapshot.activeBinId} price ${snapshot.activePrice.toPrecision(6)} ${snapshot.priceLabel} | quote ${q.symbol}${quoteIsSol ? "" : ` (1 ${q.symbol} = ${q.priceInSol.toFixed(6)} SOL)`} | screen ${screen ? `#${screen.rank} score ${screen.score}` : "n/a"} | wallet ${sol.toFixed(4)} SOL, ${quoteIsSol ? "" : `${quote.toFixed(2)} ${q.symbol}, `}${token.ui.toFixed(2)} ${snapshot.baseToken.symbol} | bands ${positions.length} | size x${view.sizeMultiplier}${knife ? ` | ${knife}` : ""}`,
@@ -1814,7 +1858,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   if (execution.ok && execution.opened && verdict.decision.open && execution.mode !== "dry-run") {
     const op = verdict.decision.open;
     const bins = op.binsBelowActive + op.binsAboveActive + 1;
-    const kind: BandMeta["kind"] = screen?.stock || basisRow ? "stock" : snapshot.pair ? "other" : "memecoin";
+    const kind: BandMeta["kind"] = laneOfPool(app, o.address, snapshot, { stock: screen?.stock || basisRow });
     (state.bandMeta ??= {})[execution.opened.address] = {
       pool: o.address,
       label: snapshot.label,
@@ -2340,11 +2384,17 @@ async function runIteration(app: App): Promise<void> {
         // says a seat comes in well under what it was forecast. So the reading meets the fade line
         // calibrated. The factor is taken RELATIVE to the shipped 0.5, so an uncalibrated lane reads
         // exactly what it reads today and a calibrated one can only ever read its seats LOWER.
-        const lane = app.screen?.pools.find((sp) => sp.address === o.address)?.stock ? "stock" : "memecoin";
+        const lane = laneOfPool(app, o.address, o.snapshot);
         const cal = Math.min(1, factorFor(learnedState(), lane) / FEE_SHARE_DEFAULT);
         const rawPct = y.yieldPctPerDay;
         const calPct = rawPct * cal;
-        for (const p of o.positions) app.predictedYield.set(p.address, Math.round(calPct * 100) / 100);
+        // THE FACE FIGURE is what is remembered, not the calibrated one. predictedYieldPct is the
+        // learners' fallback training label and src/desk/learning.ts scores it as taken whole
+        // (factor 1); storing the calibrated figure fed the knob its own output, and a simulated 60
+        // cycles of a seat truly earning 0.20 of face settled on sqrt(0.5 x truth) = 0.316 and then
+        // rang between 0.30 and 0.33 for ever. The calibration belongs where the number meets a
+        // floor, which is the fade line and the ranking below, and nowhere else.
+        for (const p of o.positions) app.predictedYield.set(p.address, Math.round(rawPct * 100) / 100);
         heldMeme.push({ address: o.address, label: o.snapshot.label, yieldPctPerDay: calPct, openedAt: state.seatSince?.[o.address] ?? state.lastMoveByPool?.[o.address] ?? null, pinned: pinnedTickerOf(app, o.address, o.snapshot) !== null || !!pinnedPoolAt(app.pinned, o.address), capSol: riskLimits.maxPositionSol, heldSol: seatSol, feeSource: "flow-4h", stock: lane === "stock" });
         const streak = calPct < line ? (app.fadeStreak.get(o.address) ?? 0) + 1 : 0;
         app.fadeStreak.set(o.address, streak);
@@ -2385,7 +2435,13 @@ async function runIteration(app: App): Promise<void> {
           const oneSided = binsForCover(snapshot.binStep, coverPct, riskLimits.maxBinWidth, 1);
           const seatSol = riskLimits.maxPositionSol * travelSizeMultiple(travelPct > 0 ? travelPct : null, pEnvNow.sizeRefTravelPct, pEnvNow.sizeMinMultiple);
           const y = seatYield({ seatQuote: seatSol / q.priceInSol, binsEachSide: Math.max(0, Math.floor((oneSided - 1) / 2)), activeBinId: snapshot.activeBinId, bins: snapshot.bins, quoteSide: q.side, tokenPriceInQuote: q.tokenPriceInQuote, poolFeesPerDayQuote: flow.feesPerDayQuote240m });
-          ranked.push({ address: c.address, label: c.label, mint: c.baseMint, yieldPctPerDay: y.yieldPctPerDay, sharePct: y.sharePct, feesPerDayQuote: y.feesPerDayQuote, quoteSymbol: q.symbol, feeSource: "flow-4h", capSol: seatSol, stock: false });
+          // BOTH SIDES OF THE COMPARISON, or neither. The held seats above enter calibrated, so a
+          // challenger read at face would beat an identically earning seat by 1/cal: with the
+          // memecoin lane at 0.35 every held seat read 30% low, weakSeatRotation's bar fell 30% and
+          // the desk rotated out of seats it would have kept, paying rent and swap fees for no
+          // change in the world. The candidate is a memecoin band by construction (stock: false).
+          const calCand = Math.min(1, factorFor(learnedState(), "memecoin") / FEE_SHARE_DEFAULT);
+          ranked.push({ address: c.address, label: c.label, mint: c.baseMint, yieldPctPerDay: y.yieldPctPerDay * calCand, sharePct: y.sharePct, feesPerDayQuote: y.feesPerDayQuote, quoteSymbol: q.symbol, feeSource: "flow-4h", capSol: seatSol, stock: false });
         }
         if (ranked.length) {
           const env = { ...rEnvNow, minYieldPct: pEnvNow.minSeatYieldPct };

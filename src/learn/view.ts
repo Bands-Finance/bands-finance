@@ -1,8 +1,17 @@
 /**
- * ONE VIEW, four surfaces. /api/status, the "what he learned" panel on mrbands.finance, the free
- * bands_lessons MCP tool and `npm run learning` all read LearnedView and nothing else, so they can never
- * disagree with each other or with the files. LearnedView is the only symbol this package shares with
- * the desk branch and the surface branch.
+ * ONE VIEW, TWO BUILDERS, and which is which said plainly, because a header that claims more than the
+ * code does is worse than none. `npm run learning` (src/scripts/learning-report.ts) reads THIS view.
+ * /api/status, the "what he learned" panel on mrbands.finance and the free bands_lessons MCP tool read
+ * readLearnedView in src/status.ts, which renders the same files into src/learn/surface.ts's shape for
+ * a surface that wants the factor, its sample and the journal row without the report's arithmetic.
+ *
+ * They read the SAME files and must agree on every number they both carry, which is enforced rather
+ * than assumed: both drop ask bands (a closed seat's token being worked off over the price is not a
+ * seat the desk chose), both score a seat with forecastOf (the entry forecast first, the seat check as
+ * the fallback), and both read the drift-free net by the names lessonOf writes. They used to disagree:
+ * this one said "55 closed seats on record" where the site said "How his 59 seats ended", and the gap
+ * was the four ask bands. src/scripts/test-learn-surface.ts holds them to each other on the same dir.
+ * LearnedView (the surface one) is the only symbol this package shares with the desk branch.
  *
  * It is a READ. It never learns, never writes and never decides: it says what is in force, what bought
  * it, what has not got there yet, and whether learning is frozen. The honest caveats travel with the

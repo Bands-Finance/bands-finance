@@ -21,6 +21,7 @@
  * Everything here is pure, and the window decays: as the 48 hours empty the multiple walks back to 1.0
  * and the extra sit-out to zero on its own, with no second decision.
  */
+import { endedBadly } from "../desk/learning";
 import type { Lesson } from "./lessons";
 
 const num = (v: string | undefined, d: number): number => {
@@ -52,8 +53,18 @@ export function poolMemoryEnv(env: NodeJS.ProcessEnv = process.env): PoolMemoryE
   };
 }
 
-/** PURE. A seat the price went DOWN through, or the stop took: the side that never came back. */
-export const downExit = (l: Lesson): boolean => l.endReason === "through-band" || l.endReason === "stop";
+/**
+ * PURE. A seat the price went DOWN through, or the stop took: the side that never came back.
+ *
+ * A stop is taken on MARKET VALUE in SOL, so a USDC-quoted seat is stopped when SOL moves under it
+ * even with the price above the band. That is the drift reading the money through the back door,
+ * which is exactly what this header says the end side cannot fake, so it is taken out by the
+ * decomposition the lesson already carries: the seat's own net up and the quote's move down. AMD/USDC
+ * on 2026-09-18 is the case (97.3% of its life in range, netSolExDrift +0.332, quoteDriftSol -6.346),
+ * and it was the single winner inside the paper book's "ended down" row. A row carrying no
+ * decomposition is still counted down: the correction only ever counts LESS against a pool.
+ */
+export const downExit = (l: Lesson): boolean => endedBadly(l);
 
 export interface PoolPenalty {
   pool: string;

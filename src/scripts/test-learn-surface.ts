@@ -23,6 +23,9 @@ import path from "node:path";
 
 import { LEARNED_BUDGET_CHARS, formatLearned } from "../agent/observation";
 import { emptyLearnedView, type LearnedChange, type LearnedView } from "../learn/surface";
+import { lessonOf } from "../learn/lessons";
+import { clearLearnedCache, learnedView } from "../learn/view";
+import type { LedgerRow } from "../engine/ledger";
 import { forecastRatio, learnFrozen, readLearnedView } from "../status";
 
 type Runner = (name: string, fn: () => void | Promise<void>) => Promise<void>;
@@ -202,6 +205,109 @@ export async function runLearnSurfaceTests(test: Runner): Promise<void> {
     assert.deepEqual(learnFrozen({ LEARN_FROZEN: "true" } as NodeJS.ProcessEnv), { all: true, calibration: true, pools: true }, "the master switch freezes every knob");
   });
 
+  await test("THE DECOMPOSITION SURVIVES A REAL LESSON ROW: what lessonOf() writes is what every surface reads", () => {
+    // Not a hand-written fixture. The row is produced by lessonOf() from a ledger, the way the desk
+    // produces one, because the surfaces used to declare `netExDriftSol` and `driftSol` where the
+    // writer writes `netSolExDrift` and `quoteDriftSol`: the decomposition was ALWAYS null and his
+    // observation, the site and bands_lessons printed netSol alone, the one number every header in
+    // the package says must never be read alone. The test passed only because its fixture carried the
+    // wrong name too. This is AMD/USDC, 2026-09-18, to scale: stopped on market value in SOL with the
+    // price above the band, the quote down under it and the seat itself up.
+    const at = T0 - 2 * H;
+    const mark = (q: number) => ({ quoteMint: "USDC", markQuoteInSol: q });
+    const ledger: LedgerRow[] = [
+      { ts: at - 45 * 60_000, mode: "dry-run", sig: null, pool: POOL, position: "paper-AMD-1", mech: "open", solDelta: -30, tokenDelta: -0, tokenMint: "AMDx", markTokenInSol: 0.05, rentSol: -0.05, txFeeSol: -0.000005, basis: "exact", note: "", ...mark(0.006) },
+      { ts: at - 20 * 60_000, mode: "dry-run", sig: null, pool: POOL, position: "paper-AMD-1", mech: "collect", solDelta: 0.3, feeSol: 0.3, tokenDelta: 0, tokenMint: "AMDx", markTokenInSol: 0.05, rentSol: 0, txFeeSol: -0.000005, basis: "exact", note: "", ...mark(0.0055) },
+      { ts: at, mode: "dry-run", sig: null, pool: POOL, position: "paper-AMD-1", mech: "close", solDelta: 24, feeSol: 0.05, tokenDelta: 0, tokenMint: "AMDx", markTokenInSol: 0.05, rentSol: 0.05, txFeeSol: -0.000005, basis: "exact", note: "", ...mark(0.005) },
+    ];
+    const real = lessonOf({
+      meta: { pool: POOL, label: "AMD/USDC", kind: "memecoin", openedAt: at - 45 * 60_000, seatSol: 30, bins: 41, binStep: 20, coverPct: 2, travelBins60m: null, predictedYieldPct: 18 },
+      position: "paper-AMD-1", stats: { cycles: 37, inRange: 36 }, rows: ledger, closedAt: at, endReason: "stop", headline: "Stopped.", mode: "paper",
+    });
+    assert.ok(typeof real.quoteDriftSol === "number" && real.quoteDriftSol < 0, "the ledger says the quote moved down under the seat");
+    assert.ok(real.netSol < 0 && (real.netSolExDrift as number) > real.netSol, "so netSol reads worse than the seat itself did");
+    const dir = fixture([real as unknown as Record<string, unknown>], []);
+    const v = readLearnedView({ dir, mode: "paper", pool: { address: POOL }, now: T0 });
+    const seat = v.seats[0];
+    assert.equal(seat.netExDriftSol, real.netSolExDrift, "the surface reads the writer's own field, not a name nothing writes");
+    assert.equal(seat.quoteDriftSol, real.quoteDriftSol, "and carries the drift itself, so a reader can check the subtraction");
+    assert.notEqual(seat.netExDriftSol, seat.netSol, "which is the whole point: the two numbers are different");
+    const block = formatLearned(v);
+    assert.ok(block.includes("ex-drift"), block);
+    assert.ok(block.includes(`${(real.netSolExDrift as number) >= 0 ? "+" : "-"}${Math.abs(real.netSolExDrift as number).toFixed(3)} ex-drift`), `the block shows him the seat's own money:\n${block}`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await test("A MOVED KNOB PRINTS THE NUMBER IN FORCE, whatever its sample reads today", () => {
+    // the normal path on the paper book: every row carries entryYieldPct and no predictedYieldPct,
+    // and the desk has already journalled a move off them. The page used to read a different, smaller
+    // sample than the knob it was describing, so underSample won and both surfaces said "x0.50, the
+    // shipped default ... so it has not moved" with the row that moved it listed two lines below.
+    const seats = Array.from({ length: 24 }, (_, i) => lesson({ at: T0 - i * H, position: `paper-D5ozar-${i}`, predictedYieldPct: null, entryYieldPct: 10, realizedYieldPctPerDay: 4 }));
+    const dir = fixture(seats, [change({ n: 24 })]);
+    const v = readLearnedView({ dir, mode: "paper", now: T0 + H });
+    const f = v.factors.find((x) => x.knob === "calibration" && x.lane === "memecoin")!;
+    assert.equal(f.n, 24, "the surface counts the seats the desk scores: the entry forecast first");
+    assert.equal(f.underSample, false);
+    assert.equal(f.factor, 0.45);
+    const block = formatLearned(v);
+    const memeLine = block.split("\n").find((l) => l.startsWith("- memecoin forecast factor"))!;
+    assert.ok(memeLine.includes("x0.45, in force now"), memeLine);
+    assert.ok(!memeLine.includes("has not moved"), `a journalled knob is never printed as unmoved: ${memeLine}`);
+    // the stock lane, which nothing has moved, still says so: this is per knob, not a blanket
+    assert.ok(block.split("\n").find((l) => l.startsWith("- stock forecast factor"))!.includes("has not moved"));
+    assert.ok(!block.includes("no closed seat has scored your entry forecast yet"), block);
+    assert.ok(block.includes("median 0.40"), `his entry forecast is scored against what it realised:\n${block}`);
+    // and a knob that moved and then lost its sample still prints what the desk is pricing at
+    const thin = readLearnedView({ dir, mode: "paper", now: T0 + H, env: { LEARN_CAL_MIN_N: "500" } as NodeJS.ProcessEnv });
+    const tf = thin.factors.find((x) => x.knob === "calibration" && x.lane === "memecoin")!;
+    assert.equal(tf.underSample, true);
+    assert.equal(tf.factor, 0.45, "the desk is pricing at 0.45 either way, so that is the number he is shown");
+    assert.ok(formatLearned(thin).includes("x0.45, in force now on 24 scored seat(s)"), formatLearned(thin));
+    assert.ok(formatLearned(thin).includes("under the 500 a fresh move needs"), "with the honest caveat beside it");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await test("THE TWO BUILDERS AGREE on the same dir: ask bands are nobody's seats", () => {
+    const seats = [
+      ...Array.from({ length: 24 }, (_, i) => lesson({ at: T0 - i * H, position: `paper-D5ozar-${i}`, realizedYieldPctPerDay: 6 })),
+      ...Array.from({ length: 4 }, (_, i) => lesson({ at: T0 - (i + 30) * H, position: `paper-ask-${i}`, ask: true, endReason: "sold", realizedYieldPctPerDay: 99 })),
+    ];
+    const dir = fixture(seats, []);
+    const surface = readLearnedView({ dir, mode: "paper", now: T0 + H });
+    clearLearnedCache();
+    const report = learnedView(dir, "paper", undefined, {} as NodeJS.ProcessEnv, T0 + H);
+    assert.equal(surface.lessons.total, 24, "an ask band is a closed seat's token being worked off, not a seat he chose");
+    assert.equal(surface.lessons.total, report.lessonsTotal, "and the site and `npm run learning` count the same book");
+    assert.equal(surface.lessons.byEndReason.sold, undefined, "the end-reason tally drops them too");
+    assert.equal(surface.lessons.ratio!.n, report.ratio.n, "and both score the same seats");
+    clearLearnedCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await test("HIS OBSERVATION ACTUALLY CARRIES THE BLOCK: the desk loop sets `learned`, and it renders off disk", () => {
+    // The field was declared, rendered and tested for a week while NOTHING in production set it, so
+    // every surface but his own context window could see what a seat earned. The block is the only
+    // outcome he is ever shown; without it there is no path from a closed seat to a better decision.
+    const dir = fixture(scoredSeats(), [change()]);
+    // exactly the options src/index.ts learnedFor() passes, against a book on disk
+    const v = readLearnedView({ dir, mode: "paper", modelOn: false, pool: { address: POOL, label: "wXMR/SOL" }, now: T0 + H });
+    const block = formatLearned(v);
+    assert.ok(block.startsWith("## What you have learned"));
+    assert.ok(block.includes("closed seat(s) in wXMR/SOL"), "built for the pool he is deciding about");
+    assert.ok(block.includes("forecast factor"), "with the knob in force");
+    // formatObservation prints it wherever it is set, which is the second half of the path
+    const rendered = formatLearned(v, LEARNED_BUDGET_CHARS);
+    assert.ok(rendered.length <= LEARNED_BUDGET_CHARS);
+    // and the desk is what sets it. src/index.ts runs main() on import, so the loop itself cannot be
+    // imported into a test: this reads the wiring where it is written instead of asserting nothing.
+    const src = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+    assert.match(src, /learned: learnedFor\(o\.address, snapshot\.label\),/, "the Observation the desk builds carries it");
+    assert.match(src, /pool: \{ address, label \},/, "for the pool it is deciding about, not the whole book");
+    assert.match(src, /modelOn: openHermitAvailable\(\) && deciderOf\(\) === "openhermit",/, "and says plainly whether he reasoned any of it");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   await test("his observation: the learned block stays inside its character budget", () => {
     const dir = fixture(scoredSeats(), [change()]);
     const v = readLearnedView({ dir, mode: "paper", pool: { address: POOL }, now: T0 + H });
@@ -228,7 +334,9 @@ export async function runLearnSurfaceTests(test: Runner): Promise<void> {
       feesSol: 0.186098,
       netSol: -0.188083,
       netExDriftSol: 0.0332,
+      quoteDriftSol: -0.2213,
       predictedYieldPct: 18.4,
+      entryYieldPct: 18.4,
       realizedYieldPctPerDay: 7.16,
     }));
     const tight = formatLearned(v, 700);

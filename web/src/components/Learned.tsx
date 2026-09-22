@@ -164,19 +164,23 @@ export function Learned({ view }: LearnedProps = {}) {
             <h3 className="learned__knob-title">
               {KNOB_WORDS[f.knob] ?? f.knob} <span className="learned__lane">{f.label}</span>
             </h3>
-            <div className={`learned__factor${f.underSample || f.lastMovedAt === null ? " learned__factor--default" : ""}`}>{x(f.underSample ? f.defaultFactor : f.factor)}</div>
+            {/* a knob that was journalled prints the number IN FORCE, whatever its sample reads today: the
+                desk is pricing at it either way, and "it has not moved" beside the row that moved it is
+                the one thing the journal exists to prevent. The default shows only while nothing moved. */}
+            <div className={`learned__factor${f.lastMovedAt === null ? " learned__factor--default" : ""}`}>{x(f.lastMovedAt === null ? f.defaultFactor : f.factor)}</div>
             <p className="learned__knob-why">
-              {f.underSample ? (
+              {f.lastMovedAt !== null ? (
+                <>
+                  In force on <strong>{f.n}</strong> scored seat{f.n === 1 ? "" : "s"}, last moved {day(f.lastMovedAt)}
+                  {f.underSample ? <>, which is under the {f.minSample} a fresh move needs, so it stands where it was left</> : null}. {f.why}
+                </>
+              ) : f.underSample ? (
                 <>
                   Not enough seats yet: <strong>{f.n}</strong> of the <strong>{f.minSample}</strong> it needs, so the shipped {x(f.defaultFactor)} stands.
                 </>
-              ) : f.lastMovedAt === null ? (
-                <>
-                  <strong>{f.n}</strong> seats say it may move, and it has not moved yet: the shipped {x(f.defaultFactor)} stands.
-                </>
               ) : (
                 <>
-                  On <strong>{f.n}</strong> seats, last moved {day(f.lastMovedAt)}. {f.why}
+                  <strong>{f.n}</strong> seats say it may move, and it has not moved yet: the shipped {x(f.defaultFactor)} stands.
                 </>
               )}
               {f.frozen && <span className="learned__frozen"> frozen</span>}

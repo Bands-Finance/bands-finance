@@ -242,10 +242,21 @@ async function runLearners(): Promise<void> {
     const env = calEnv({});
     assert.deepEqual([env.base, env.min, env.max, env.step, env.minSample, env.paceSeed], [0.5, 0.1, 0.5, 0.05, 20, PACE_SEED_1719_SEP]);
     // a book that never left the band and always paid what was forecast: the ceiling, which is today's number
-    const perfect = Array.from({ length: 25 }, (_, i) => LES({ at: NOW - i * H, inRangePct: 100, predictedYieldPct: 100, realizedYieldPctPerDay: 100, entryYieldFactor: 0.5 }));
+    const perfect = Array.from({ length: 25 }, (_, i) => LES({ at: NOW - i * H, inRangePct: 100, entryYieldPct: 100, predictedYieldPct: 100, realizedYieldPctPerDay: 100, entryYieldFactor: 0.5 }));
     const c = calibrationFrom(perfect, env, NOW, "live");
     assert.deepEqual([c.memecoin.inRangeFactor, c.memecoin.paceFactor, c.memecoin.combined], [1, 0.5, 0.5], "GOLDEN: a perfect forecast reproduces the shipped 0.5 exactly");
     assert.equal(c.memecoin.weak, false);
+    // THE FOOTING, the same one the desk's own learner uses (src/desk/learning.ts forecastOf): an ENTRY
+    // forecast carries the share of face in force when it was made; a SEAT CHECK takes the pool's pace
+    // whole, so its factor is 1. This module used to score both at the shipped 0.5, which halves the
+    // pace half: the published second opinion came out about 2x low and disagreed with the desk's own
+    // target on the same book by exactly that factor.
+    const seatCheck = perfect.map((l) => ({ ...l, entryYieldPct: null, entryYieldFactor: null }));
+    assert.equal(calibrationFrom(seatCheck, env, NOW, "live").memecoin.paceFactor, 1, "a seat check that was paid in full says the seat captured the pool's whole pace");
+    const half = perfect.map((l) => ({ ...l, entryYieldPct: null, entryYieldFactor: null, realizedYieldPctPerDay: 50 }));
+    near(calibrationFrom(half, env, NOW, "live").memecoin.paceFactor, 0.5, 1e-9, "and one paid half of it says half");
+    // the 39 priced seats of the 17-19 Sep real-money run, read on that footing, are the seed
+    assert.equal(PACE_SEED_1719_SEP, 0.66, "the seed is the median read at factor 1: 0.658, not the 0.329 it reads at 0.5");
     // a book that spent half its life out of range and paid a third of the forecast while in it
     const poor = Array.from({ length: 25 }, (_, i) => LES({ at: NOW - i * H, inRangePct: 50, predictedYieldPct: 120, realizedYieldPctPerDay: 20, entryYieldFactor: 0.5 }));
     const p = calibrationFrom(poor, env, NOW, "live");

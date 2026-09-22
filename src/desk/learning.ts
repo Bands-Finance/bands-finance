@@ -29,8 +29,10 @@
  *   BOUNDED STEP    one step per knob per cycle (calibration LEARN_CAL_STEP, penalty one rung), and
  *                   LEARN_MIN_GAP_H between two changes of the same knob.
  *   DECAY           the calibration is a weighted median over LEARN_CAL_WINDOW_H with a 7-day
- *                   half-life; the penalty reads a LEARN_POOL_WINDOW_H window. Old evidence stops
- *                   voting on its own.
+ *                   half-life; the penalty reads a LEARN_POOL_WINDOW_H window and, when that window
+ *                   holds no down exit any more, steps BACK toward 1.0 one journalled rung at a time
+ *                   until the pool is whole and its row is dropped. Old evidence stops voting on its
+ *                   own, in both directions, and one event buys one rung, never a second after the gap.
  *   JOURNAL         every change is one row in DATA_DIR/learning.jsonl with the evidence sentence
  *                   the site and the API print verbatim. Nothing changes without a row.
  *   FREEZE          learningFrozen(): LEARN_FROZEN is frozen on the literal "true" and nothing else.
@@ -198,6 +200,27 @@ export const sitOutMinFor = (state: LearningState | null, pool: string): number 
   return p && Number.isFinite(p.sitOutMin) ? Math.max(0, p.sitOutMin) : 0;
 };
 
+/* ---------- the wiring, so the desk's own expression is what the tests read ---------- */
+
+/**
+ * PURE. THE SEAT A POOL MAY TAKE: the human cap, the engine's own bench/regime multiple, and the
+ * learned penalty, in that order. The penalty is <= 1 always (penaltyFor clamps it), so this is at or
+ * under MAX_POSITION_SOL x the engine's multiple and can never be above it. Exported because the test
+ * used to assert this expression against a retyped copy of itself, which would have passed with the
+ * penalty dropped from src/index.ts altogether: the half of the loop that moves a size was the half
+ * with nothing closed end to end.
+ */
+export const seatCapSol = (maxPositionSol: number, sizeMultiplier: number, state: LearningState | null, pool: string): number =>
+  maxPositionSol * sizeMultiplier * Math.min(1, penaltyFor(state, pool));
+
+/**
+ * PURE. THE WAIT A POOL MUST SERVE before he sits down in it again: the configured minimum, or the
+ * learned one when it is longer. Never shorter, so a learner can stretch a human's wait and never cut
+ * one, and a pool nothing was learned about keeps exactly the configured minutes.
+ */
+export const reentryMinFor = (configuredMin: number, state: LearningState | null, pool: string): number =>
+  Math.max(configuredMin, sitOutMinFor(state, pool));
+
 /* ---------- the evidence ---------- */
 
 /** What a learner reads off a lesson. Never netSol: the drift sits inside it. */
@@ -215,16 +238,35 @@ export interface LessonLike {
   entryYieldPct?: number | null;
   /** the share of face that forecast already carried; absent means the seat check's, which takes face whole */
   entryYieldFactor?: number | null;
+  /** the quote token's own move against SOL over the seat's life, SOL; null for a SOL-quoted seat */
+  quoteDriftSol?: number | null;
+  /** the seat's net with that drift taken out: what the seat itself did */
+  netSolExDrift?: number | null;
   ask?: boolean;
 }
 
 const laneOfKind = (kind: string): Lane => (kind === "stock" ? "stock" : kind === "other" ? "other" : "memecoin");
 
+/**
+ * PURE. THE LANE a pool's seat belongs to, from the two facts that decide it. Spelled once because it
+ * used to be spelled three ways: the lesson's `kind` and src/agent/policy.ts laneOf each had three
+ * lanes, while the seat check had `screen.stock ? "stock" : "memecoin"`, which has no "other" lane at
+ * all. So a pair pool was priced at the memecoin factor and its close taught the "other" lane, whose
+ * factor the seat check could never apply, and a stock pool held by a basis row but absent from the
+ * screen was priced as a memecoin and taught the stock lane. A knob can only learn from seats it was
+ * used on.
+ */
+export const laneOf = (f: { stock: boolean; pair: boolean }): Lane => (f.stock ? "stock" : f.pair ? "other" : "memecoin");
+
 /** PURE. The forecast a lesson is scored against, and the share of face it already carried. */
 export function forecastOf(l: LessonLike): { forecast: number; factor: number } | null {
   const entry = typeof l.entryYieldPct === "number" && l.entryYieldPct > 0 ? l.entryYieldPct : null;
   if (entry !== null) return { forecast: entry, factor: typeof l.entryYieldFactor === "number" && l.entryYieldFactor > 0 ? l.entryYieldFactor : FEE_SHARE_DEFAULT };
-  // the seat check's reading (src/screener/seatYield.ts) takes the pool's fee pace whole: factor 1
+  // The seat check's reading (src/screener/seatYield.ts) takes the pool's fee pace whole: factor 1.
+  // src/index.ts stores that FACE figure in predictedYieldPct and applies the lane's factor only where
+  // the number meets a floor, so this footing is true rather than assumed. Storing the calibrated
+  // figure instead would feed the knob its own output: with a lane at 0.4 the ratio reads 1.25x high
+  // and the factor settles on sqrt(0.5 x truth) rather than the truth.
   const seen = typeof l.predictedYieldPct === "number" && l.predictedYieldPct > 0 ? l.predictedYieldPct : null;
   return seen === null ? null : { forecast: seen, factor: 1 };
 }
@@ -322,8 +364,32 @@ export function stepRung(from: number, down: boolean): number {
   return PENALTY_RUNGS[next];
 }
 
-/** A seat that ended on the DOWN side: through the bottom of the band, or on the stop. */
-export const endedBadly = (endReason: string): boolean => endReason === "through-band" || endReason === "stop";
+/**
+ * PURE. A stop the QUOTE TOKEN took, not the price: a seat booked in SOL but quoted in something else
+ * is stopped on market value, so SOL moving under it reads as a loss the seat never made. AMD/USDC on
+ * 2026-09-18 stopped at -6.014 SOL of which -6.346 was this, the seat itself +0.332 and the price 48
+ * bins ABOVE the band. The end reason cannot tell those apart on its own, so the decomposition the
+ * lesson already carries does, and only in the direction that counts LESS against a pool: a row with no
+ * decomposition is still the down side.
+ */
+export const driftStop = (l: Pick<LessonLike, "endReason" | "quoteDriftSol" | "netSolExDrift">): boolean =>
+  l.endReason === "stop" && typeof l.quoteDriftSol === "number" && l.quoteDriftSol < 0 && typeof l.netSolExDrift === "number" && l.netSolExDrift > 0;
+
+/** A seat that ended on the DOWN side: through the bottom of the band, or on a stop the price took. */
+export const endedBadly = (l: Pick<LessonLike, "endReason" | "quoteDriftSol" | "netSolExDrift">): boolean =>
+  l.endReason === "through-band" || (l.endReason === "stop" && !driftStop(l));
+
+/**
+ * PURE. A pool label safe to journal and to replay. A label is built from on-chain token symbols
+ * (src/tools/dlmm.ts), which whoever made the pool chose, and a penalty's `why` is stored once and then
+ * printed verbatim into his observation and onto his public page for as long as it stands. Newlines and
+ * markdown headings out (a heading would be text in his own context window), "@" out (a journalled
+ * handle must never read as a mention on his page), and a length cap.
+ */
+export const safeLabel = (label: string | undefined | null): string => {
+  const s = (label ?? "").replace(/[^\w./+-]/g, "").slice(0, 24);
+  return s === "" ? "that pool" : s;
+};
 
 /**
  * PURE. The pool penalties the recent lessons argue for: at most one rung per pool per cycle, never
@@ -331,6 +397,23 @@ export const endedBadly = (endReason: string): boolean => endReason === "through
  * closed seats went through the band or hit the stop; back up one rung when none of them did. The
  * sit-out follows the rung and is capped at `sitOutMaxMultiple` times the configured re-entry
  * minimum, so a learner can stretch a wait but never turn it into a bench.
+ *
+ * TWO RULES THAT MAKE THE WINDOW MEAN WHAT THE HEADER SAYS, both learned the hard way on the real
+ * backfilled paper book:
+ *
+ *   NEW EVIDENCE BUYS EACH STEP DOWN. A minimum sample and a minimum gap are not enough: with the
+ *   same three bad closes sitting in the window, the pool took another rung every LEARN_MIN_GAP_H
+ *   until it hit the floor. Replaying the book gave baton/SOL 1 -> 0.75 -> 0.5 -> 0.25 in twelve
+ *   hours on three journal rows with a byte-identical `why` and not one seat closed between them.
+ *   So a step down needs a down exit NEWER than the change it is stepping from: one event, one rung.
+ *
+ *   THE WINDOW EMPTYING WALKS IT BACK. The penalised pool takes a quarter seat and sits out four
+ *   times as long, so it closes fewer seats, so it used to have no way of ever earning its rung back:
+ *   a ratchet. A pool under the minimum sample with no down exit left in the window now steps back up
+ *   one rung per cycle, journalled like any other change, until it is whole again and its row is
+ *   dropped from the state. That is what "old evidence stops voting on its own" has to mean when the
+ *   number is stored rather than recomputed, and it is also what keeps the state from growing one
+ *   entry per pool ever penalised.
  */
 export function poolPenaltyChanges(lessons: readonly LessonLike[], mode: string, state: LearningState, env: LearnEnv, now: number, reentryMin: number): LearningChange[] {
   const since = now - env.poolWindowH * 3_600_000;
@@ -343,18 +426,43 @@ export function poolPenaltyChanges(lessons: readonly LessonLike[], mode: string,
     (byPool.get(l.pool) ?? byPool.set(l.pool, []).get(l.pool)!).push(l);
   }
   const out: LearningChange[] = [];
-  for (const [pool, rows] of byPool) {
-    if (rows.length < env.poolMinN) continue;
+  // every pool the window holds, plus every pool carrying a penalty: a pool that stopped being picked
+  // has an empty window, and its stored rung is exactly the one that has to walk back
+  for (const pool of new Set<string>([...byPool.keys(), ...Object.keys(state.pools ?? {})])) {
+    const rows = byPool.get(pool) ?? [];
     const cur = state.pools[pool];
     if (cur && now - cur.at < env.minGapMs) continue;
     const from = cur ? cur.penalty : 1;
-    const bad = rows.filter((r) => endedBadly(r.endReason));
+    const bad = rows.filter(endedBadly);
+    const label = safeLabel(rows.length ? rows[rows.length - 1].label : cur?.label);
+    const windowH = env.poolWindowH;
+    if (rows.length < env.poolMinN) {
+      // under the sample nothing may be learned; but a rung already taken is only held up by evidence
+      if (from >= 1) continue;
+      if (bad.length > 0) continue; // the window still holds a down exit: the penalty stands
+      const to = stepRung(from, false);
+      if (to === from) continue;
+      out.push({
+        at: now,
+        mode,
+        knob: "pool-penalty",
+        pool,
+        label,
+        from,
+        to,
+        n: rows.length,
+        windowH,
+        why: `no seat of mine in ${label} has gone through the band or hit the stop in ${windowH}h (${rows.length} closed there in that time), so the evidence that shrank my seat has aged out and I give the pool back a rung`,
+      });
+      continue;
+    }
     const down = bad.length > env.poolBadShare * rows.length;
     if (!down && bad.length > 0) continue; // mixed: nothing argued either way
     if (!down && from >= 1) continue; // already whole
+    // one event, one rung: the same closes must not buy a second step down after the gap
+    if (down && cur && !bad.some((b) => b.at > cur.at)) continue;
     const to = stepRung(from, down);
     if (to === from) continue;
-    const label = rows[rows.length - 1].label;
     out.push({
       at: now,
       mode,
@@ -364,7 +472,7 @@ export function poolPenaltyChanges(lessons: readonly LessonLike[], mode: string,
       from,
       to,
       n: rows.length,
-      windowH: env.poolWindowH,
+      windowH,
       why: down
         ? `${bad.length} of my last ${rows.length} seats in ${label} ended on the down side (${bad.map((b) => `${b.endReason} after ${Math.round(b.minutes)} min`).join(", ")}), so I take a smaller seat there and wait longer before going back`
         : `my last ${rows.length} seats in ${label} all ended without going through the band or hitting the stop, so I give the pool back a rung of its size`,
@@ -373,15 +481,24 @@ export function poolPenaltyChanges(lessons: readonly LessonLike[], mode: string,
   return out;
 }
 
-/** PURE. The state with one change applied. The penalty's sit-out follows its rung. */
+/**
+ * PURE. The state with one change applied. The penalty's sit-out follows its rung, and a pool walked
+ * all the way back to full size loses its row: nothing is learned about it any more, and the state
+ * cannot grow one entry per pool ever penalised.
+ */
 export function applyChange(state: LearningState, c: LearningChange, env: LearnEnv, reentryMin: number): LearningState {
   if (c.knob === "calibration" && c.lane) {
     return { ...state, calibration: { ...state.calibration, [c.lane]: { lane: c.lane, factor: c.to, n: c.n, at: c.at, why: c.why } }, updatedAt: c.at };
   }
   if (c.knob === "pool-penalty" && c.pool) {
+    if (c.to >= 1) {
+      const pools = { ...state.pools };
+      delete pools[c.pool];
+      return { ...state, pools, updatedAt: c.at };
+    }
     const rung = PENALTY_RUNGS.findIndex((r) => Math.abs(r - c.to) < 1e-9);
     const multiple = Math.min(env.sitOutMaxMultiple, 1 + Math.max(0, rung));
-    return { ...state, pools: { ...state.pools, [c.pool]: { pool: c.pool, label: c.label ?? c.pool, penalty: c.to, sitOutMin: Math.round(Math.max(0, reentryMin) * multiple), n: c.n, at: c.at, why: c.why } }, updatedAt: c.at };
+    return { ...state, pools: { ...state.pools, [c.pool]: { pool: c.pool, label: safeLabel(c.label ?? c.pool), penalty: c.to, sitOutMin: Math.round(Math.max(0, reentryMin) * multiple), n: c.n, at: c.at, why: c.why } }, updatedAt: c.at };
   }
   return state;
 }
@@ -461,10 +578,15 @@ export const clearLearningCache = (): void => {
  * desk's own DATA_DIR, deliberately: the width tuner sat dark for a week because TUNING_FILE was
  * unset in the service and nothing said so. The honest off switch is LEARN_FROZEN=true, which is
  * loud, per-knob and printed in the boot banner; an unset variable is not an off switch.
- * LEARN_FILE overrides the state path for a rehearsal or a scratch run.
+ * LEARN_FILE overrides the state path for a rehearsal or a scratch run, and THE JOURNAL FOLLOWS IT.
+ * It used to redirect the state alone, so a rehearsal kept appending its rows to the live book's
+ * learning.jsonl, which /api/status, web/public/learned.json and the free bands_lessons tool all print
+ * verbatim: a scratch run would have published changes into his public record. An override is a whole
+ * book or it is nothing.
  */
 export function learnFiles(dataDir: string, mode: string, env: NodeJS.ProcessEnv = process.env): { state: string; log: string; mode: string } {
   const override = (env.LEARN_FILE ?? "").trim();
   const dir = dataDir.replace(/\/+$/, "");
-  return { state: override || `${dir}/${LEARNING_FILE}`, log: `${dir}/${LEARNING_LOG}`, mode };
+  if (!override) return { state: `${dir}/${LEARNING_FILE}`, log: `${dir}/${LEARNING_LOG}`, mode };
+  return { state: override, log: `${override.replace(/\.json$/i, "")}.jsonl`, mode };
 }

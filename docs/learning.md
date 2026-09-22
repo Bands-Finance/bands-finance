@@ -110,9 +110,21 @@ with 29 winners. Seats that went DOWN through the band or hit the stop lost 2.40
 | 1 | 0.5 | 2x the base, capped |
 | 2 or more | 0.25 | 4x the base, capped at 240 min |
 
-Minimum sample 3 closed seats in that pool and mode (`LEARN_POOL_MIN_SEATS`). The window decays: as the
-48 hours empty, the multiple walks back to 1.0 and the extra sit-out to zero with no second decision.
-Freeze with `LEARN_FROZEN_POOLS=true`.
+Minimum sample 3 closed seats in that pool and mode (`LEARN_POOL_MIN_SEATS`).
+
+**One event, one rung.** A minimum sample and a minimum gap are not enough on their own: with the same
+three bad closes still sitting in the window, the pool took another rung every `LEARN_MIN_GAP_H` until
+it hit the floor. Replaying the real backfilled paper book gave baton/SOL 1 -> 0.75 -> 0.5 -> 0.25 in
+twelve hours on three journal rows with a byte-identical evidence sentence and not one seat closed
+between them. A step DOWN now needs a down exit newer than the change it is stepping from.
+
+**The window decays, and the acting learner decays with it.** As the 48 hours empty the multiple walks
+back to 1.0 and the extra sit-out to zero, one journalled rung per cycle, and the pool's row is dropped
+from `learning.json` once it is whole. This is not free: the acting learner STORES a rung rather than
+recomputing it, and a penalised pool takes a quarter seat and sits out four times as long, so it closes
+fewer seats, so it used to have no way of earning its rung back at all. That is a ratchet, not a decay,
+and it left baton/SOL at x0.25 with a 240 min sit-out learned from a window that had emptied days
+earlier. Freeze with `LEARN_FROZEN_POOLS=true`.
 
 ### 3. The freeze switch (`src/learn/freeze.ts`)
 
@@ -165,7 +177,7 @@ may be dropped or softened.
 2. **Paper fees are modelled.** A paper seat's fees come out of the same formula as the forecast
    (`src/paper/mark.ts` `accrueFees`: pool pace x share x 0.5). A paper pace factor would score the
    screen against itself and read 1.0 by construction. So in the second opinion the pace half is the seed
-   measured on the 17-19 Sep real-money run (`LEARN_PACE_SEED`, default 0.33) and never moves; only the
+   measured on the 17-19 Sep real-money run (`LEARN_PACE_SEED`, default 0.66) and never moves; only the
    in-range half reads anything, because where the price went is a fact the paper book did not invent.
    The learner that acts does not use either half: it waits for a seat he priced at the open and then
    scored at the close, which is why the paper book moves nothing today. See caveat 8.
@@ -175,10 +187,22 @@ may be dropped or softened.
 4. **The calibration fixes the level, not the ordering.** It scales every pool's forecast by the same
    number. It does not learn which pool is better than which. If the screen ranks the wrong pool first,
    a calibrated desk will still seat it, just smaller or not at all.
-5. **The calibration under-corrects on purpose.** The factor in force at the open is part of the
-   arithmetic (`entryYieldFactor`), which makes the loop converge instead of ringing between 0.5 and
-   0.39 for ever. A lesson written before that stamp existed is read at the shipped 0.5, which is the
-   conservative assumption.
+5. **The calibration is never fed its own output.** A ratio of realised to forecast only says what the
+   right factor is once it is read against the factor that MADE the forecast, or the loop rings instead
+   of converging. There are two forecasts and they are on two footings, spelled once in
+   `forecastOf` (`src/desk/learning.ts`) and matched by `src/learn/calibration.ts`:
+   - the **entry** forecast carries `entryYieldFactor`, the share of face in force when it was made;
+   - the **seat check** takes the pool's face pace whole, so its factor is 1, and `src/index.ts` stores
+     the FACE reading in `predictedYieldPct` for exactly that reason. It applies the lane's factor only
+     where the number meets a floor (the fade line and the seat ranking). Storing the calibrated figure
+     fed the knob its own output: simulated over 60 cycles on a seat truly earning 0.20 of face, the
+     factor walked 0.45 0.40 0.35 0.30 and then rang between 0.30 and 0.33 for ever, settling on
+     sqrt(0.5 x truth) = 0.316 rather than the truth.
+
+   The seat check's number is calibrated on BOTH sides of any comparison or on neither. Held seats used
+   to enter the seat ranking calibrated while the candidates they were measured against were read at
+   face, so every held seat read 1/cal too low, the rotation bar fell with it and the desk rotated out
+   of seats it would have kept, paying rent and swap fees for no change in the world.
 6. **Band width is NOT learnable on this evidence.** The width tuner stays in the tree and stays off.
    Nothing in either book separates a good width from a bad one. If that changes, the evidence will be
    in `npm run learning` before the knob moves. It is also the one learned number in the tree with no
@@ -189,6 +213,15 @@ may be dropped or softened.
    AMD/USDC stopped at -6.014 SOL, of which -6.346 was drift: the seat itself was **+0.332** and the
    price was 48 bins ABOVE the band when the stop fired. The learners key on the end side and on the
    yield ratio. The drift is decomposed onto the lesson and shown, never learned from.
+
+   The end side is not quite free of it either, and that is handled rather than ignored: a stop is taken
+   on market value in SOL, so a USDC-quoted seat can be stopped by SOL moving under it with the price
+   above the band. A stop counts as a DOWN exit unless the lesson's own decomposition says the quote
+   took it and the seat itself was up (`driftStop`, `src/desk/learning.ts`). A row carrying no
+   decomposition is still counted down: the correction only ever counts LESS against a pool, never more.
+   The surfaces read `netSolExDrift` and `quoteDriftSol`, the names `lessonOf` actually writes; they used
+   to read `netExDriftSol` and `driftSol`, which nothing writes, so his observation and the site printed
+   `netSol` alone and AMD/USDC's stop showed him "net -6.014 SOL" with no sign that the seat was up.
 
 8. **The paper book has nothing to score yet, and says so.** Not one of the 21 paper lessons on disk
    carries a forecast, and the 67 the backfill reconstructs cannot carry one either: `entryYieldPct` was
