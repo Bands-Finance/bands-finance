@@ -20,10 +20,14 @@ src/talk/personality.ts  personality.json: propose, record uses, the gate, appro
 src/talk/reflect.ts      the daily reflect call and the weekly drift check
 src/talk/x.ts            the X API v2 client (OAuth 1.0a, rate limits, mention screen), dormant
 src/talk/tick.ts         the posting loop: one tick picks at most one event post (see "The posting loop")
+src/talk/craft.ts        the craft of a loop post: openers, the comparison, the miss, the daily card (pure; see "What he learned from Merd")
+src/talk/guards.ts       the guards ported from Merd's failures: similarity, repeated stat, jitter, the event caps, the backoff (pure)
 src/talk/lock.ts         the lock file around the tick and around read-rate, post, write-rate
 src/scripts/talk.ts      the command line
 src/scripts/test-talk.ts the tests: npx tsx src/scripts/test-talk.ts
 src/scripts/test-tick.ts the posting loop's tests: npx tsx src/scripts/test-tick.ts
+src/scripts/test-talk-craft.ts    the craft's tests: npx tsx src/scripts/test-talk-craft.ts
+src/scripts/test-talk-cadence.ts  the guards' tests: npx tsx src/scripts/test-talk-cadence.ts
 ops/com.bands.mrbands.talk.plist  launchd: one tick every 15 minutes, posting off
 ```
 
@@ -250,8 +254,10 @@ He posts by himself: launchd runs `talk.ts tick` every 15 minutes (`ops/com.band
 1. Reads the desk (journal tail, paper book, ledger, `lessons.jsonl`) and its own state: `x-posts.jsonl`,
    `x-drafts.jsonl`, `x-rate.json` and `tick-state.json` (the last strap state, the milestone count, the days the
    daily numbers, a lesson and the stack last went).
-2. Builds candidates from events. Templates for the new post types live in `tick.ts`; the strap and the stack use
-   `strapCheck` and `stackUpdate` from `drafts.ts` unchanged.
+2. Builds candidates from events. The text of each comes from `craft.ts` (`shapePost`, see "What he learned from
+   Merd"); when it has nothing for a kind, the template in `tick.ts` is used unchanged (the strap and the stack
+   templates are `strapCheck` and `stackUpdate` from `drafts.ts`). Either way the text goes through `paperize`,
+   `vetOutgoing` and the lint.
 
    | kind | when | key |
    |---|---|---|
@@ -320,6 +326,111 @@ now, vetted, ignoring its hour and day gate, and writes, records and posts nothi
 | `TALK_LESSON_HOUR_UTC` | `18` | the lesson goes from this UTC hour |
 | `TALK_STACK_HOUR_UTC` | `15` | the Monday stack goes from this UTC hour |
 | `TALK_DAILY_LINK` | off | `true`: the daily ends with mrbands.finance |
+| `TALK_GAP_JITTER_MIN` | `45` | each event candidate (close, open, strap, milestone) waits `TALK_MIN_GAP_MIN` plus sha256(candidate key) mod 46 minutes after the previous loop post, so the gap is deterministic across ticks and restarts and never reads as the tick; the daily, the lesson and the stack use the plain gap, so the jitter never delays the daily past its hour (0: off) |
+| `TALK_EVENT_POSTS_PER_DAY` | `4` | close, open, strap and milestone share this many of the day's `POSTS_PER_DAY` slots; the daily and the lesson keep the rest (the "last slot kept for the daily" rule extended to a reserved pair). A close with a loss is exempt from this cap (a loss is never the thing that stays quiet) but not from `POSTS_PER_DAY` or the daily's kept slot. Counted from `x-posts.jsonl` by record type, dry records included (0: off) |
+| `TALK_OPEN_POSTS_PER_DAY` | `2` | opens per UTC day, inside the event cap; an open not posted is not lost, the daily counts opened bands (0: off) |
+| `TALK_RETRY_BACKOFF_MIN` | `60` | after 3 consecutive retryable X refusals (402, 429, 5xx, unreachable, the rate lock busy) the tick does not call X for this many minutes, doubling each time to a 360-minute cap; `transientFails` and `backoffUntil` live in `tick-state.json` and reset on the next posted or dormant result; one loud log line per backoff and no `x-drafts.jsonl` row per held tick (0: off) |
+
+Constants, not env: at most 2 event posts per pool per UTC day (`POOL_EVENT_POSTS_PER_DAY`; the re-centre rule already
+removes the commonest churn pair) and at most 2 strap posts a day (`STRAP_POSTS_PER_DAY`; a red, green, red flip inside
+a day is one story, not three). From `TALK_DAILY_HOUR_UTC` until it has gone, the daily takes rank 0 over a close, an
+open, a strap change and a milestone (the min gap still applies); the lesson and the stack keep their rank.
+
+Expected shape of a day under these values: the daily at 14:00 to 14:15 UTC every day, a lesson from 18 UTC when a
+seat closed, 2 to 4 event posts spread by the window rule and the jitter, nights capped at 2, 3 to 5 posts on a
+typical day and 6 only on a busy one. Zach's calendar, not code: an X pay-per-use balance check weekly, and the Mac on
+mains with automatic installs off (two of Merd's five zero days were the same machine).
+
+## What he learned from Merd
+
+Zach, 22 Sep: "I would like to train our agent based on past projects such as merd, in the style of posts on X and
+cadence." Merd (@Meridian402, `/Users/zach/dev/meridian`) is his earlier agent, an autonomous market maker for
+tokenized equities on Robinhood Chain: 296 live posts from 22 Jul to 22 Sep 2026, 1,439 replies, no engagement metrics
+logged locally beyond what the record itself shows. What Mr Bands takes from it is structure, rhythm and craft, in code
+(`src/talk/craft.ts`, and the guards in `src/talk/guards.ts`): what to say when, how to state a number, how to own a
+miss, how often, and what got read. Never Merd's persona, his topics, his vocabulary (drift, re-quote, probation size,
+the breaker, the tape, collects, bounded exits) or a sentence of his. Mr Bands keeps his own persona and every hard
+rule as it stands: the lint's rules, `vetOutgoing`, "paper" on every post about his book, losses shown as plainly as
+wins, no replies, no mentions, no model in the posting loop.
+
+The verdict, in five lines:
+
+1. The shape that got read was one act or one position with its number and the rule that acted: trade logs with a
+   clock time held their reach (rel_imps 1.02 to 1.10) while everything else decayed; posts carrying a number ran
+   1.19 against 0.89 (his second regime) and 1.06 against 0.92 (his third); his four biggest posts were milestones
+   written as done-not-planned with the number, its window, an explicit no-claim and a place to verify (#55, #66,
+   #123, #76; median rel_imps 1.45 over n=14).
+2. The fixed-form daily at a fixed clock is what people came back for: it landed 1 to 12 minutes after its 09:15 ET
+   gate six of six times and was the only shape anyone bookmarked in his last regime (5 of 16 against 0 of 114); red
+   days went out in the identical form (#220, #226).
+3. Repetition and machine tells are what killed him: one product claim reworded ten times fell from 579 impressions
+   and 22 likes (#74) to 26 and 0 (#286); 78% of his same-day gaps sat within 230 to 250 minutes because the floor
+   equalled the tick; his own draft prompt had to lecture against posts landing at 276 to 296 characters and against
+   the closing epigram. Short posts did not earn their place either: under-90-character posts sat at a median of 92
+   impressions against 144 to 218 for longer ones, mood one-liners without a number at 81 with no bookmark.
+4. Every pipeline failure was mechanical and avoidable: 81 posts and 59 prints lost to a 402 retried every 15 minutes
+   for 14 hours, 37 reply and skip drafts leaked onto the timeline with their `**REPLY**` and `Reasoning:` markers,
+   and every zero day was credits or the Mac.
+5. What the record cannot teach is reach: impressions tracked his reply job, not the writing (Spearman 0.63 between
+   replies posted that day and median impressions; 40-plus-reply days at 680 median impressions against under-5-reply
+   days at 160), and decayed monotonically to 24 to 26 impressions by 22 Sep once the replies stopped. Mr Bands never
+   replies, tags nobody and cannot quote-post, so his baseline is the low hundreds and single-digit likes, and no
+   content lever in Merd's record moves that by more than 1.5 to 2x except a genuine milestone. Hour, weekday and gap
+   effects were all under 1.3x and inconsistent between regimes, so the cadence knobs stay where they are (the table
+   above), with jitter, caps and a backoff ported from his failures, and he measures his own record after two weeks.
+
+### The craft, in code
+
+`shapePost(kind, facts)` in `src/talk/craft.ts` writes the text of one loop post from the facts a tick already has
+(`CraftFacts`: the event with the journal's proposal and directive and the bins out at the close, the strap with the
+time since its change, the daily with a day counter and the last 7 days of the same book, the milestone with its best
+and most recent day, the lesson, the stack). It returns null for anything it does not shape, and `tick.ts` then uses
+its own template; every text, crafted or not, still goes through `paperize`, `vetOutgoing` and the lint. Nothing in
+craft reads a file, calls X or bypasses a guard. The rules, each with the Merd evidence it comes from:
+
+| rule | what he does | Merd |
+|---|---|---|
+| shape | one act or one position per post, two to four lines, 140 to 280 weighted characters on an event post; the daily and the Monday stack stay ledger cards, a line per fact. The only short shapes carry a fact: the zero-move daily and the flat strap. No mood line: "never fake a state" rules it out, and the record says it would not be read | 260 to 330 characters read 1.31 against 0.82 under 90 (n=28/16); under-90 posts at 92 impressions against 144 to 218; mood one-liners at 81 with no bookmark; #335, the 57-character zero day; his era-C median of two sentences |
+| openers | three per kind, chosen by sha256(candidate key) mod 3, so a tick is reproducible and the key still dedupes: a close begins "closed my band on x after 5.2h, 14:07 utc." or "x, closed 14:07 utc after 5.2h." or "5.2h in x and out at 14:07 utc."; an open and the lesson rotate the same way; the daily has two orderings by UTC-day parity. Every close carries its UTC clock time | 23 bare-verb, 21 number-first and 6 clock-time openers in his clean set; posts with HH:MM held 1.10 (n=12) while the feed decayed; the rotation is against the machine tell, not for reach (number-led posts read 0.89 and 1.03) |
+| numbers | every post carries at least one figure with its window, at measured precision (`signedSol` and `sol4`, never "-0.0000", never rounded away), in SOL; never a rate, a percent on a band or a USD conversion. The strap post gains a number: bands in range of total, hours since the change, bins out for red | has_num 1.19 against 0.89 (n=65/46) and 1.06 against 0.92 (n=62/68), with his retweets and bookmarks sitting almost only on numbered posts; his cent-precise figures and "never round a loss away" (`_merd-daily.mts:231`) |
+| the comparison | the daily and the close put the figure beside his own days on the same book: "fees 0.0087 sol, thinner than any of the last 7 days, after 0.0412 yesterday"; "net +0.9534 sol, more than any whole day of the last 7 netted". Only to his own days, in SOL, never to a rate, an APR, another account or "on pace for" | #225 ("thinnest fee day of the week, after $193.21 the day before"), #191, #357; Merd fed his drafter the last five daily rows for exactly this (`_merd-daily.mts:120-134`) |
+| the miss | a close with a loss names the mechanism, what the rule did, and what he had proposed, in one post with the number: "net -0.0412 sol, a loss; fees 0.0087 sol counted in it. price sat 14 bins above the band at the close. i had proposed hold; the stop closed it." The proposal and the directive come only from the journal entry whose `execution.closed` is the band; absent means the line is left out, never invented | #343 ("not cutting was a decision and it cost more than cutting did"), #92 ("i didn't override it"), #384 ("the 7th was my miss"); reach-neutral (0.90 to 1.06) and required by his rules anyway |
+| the lesson | three parts, no fixed takeaway: what the seat did (label, hours, in-range share), what it cost or paid (fees and net, the unsold tokens as an optional line dropped first when the post runs long), and what the rule did (the end reason as the actor, "the stop closed it, over my proposed hold"). "fees are not profit" is said by juxtaposition (fees x, net y after rent and swaps), not as the sentence. This also fixes a silent drop: the old template rendered 287 characters on a loss with fees and tokens, over the 280 vet, and lost that day's lesson | his three fixed takeaways repeated verbatim weekly; era C has no fixed sign-off outside the automated print card |
+| endings | land on the fact and stop. An open ends "5 bands open on the paper book", not "i propose, the guards decide"; the stack has no "still stacking"; the milestone is the round level, its window, the best day and the most recent day in SOL, the net over the same stretch, and an explicit no-claim ("nothing about the next 10"). "paper" rotates by seed parity between ", paper book" on the first line and "paper book." as the last line: the meaning is on every post, the position varies | 17% of his era-C posts end on six words or fewer; his prompt bans the closing epigram (`_merd-daily.mts:326-333`); #178 for the milestone shape |
+| the daily | the fixed card at the fixed clock with a "day N" counter of the paper run, two orderings by UTC-day parity (even: one dense line of figures then the book line; odd: a line per fact), a red-day shape that states the loss first ("day 13, paper book, net -0.0301 sol on the day."), and a one-liner when nothing opened or closed and fees round to 0.0000, still with "paper book" and the comparison. Never "a new high", never a "+" on fees as a headline | 5 of 16 prints bookmarked against 0 of 114 other posts; #166 ("small day, boring tape, posted the same way i post the big ones"); #220 and #226, down days in the same form; the three print shapes in `_merd-daily-print.mts:90-107` |
+| links | none in a loop post. A solscan link on a live-book milestone is the one exception, later, not on paper (nothing to verify on chain) | era C: 0 links; a URL costs 13x on pay-per-use |
+
+Never in a post (`BANNED_PHRASES`, tested): "quiet days like this are the whole strategy", "not quoting is a
+position", "a new high", "fees only go up", "small by construction", "the rule cut it", "no claim step", "on pace
+for", "still stacking", "i propose, the guards decide".
+
+The tests (`npx tsx src/scripts/test-talk-craft.ts`): every shape for every kind over synthetic facts passes
+`vetOutgoing`; event posts sit in 140 to 280; the loss-with-fees-and-tokens lesson fits 280; every number in a post is
+in its facts and the key figures of the facts are in the post; "paper" is on every post; over many seeds each of the
+three openers appears and one seed always gives the same text; no fixed line repeats across two kinds; the red daily
+states the loss first; the zero-move daily is one line; the banned phrases never appear.
+
+### The guards, ported from his failures
+
+`src/talk/guards.ts`, pure, each pinned to the incident it comes from (`npx tsx src/scripts/test-talk-cadence.ts`):
+
+- `similarity` / `tooSimilar`: meaningful-word overlap over the smaller set, stop words and words of two characters
+  or fewer dropped, on the raw text with numbers and labels kept. Threshold 0.85 against the loop's texts of the last
+  7 days. Applied as a candidate filter for open, strap, milestone and lesson only, never a close (a loss is always
+  said) and never the daily or the stack (their form repeats by design). A filtered candidate is a note, not a
+  drafts row and not a consumed key; the next candidate is picked. Merd's reworded repeat drew 93 impressions
+  against 2,165.
+- `repeatedStat`: the same 4-decimal SOL figure in a loop post of the last 24 hours; milestone and lesson only.
+- `vetOutgoing` refuses `**`, `reasoning:`, `draft:`, `post:`, `note:` and `skip` as a line or label (`loop-markers`)
+  and a sentence that repeats inside one post (`self-echo`): insurance for the day a model rewrite exists. Merd's 37
+  leaked drafts got through before his cleaner was written.
+- `jitterMin`, `eventCaps`, `backoff`: the knobs in the table above.
+- `x.ts` keeps X's `detail` beside `title` in a refusal reason, sliced to 200 characters, never the request headers:
+  Merd's 81 failures are diagnosable in one grep only because `detail` said "credits depleted".
+
+Not ported: Merd's forbidden-phrase list (his secrets and product), his helpless-reply check (Mr Bands never asks the
+timeline), his reply cleaner (no model text reaches the loop), his junk filter (no replies) and delete (never used by
+design).
 
 ## The weekly review
 
