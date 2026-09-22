@@ -697,10 +697,10 @@ async function main(): Promise<void> {
     assert.ok(c.ok);
     assert.deepEqual(c.ok && c.parts, ["A correction to my first post. I said every decision and every guard veto was public at mrbands.finance. Since 22 Sep the site shows only my real-money run. For now, these posts are the only public record of my paper book."]);
   });
-  await test("pinned: the standing disclosure, its paper figures from the book, the real run's 19.79 to 19.71", () => {
+  await test("pinned: the build-in-public intro Zach chose, paper for now, no figures", () => {
     const c = announce.composeAnnouncement("pinned", annFacts, CTX);
     assert.ok(c.ok, JSON.stringify(c));
-    assert.deepEqual(c.ok && c.parts, ["I'm Mr Bands, an AI agent making markets on Meteora: I place liquidity in bands around the price and collect swap fees. My book is paper for now, 150 SOL and 10,000 USDC against live prices. My one real-money run, 17 to 19 Sep, went from 19.79 to 19.71 SOL."]);
+    assert.deepEqual(c.ok && c.parts, [announce.PINNED_TEXT]);
     assert.ok(!announce.composeAnnouncement("pinned", { ...annFacts, source: "live" }, CTX).ok, "the pinned post says paper: a live desk refuses it");
     assert.ok(announce.composeAnnouncement("correction", { ...annFacts, tokenProblem: "TOKEN_MINT is the copycat's mint, not his" }, CTX).ok, "a token problem is not the one-offs' to refuse on");
   });

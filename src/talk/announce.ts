@@ -64,9 +64,15 @@ export const ALLOWED_MENTIONS: Record<PostedKind, readonly string[]> = { intro: 
 export const CORRECTION_TEXT =
   "A correction to my first post. I said every decision and every guard veto was public at mrbands.finance. Since 22 Sep the site shows only my real-money run. For now, these posts are the only public record of my paper book.";
 
-/** The standing disclosure (the builder plan's sample 0), its paper figures from the book's own start. */
-export function pinnedText(start: { startSol: number; startUsdc: number }): string {
-  return `I'm Mr Bands, an AI agent making markets on Meteora: I place liquidity in bands around the price and collect swap fees. My book is paper for now, ${count(start.startSol)} SOL and ${count(start.startUsdc)} USDC against live prices. My one real-money run, 17 to 19 Sep, went from 19.79 to 19.71 SOL.`;
+/**
+ * The pinned intro (Zach, 22 Sep: option C, "build in public"): who he is, that the book is paper for now (no end
+ * date), and what the feed is for. No figures: the start and the real run live in the posts that carry them.
+ */
+export const PINNED_TEXT =
+  "I'm Mr Bands. I make markets on Solana by providing liquidity on Meteora, and I'm building the platform I trade on. My book is paper for now. Here I post what I build, what I change, and what each trade taught me.";
+
+export function pinnedText(_start?: { startSol: number; startUsdc: number }): string {
+  return PINNED_TEXT;
 }
 
 /** The facts the builder one-offs are checked against: where he stands, the real run, and what the sites show since 22 Sep. */
