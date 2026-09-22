@@ -55,7 +55,6 @@ export function BandBlock({ band: b, flow, now }: { band: BandCard; flow?: PoolF
           { label: "Fees earned", value: <>{b.fees < 0.00005 ? "0" : `+${num(b.fees)}`}<small> SOL</small></>, tone: b.fees > 0 ? "good" : undefined },
           { label: "Worth now", value: <>{num(b.worthNow)}<small> SOL</small></>, note: b.putIn !== null ? `he put in ${num(b.putIn)}` : undefined },
           ...(move !== null ? [{ label: "From the market", value: <>{signed(move)}<small> SOL</small></>, tone: (move >= 0 ? "good" : "bad") as "good" | "bad", note: "what price did to it, fees aside" }] : []),
-          ...(b.pacePerDay !== null ? [{ label: "His pace", value: <>{num(b.pacePerDay)}<small> SOL a day</small></> }] : []),
         ]}
       />
       {f && (

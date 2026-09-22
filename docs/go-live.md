@@ -18,7 +18,8 @@ opens after a losing day and flatten the book after a drawdown; you clear those 
    as `WALLET_SECRET_KEY` (never committed) and its address is pinned in `EXPECTED_WALLET` so a wrong
    key cannot trade. Import the same secret into Backpack or Phantom if you want to watch it.
 2. **The model.** `ANTHROPIC_API_KEY` in `.env` (or his agent on the gateway, docs/openhermit.md). Without
-   one the desk policy, his rulebook, makes every proposal. The live loop has never run with a model
+   one the desk policy, his rulebook, makes every proposal, but on a live book only with `POLICY_LIVE=true`
+   (ops/live.env sets it); without it nothing opens and only the engine's exits run. The live loop has never run with a model
    proposal yet (the 17-19 Sep run was all rulebook); the first day of one should stay in dry-run so you
    can read what it proposes before anything is signed.
 3. **The RPC.** `RPC_URL` pointing at a dedicated endpoint (Helius). The public endpoint rate-limits

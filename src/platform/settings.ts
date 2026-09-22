@@ -1,7 +1,7 @@
 /**
  * Per-wallet settings for a user's personal Mr Bands. Ports Meridian's agent/src/deploy/agentSettings.ts.
  * An extensible settings OBJECT stored append-only in agent-settings.jsonl, latest row wins per wallet.
- * Everything here is prompt-level: the agent is an advisor, so a preference only exists if it changes
+ * Everything here is prompt-level: the agent is a guide that describes, so a preference only exists if it changes
  * how the agent reasons or talks. Enums are validated against fixed sets; the free-text fields (name,
  * goal, voice) are sanitized so nothing a user types can smuggle instructions into the persona.
  *

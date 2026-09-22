@@ -204,7 +204,9 @@ export const DISCLOSURE_PHRASES: readonly string[] = ["disclosure:", "my own tok
  * His disclosure line for when his token is live (Zach, 22 Sep 2026), with the mint the site lists. It passes
  * lintText with that mint as a house mint (src/scripts/test-talk.ts checks it). One change from the wording as
  * given: ", and its trades pay" became ". its trades pay", because with a 44-character mint the line as given is
- * 284 characters and the length rule stops at 280; this way it is 280.
+ * 284 characters and the length rule stops at 280; this way it is 280. The line says holding the mint opens the
+ * engine, which no code does yet (engine access is an allowlist or open to all, src/platform/engineSkill.ts): it
+ * does not post until the hold gate ships (docs/sprint.md, "How he talks about it"). Zach's wording, kept as given.
  */
 export function disclosureLine(mint: string): string {
   return `my own token. i launched it myself. the desk holds none and never trades it. holding ${mint} in a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my own wallet, which pays for what i run on.`;

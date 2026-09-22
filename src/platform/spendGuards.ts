@@ -120,7 +120,7 @@ export function ceilingBreach(view: SpendWindow, wallet: string, limits: { globa
     return {
       status: 503,
       code: "chat_daily_cap",
-      error: "bands.finance has hit its daily limit on advisor conversations. chat is paused until it resets; nothing you did caused this.",
+      error: "bands.finance has hit its daily limit on conversations with your mr bands. chat is paused until it resets; nothing you did caused this.",
     };
   }
   const mine = view.byWallet.get(wallet) ?? 0;
@@ -128,7 +128,7 @@ export function ceilingBreach(view: SpendWindow, wallet: string, limits: { globa
     return {
       status: 429,
       code: "wallet_daily_cap",
-      error: `you've used ${limits.walletMax} advisor messages in the last 24 hours, which is today's limit for one wallet. it frees up as those roll off.`,
+      error: `you've used ${limits.walletMax} messages to your mr bands in the last 24 hours, which is today's limit for one wallet. it frees up as those roll off.`,
     };
   }
   return null;

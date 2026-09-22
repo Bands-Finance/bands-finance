@@ -380,7 +380,7 @@ async function main(): Promise<void> {
     try {
       const res = await json("/api/my-agent/message", { body: { text: "hi" }, token: session.token });
       assert.equal(res.status, 503);
-      assert.deepEqual(await res.json(), { ok: false, code: "not_configured", error: "the advisor is not configured on this host" });
+      assert.deepEqual(await res.json(), { ok: false, code: "not_configured", error: "your mr bands is not configured on this host" });
       const stream = await json("/api/my-agent/stream", { body: { text: "hi" }, token: session.token });
       assert.equal(stream.status, 503);
       assert.equal((await json("/api/my-agent/message", { body: { text: "" }, token: session.token })).status, 400);

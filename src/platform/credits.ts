@@ -1,5 +1,5 @@
 /**
- * Credits: how advisor usage gets paid for. Ports Meridian's agent/src/credits.ts without the MERD
+ * Credits: how chat with your own Mr Bands gets paid for. Ports Meridian's agent/src/credits.ts without the MERD
  * branch. 1 credit = 1 message, balances never expire, no subscriptions. Every balance change is an
  * append-only event in credits.jsonl and the per-wallet balance is folded from it; the file is the
  * truth and the fold is cached only on the file's stat.

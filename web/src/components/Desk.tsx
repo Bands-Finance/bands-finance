@@ -81,7 +81,7 @@ const START_LINES = [
   "1. He reads the pool: price, the bins around it, his wallet, his open bands.",
   "2. He proposes one move: open, close, claim fees, move, or hold. Today it comes from his own rulebook.",
   "3. The guards decide, in plain code.",
-  "4. If they say yes, the wallet builds, simulates and (when live) sends the transaction.",
+  "4. If they say yes, the move runs: on paper, against the paper book; when live, the wallet builds, simulates and sends the transaction.",
   "5. All of it lands in this journal. Type 'guards', 'bands', 'pools', 'last' or 'help'.",
 ];
 

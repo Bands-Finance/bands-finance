@@ -204,7 +204,7 @@ protocol to Solana. It needs a persistent host for the API
 | Surface | Routes | Notes |
 |---|---|---|
 | Wallet sign-in | `POST /api/account/challenge`, `POST /api/account/link` | ed25519 over a challenge, HMAC nonce (10 min), 7-day bearer. Set `BANDS_SESSION_SECRET`. |
-| Your own Mr Bands | `POST /api/my-agent/ensure`, `message`, `stream`, `settings`, `credits`, `history`, `POST /api/cli` | A per-wallet advisor over the live desk (journal, screen, limits). 50 free credits; `CREDITS_ENFORCED` charges. Needs `ANTHROPIC_API_KEY`, else 503. |
+| Your own Mr Bands | `POST /api/my-agent/ensure`, `message`, `stream`, `settings`, `credits`, `history`, `POST /api/cli` | A per-wallet guide that describes his desk (journal, screen, limits); it never advises. 50 free credits; `CREDITS_ENFORCED` charges. Needs `ANTHROPIC_API_KEY`, else 503. |
 | MCP tools | `POST /mcp` | `bands_list_pools`, `bands_limits`, `bands_agent_thoughts` free; `bands_pool_snapshot` $0.01, `bands_screen` $0.02, `bands_pool_score` $0.05 over x402. |
 | x402 in USDC | `402` challenge, `X-PAYMENT` proof | Self-facilitated: SPL transfer to the treasury USDC account, signed authorization, on-chain verify, replay ledger. Fails closed without `X402_VERIFY=self`. |
 | Engine skill | `GET /api/engine/access`, `skill`, `positions`; `POST /api/engine/plan`, `collect`, `close` | Advise-then-approve: the API runs Mr Bands' guards for the caller and returns unsigned transactions; the wallet signs. Closed until `ENGINE_OPEN=true` or `ENGINE_ALLOWLIST`. |
@@ -213,7 +213,7 @@ protocol to Solana. It needs a persistent host for the API
 
 Keys live in `.env.example` and `.env.platform.example`. Everything ships dormant: no treasury means
 stub payments in local dev only, no operator token means operator routes are closed, no key means
-the advisor answers 503 rather than a canned line.
+your own Mr Bands answers 503 rather than a canned line.
 
 ```bash
 npm run test:all           # guards, engine, platform, rails suites (no RPC, no LLM)

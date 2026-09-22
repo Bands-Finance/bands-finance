@@ -63,8 +63,7 @@ What he does himself, and nobody does for him:
   operating wallet**, by code with a fixed list of payees, caps and a reserve floor, with no human signing and
   never on the model's say, he will pay his on-chain bills: his token launch, his gas, his inference through
   UsePod (the hackathon's inference sponsor), and his RPC through Helius. His creator fees from $BANDS go to that
-  wallet (not a cold treasury, and never the desk wallet), and any excess is swept to a cold wallet held for
-  him. He starts on a one-time seed from Zach, disclosed with its transaction. The Mac, the hosting, the domain
+  wallet (not a cold treasury, and never the desk wallet). He starts on a one-time seed from Zach, disclosed with its transaction. The Mac, the hosting, the domain
   and X access stay paid by Zach off-chain, and the books list them as a subsidy. His token income will not
   cover his costs during judging, and the books will say so. It is being built: on the sites and in tool
   descriptions it is "coming" at most until it runs. This section is updated when the design lands.
@@ -158,7 +157,7 @@ once it does.)
 apart and the mint must; his mint leads on every surface once it exists, and the token's description sends
 people to mrbands.finance for it). Launched **self-funded from his own new operating wallet**, so the payer, and
 therefore the permanent creator-fee beneficiary, is the wallet that pays his bills: never the hot desk wallet
-(the launch refuses it as payer) and not a cold treasury. Any excess is swept to a cold wallet held for him. The
+(the launch refuses it as payer) and not a cold treasury. The
 plan is his own launch, armed by Zach (see "The point: his autonomy"); the fallback is the existing CLI with
 `WALLET_SECRET_KEY` set to the operating wallet's key for that one run and `TOKEN_PAYER_EXPECTED` pinning its
 address (docs/token.md). It costs about 0.02-0.05 SOL. A launch can be done once per agent, and the pair, fee and
@@ -170,8 +169,8 @@ issuer-freeze exposure through NVDAx, and hold down volume with the maximum fee.
 
 **What it is: a key, not a share.**
 - Free forever, no token: the journal, the screener, Learn, the casebook, the free lessons tool, the read tools.
-- Holding the official mint in a signed-in wallet opens the engine on **your own** wallet: plan, collect,
-  close. You sign everything. The gate is a balance read on the sign-in that already exists: no escrow, no
+- Holding the official mint in a signed-in wallet will open the engine on **your own** wallet: plan, collect,
+  close. Not in code yet: the hold gate is Role 2 work (calendar: Sun 27 Sep). You sign everything. The gate is a balance read on the sign-in that already exists: no escrow, no
   contract, nothing a model can drain. It is an access demo, not an anti-spam filter. At a fresh curve's
   price the key costs pennies, and that is fine for opening tools.
 - Graduating (closing a real band and explaining it) is the other door, and the one we lead with.
@@ -200,12 +199,21 @@ in code and linted: "my own token. i launched it myself. the desk holds none and
 a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my own
 wallet, which pays for what i run on." (Zach's wording ended "not a share, it pays nobody who holds it, and its trades pay a cut"; with a
 44-character mint that ran 284 characters against the lint's 280, so ", and its" became ". its", same meaning,
-exactly 280. The line is `disclosureLine(mint)` in src/talk/lint.ts, and test-talk holds it to 280.) He names the mint, never a bare ticker. The copycat shares the name and
+exactly 280. The line is `disclosureLine(mint)` in src/talk/lint.ts, and test-talk holds it to 280.) (The line says holding the mint opens the engine. No code does that yet: engine access today is an
+allowlist or open to all (src/platform/engineSkill.ts), and the hold gate is on the calendar for Sun 27 Sep,
+after the Fri 25 Sep launch. So the line does not post until the hold gate is live. Open for Zach: move the
+gate before the launch, or approve a pre-gate line for the days between. A candidate that passes the lint at
+273 characters with a 44-character mint: "my own token. i launched it myself. the desk holds none and never trades
+it. holding <mint> in a signed-in wallet will open the engine. not a share, it pays nobody who holds it. its
+trades pay a cut to my own wallet, for what i run on.") ("The mint mrbands.finance lists" is a promise the site does not keep yet: today it only links
+`VITE_TOKEN_URL` under the label "$BANDS on ClawPump", the copycat's ticker, and prints no mint. The site must
+print the mint itself before the launch goes out, because the token's on-chain description sends people there
+to check.) He names the mint, never a bare ticker. The copycat shares the name and
 the ticker, so he never says "other $bands tokens are not mine" (his is one): he names the copycat by its mint
 as not his, and says his is the mint mrbands.finance lists. He never calls its price, never puts a price, chart,
 cap, holders, volume, fee, % or $ next to his own, never says buy, sell or early, never links it to the desk's
-P&L, and never names it in a lesson. Asked "should i buy it?": "i don't tell anyone what to buy. here is what it
-opens, and the lessons are free without it." He posts his own
+P&L, and never names it in a lesson. Asked "should i buy it?": "i don't tell anyone what to do with a token. here is what it
+opens, and the lessons are free without it." (That reply passes the lint; "what to buy" did not.) He posts his own
 entry announcement, in his own words and tagging @clawpumptech, rather than the hackathon's template (it says
 "Agents powered by $CLAW").
 
@@ -285,11 +293,11 @@ price knobs, the position watcher.
 | Day | Zach (keys, money, accounts: first thing each morning) | Claude |
 |---|---|---|
 | **Tue 22 Sep** | Copycat answer. X account, follow, DM for a slot. **Register.** Mac on power, lid open, updates off. `OPENHERMIT_TOKEN`. Lawyer decision. Push the commits. | docs/clawrena.md; public honesty fixes; SKILL.md; H1 guard and CLI message; settle one headline number. |
-| **Wed 23 Sep** | `CLAWPUMP_API_KEY`, `npm run clawpump -- pairs`. Email ClawPump the questions below. Create his new operating wallet and send it the one-time seed (at least about 0.05 SOL for the launch), and keep the seed's transaction for the disclosure. | Seat-scoring change on paper. Start the keyless API and tunnel. Watch the paper LLM decisions. |
+| **Wed 23 Sep** | `CLAWPUMP_API_KEY`, `npm run clawpump -- pairs`. Email ClawPump the questions below. Create his new operating wallet and send it the one-time seed (at least about 0.05 SOL for the launch), and keep the seed's transaction for the disclosure. | Seat-scoring change on paper. Start the keyless API and tunnel. Watch the paper model's proposals. |
 | **Thu 24 Sep** | Token preflight from his operating wallet, and read the quote. | Build the casebook. Start the Hermes skill. |
-| **Fri 25 Sep** | **Arm the launch** (his operating wallet seeded, set the flag). **He launches his own token and posts his entry himself.** Attach it at /ansemhack/entry if it doesn't attach itself. All three steps done, a week early. | Official-token page with the not-his notice. `TOKEN_URL`/`X_URL`. "Fees are not profit". Casebook public. |
+| **Fri 25 Sep** | **Arm the launch** (his operating wallet seeded, set the flag). **He launches his own token and posts his entry himself.** Attach it at /ansemhack/entry if it doesn't attach itself. All three steps done, a week early. | Official-token page with the not-his notice, the mint printed on it (not only a link). `TOKEN_URL`/`X_URL`. "Fees are not profit". Casebook public. |
 | **Sat 26 Sep** | | `bands_lessons` tool. The Hermes skill. |
-| **Sun 27 Sep** | Stream rehearsal. | Hold gate and `bands_access`. Freeze the site's look. |
+| **Sun 27 Sep** | Stream rehearsal. | Hold gate and `bands_access` (his disclosure line waits for it). Freeze the site's look. |
 | **Mon 28 Sep** | **Judging opens.** | Daily honest-numbers post (SOL and hours, net shown). |
 | **Tue 29 to Wed 30 Sep** | Review the token-page wording. | Outside-agent skill demo. End to end on the public tunnel: sign in, access, plan, sign. |
 | **Thu 1 Oct** | **By noon ET, recheck all three entry steps on the entry page.** Cutoff Fri 2 Oct 05:00 UTC. | Announce Role 2. |
@@ -385,7 +393,7 @@ prints every row as agreeing, and test-web-model pins the shipped file to these 
 2. **The token: $BANDS**, chosen over $MRBANDS knowingly, with the copycat sharing the ticker: the mint is the
    only way to tell them apart, so his mint leads everywhere and the copycat is named by its mint. SOL pair, no
    dev buy, `buybackBps` 0, self-funded from his own new operating wallet, which is the creator-fee beneficiary
-   for good (any excess swept to a cold wallet held for him). Not the desk wallet, not a cold treasury.
+   for good. Not the desk wallet, not a cold treasury.
 3. **No live money.** The live desk stays halted through 8 Oct; the trader record is the frozen 17-19 Sep run.
 4. **His model proposes on paper only**, the guards deciding, with a hard credit limit on the OpenRouter key.
 5. **The lawyer: launch the no-rights design knowingly** on Fri 25 Sep; a review before anything is added.

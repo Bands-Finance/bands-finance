@@ -127,7 +127,7 @@ export function personaFor(wallet: string, settings: AgentSettings = getAgentSet
     ...(s.focus && s.focus.length ? [focusLine(s.focus)] : []),
     ``,
     `THE PERSON IS TYPING TO YOU IN A TERMINAL, and you know what it can do, so teach it as you go rather than leaving them to find /help. When something they want is a command, name the exact command they should type. Do it in passing, one at a time, never as a list they did not ask for.`,
-    `  What they can type: /whoami shows how they have you configured. /name renames you. /risk conservative|balanced|aggressive, /style concise|balanced|deep, /focus market-making|yield|directional|research, /goal and /voice set how you work. /credits shows what they have. /status /pnl /last /pools /guards read Mr Bands' live desk. Commands cost nothing; only messages do.`,
+    `  What they can type: /whoami shows how they have you configured. /name renames you. /risk conservative|balanced|aggressive, /style concise|balanced|deep, /focus market-making|yield|directional|research, /goal and /voice set how you work. /credits shows what they have. /status /pnl /last /pools /guards read Mr Bands' desk. Commands cost nothing; only messages do.`,
     `  The moment to say one is when it answers the thing they just asked. If they ask you to be shorter, tell them /style concise makes it permanent. If they ask what you are working from, /whoami. If they ask what Mr Bands holds right now, /pnl. If nothing fits, say nothing about commands at all: an unprompted tour is worse than silence.`,
     `  When somebody new asks what you can do, do not recite a feature list. Ask what they are trying to work out, then show them by doing it.`,
     ``,
@@ -314,7 +314,7 @@ export function deskLines(command: "status" | "pnl" | "last" | "pools" | "guards
       return [
         "the guards are plain code between Mr Bands and the chain. they can veto him or pull him out:",
         ...describeLimits(riskLimits).split("\n"),
-        "your advisor sits outside all of this: it holds no key and can move nothing.",
+        "your mr bands sits outside all of this: it holds no key and can move nothing.",
       ];
   }
 }
@@ -373,7 +373,7 @@ export function advisorConfigured(): boolean {
   return platformEnv().anthropicApiKey.length > 0;
 }
 
-export const NOT_CONFIGURED = "the advisor is not configured on this host";
+export const NOT_CONFIGURED = "your mr bands is not configured on this host";
 
 export interface TurnRefusal {
   ok: false;
@@ -401,8 +401,8 @@ export async function openTurn(wallet: string): Promise<TurnLease | TurnRefusal>
   if (!advisorConfigured()) return { ok: false, status: 503, code: "not_configured", error: NOT_CONFIGURED };
   const ceiling = chatSpendBlocked(wallet);
   if (ceiling) return { ok: false, status: ceiling.status as 429 | 503, code: ceiling.code, error: ceiling.error };
-  if (!rateLimitOk(wallet)) return { ok: false, status: 429, code: "rate_limited", error: "you're sending messages faster than your advisor can think. give it a moment." };
-  if (!tryBeginTurn(wallet)) return { ok: false, status: 409, code: "in_flight", error: "your advisor is still responding to your last message." };
+  if (!rateLimitOk(wallet)) return { ok: false, status: 429, code: "rate_limited", error: "you're sending messages faster than your mr bands can think. give it a moment." };
+  if (!tryBeginTurn(wallet)) return { ok: false, status: 409, code: "in_flight", error: "your mr bands is still responding to your last message." };
   const spend = trySpend(wallet, 1);
   if (!spend.ok) {
     endTurn(wallet);
@@ -524,7 +524,7 @@ export async function runUserTurn(
     if (!reply) {
       // A clean exit with no text (a refusal with nothing to say, an empty message) is a failed turn.
       const credits = refundCredit(wallet, 1, stopReason === "refusal" ? "refund:refusal" : "refund:empty");
-      return { ok: false, status: 502, error: "your advisor could not respond just now, try again shortly.", credits, timedOut: false, aborted: false };
+      return { ok: false, status: 502, error: "your mr bands could not respond just now, try again shortly.", credits, timedOut: false, aborted: false };
     }
     appendChat(wallet, "user", text);
     appendChat(wallet, "assistant", reply);
@@ -548,7 +548,7 @@ export async function runUserTurn(
     return {
       ok: false,
       status: 502,
-      error: timedOut ? "your advisor stopped responding partway through, try again shortly." : "your advisor could not respond just now, try again shortly.",
+      error: timedOut ? "your mr bands stopped responding partway through, try again shortly." : "your mr bands could not respond just now, try again shortly.",
       credits,
       timedOut,
       aborted: clientHungUp,

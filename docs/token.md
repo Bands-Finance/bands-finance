@@ -8,15 +8,17 @@ the token section of docs/clawrena.md disagree, this file is newer.
 never the desk wallet and not a cold treasury: ClawPump's docs call the self-funded `walletAddress` "the Solana
 base58 wallet that pays for the launch AND receives the agent's 75% creator-fee share", so the payer is the
 creator-fee beneficiary for as long as the token trades. Zach decided on 22 Sep that Mr Bands pays his own way,
-so that beneficiary is the wallet that pays his on-chain bills, by capped code; any excess is swept to a cold
-wallet held for him. A launch happens once per agent, and the pair, the fee and the payout are fixed for good.
+so that beneficiary is the wallet that pays his on-chain bills, by capped code (being built). A launch happens once per agent, and the pair, the fee and the payout are fixed for good.
 
 **Same ticker as the copycat.** A copycat "Mr Bands" $BANDS already trades on pump.fun with his portrait (mint
 `JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m`, X `@MrBandsSol`). It is not his. Name and ticker are the same, so
 the mint is the only way to tell them apart: his is the mint mrbands.finance lists once it launches, and the
-token's on-chain description sends people there to check.
+token's on-chain description sends people there to check. The site does not print a mint yet, so that has to
+ship before the launch (docs/sprint.md, Fri 25 Sep).
 
-**What it is.** His own token: a key that opens the engine on your own wallet, not a share. It will pay nobody
+**What it is (the design, not yet the state).** His own token: a key that will open the engine on your own
+wallet once the hold gate ships (planned Sun 27 Sep; today engine access is an allowlist or open to all), not a
+share. It will pay nobody
 who holds it: no buyback, no burn, no revenue share, no staking, no holder rewards, no airdrop. Its creator fees
 will go to the wallet that paid for the launch, his own operating wallet, which pays for what he runs on, for as
 long as it trades. The desk never holds, swaps or market-makes it.
@@ -63,8 +65,7 @@ solana-keygen pubkey ~/mrbands-operating.json
 
 The last line prints the operating wallet's address. Keep a copy of the key file offline (a USB stick, not a
 cloud drive). It never goes in the repo, in chat or in a gateway agent. The creator fees arrive at the address
-without the key; his payment code (being built) spends from it within its caps, and any excess is swept to a
-cold wallet held for him.
+without the key; his payment code (being built) will spend from it within its caps.
 
 **2. Seed it.** Send the one-time seed (about 0.05 SOL covers the launch) to the operating wallet's address from
 your own wallet, not from the desk. Keep the seed's transaction signature: it is disclosed as his starting
@@ -163,5 +164,7 @@ launches, everything about it is in future tense. Once he has launched it, the l
 it myself. the desk holds none and never trades it. holding <mint> in a signed-in wallet opens the engine. not a
 share, it pays nobody who holds it. its trades pay a cut to my own wallet, which pays for what i run on." (If Zach
 launches it by the fallback, "i launched it myself" is not true: that clause is replaced with one that is, and
-the line passes the lint, at most 280 characters with the mint, before anything posts.) He names the mint, never a bare ticker, names
+the line passes the lint, at most 280 characters with the mint, before anything posts.) It does not post until
+the hold gate is live, because it says holding the mint opens the engine (docs/sprint.md, "How he talks about
+it"). He names the mint, never a bare ticker, names
 the copycat by its mint as not his, and never calls a price.

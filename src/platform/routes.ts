@@ -53,7 +53,7 @@ function walletOf(c: Context): string | null {
   return requireWallet(c.req.header("authorization"));
 }
 
-const unauthorized = (c: Context) => c.json({ ok: false, error: "sign in with your wallet to reach your advisor" }, 401);
+const unauthorized = (c: Context) => c.json({ ok: false, error: "sign in with your wallet to reach your mr bands" }, 401);
 
 /** Operator bearer, compared in constant time. Unset token = every operator route refuses. */
 function operatorOk(c: Context): "ok" | "unset" | "bad" {
@@ -108,7 +108,7 @@ export function platformRoutes(app: Hono): void {
       return c.json({ ok: true, ...ensureUserAgent(wallet), configured: advisorConfigured() });
     } catch (err) {
       console.error("[my-agent] ensure failed:", err instanceof Error ? err.message : err);
-      return c.json({ ok: false, error: "could not set up your advisor, try again shortly" }, 502);
+      return c.json({ ok: false, error: "could not set up your mr bands, try again shortly" }, 502);
     }
   });
 
@@ -171,7 +171,7 @@ export function platformRoutes(app: Hono): void {
       async (err, stream) => {
         console.error("[my-agent] stream broke:", err.message);
         lease.close();
-        await stream.writeSSE({ event: "error", data: JSON.stringify({ error: "your advisor could not respond just now, try again shortly." }) });
+        await stream.writeSSE({ event: "error", data: JSON.stringify({ error: "your mr bands could not respond just now, try again shortly." }) });
       },
     );
   });
@@ -225,7 +225,7 @@ export function platformRoutes(app: Hono): void {
             ok: true,
             effect: "read",
             lines: enforced
-              ? [`${balance} credits`, ``, `  1 credit   one message to your advisor`, `  free       every /command, including the desk ones`, ``, balance > 0 ? `/packs shows what a top-up costs.` : `you are out. /packs shows what a top-up costs.`]
+              ? [`${balance} credits`, ``, `  1 credit   one message to your mr bands`, `  free       every /command, including the desk ones`, ``, balance > 0 ? `/packs shows what a top-up costs.` : `you are out. /packs shows what a top-up costs.`]
               : [`${balance} credits, but charging is OFF right now, so messages are free.`, ``, `nothing is being deducted and nothing is for sale until that changes.`, `the balance is real and will be there when it turns on.`],
           });
         }

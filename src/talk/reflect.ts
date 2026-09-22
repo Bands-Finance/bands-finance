@@ -71,7 +71,7 @@ export function lockedCoreText(env: Pick<TalkEnv, "operatorHandle" | "xHandle" |
     if (start < 0 || end < start) return null;
     return text
       .slice(start, end)
-      .replace(/\{\{OPERATOR_HANDLE\}\}/g, env.operatorHandle ? `@${env.operatorHandle}` : "zach's x account")
+      .replace(/\{\{OPERATOR_HANDLE\}\}/g, env.operatorHandle ? `@${env.operatorHandle}` : "[zach's x handle, not set]")
       .replace(/\{\{X_HANDLE\}\}/g, env.xHandle ? `@${env.xHandle}` : "your x handle")
       .replace(/\{\{VENUES\}\}/g, env.venues)
       .replace(/\{\{EDGE_THRESHOLD\}\}/g, `${env.strapEdgePct}% of the band width`)

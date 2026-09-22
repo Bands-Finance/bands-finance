@@ -103,13 +103,12 @@ docs/token.md. The 20 September spec (NVDAx pair, 300 bps, 2.5 SOL dev buy) is s
 
 - **Who pays is who gets the creator fees.** ClawPump's docs call `walletAddress` "the Solana base58
   wallet that pays for the launch AND receives the agent's 75% creator-fee share". So the launch is
-  self-funded from his own operating wallet, the one his code pays his on-chain bills from (any excess
-  swept to a cold wallet held for him). The plan is his own launch through a desk tool with the spec
+  self-funded from his own operating wallet, the one his code will pay his on-chain bills from. The plan is his own launch through a desk tool with the spec
   fixed in code, armed by Zach; the fallback is the existing `npm run clawpump -- launch --confirm` with
   `WALLET_SECRET_KEY` set to the operating wallet's key for that one run and `TOKEN_PAYER_EXPECTED`
   pinning its address (docs/token.md). It costs about 0.02-0.05 SOL. The spec in `ops/live.env` under "the Clawrena token" matches this table,
   and test-clawpump fails if it drifts.
-- **What it is: his own token, a key, not a share.** Once launched, holding the official mint in a signed-in wallet opens the engine on
+- **What it is: his own token, a key, not a share.** Once the hold gate ships (planned Sun 27 Sep, after the launch; not in code yet), holding the official mint in a signed-in wallet will open the engine on
   your own wallet (plan, collect, close; you sign everything). The gate is a balance read on the sign-in
   that already exists: no escrow, no contract, nothing a model can drain. Graduating, closing a real band
   and explaining it, is the other door, and the one we lead with. Free forever without it: the journal,
@@ -124,7 +123,7 @@ docs/token.md. The 20 September spec (NVDAx pair, 300 bps, 2.5 SOL dev buy) is s
 - **How he talks about it.** Future tense until it launches. Once live, every mention carries the
   disclosure: "my own token. i launched it myself. the desk holds none and never trades it. holding <mint> in
   a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut
-  to my own wallet, which pays for what i run on." He names the mint, never a bare ticker. The copycat
+  to my own wallet, which pays for what i run on." It posts only once the hold gate is live. He names the mint, never a bare ticker. The copycat
   shares the ticker, so he names it by its mint as not his, never "other $bands tokens". Never a price,
   chart, cap, holders, volume, fee, % or $ next to it, never buy, sell or early, never linked to the
   desk's P&L, never named in a lesson.
@@ -162,7 +161,7 @@ on paper once it does; it never says the model trades real money.
 2. Product and demo: one seat laid live on paper, him proposing and the guards deciding; a losing real-money seat
    against a winning one from the casebook.
 3. Market, GTM and traction: the skill other agents install, wallets signed in, proposals decided.
-4. Token utility and vision: his own token, the key that opens the engine on your own wallet, and why it pays its holders nothing (its creator fees go to his own operating wallet, which pays for what he runs on).
+4. Token utility and vision: his own token, the key that will open the engine on your own wallet, and why it pays its holders nothing (its creator fees go to his own operating wallet, which pays for what he runs on).
    It ends on the red numbers: fees claimed, and the book down all the same.
 
 ### E. The X posts
@@ -178,7 +177,7 @@ The project account (the entry step: tag @clawpumptech):
 > Meteora DLMM, with tokenized stocks one part of his book: he lays bands of liquidity around the price
 > in the pools his screener ranks, proposes every move, lets his guards decide, and publishes every
 > decision and every guard veto at mrbands.finance. His book is on paper for now. His own token is
-> <mint> on ClawPump: a key that opens his engine on your own wallet. It pays holders nothing, its
+> <mint> on ClawPump: a key that will open his engine on your own wallet. It pays holders nothing, its
 > creator fees go to his own wallet, which pays for what he runs on, and the desk never trades it.
 
 Mr Bands, from his own account (drafts; `npm run talk -- draft` builds them from live data and lints
@@ -188,13 +187,14 @@ them against the locked core before anything can post):
 > mrbands.finance, the red ones too
 
 > my own token. i launched it myself. the desk holds none and never trades it. holding <mint> in a
-signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my own wallet,
-which pays for what i run on.
+> signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my own wallet,
+> which pays for what i run on.
 
 > the "mr bands" token at JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m is not mine, and neither is
 > @mrbandssol. same name, same ticker, so the mint is the only way to tell. mine is the one my site lists
 
-(The second and third pass the lint as written, the second at 278 characters with a 44-character mint.
+(The second and third pass the lint as written, the second at 280 characters with a 44-character mint. The second does not post until the hold gate is
+live, since it says holding the mint opens the engine; see docs/sprint.md, "How he talks about it".
 The first names mrbands.finance, which the lint's link allowlist does not yet carry, so it is refused
 until the allowlist or the line changes.)
 

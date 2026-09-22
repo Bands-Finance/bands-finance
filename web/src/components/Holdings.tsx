@@ -146,7 +146,6 @@ export function Holdings({ book, screen, status, now, agentName, flows }: Holdin
                 );
               })()}
               <footer className="bandnote__foot engrave">
-                {b.pacePerDay !== null && <span>{num(b.pacePerDay)} SOL a day</span>}
                 {b.openedAt !== null && <span>Open {duration(now - b.openedAt)}</span>}
                 <span>±{(b.widthPct / 2).toFixed(1)}%</span>
                 <a href={`https://solscan.io/account/${b.address}`} target="_blank" rel="noreferrer" title="the position on Solscan">

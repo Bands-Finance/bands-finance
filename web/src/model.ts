@@ -647,7 +647,7 @@ export function statusOf(newestFirst: JournalEntry[], now: number, demo: boolean
   const ago = ageMs === null ? "" : ageMs < 90e3 ? "a minute ago" : ageMs < 3600e3 ? `${Math.round(ageMs / 60e3)} min ago` : ageMs < 86400e3 ? `${Math.round(ageMs / 3600e3)} h ago` : `${Math.round(ageMs / 86400e3)} d ago`;
   const span = latest && newestFirst.length ? (() => { const first = new Date(newestFirst[newestFirst.length - 1].ts).getTime(); const h = (lastTs! - first) / 3600e3; return h < 48 ? `${Math.round(h)} hours` : `${Math.round(h / 24)} days`; })() : "";
   if (mode === "demo") {
-    return { mode, lastTs, ageMs, short: "demo", sentence: `This is a scripted demo: ${span} of simulated decisions in ${latest?.pool.label ?? "one pool"}, written to show how Mr Bands decides. No wallet, no real money, nothing sent to Solana.` };
+    return { mode, lastTs, ageMs, short: "demo", sentence: `This is a scripted demo: ${span} of simulated decisions in ${latest?.pool.label ?? "one pool"}, written to show how Mr Bands proposes and the guards decide. No wallet, no real money, nothing sent to Solana.` };
   }
   if (mode === "paper") {
     return { mode, lastTs, ageMs, short: "paper", sentence: `Paper trading: Mr Bands is working real pools at live prices with a pretend wallet. Bands, fees and hedges are marked against the market; nothing is sent to Solana. Last decision ${ago}.` };

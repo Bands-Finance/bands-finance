@@ -110,7 +110,7 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
     if (greeted.current || agent.state === "provisioning" || agent.state === "idle") return;
     greeted.current = true;
     if (agent.state === "error") {
-      cli.print([{ kind: "error", text: agent.error ?? "could not reach your advisor." }]);
+      cli.print([{ kind: "error", text: agent.error ?? "could not reach your mr bands." }]);
       return;
     }
     const prior = agent.messages;
@@ -118,12 +118,12 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
     cli.print([
       ...prior.map((m) => ({ kind: m.role === "user" ? ("input" as const) : ("agent" as const), text: m.content })),
       notConfigured
-        ? { kind: "error" as const, text: "the advisor is not configured on this host: no model key. commands still work; messages will be refused.", suggest: ["/status", "/help"] }
+        ? { kind: "error" as const, text: "your mr bands is not configured on this host: no model key. commands still work; messages will be refused.", suggest: ["/status", "/help"] }
         : prior.length
           ? { kind: "system" as const, text: `${agent.name} is live.`, suggest: ["/help"] }
           : {
               kind: "system" as const,
-              text: `${agent.name} is live and it is yours. it reads the live desk every turn and remembers this conversation.`,
+              text: `${agent.name} is live and it is yours. it reads his desk every turn and remembers this conversation.`,
               suggest: ["what is on his book today?", "/explore", "/help"],
             },
     ]);
@@ -219,7 +219,7 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
             <i />
           </span>
           <span className="term__title">
-            {agent.agentId ?? `bands-u-${who}`} · {agent.name} · your advisor
+            {agent.agentId ?? `bands-u-${who}`} · {agent.name} · your mr bands
           </span>
           <span className={`term__status term__status--${dot}`}>
             <span className="term__status-dot" />
@@ -229,11 +229,11 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
 
         <div className="term__body" ref={bodyRef}>
           <p className="term__boot">
-            {agent.name} · advisor keyed to {who} · reads Mr Bands' journal, screen and guards each turn · holds no key, moves nothing · messages
+            {agent.name} · keyed to {who} · reads Mr Bands' journal, screen and guards each turn · holds no key, moves nothing · messages
             {agent.creditsInfo?.enforced ? " cost 1 credit" : " are free right now"} · commands are free
           </p>
 
-          {agent.state === "provisioning" && <p className="term__line term__line--dim">// setting up your advisor…</p>}
+          {agent.state === "provisioning" && <p className="term__line term__line--dim">// setting up your mr bands…</p>}
 
           {cli.lines.map((l, i) => (
             <Line key={`${l.ts}-${i}`} line={l} who={who} isLast={i === cli.lines.length - 1} onRun={runLine} disabled={cli.busy || thinking} />
@@ -275,7 +275,7 @@ function AdvisorTerminal({ token, address }: { token: string; address: string })
               maxLength={2000}
               spellCheck={false}
               autoComplete="off"
-              aria-label="Your advisor's input"
+              aria-label="Your Mr Bands' input"
             />
           </form>
         </div>
