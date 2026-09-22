@@ -79,11 +79,19 @@
          daily and exposure budget; the desk policy and every guard still decide. Paper only: a live book also needs
          AUTO_APPROVE_LIVE=true and an AUTO_APPROVE_PROPOSERS allowlist, and ops/live.env sets neither. -->
     <key>AUTO_APPROVE_PROPOSALS</key><string>true</string>
-    <!-- The paper desk proposes from its rulebook until the model screen ships (only non-obvious calls go to
-         the model; in-range and gated holds are answered by code). .env says DECIDER=openhermit and now holds
-         OPENHERMIT_TOKEN for his X replies; without this line a restart would send about 1,500 decisions a day to
-         Opus on the gateway's shared OpenRouter key. This plist value wins over .env (dotenv never overrides). -->
-    <key>DECIDER</key><string>policy</string>
+    <!-- Mr Bands on OpenHermit (docs/openhermit.md): his agent on the gateway proposes, the guards decide, and an
+         unusable answer falls back to the desk policy. The model screen (src/agent/decide.ts screenDecision) answers the
+         obvious holds in code (in range, gated, no size, flagged, not worth it: about 88% of his decisions) and labels
+         them "screen", so only the real calls reach the model, about 160 a day. MODEL_CALLS_PER_DAY is a hard cap
+         counted on disk in data-live/model-budget.json (UTC day; clamped to 500); once spent he decides from the desk
+         policy with a note until the next UTC day. At Opus list price that is about 11 to 18 dollars a day, 14 to 22 at
+         the cap, on the OpenRouter key the gateway shares with the Meridian fleet. Switch back with DECIDER=policy, then
+         bootout and bootstrap this service. (No double hyphens in this comment: they are not legal inside XML comments.) -->
+    <key>DECIDER</key><string>openhermit</string>
+    <key>OPENHERMIT_GATEWAY_URL</key><string>http://127.0.0.1:4000</string>
+    <key>OPENHERMIT_AGENT_ID</key><string>mr-bands</string>
+    <key>OPENHERMIT_TIMEOUT_MS</key><string>60000</string>
+    <key>MODEL_CALLS_PER_DAY</key><string>200</string>
     <!-- SELF LEARNING (src/desk/learning.ts). He learns from his own closed seats on THIS book and writes what he
          learned to data-live/learning.json, with one journalled row per change in data-live/learning.jsonl. Two knobs,
          both multiples of 1 or less, both applied through paths that only ever tighten: the share of a pool's face fee
@@ -100,16 +108,6 @@
     <key>LEARN_CAL_WINDOW_H</key><string>168</string>
     <key>LEARN_CAL_MIN_N</key><string>20</string>
     <key>LEARN_MIN_GAP_H</key><string>6</string>
-    <!-- Mr Bands on OpenHermit (docs/openhermit.md): uncomment to have the agent on the gateway propose instead of
-         the desk policy (the guards still decide; an unusable answer falls back to the desk policy). First put
-         OPENHERMIT_TOKEN and PLATFORM_HOUSE_TOKEN in .env, then run the openhermit script's provision command for the
-         paper MCP, then its ask command (both spelled out in docs/openhermit.md). Switch back with DECIDER=policy, then
-         bootout and bootstrap this service. (No double hyphens in this comment: they are not legal inside XML comments.)
-    <key>DECIDER</key><string>openhermit</string>
-    <key>OPENHERMIT_GATEWAY_URL</key><string>http://127.0.0.1:4000</string>
-    <key>OPENHERMIT_AGENT_ID</key><string>mr-bands</string>
-    <key>OPENHERMIT_TIMEOUT_MS</key><string>60000</string>
-    -->
   </dict>
 </dict>
 </plist>
