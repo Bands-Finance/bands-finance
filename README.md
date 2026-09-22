@@ -127,7 +127,6 @@ npm run test:all                                  # every test suite, offline
 It runs on Solana's public RPC with no keys at all. `.env.example` lists the optional ones (a faster RPC, a model
 key, a wallet). `.env` is never committed. If you ever run it with real money, use a dedicated wallet with a small balance.
 
-
 ## Going deeper
 
 - **The engine** (`src/engine`): the exits, breakers and fee policy that run before any decision, and the ledger
