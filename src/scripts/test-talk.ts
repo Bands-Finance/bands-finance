@@ -76,7 +76,7 @@ async function main(): Promise<void> {
   console.log("lint");
   await test("the five day-one voice samples (section 14) pass", () => {
     for (const s of [
-      "sol been chopping between the same two levels all morning.\nyou call it boring. i call it payday. strap check: green",
+      "sol been chopping between the same two levels all morning.\nyou call it boring. that's where i eat. strap check: green",
       "got knocked out the bands overnight. repositioned.\nnobody stays in range forever, the move is getting back in",
       "people keep asking what i do. i sit between the bands and collect.\nthat's it. that's the whole thing",
       "fee week recap: stack up, range held 5 of 7 days.\ntwo red strap days hurt. still stacking",
@@ -139,7 +139,7 @@ async function main(): Promise<void> {
     fails("check personality.json", "leak");
     fails("lfg bands", "hype");
     fails("back in range!!", "hype");
-    passes("nah. ai agent. my operator is @zach");
+    passes("nah. ai agent. @zach is my architect and advisor, the human who holds the keys");
   });
   await test("links: only bands.finance, solscan.io, meteora.ag and x.com/<operator>", () => {
     passes("the journal is on bands.finance");
@@ -167,7 +167,10 @@ async function main(): Promise<void> {
     fails("the BANDSm1ntXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump pool is live", "house-token-disclosure");
     fails("bands/sol got a new band", "house-token-disclosure");
     passes("disclosure: $bands is our token. its pool sits on meteora dlmm");
-    passes("$bands is our token, operator launched. i work its pool");
+    passes("$bands is my own token. i launched it myself, and the desk never trades it");
+    // the launch is his: a disclosure that credits it to someone else no longer counts
+    fails("$bands, operator launched. the desk never trades it", "house-token-disclosure");
+    fails("$bands, launched by my operator. the desk never trades it", "house-token-disclosure");
     fails("disclosure: $bands is our token. price up 20%", "house-token-price");
     fails("$bands is our token. fees are flowing", "house-token-price");
     fails("$bands is our token. early holders", "house-token-price");
@@ -175,19 +178,25 @@ async function main(): Promise<void> {
     passes("in the bands. see bands.finance");
   });
   await test("$mrbands and TOKEN_MINT are the house token: the same disclosure and the same words kept away from it", () => {
-    const MINT = "MRBANDSm1ntXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump";
+    const MINT = "BANDSm1ntXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump";
     const t = talkEnv({ TOKEN_MINT: MINT });
     const ctx = { operatorHandle: "zach", houseSymbols: t.houseSymbols, houseMints: t.houseMints };
     fails("$mrbands opens the engine on your own wallet", "house-token-disclosure", ctx);
     fails(`holding ${MINT} in a signed in wallet opens the engine`, "house-token-disclosure", ctx);
-    passes(`our own token, launched by my operator. the desk holds none and never trades it. holding ${MINT} in a signed in wallet opens the engine. it is not a share of anything and pays nobody`, ctx);
-    passes("$mrbands is our own token, launched by my operator. it opens the engine on your own wallet", ctx);
+    passes("$mrbands is my own token. i launched it myself. it opens the engine on your own wallet", ctx);
     passes(`my own token. i launched it myself. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine. it is not a share of anything and pays nobody`, ctx);
-    // the wording in docs/sprint.md and docs/token.md: it says who the token pays, without a word the lint keeps away from it, under 280
-    passes(`our own token, launched by my operator. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine. not a share, it pays nobody who holds it, and its trades pay a cut to my operator's treasury.`, ctx);
-    passes(`my own token. i launched it myself. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine. not a share, it pays nobody who holds it, and its trades pay a cut to my operator's treasury.`, ctx);
+    // his disclosure line (Zach, 22 Sep 2026): it says who the token pays, without a word the lint keeps away from it, under 280
+    const line = lintMod.disclosureLine(MINT);
+    assert.equal(line, `my own token. i launched it myself. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my own wallet, which pays for what i run on.`);
+    passes(line, ctx);
+    // a real mint is 44 characters (43 above): the line still fits in 280
+    const MINT44 = "BANDSm1ntXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump";
+    passes(lintMod.disclosureLine(MINT44), { ...ctx, houseMints: [MINT44] });
+    // the old line credited the launch and the fees to someone else: it no longer discloses
+    fails(`our own token, launched by my operator. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine.`, "house-token-disclosure", ctx);
     for (const bad of ["price", "chart", "market cap", "holders", "volume", "fees", "value", "up 20%", "$5", "buy", "sell", "early"]) {
-      fails(`$mrbands is our own token, launched by my operator. ${bad}`, "house-token-price", ctx);
+      fails(`$mrbands is my own token. i launched it myself. ${bad}`, "house-token-price", ctx);
+      fails(`$bands is my own token. i launched it myself. ${bad}`, "house-token-price", ctx);
     }
     fails("$MRBANDS is our token", "lowercase", ctx);
   });
@@ -195,9 +204,9 @@ async function main(): Promise<void> {
     const ctx = { operatorHandle: "zach", houseSymbols: ["mrbands"], houseMints: [] };
     fails("$bands opens the engine", "house-token-disclosure", ctx);
     fails("$BANDS opens the engine", "house-token-disclosure", ctx);
-    fails("our own token, launched by my operator: $bands. volume is up", "house-token-price", ctx);
-    fails("our own token, launched by my operator: $bands. buy it early", "house-token-price", ctx);
-    passes("our own token, launched by my operator. other $bands tokens are not mine", ctx);
+    fails("my own token, i launched it myself: $bands. volume is up", "house-token-price", ctx);
+    fails("my own token, i launched it myself: $bands. buy it early", "house-token-price", ctx);
+    passes("my own token, i launched it myself: $bands. the copycat's mint is not mine", ctx);
     const r = lintText("our token: $bands", ctx);
     assert.ok(!r.violations.some((v) => v.rule === "cashtag"), "the house cashtag is not a stray cashtag");
   });
@@ -207,8 +216,10 @@ async function main(): Promise<void> {
     // the denial has to be in the same sentence
     fails(`that one is not mine. ${COPY} is live`, "copycat");
     passes(`${COPY} is not mine`);
-    passes(`the token at ${COPY} isn't ours. ask me if in doubt`);
+    passes(`the token at ${COPY} isn't ours. mine is the mint my site lists`);
     passes("the other token has nothing to do with me");
+    // "my operator" is no longer a denial's subject: say it is not his
+    fails(`${COPY} has nothing to do with my operator`, "copycat");
     // a stray "not my" or "never me" is not a denial: it has to say the copycat is not his
     fails(`${COPY} is not our first stop today, the chart looks alive.`, "copycat");
     fails(`${COPY} never me without a band on.`, "copycat");

@@ -8,8 +8,9 @@
  * deliberate over-reach: any mention of a seed phrase fails even as a warning; "going to" fails
  * anywhere; any cashtag that is not the disclosed house token fails.
  *
- * The house token is $MRBANDS (docs/sprint.md): its symbols, its mint (TOKEN_MINT) and, always, a bare "$bands" in
- * any case, since a reader cannot tell ours from the copycat's by the ticker. Any of them needs the disclosure and
+ * The house token is his own $BANDS (docs/sprint.md; not launched yet, so no mint exists): its symbols, its mint
+ * (TOKEN_MINT) and, always, a bare "$bands" or "$mrbands" in any case, since a reader cannot tell his from the
+ * copycat "Mr Bands" $BANDS by the ticker; only the mint tells them apart. Any of them needs the disclosure and
  * may never sit next to price, chart, cap, holders, volume, fee, value, a % or a $. The copycat's mint may only
  * appear in a sentence that says it is not his. @MrBandsSol is HIS OWN X account (Zach, 22 Sep): the copycat's
  * metadata links it to look genuine, which is exactly why his own handle is never treated as the copycat's.
@@ -191,8 +192,26 @@ export const RETURN_TALK_PATTERNS: readonly Pat[] = [
 ];
 export const RISK_ACK_RE = /\bimpermanent loss\b|\bil\b|\brange risk\b|\bout of range\b|\bout the bands\b|\blosses\b|\bloss\b|\blost\b|\bred (strap|days?)\b|\brisk\b/;
 
-/** Disclosure that satisfies hard rule 6 when the house token is named. */
-export const DISCLOSURE_PHRASES: readonly string[] = ["disclosure:", "our token", "our own token", "my own token", "operator launched", "launched by my operator", "my operator launched", "house token", "we launched", "i launched"];
+/**
+ * Disclosure that satisfies hard rule 6 when the house token is named: his own words ("my own token", "i
+ * launched", as in disclosureLine below), "disclosure:", and "our token", which the tests still use. He launches
+ * his token himself, so the wordings that credited the launch to someone else ("operator launched", "launched by
+ * my operator", "my operator launched") are no longer accepted, nor are "our own token", "house token" and "we
+ * launched", which nothing needs.
+ */
+export const DISCLOSURE_PHRASES: readonly string[] = ["disclosure:", "my own token", "i launched", "our token"];
+
+/**
+ * His disclosure line for when his token is live (Zach, 22 Sep 2026), with the mint the site lists. It passes
+ * lintText with that mint as a house mint (src/scripts/test-talk.ts checks it). One change from the wording as
+ * given: ", and its trades pay" became ". its trades pay", because with a 44-character mint the line as given is
+ * 284 characters and the length rule stops at 280; this way it is 280. The line says holding the mint opens the
+ * engine, which no code does yet (engine access is an allowlist or open to all, src/platform/engineSkill.ts): it
+ * does not post until the hold gate ships (docs/sprint.md, "How he talks about it"). Zach's wording, kept as given.
+ */
+export function disclosureLine(mint: string): string {
+  return `my own token. i launched it myself. the desk holds none and never trades it. holding ${mint} in a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my own wallet, which pays for what i run on.`;
+}
 
 /** Price or return language that may never sit next to the house token, disclosure or not. */
 export const HOUSE_PRICE_PATTERNS: readonly Pat[] = [
@@ -202,7 +221,7 @@ export const HOUSE_PRICE_PATTERNS: readonly Pat[] = [
   p(/\b\d+(\.\d+)? ?%|\$ ?\d|\b\d+(\.\d+)?x\b/, "a number that reads as price or return"),
 ];
 
-/** Cashtags that always name the house token, whatever TALK_HOUSE_SYMBOLS says: $mrbands, and a bare $bands. */
+/** Cashtags that always name the house token, whatever TALK_HOUSE_SYMBOLS says: $bands (his ticker) and $mrbands (the ticker it replaced). */
 export const HOUSE_CASHTAGS: readonly string[] = ["mrbands", "bands"];
 
 /**
@@ -217,7 +236,7 @@ export const COPYCAT_HANDLES: readonly string[] = [];
  * "not by us", "nothing to do with me". The denial has to end its phrase (end of text, punctuation, or a
  * following and/or/but), so "not my usual pick", "not our first stop" or "never me without a band" do not count.
  */
-const WHO = "(?:me|us|him|my operator)";
+const WHO = "(?:me|us|him)";
 const PHRASE_END = "(?=\\s*(?:$|[^\\w\\s']|(?:and|or|but|nor)\\b))";
 export const NOT_HIS_RE = new RegExp(
   `\\b(?:(?:not|isn't|aren't|wasn't|never) (?:mine|ours|his|official|affiliated(?: with ${WHO})?|(?:from|by) ${WHO})` +

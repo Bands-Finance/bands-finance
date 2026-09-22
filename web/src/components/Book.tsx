@@ -171,7 +171,6 @@ function BandStrip({ b, now }: { b: BandCard; now: number }) {
             <dt>fees earned</dt>
             <dd className="livepos__led--up">
               {plusFee(b.fees)}
-              {b.pacePerDay !== null && b.pacePerDay > 0 && <span className="livepos__led-pace">{feeSol(b.pacePerDay)}/day pace</span>}
             </dd>
           </div>
           <div className="livepos__led-total">

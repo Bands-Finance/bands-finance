@@ -4,7 +4,7 @@
   "gasReserveSol": 1,
   "stopLossPct": 15,
   "maxBinWidth": 69,
-  "maxTxPerDay": 48,
+  "maxTxPerDay": 240,
   "minSecondsBetweenActions": 600,
   "maxSlippagePct": 1,
   "maxPriceMovePctPerCycle": 40

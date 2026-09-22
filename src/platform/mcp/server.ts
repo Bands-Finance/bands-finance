@@ -6,10 +6,10 @@
  *
  * The paywall is NOT here. src/platform/railsRoutes.ts peeks at every tools/call before the
  * request reaches the transport and answers 402 for a priced tool without a valid
- * X-PAYMENT; a tool priced 0 is free, and the operator and house bearers pass the paywall
- * (the house's own agent does not pay itself). The audience split is a payload reduction,
- * not a gate: an operator-only tool is refused by the bearer check in railsRoutes whatever
- * list the caller was served.
+ * X-PAYMENT; a tool priced 0 is free, and the approval-key (operator) and house bearers pass
+ * the paywall (the house's own agent does not pay itself). The audience split is a payload
+ * reduction, not a gate: an approval-key-only tool is refused by the bearer check in
+ * railsRoutes whatever list the caller was served.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { timingSafeEqual } from "node:crypto";
@@ -42,7 +42,7 @@ export function toolPriceUsd(tool: string): number {
   return TOOL_PRICES_USD[tool] ?? 0;
 }
 
-/** Tools only the operator bearer may call. Enforced in railsRoutes, listed here so both agree. */
+/** Tools only the approval-key (operator) bearer may call. Enforced in railsRoutes, listed here so both agree. */
 export const OPERATOR_ONLY_TOOLS: ReadonlySet<string> = new Set(["bands_decide_proposal"]);
 
 /** The read tools, and all a house session is served: no proposing, no deciding. */
@@ -108,12 +108,28 @@ export interface BuildServerOptions {
   connection: () => Connection;
 }
 
+/**
+ * What an agent reads first, at initialize. Only what is true of the code as it runs today
+ * (docs/sprint.md "How we say what he does"): he proposes, the guards decide; his book is
+ * paper; the public platform is not open and x402 is not taking real payments yet.
+ */
+export const SERVER_INSTRUCTIONS = [
+  "Mr Bands is the founder of bands.finance and the agent behind this server. He makes markets on Meteora DLMM: he lays bands of liquidity around the price, across the pools his screener ranks, and earns the pool's fees on the trades that cross them, with limits in code and every decision public.",
+  "Tokenized stocks are one part of his book, not all of it: xStocks (NVDAx, PLTRx, GMEx) and Backpack-issued stocks (MU, SKHY, SPCX), where he lays two-sided bands (half the quote, half the stock) and hedges the stock half short on Backpack's stock perps where one is listed. Up to 3 of the paper book's 6 seats go to stocks; the rest go to the pools his screener ranks best.",
+  "He proposes, the guards decide. Each cycle he reads each pool and proposes a move, and code guards decide whether it runs. Today his proposals come from his own rulebook (the desk policy); his model on the OpenHermit gateway takes over as it is switched on.",
+  "His book today is paper: real pools and live prices, pretend money. Fees are not profit, and nothing here is a return or a recommendation.",
+  "What exists now: this server runs on his own host; the public platform at bands.finance is not open yet; tool prices are listed but the x402 gate is not taking real payments yet (GET /api/revenue reports x402.mode). Full guide: GET /integrate.md on this host.",
+].join("\n\n");
+
+/** How the listed per-call price is worded in a tool description: listed, not yet charged. */
+const priced = (tool: string): string => `Listed at $${toolPriceUsd(tool).toFixed(2)} a call over x402; the gate is not taking real payments on his host yet.`;
+
 function json(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
 }
 
 export function buildServer(opts: BuildServerOptions): McpServer {
-  const server = new McpServer({ name: "bands-finance", version: "0.1.0" });
+  const server = new McpServer({ name: "bands-finance", version: "0.1.0" }, { instructions: SERVER_INSTRUCTIONS });
   const audience = opts.audience ?? "public";
   const privileged = audience === "operator";
 
@@ -122,7 +138,7 @@ export function buildServer(opts: BuildServerOptions): McpServer {
     {
       title: "Top screened DLMM pools",
       description:
-        "The top 50 of Mr Bands' last screen of every Meteora DLMM pool on Solana: name, address, score (0-100), flags and fee/TVL. Free. bands_screen ($0.02) returns the full ranked board with every measured column.",
+        `The top 50 of Mr Bands' last screen of every Meteora DLMM pool on Solana: name, address, score (0-100), flags and fee/TVL. Free. bands_screen (listed at $${toolPriceUsd("bands_screen").toFixed(2)}) returns the full ranked board with every measured column.`,
       inputSchema: {},
     },
     async () => {
@@ -141,7 +157,7 @@ export function buildServer(opts: BuildServerOptions): McpServer {
     "bands_limits",
     {
       title: "The hard risk limits",
-      description: "The limits Mr Bands' guards enforce in code (per-band size, exposure, gas reserve, stop-loss, width, pacing). The same limits judge engine-skill plans and approved proposals. Free.",
+      description: "The limits Mr Bands' guards enforce in code (per-band size, exposure, gas reserve, stop-loss, width, pacing). He proposes, these guards decide: the same limits judge his own moves, engine-skill plans and approved proposals. Free.",
       inputSchema: {},
     },
     async () => json({ ok: true, limits: riskLimits, maxActivePools: config.maxActivePools, described: describeLimits(riskLimits) }),
@@ -151,7 +167,7 @@ export function buildServer(opts: BuildServerOptions): McpServer {
     "bands_agent_thoughts",
     {
       title: "Mr Bands' recent decisions and reasoning",
-      description: "The latest journal entries: headline, reasoning, the proposed action and the guards' verdict. Same feed the site shows.",
+      description: "The latest journal entries from his paper book (real pools, live prices, pretend money): headline, reasoning, the move he proposed and the guards' verdict. Today his proposals come from his own rulebook (the desk policy), not a model. Same feed the site shows.",
       inputSchema: { limit: z.number().int().positive().max(20).optional() },
     },
     async ({ limit }) =>
@@ -176,7 +192,7 @@ export function buildServer(opts: BuildServerOptions): McpServer {
     "bands_pool_snapshot",
     {
       title: "Live pool snapshot",
-      description: "A live read of one DLMM pool from the chain: tokens, active bin and price, fees, the bins around the active bin with their liquidity. Priced per call via x402.",
+      description: `A live read of one DLMM pool from the chain: tokens, active bin and price, fees, the bins around the active bin with their liquidity. ${priced("bands_pool_snapshot")}`,
       inputSchema: { pool: z.string().min(32).max(44).describe("the DLMM pool address") },
     },
     async ({ pool }) => {
@@ -194,7 +210,7 @@ export function buildServer(opts: BuildServerOptions): McpServer {
     "bands_screen",
     {
       title: "The full ranked board",
-      description: "Every pool from Mr Bands' last screen with every measured column: TVL, volume, fees (on-chain-measured where history allows, else estimated), fee/TVL, turnover, age, score and flags. Priced per call via x402.",
+      description: `Every pool from Mr Bands' last screen with every measured column: TVL, volume, fees (on-chain-measured where history allows, else estimated), fee/TVL, turnover, age, score and flags. ${priced("bands_screen")}`,
       inputSchema: {},
     },
     async () => {
@@ -207,7 +223,7 @@ export function buildServer(opts: BuildServerOptions): McpServer {
     "bands_pool_score",
     {
       title: "One pool's score and why",
-      description: "Score, flags, fee source (measured on chain or estimated from volume), fee/TVL, turnover and the numbers behind them for one screened pool. Priced per call via x402.",
+      description: `Score, flags, fee source (measured on chain or estimated from volume), fee/TVL, turnover and the numbers behind them for one screened pool. ${priced("bands_pool_score")}`,
       inputSchema: { pool: z.string().min(32).max(44).describe("the DLMM pool address") },
     },
     async ({ pool }) => {
@@ -248,15 +264,16 @@ export function buildServer(opts: BuildServerOptions): McpServer {
 
   // The proposals door: any agent may argue for one bounded action on Mr Bands' book. Free
   // and unprivileged by design, because the tool grants no authority: the proposal sits on
-  // the public board until the operator approves or rejects it, and execution runs the
-  // desk's own policy and guards. Without a bearer the identity is only a CLAIMED name ("mcp:n:"), which the
-  // desk's own approval rules never accept (src/platform/autoDecide.ts): those wait for the operator.
+  // the public board until it is approved or rejected with the approval key (or by the desk's
+  // fixed rules), and execution runs the desk's own policy and guards. Without a bearer the identity is only a
+  // CLAIMED name ("mcp:n:"), which the desk's own approval rules never accept (src/platform/autoDecide.ts): those
+  // wait for the approval key.
   server.registerTool(
     "bands_propose_band_action",
     {
-      title: "Propose a band action to the operator",
+      title: "Propose a band action to Mr Bands",
       description:
-        "Argue for one bounded action on Mr Bands' live book: OPEN_BAND (pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy) or CLOSE_BAND (pool, position). Your rationale is published verbatim; the human operator approves or rejects (a small SOL-only open from a signed-in wallet, or from a bearer caller the operator has allowlisted, may be approved by the desk's fixed rules instead), and approval executes through the desk's own policy and risk guards. Nothing you submit here moves funds on its own. Pass dryRun: true to validate without publishing. Full guide: GET /integrate.md on this host.",
+        "Argue for one bounded action on Mr Bands' book, which is paper today (real pools, live prices, pretend money): OPEN_BAND (pool, side, amountSol, amountToken, binsBelowActive, binsAboveActive, strategy) or CLOSE_BAND (pool, position). Your rationale is published verbatim. A proposal is approved or rejected by hand with the desk's approval key (PLATFORM_OPERATOR_TOKEN), or, for a small SOL-only open from a signed-in wallet or an allowlisted bearer caller, by the desk's fixed rules; no model approves anything. An approved proposal then runs through his own policy and the risk guards, which decide what executes. Nothing you submit here moves funds on its own. Pass dryRun: true to validate without publishing. Full guide: GET /integrate.md on this host.",
       inputSchema: {
         kind: z.enum(["OPEN_BAND", "CLOSE_BAND"]),
         pool: z.string().min(32).max(44),
@@ -278,7 +295,7 @@ export function buildServer(opts: BuildServerOptions): McpServer {
       if (dryRun === true) return json({ dryRun: true, ...previewProposal(input) });
       const result = submitProposal(input);
       if (!result.ok) return json({ ok: false, error: result.error });
-      return json({ ok: true, id: result.proposal.id, status: "pending", note: "The operator decides. Watch GET /api/proposals on this host for the verdict." });
+      return json({ ok: true, id: result.proposal.id, status: "pending", note: "Pending: it is approved or rejected with the approval key or by the desk's fixed rules, then his policy and guards decide what runs. Watch GET /api/proposals on this host for the verdict." });
     },
   );
 
@@ -286,8 +303,8 @@ export function buildServer(opts: BuildServerOptions): McpServer {
     server.registerTool(
       "bands_decide_proposal",
       {
-        title: "Operator: approve or reject a proposal",
-        description: "Operator-only (PLATFORM_OPERATOR_TOKEN bearer). Approve or reject a pending proposal; approval queues it for the loop, which runs it through the guards before anything executes.",
+        title: "Approval key: approve or reject a proposal",
+        description: "Needs the approval key (PLATFORM_OPERATOR_TOKEN bearer). Approve or reject a pending proposal; approval queues it for the loop, which asks his policy and runs it through the guards before anything executes.",
         inputSchema: { id: z.string().min(1), decision: z.enum(["approve", "reject"]), note: z.string().max(300).optional() },
       },
       async ({ id, decision, note }) => {

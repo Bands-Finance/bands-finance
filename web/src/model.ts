@@ -56,13 +56,13 @@ export function sideWords(side: string, quote: QuoteView): string {
   return quote.symbol === "SOL" ? w : w.replace(/^SOL\b/, quote.symbol);
 }
 export const GLOSS = {
-  band: "A band is a slice of price Mr Bands puts SOL into. Every trade that crosses it pays him a fee.",
+  band: "A band is a slice of price Mr Bands puts liquidity into: SOL, or in a tokenized stock's pool both the quote and the stock. Every trade that crosses it pays him a fee.",
   inRange: "In range means the current price is inside the band, so it is earning right now.",
   bin: "Pools on Meteora cut price into small steps called bins. A band is a run of bins.",
-  dryRun: "Dry run: he decides exactly as he would live, the wallet builds and simulates the transaction, and nothing is broadcast.",
+  dryRun: "Dry run: he proposes and the guards decide exactly as they would live, the wallet builds and simulates the transaction, and nothing is broadcast.",
   paper: "Paper trading: real pools, real prices, a pretend wallet. Every band, fee and hedge below is marked against the live market, and no transaction is ever sent.",
-  demo: "Demo data: a seeded five-hour example of how he decides, not a real run.",
-  guards: "Plain code around the AI: caps, a stop-loss, a cooldown. It can veto him or pull him out, and it prints why.",
+  demo: "Demo data: a seeded five-hour example of how he proposes and the guards decide, not a real run.",
+  guards: "Plain code around whatever proposes his moves: caps, a stop-loss, a cooldown. It decides: it can veto him or pull him out, and it prints why.",
 };
 
 /* ---------- verdicts ---------- */
@@ -647,7 +647,7 @@ export function statusOf(newestFirst: JournalEntry[], now: number, demo: boolean
   const ago = ageMs === null ? "" : ageMs < 90e3 ? "a minute ago" : ageMs < 3600e3 ? `${Math.round(ageMs / 60e3)} min ago` : ageMs < 86400e3 ? `${Math.round(ageMs / 3600e3)} h ago` : `${Math.round(ageMs / 86400e3)} d ago`;
   const span = latest && newestFirst.length ? (() => { const first = new Date(newestFirst[newestFirst.length - 1].ts).getTime(); const h = (lastTs! - first) / 3600e3; return h < 48 ? `${Math.round(h)} hours` : `${Math.round(h / 24)} days`; })() : "";
   if (mode === "demo") {
-    return { mode, lastTs, ageMs, short: "demo", sentence: `This is a scripted demo: ${span} of simulated decisions in ${latest?.pool.label ?? "one pool"}, written to show how Mr Bands decides. No wallet, no real money, nothing sent to Solana.` };
+    return { mode, lastTs, ageMs, short: "demo", sentence: `This is a scripted demo: ${span} of simulated decisions in ${latest?.pool.label ?? "one pool"}, written to show how Mr Bands proposes and the guards decide. No wallet, no real money, nothing sent to Solana.` };
   }
   if (mode === "paper") {
     return { mode, lastTs, ageMs, short: "paper", sentence: `Paper trading: Mr Bands is working real pools at live prices with a pretend wallet. Bands, fees and hedges are marked against the market; nothing is sent to Solana. Last decision ${ago}.` };

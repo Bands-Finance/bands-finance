@@ -40,7 +40,7 @@ interface Family {
 const NA = "n/a";
 const n = (v: number | undefined, unit = "") => (v === undefined ? NA : `${v}${unit}`);
 
-// The rules are plain code around the AI: caps, reserves, a stop-loss, a
+// The rules are plain code around whatever proposes his moves: caps, reserves, a stop-loss, a
 // cooldown, an off switch. Grouped by what they govern so the ten of them read
 // as a rulebook, not a settings dump. The numbers come from /api/limits; the
 // sentences are what each number means.
@@ -137,11 +137,11 @@ function familiesOf(l: RiskLimits | null, maxActivePools: number): Family[] {
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
 /**
- * The rules he can't break: enforced in code, outside the AI. Rendered in the
+ * The rules he can't break: enforced in code, outside his proposals. Rendered in the
  * same card grammar as the ported catalog so it sits natively between the
  * explainer and the journal.
  */
-export function Guards({ limits, record, maxActivePools = 3 }: GuardsProps) {
+export function Guards({ limits, record, maxActivePools = 6 }: GuardsProps) {
   const ref = useReveal<HTMLElement>();
   const families = familiesOf(limits, maxActivePools);
   let idx = 0;
@@ -153,7 +153,7 @@ export function Guards({ limits, record, maxActivePools = 3 }: GuardsProps) {
         <span className="eyebrow">The guards · enforced in code</span>
         <h2 className="tools__title">The rules he can't break</h2>
         <p className="tools__sub">
-          Enforced in code, outside the AI. He sees them; he cannot change them.
+          Enforced in code, outside whatever proposes his moves. He sees them; he cannot change them.
           {!limits && <> The limits file has not answered yet, so the numbers below are blank; the rules still run.</>}
         </p>
       </div>

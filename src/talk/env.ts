@@ -2,7 +2,8 @@
  * The talking layer's knobs (docs/mr-bands-agent.md placeholders), read straight from an env object so
  * tests pin their own. Empty strings read as unset (dotenv writes `KEY=` as "").
  *
- *   OPERATOR_HANDLE          {{OPERATOR_HANDLE}}: the operator's X handle. REQUIRED to post and to apply any
+ *   OPERATOR_HANDLE          {{OPERATOR_HANDLE}}: Zach's X handle (his architect and advisor, and the account X's
+ *                            automated-account label names as his manager). REQUIRED to post and to apply any
  *                            living-layer change; no default. Stored without "@", lowercased.
  *   X_HANDLE                 {{X_HANDLE}}: Mr Bands' own X handle. REQUIRED to post; no default.
  *   TALK_VENUES              {{VENUES}}: how posts name the venues (default: the TRADABLE_VENUES labels,
@@ -17,7 +18,7 @@
  *   TALK_CHOP_WINDOW_HOURS   the chop window (default 6)
  *   TALK_HOUSE_SYMBOLS       the house token's symbols for the disclosure lint (default "mrbands,bands"; a bare
  *                            "$bands" and "$mrbands" count as the house token whatever this says, src/talk/lint.ts)
- *   TOKEN_MINT               the house token's mint, $MRBANDS once launched (with PAIR_HOUSE_MINTS, which stays
+ *   TOKEN_MINT               the house token's mint, his own $BANDS once launched (with PAIR_HOUSE_MINTS, which stays
  *                            unset through 8 Oct; both read through src/risk/house.ts; default none)
  *   POSTS_PER_DAY            {{POSTS_PER_DAY}} original posts per UTC day (default 8)
  *   REPLIES_PER_HOUR         {{REPLIES_PER_HOUR}} replies per rolling hour (default 10)

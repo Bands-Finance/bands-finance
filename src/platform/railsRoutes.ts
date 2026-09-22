@@ -80,9 +80,9 @@ export interface Paywall {
  * the ledger is the truth, and nothing arrived.
  *
  * The operator and house bearers pass the paywall outright: the house's own agent (Mr Bands
- * on OpenHermit, reasoning through this very server with the house token) must not pay
- * itself, and a payment it did send would be revenue from our own treasury to our own
- * treasury. The checks are the same constant-time match that guards operator-only tools; a
+ * on the OpenHermit gateway, reading pools through this very server with the house token)
+ * must not pay itself, and a payment it did send would move his own money from his own
+ * wallet back to the x402 payee. The checks are the same constant-time match that guards operator-only tools; a
  * wrong bearer is a stranger and pays like one. Nothing else about the paywall changes.
  */
 export async function checkPayment(gate: PaymentGate, revenue: RevenueLedger, body: unknown, paymentHeader: string | undefined, authorization?: string | undefined): Promise<Paywall | null> {
@@ -167,7 +167,7 @@ export function railsRoutes(app: Hono): void {
     // the paywall and still be dispatched element by element by the transport.
     if (Array.isArray(body)) return rpcError(c, 400, -32600, "batched requests are not accepted; send one JSON-RPC message per request");
     const auth = c.req.header("authorization");
-    if (!mcpRequestAllowed(body, auth)) return c.json({ error: "this tool is operator-only; data tools need no auth, just x402 payment" }, 401);
+    if (!mcpRequestAllowed(body, auth)) return c.json({ error: "this tool needs the approval key (PLATFORM_OPERATOR_TOKEN bearer); data tools need no auth, only the listed x402 price" }, 401);
     const paywall = await checkPayment(gate, revenue, body, c.req.header("x-payment"), auth);
     if (paywall) return c.json(paywall.body, paywall.status);
 
@@ -311,7 +311,8 @@ export function railsRoutes(app: Hono): void {
   }
 
   // ---------------------------------------------------------------------------------
-  // Proposals: agents propose, the operator decides, the loop executes through the guards.
+  // Proposals: agents propose; approval is the approval key or the desk's fixed rules; the loop
+  // asks his policy and the guards decide what executes.
   // ---------------------------------------------------------------------------------
   const STATUSES: ReadonlySet<string> = new Set<ProposalStatus>(PROPOSAL_STATUSES);
   app.get("/api/proposals", (c) => {
@@ -347,7 +348,7 @@ export function railsRoutes(app: Hono): void {
   });
 
   app.post("/api/proposals/decide", async (c) => {
-    if (!operatorAuthorized(c.req.header("authorization"))) return c.json({ ok: false, error: "operator bearer required" }, 401);
+    if (!operatorAuthorized(c.req.header("authorization"))) return c.json({ ok: false, error: "the approval key (PLATFORM_OPERATOR_TOKEN bearer) is required" }, 401);
     const body = (await jsonBody(c)) ?? {};
     const id = body.id;
     const decision = body.decision;
@@ -358,7 +359,7 @@ export function railsRoutes(app: Hono): void {
   });
 
   // ---------------------------------------------------------------------------------
-  // Revenue: folded from revenue.jsonl. The operator's stranded-payment path lives here.
+  // Revenue: folded from revenue.jsonl. The approval key's stranded-payment path lives here.
   // ---------------------------------------------------------------------------------
   app.get("/api/revenue", (c) =>
     c.json({
@@ -372,7 +373,7 @@ export function railsRoutes(app: Hono): void {
   );
 
   app.post("/api/revenue/settle", async (c) => {
-    if (!operatorAuthorized(c.req.header("authorization"))) return c.json({ ok: false, error: "operator bearer required" }, 401);
+    if (!operatorAuthorized(c.req.header("authorization"))) return c.json({ ok: false, error: "the approval key (PLATFORM_OPERATOR_TOKEN bearer) is required" }, 401);
     const body = (await jsonBody(c)) ?? {};
     const signature = body.signature;
     const resource = body.resource;

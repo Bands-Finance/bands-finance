@@ -51,10 +51,10 @@ export type DeskCommand = (typeof DESK_COMMANDS)[number];
 const DESK = new Set<string>(DESK_COMMANDS);
 
 const HELP = [
-  "type a message to talk to your advisor. commands start with a slash.",
+  "type a message to talk to your mr bands. commands start with a slash.",
   "",
   "  /explore           a short guided tour, one thing at a time",
-  "  /whoami            how your advisor is set up right now",
+  "  /whoami            how your mr bands is set up right now",
   "  /status            what Mr Bands' desk is doing",
   "  /credits           your balance and what spends it",
   "",
@@ -62,9 +62,9 @@ const HELP = [
 ];
 
 const HELP_ALL = [
-  "every command. anything without a slash is a message to your advisor.",
+  "every command. anything without a slash is a message to your mr bands.",
   "",
-  "  shape your advisor",
+  "  shape your mr bands",
   "    /whoami            what it is set to right now",
   "    /name <name>       rename it",
   "    /risk <level>      conservative | balanced | aggressive",
@@ -74,7 +74,7 @@ const HELP_ALL = [
   "    /voice <text>      how it should sound. dry, warm, blunt, your call",
   "    /reset <field>     clear one setting back to default",
   "",
-  "  the desk (Mr Bands' live journal, read only)",
+  "  the desk (Mr Bands' journal, read only)",
   "    /status            mode, pools worked, open bands, how fresh the data is",
   "    /pnl               open bands: worth now against entry, fees waiting",
   "    /last              his newest decision, and why",
@@ -91,15 +91,15 @@ const HELP_ALL = [
 /** The tour, ordered by what a new person actually wants to know. */
 const TOUR: Array<{ title: string; lines: string[]; tryIt: string }> = [
   {
-    title: "your advisor is yours",
+    title: "your mr bands is keyed to you",
     lines: [
       "it is keyed to your wallet, with its own memory. it remembers this",
-      "conversation between visits, and nobody else's advisor shares it.",
+      "conversation between visits, and nobody else's mr bands shares it.",
     ],
-    tryIt: "how would you approach making markets in a thin SOL pool?",
+    tryIt: "what is on his book today?",
   },
   {
-    title: "it reads a live desk, not a training set",
+    title: "it reads his desk, not a training set",
     lines: [
       "every turn it is handed Mr Bands' newest journal entries and the top of his",
       "pool screen. you can read the same thing it does, without asking it.",
@@ -125,7 +125,7 @@ const TOUR: Array<{ title: string; lines: string[]; tryIt: string }> = [
   {
     title: "the market it watches",
     lines: [
-      "Meteora DLMM pools on Solana, screened every 15 minutes and ranked by fee",
+      "Meteora DLMM pools on Solana, screened every 30 minutes and ranked by fee",
       "yield, braked by liquidity, age and volatility.",
     ],
     tryIt: "/pools",
@@ -134,7 +134,7 @@ const TOUR: Array<{ title: string; lines: string[]; tryIt: string }> = [
     title: "the guards",
     lines: [
       "plain code sits between Mr Bands and the chain: caps, a stop-loss, a cooldown.",
-      "it can veto him or pull him out. your advisor cannot move funds at all.",
+      "it can veto him or pull him out. your mr bands cannot move funds at all.",
     ],
     tryIt: "/guards",
   },

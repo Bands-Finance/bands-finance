@@ -1,5 +1,5 @@
 /**
- * The #/me route: "Your Mr Bands" (advisor terminal) followed by the engine skill panel, which
+ * The #/me route: "Your Mr Bands" (its terminal) followed by the engine skill panel, which
  * lets a signed-in wallet run Mr Bands' band math and guards on its own capital. The engine
  * panel is a lazy chunk and only mounts once the platform API has answered, so the static
  * snapshot never downloads wallet-adapter for it.

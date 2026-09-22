@@ -1,5 +1,5 @@
 /**
- * Backpressure + fairness for the advisor chat routes. Ports Meridian's agent/src/chatLimits.ts.
+ * Backpressure + fairness for the chat routes of your own Mr Bands. Ports Meridian's agent/src/chatLimits.ts.
  * Three independent guards, applied in order to /api/my-agent/message and /stream:
  *
  *   per-wallet token bucket   one wallet cannot spam the model (5 burst, +1 every 3s)

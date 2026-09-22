@@ -2,11 +2,12 @@
 
 Mr Bands' voice on X, built against `docs/mr-bands-agent.md` (the spec). Part 1 of the spec, the locked core,
 is enforced in code by a lint that every outgoing text passes. Part 2, the living layer, lives in a state file
-that only the operator can change. Nothing here places, signs or broadcasts a trade: the talking layer reads the
+that only Zach, his architect and advisor, can change (the approve command's `--operator` must match
+`OPERATOR_HANDLE`). Nothing here places, signs or broadcasts a trade: the talking layer reads the
 journal, the paper book and the ledger, and writes only its own files.
 
-**Posting is dormant.** Nothing reaches X until the operator supplies everything listed under
-[What is dormant, and what the operator must supply](#what-is-dormant-and-what-the-operator-must-supply). Until then every `post` prints the draft, says why it did
+**Posting is dormant.** Nothing reaches X until Zach supplies everything listed under
+[What is dormant, and what Zach must supply](#what-is-dormant-and-what-zach-must-supply). Until then every `post` prints the draft, says why it did
 not go out, and appends it to `x-drafts.jsonl`.
 
 ```
@@ -15,7 +16,7 @@ src/talk/lint.ts         the compliance and voice lint (pure); the phrase lists 
 src/talk/strap.ts        strap state, stack figures, window labels (pure)
 src/talk/data.ts         reads DATA_DIR: decisions.jsonl tail, paper-book.json, ledger.jsonl (read-only)
 src/talk/drafts.ts       drafts for each post type, from live data only (pure)
-src/talk/personality.ts  personality.json: propose, record uses, the gate, operator approve/veto
+src/talk/personality.ts  personality.json: propose, record uses, the gate, approve/veto (Zach's handle)
 src/talk/reflect.ts      the daily reflect call and the weekly drift check
 src/talk/x.ts            the X API v2 client (OAuth 1.0a, rate limits, mention screen), dormant
 src/scripts/talk.ts      the command line
@@ -77,7 +78,7 @@ the strap would read yellow forever. With the default 15, a band from 100 to 101
 
 ## The spec, section by section
 
-**1. Identity.** The "are you a real person" lesson and reply say "ai agent" and name the operator. The lint fails
+**1. Identity.** The "are you a real person" lesson and reply say "ai agent" and name Zach's handle (`OPERATOR_HANDLE`). The lint fails
 any text that claims to be human or denies being an AI (`human-claim`).
 
 **2. Voice.** The lint enforces lowercase (links and base58 addresses keep their case), no em or en dash (or `--`),
@@ -110,7 +111,7 @@ swap costs, network fees and red days (UTC days whose realized net was below zer
 | 3 no personalized advice | `financial-advice`: "you should", "i recommend", "your portfolio" |
 | 4 no keys, seed phrases, wallet access | `key-request`: any mention fails, even a warning |
 | 5 no shilling or price calls | `price-call`: buy, sell, ape, target, moon, pump it, going to, gonna, bullish, load up, nfa |
-| 6 disclose any relationship | `cashtag`: a cashtag that is not the house token fails; `house-token-disclosure`: `$bands`, a house mint, "bands token" or a `bands/` pair label needs "disclosure:", "our token", "operator launched" or similar; `house-token-price`: price, return, fee, holder, volume words, a percent or a dollar figure next to the house token fail even with a disclosure |
+| 6 disclose any relationship | `cashtag`: a cashtag that is not the house token fails; `house-token-disclosure`: `$bands`, a house mint, "bands token" or a `bands/` pair label needs "disclosure:", "our token", "my own token", "i launched" or similar; `house-token-price`: price, return, fee, holder, volume words, a percent or a dollar figure next to the house token fail even with a disclosure |
 | 7, 8 no impersonation, no mascots | the voice is fixed text in drafts; no draft names another brand or person |
 | 9 no scams or suspicious links | `link`: only bands.finance, solscan.io, meteora.ag (subdomains too) and x.com/`OPERATOR_HANDLE`; `scam-bait`: dm me, airdrop, giveaway, claim your; the mention screen skips link-only and scam text and bot-looking accounts |
 | 10 no em dashes | `em-dash` |
@@ -129,7 +130,7 @@ are set. The rate limiter in `x-rate.json` enforces `POSTS_PER_DAY`, `REPLIES_PE
 a rate file that cannot be read refuses instead of resetting. Replies go only to mentions, through a screen that skips
 our own account, handles that look like bots, scams, support impersonators or engagement farms, accounts flagged in
 the personality file, link-only text, links off the allowlist and scam text. There is no follow, unfollow, mass-reply
-or unsolicited-mention code. The automated-account label and the bio are the operator's to set on X.
+or unsolicited-mention code. The automated-account label (which links his account to Zach's as its manager) and the bio are Zach's to set on X.
 
 **8. Personality state file.** `TALK_STATE_PATH/personality.json`, validated with zod on every read and write, written
 temp + rename, created empty on first read. A file that exists but does not validate is an error and is never
@@ -176,7 +177,7 @@ flagged or suspicious accounts.
 | `post_x`, `reply_x` | `postTweet`, `replyToMention` |
 | `get_engagement` | `getEngagement` |
 | `read_state`, `propose_state` | `readPersonality`, `proposeChanges`, `recordUse` |
-| `write_state` | `approveProposal`, `vetoProposal`, operator identity required |
+| `write_state` | `approveProposal`, `vetoProposal`, Zach's handle (`--operator`) required |
 
 **13. Post types.** `strapCheck`, `rebalanceNote` (the newest REBALANCE, or a CLOSE then OPEN in the same pool within
 two cycles, that the guards allowed and that executed; why from the band's position before the move and the engine
@@ -191,19 +192,20 @@ in-range pool's price stayed inside `TALK_CHOP_RANGE_PCT` over the window and th
 **16. Common questions.** Lessons and replies: `how-much`, `token-calls`, `real-person`, `impermanent-loss`, plus
 `what-i-do`, `concentrated-liquidity`, `out-of-range`.
 
-## What is dormant, and what the operator must supply
+## What is dormant, and what Zach must supply
 
 Dormant: posting, replies and engagement reads (`x.ts`) and the reflect call (without an Anthropic key). Nothing
 else talks to anything outside the machine.
 
-To go live on X, the operator:
+To go live on X, Zach:
 
 1. Creates the X account and sets, on X, the **automated account label** linked to his own account and a **bio
-   that says Mr Bands is an AI agent**. Only the operator can do this; no code here touches the profile.
+   that says Mr Bands is an AI agent**. Only Zach can do this; no code here touches the profile.
 2. Creates an X developer app with read and write permission and generates the user-context OAuth 1.0a keys for
    the Mr Bands account: `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_SECRET`.
-3. Sets `OPERATOR_HANDLE`, `X_HANDLE`, a `TALK_STATE_PATH` of its own, and `TALK_HOUSE_SYMBOLS` / `PAIR_HOUSE_MINTS`
-   once the token exists.
+3. Sets `OPERATOR_HANDLE` (his own handle), `X_HANDLE`, a `TALK_STATE_PATH` of its own, and `TOKEN_MINT` in `.env`
+   once the token exists (`TALK_HOUSE_SYMBOLS` defaults to the ticker already; `PAIR_HOUSE_MINTS` stays unset
+   through 8 Oct, since it would seat the token).
 4. Runs `draft` and `post` for a few days with `X_LIVE` unset and reads `x-drafts.jsonl`.
 5. Sets `X_LIVE=true`.
 
@@ -217,4 +219,4 @@ For reflect: `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`).
 3. Weekly, before review: `talk.ts drift`. Anything flagged is dealt with first.
 4. `talk.ts proposals`, then for each: `talk.ts approve <id> --operator <handle>` or
    `talk.ts veto <id> --operator <handle> --reason "<why>"`. Each applied change raises the version; the decisions
-   log records the operator, the time and the reason. A vetoed bit or opinion is remembered as retired by veto.
+   log records who decided, the time and the reason. A vetoed bit or opinion is remembered as retired by veto.

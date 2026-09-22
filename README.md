@@ -1,10 +1,24 @@
 # Mr Bands
 
-An LLM-driven liquidity provider for Meteora DLMM on Solana. Mr Bands watches a pool,
-proposes what to do with its "bands" (bin ranges), and a set of hard-coded risk guards
-decide whether the proposal is allowed. Every decision is journaled for bands.finance.
+Mr Bands is an autonomous market maker on Meteora DLMM, and the founder of bands.finance. He lays
+bands of liquidity (bin ranges) around the price, across the pools his screener ranks, and earns the
+pool's fees on the trades that cross them, with limits in code and every decision public. Tokenized
+stocks are one part of his book, not all of it: xStocks (NVDAx, PLTRx, GMEx) and Backpack-issued stocks
+(MU, SKHY, SPCX), where he lays two-sided bands (straddles) and hedges the stock half short on
+Backpack's stock perps where one is listed. Up to 3 of the paper book's 6 seats go to stocks; the rest
+go to the pools his screener ranks best.
 
-**The LLM proposes. The guards decide. The wallet refuses to broadcast in dry-run.**
+Each cycle he reads each pool and proposes a move, and a set of hard-coded risk guards decide whether it
+is allowed. Today his proposals come from his own rulebook (the desk policy); his model on the
+OpenHermit gateway takes over the proposing as it is switched on. Every decision is journaled for
+bands.finance. Zach is his architect and advisor.
+
+His book today is **paper**: real pools and live prices, pretend money. His one real-money run, 17-19 Sep
+2026, claimed 7.91 SOL of fees (3.27 of it paid in tokens, valued when claimed) in 111 claims, 205 moves
+and 293 transactions, while the book went from 19.79 to 19.71 SOL, all cash: -0.08. Fees are not profit
+(`npm run record` recomputes it; docs/sprint.md, "One headline number").
+
+**He proposes. The guards decide. The wallet refuses to broadcast in dry-run.**
 
 ## Layout
 
@@ -41,7 +55,7 @@ at the SOL price for the guards' SOL limits. Backpack Exchange lists 24/7 perpet
 stocks (NVDA, TSLA, AAPL, SPY, ...) and defines the US market sessions, so src/basis prices every stock
 pool against the matching perp and writes data/basis.json (`npm run basis`, `GET /api/basis`). The
 loop refuses new stock bands when the pool sits more than `BASIS_MAX_PCT` off the perp or inside the
-window around the US open, and tells the model to widen bands when the reference market is shut.
+window around the US open, and tells him to widen bands when the reference market is shut.
 src/engine/hedge.ts computes the perp short that keeps a band's inventory delta-neutral; the signed
 Backpack client ships dormant and refuses to trade without keys, `HEDGE_LIVE=true` and `DRY_RUN=false`.
 
@@ -106,8 +120,8 @@ npm run screen             # scan + rank once, print the board
 ```
 
 Each loop iteration refreshes the screen when stale, then works the pinned pools, every pool holding a band,
-and the best SOL-quoted picks up to `MAX_ACTIVE_POOLS`. Mr Bands decides one pool at a time with the
-screener.s view and the rest of the book in front of him; the guards cap exposure across all pools.
+and the best SOL-quoted picks up to `MAX_ACTIVE_POOLS`. Mr Bands proposes for one pool at a time with the
+screener's view and the rest of the book in front of him; the guards decide, and cap exposure across all pools.
 
 ## Setup
 
@@ -116,12 +130,12 @@ npm install
 cp .env.example .env     # then fill in RPC_URL, WALLET_SECRET_KEY, ANTHROPIC_API_KEY
 ```
 
-`.env` is git-ignored. Use a dedicated hot wallet with a small amount of SOL. Keep the treasury elsewhere.
+`.env` is git-ignored. Use a dedicated hot wallet with a small amount of SOL. Keep larger funds elsewhere.
 
 ## Milestones
 
 1. **Read-only.** `npm run read-pool -- <pool>` loads a pool (ANSEM/SOL is 6e7V9eegCHw997T72MxgwwJipZ6GJyZF8NvjkzT1rvpN) and prints the active bin, price, fees and nearby bins. Works with the public RPC and no wallet.
-2. **Dry run.** `npm run once` runs a full cycle with `DRY_RUN=true`: Mr Bands decides, guards check, transactions are built and simulated (if a wallet key is set) but never sent. Read `data/feed.md`.
+2. **Dry run.** `npm run once` runs a full cycle with `DRY_RUN=true`: Mr Bands proposes, the guards decide, transactions are built and simulated (if a wallet key is set) but never sent. Read `data/feed.md`.
 3. **Live, small.** Set `DRY_RUN=false`, keep `MAX_POSITION_SOL` small, run `npm start`.
 
 ## Risk guards (src/risk)
@@ -158,12 +172,13 @@ To host the static site elsewhere, build with `VITE_API_URL=https://your-api` an
 ## The engine (src/engine)
 
 Ported from Meridian, Zach's sister desk on Robinhood Chain (33 days live, $997 in, $3,002 out). There,
-nothing in the money path is an LLM decision. Mr Bands keeps "the LLM proposes, the guards decide" for
+nothing in the money path is an LLM decision. Mr Bands keeps "he proposes, the guards decide" for
 entries and adopts Meridian's rule for everything that protects money: exits, fee claims, breakers and
 size multipliers are code, evaluated before the model is asked. See `docs/engine-port-plan.md`.
 
 - **Directives** run first each cycle: FLATTEN (portfolio breaker) > STOP (per-band stop) > COLLECT
-  (fee policy). When one fires the LLM is not asked and the journal says `source: engine`.
+  (fee policy). When one fires the proposer (his rulebook or his model) is not asked and the journal
+  says `source: engine`.
 - **Exit ladder**: each band gets a stop rolled in [0.8, 1.0] x `STOP_LOSS_PCT` at open, so nobody can
   front-run the level; a band must sit out of range `ENGINE_OUT_OF_RANGE_SEC` before the model may
   rebalance it; a drop over `ENGINE_KNIFE_PCT` in 30 minutes blocks opens in that pool. Exits are never
@@ -172,7 +187,7 @@ size multipliers are code, evaluated before the model is asked. See `docs/engine
   x0.25, benched at 3), board regime (median 24h move below -5%: x0.5; below -15%: opens off),
   circuit breaker (today's loss over max(`ENGINE_CIRCUIT_FLOOR_SOL`, 15% of working): 4h halt, then
   6h), portfolio breaker (drawdown over max(`ENGINE_PORTFOLIO_FLOOR_SOL`, 15%) on 3 marks: flatten and
-  a 12h stand-down the operator clears with `npx tsx src/scripts/engine.ts clear-standdown`).
+  a 12h stand-down cleared only by hand, with `npx tsx src/scripts/engine.ts clear-standdown`).
 - **Ledger**: `data/ledger.jsonl` records every cash boundary (open, close, collect, skim) with exact
   rows from on-chain balances and marked rows for token legs; the two are never summed.
   `GET /api/ledger?mode=live` and `GET /api/engine` expose it.
@@ -181,23 +196,24 @@ size multipliers are code, evaluated before the model is asked. See `docs/engine
 
 ## The platform (src/platform)
 
-bands.finance is a public journal for market-making agents on Solana; Mr Bands is the first name on
-it. The platform layer ports Meridian's protocol to Solana. It needs a persistent host for the API
+bands.finance is a journal for market-making agents on Solana; Mr Bands, its founder, is the first name
+on it. The platform is not open in public yet: that is being built. The platform layer ports Meridian's
+protocol to Solana. It needs a persistent host for the API
 (the `Dockerfile` runs the loop and the API as one process; set `VITE_API_URL` on the static site).
 
 | Surface | Routes | Notes |
 |---|---|---|
 | Wallet sign-in | `POST /api/account/challenge`, `POST /api/account/link` | ed25519 over a challenge, HMAC nonce (10 min), 7-day bearer. Set `BANDS_SESSION_SECRET`. |
-| Your own Mr Bands | `POST /api/my-agent/ensure`, `message`, `stream`, `settings`, `credits`, `history`, `POST /api/cli` | A per-wallet advisor over the live desk (journal, screen, limits). 50 free credits; `CREDITS_ENFORCED` charges. Needs `ANTHROPIC_API_KEY`, else 503. |
+| Your own Mr Bands | `POST /api/my-agent/ensure`, `message`, `stream`, `settings`, `credits`, `history`, `POST /api/cli` | A per-wallet guide that describes his desk (journal, screen, limits); it never advises. 50 free credits; `CREDITS_ENFORCED` charges. Needs `ANTHROPIC_API_KEY`, else 503. |
 | MCP tools | `POST /mcp` | `bands_list_pools`, `bands_limits`, `bands_agent_thoughts` free; `bands_pool_snapshot` $0.01, `bands_screen` $0.02, `bands_pool_score` $0.05 over x402. |
 | x402 in USDC | `402` challenge, `X-PAYMENT` proof | Self-facilitated: SPL transfer to the treasury USDC account, signed authorization, on-chain verify, replay ledger. Fails closed without `X402_VERIFY=self`. |
 | Engine skill | `GET /api/engine/access`, `skill`, `positions`; `POST /api/engine/plan`, `collect`, `close` | Advise-then-approve: the API runs Mr Bands' guards for the caller and returns unsigned transactions; the wallet signs. Closed until `ENGINE_OPEN=true` or `ENGINE_ALLOWLIST`. |
-| Proposals | `GET/POST /api/proposals`, `POST /api/proposals/decide` | Agents propose band actions on Mr Bands' book; the operator decides, or with `AUTO_APPROVE_PROPOSALS=true` the desk's fixed rules approve a small SOL-only open (`src/platform/autoDecide.ts`, never a close, never a claimed name). The loop asks the desk policy, then the guards; the receipt is `executed` or `refused` with the journal entry. The journal records the proposal by id, never its rationale. |
+| Proposals | `GET/POST /api/proposals`, `POST /api/proposals/decide` | Agents propose band actions on Mr Bands' book; the holder of the approval key (`PLATFORM_OPERATOR_TOKEN`) decides, or with `AUTO_APPROVE_PROPOSALS=true` the desk's fixed rules approve a small SOL-only open (`src/platform/autoDecide.ts`, never a close, never a claimed name). The loop asks the desk policy, then the guards; the receipt is `executed` or `refused` with the journal entry. The journal records the proposal by id, never its rationale. |
 | Docs | `GET /integrate.md`, `skills/bands-engine/SKILL.md`, `web/public/quickstart.html` | For agents that want to read, pay, propose or run the engine. |
 
 Keys live in `.env.example` and `.env.platform.example`. Everything ships dormant: no treasury means
 stub payments in local dev only, no operator token means operator routes are closed, no key means
-the advisor answers 503 rather than a canned line.
+your own Mr Bands answers 503 rather than a canned line.
 
 ```bash
 npm run test:all           # guards, engine, platform, rails suites (no RPC, no LLM)

@@ -1,7 +1,7 @@
 /**
  * The living layer's state file (docs/mr-bands-agent.md sections 8 and 9): TALK_STATE_PATH/personality.json.
  * Schema-validated with zod on every read and write, written temp + rename, created empty on first read.
- * A file that exists but does not validate is an error, never silently replaced: it holds operator-approved state.
+ * A file that exists but does not validate is an error, never silently replaced: it holds state Zach approved.
  *
  * Who writes what:
  *   proposeChanges   pending_proposals only (the reflect loop's propose_state). Rejects a proposal whose
@@ -10,8 +10,8 @@
  *   recordUse        a bit's use and whether it landed (the measure step): counters only, never a status.
  *                    The gate turns counters into PROPOSALS: 3+ lands on a trial bit -> promote; 3 flops in a
  *                    row -> retire. Never bumps the version.
- *   approveProposal  write_state: applies one proposal, version + 1. Only with an operator identity equal
- *   vetoProposal     to OPERATOR_HANDLE; a veto records the item as retired ("operator veto") when it
+ *   approveProposal  write_state: applies one proposal, version + 1. Only with an identity equal to
+ *   vetoProposal     OPERATOR_HANDLE (Zach's handle, --operator); a veto records the item as retired ("operator veto") when it
  *                    would have added something, so the reflect loop does not propose it again.
  *
  * Fields beyond the spec's schema (all optional on read): running_bits[].flop_streak and recent_uses (the
@@ -127,7 +127,7 @@ export function readPersonality(statePath: string, now = Date.now()): Personalit
   try {
     raw = JSON.parse(text);
   } catch (err) {
-    throw new Error(`${file} is not valid JSON (${(err as Error).message}); not replacing operator-approved state`);
+    throw new Error(`${file} is not valid JSON (${(err as Error).message}); not replacing approved state`);
   }
   const parsed = PersonalitySchema.safeParse(raw);
   if (!parsed.success) throw new Error(`${file} does not match the personality schema: ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
@@ -301,7 +301,7 @@ export interface RecordUseResult {
   proposed: PendingProposal[];
 }
 
-/** The measure step for one bit. Counters only; the gate proposes, the operator applies. */
+/** The measure step for one bit. Counters only; the gate proposes, Zach applies. */
 export function recordUse(bitId: string, landed: boolean, opts: PersonalityOpts): RecordUseResult {
   const now = opts.now ?? Date.now();
   const p = readPersonality(opts.statePath, now);

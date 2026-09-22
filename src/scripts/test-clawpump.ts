@@ -181,7 +181,7 @@ async function main(): Promise<void> {
     assert.match(launchRefusal({ ...ok, agentId: null })!, /CLAWPUMP_AGENT_ID/);
     assert.match(launchRefusal({ ...ok, apiKey: null })!, /CLAWPUMP_API_KEY/);
     assert.match(launchRefusal({ ...ok, ephemeralWallet: true })!, /WALLET_SECRET_KEY/);
-    assert.match(launchRefusal({ ...ok, payer: DESK, payerExpected: DESK })!, /is the desk wallet \(EXPECTED_WALLET\): launch from the treasury keypair/, "never from the desk, even if pinned to it");
+    assert.match(launchRefusal({ ...ok, payer: DESK, payerExpected: DESK })!, /is the desk wallet \(EXPECTED_WALLET\): launch from his operating wallet's keypair/, "never from the desk, even if pinned to it");
     assert.match(launchRefusal({ ...ok, payerExpected: null })!, /TOKEN_PAYER_EXPECTED is not set/);
     assert.match(launchRefusal({ ...ok, payer: "Other1111" })!, /derives to Other1111, but TOKEN_PAYER_EXPECTED is .*wrong key/);
     assert.equal(launchRefusal({ ...ok, deskWallet: null }), null, "no EXPECTED_WALLET set: the pin alone decides");

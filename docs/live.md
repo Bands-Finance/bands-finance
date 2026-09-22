@@ -1,7 +1,8 @@
 # Going live: the first 20 SOL
 
-Mr Bands trades real money from the hot wallet in `.env` (`9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW`,
-pinned by `EXPECTED_WALLET`). The live configuration is `ops/live.env` (non-secret, committed) and the
+Mr Bands' live desk trades real money from the hot wallet in `.env` (`9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW`,
+pinned by `EXPECTED_WALLET`) when it runs. It is halted through 8 Oct 2026 by decision (docs/sprint.md): his book
+is paper until then, and his one real-money run is 17-19 Sep. The live configuration is `ops/live.env` (non-secret, committed) and the
 service is `ops/com.bands.mrbands.live.plist`, the only place `DRY_RUN=false` is written. Installing that
 service is the act of going live. It is done on Zach's word, in words, and never with the paper desk running.
 
@@ -13,8 +14,8 @@ service is the act of going live. It is done on Zach's word, in words, and never
 - **Pools:** Meteora DLMM stock pools that already trade, ranked by fee on depth, at most 3, plus the NVDA
   pairing (`PAIR_STOCK_PINNED_TICKERS=NVDA`). No pools of our own (`PAIR_STOCK_LANE=false`, `PAIR_LANE=false`),
   no launches, no memecoins under the 30-day rule.
-- **Who decides:** the desk policy (`POLICY_LIVE=true`, and `DECIDER=policy` pinned in `ops/live.env`, since `.env` names
-  OpenHermit for the paper desk); there is no Anthropic key. The guards decide last, as always.
+- **Who proposes:** his rulebook, the desk policy (`POLICY_LIVE=true`, and `DECIDER=policy` pinned in `ops/live.env`, since
+  `.env` names OpenHermit for the paper desk); there is no Anthropic key. The guards decide, as always.
 - **Halted until the go:** `KILL_SWITCH=true` in `ops/live.env`. While the line is there the live service does not start at all:
   `npm run live` runs the preflight first, and a live preflight FAILs on the kill switch. It is cleared at step 4 and nowhere else.
 - **Hedging:** off. The stock halves of the straddles run unhedged until Backpack keys exist.
@@ -23,7 +24,8 @@ service is the act of going live. It is done on Zach's word, in words, and never
 
 ## The order of operations (the second run, 21 September 2026 and after)
 
-The first run (17-19 September, 19.79 -> 19.68 SOL, 204 moves) is frozen as `web/public/live-run.json` and printed as
+The first run (17-19 September: 7.91 SOL of fees claimed, 3.27 of it paid in tokens; the book 19.79 -> 19.71 SOL
+all cash, -0.08; 111 claims, 205 moves, 293 transactions; docs/sprint.md "One headline number") is frozen as `web/public/live-run.json` and printed as
 the "On Solana" chapter of mrbands.finance. Its data directory must NOT be reused: the page reads the desk's feed as a
 window over `DATA_DIR`, and a restart on `data-mainnet` would print that run a second time under the new one. So:
 

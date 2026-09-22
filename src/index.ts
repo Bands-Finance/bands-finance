@@ -244,8 +244,8 @@ function banner(app: App): void {
     noteDeskApprovals(); // /api/status shows today's count from the first cycle, not from the first approval
     const liveBlocked = !config.dryRun && (!ae.live || ae.proposers.length === 0);
     console.log(
-      `proposals ${!ae.on ? "the operator approves (AUTO_APPROVE_PROPOSALS is not true)"
-        : liveBlocked ? "the operator approves (a live book needs AUTO_APPROVE_LIVE=true and AUTO_APPROVE_PROPOSERS)"
+      `proposals ${!ae.on ? "the approval key approves (AUTO_APPROVE_PROPOSALS is not true)"
+        : liveBlocked ? "the approval key approves (a live book needs AUTO_APPROVE_LIVE=true and AUTO_APPROVE_PROPOSERS)"
         : `the desk's rules approve a SOL_ONLY open <= ${ae.maxSol} SOL from ${ae.proposers.length ? `${ae.proposers.length} allowlisted proposer(s)` : "any signed-in wallet (a bearer only from the list)"}, <= ${ae.maxAgeMin} min old, ${ae.maxPerDay}/day, one at a time, <= ${ae.maxExposurePct}% of total exposure; closes wait for the operator`}; then the desk policy, then the guards`,
     );
   }
@@ -1370,7 +1370,7 @@ function autoApproveHere(app: App, o: Observed, all: Observed[], state: RiskStat
     maxTotalExposureSol: riskLimits.maxTotalExposureSol,
   }, policy);
   const tag = `[cycle ${app.cycle} ${o.snapshot.label}]`;
-  for (const l of verdict.left) console.log(`${tag} proposal ${l.id} left for the operator: ${l.reason}`);
+  for (const l of verdict.left) console.log(`${tag} proposal ${l.id} left for the approval key: ${l.reason}`);
   if (!verdict.approve) return null;
   const approved = decideProposal(verdict.approve.proposal.id, "approve", `approved by the desk's rules (${verdict.approve.rule}); the desk policy and the guards still decide`, `desk-auto:${verdict.approve.rule}`, now);
   if (approved) {

@@ -120,7 +120,7 @@ async function main(): Promise<void> {
 
   await test("R1: a CLOSE_BAND is never approved by the rules, whatever else holds", () => {
     const close = mk({ kind: "CLOSE_BAND", params: { pool, position: addr() } });
-    leaves(close, ctx(), /CLOSE_BAND waits for the operator/);
+    leaves(close, ctx(), /CLOSE_BAND waits for the approval key/);
     leaves(close, ctx({ env: { ...env, proposers: [wallet] } }), /CLOSE_BAND/);
     assert.equal(auto.autoDecide([close], ctx()).approve, null);
   });
@@ -371,7 +371,7 @@ async function main(): Promise<void> {
     const d = proposals.proposalDecision(p);
     assert.equal(d.headline, `Outside proposal ${p.id} from ${p.proposerId.slice(0, 10)}, approved by desk rule small-open.`);
     assert.ok(d.headline.length <= 90);
-    assert.equal(proposals.proposalDecision({ ...p, decidedBy: "operator" }).headline.endsWith("approved by the operator."), true);
+    assert.equal(proposals.proposalDecision({ ...p, decidedBy: "operator" }).headline.endsWith("approved by the approval key."), true);
     const outputs = [
       d,
       proposals.proposalNote(p),

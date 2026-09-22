@@ -1,6 +1,6 @@
 /**
  * THE DESK APPROVES SMALL OPENS ITSELF. With AUTO_APPROVE_PROPOSALS=true, an outside proposal
- * (src/platform/proposals.ts) no longer waits for the operator when it passes every rule below.
+ * (src/platform/proposals.ts) no longer waits for the approval key when it passes every rule below.
  * The rules are code: nothing here reads the rationale or the proposer's name, and no model is
  * asked. An approval by these rules is only the first of three gates: the loop then asks the desk
  * policy (adviseProposal, src/agent/decide.ts), which must agree or the proposal is refused, and
@@ -14,7 +14,7 @@
  *
  *   R0  AUTO_APPROVE_PROPOSALS is the literal "true". On a live book (DRY_RUN=false) also
  *       AUTO_APPROVE_LIVE=true and a non-empty AUTO_APPROVE_PROPOSERS.
- *   R1  OPEN_BAND only. A CLOSE_BAND always waits for the operator: the guards never block an exit,
+ *   R1  OPEN_BAND only. A CLOSE_BAND always waits for the approval key: the guards never block an exit,
  *       so an outside agent could otherwise force a close of a band that is earning.
  *   R2  a signed-in wallet, or a bearer-derived MCP id ("mcp:b:") that is on AUTO_APPROVE_PROPOSERS; a
  *       claimed name ("mcp:n:") never. The desk does not check a bearer it did not issue: any caller can send
@@ -135,7 +135,7 @@ export function autoDecideOne(p: Proposal, ctx: AutoContext): AutoVerdict {
   if (live && !e.live) return leave("a live book and AUTO_APPROVE_LIVE is not on");
   if (live && e.proposers.length === 0) return leave("a live book needs AUTO_APPROVE_PROPOSERS");
   // R1
-  if (p.kind !== "OPEN_BAND") return leave(`${p.kind} waits for the operator`);
+  if (p.kind !== "OPEN_BAND") return leave(`${p.kind} waits for the approval key`);
   // R2
   const kind = proposerKind(p.proposerId);
   if (kind !== "wallet" && kind !== "mcp-bearer") return leave(`proposer ${p.proposerId.slice(0, 10)} is a claimed name, not a wallet or a bearer`);

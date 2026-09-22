@@ -49,7 +49,7 @@ export interface AccessResult {
   detail: string;
 }
 
-/** PURE: parse the operator allowlist env into a set of valid pubkeys. Case-sensitive. */
+/** PURE: parse the allowlist env into a set of valid pubkeys. Case-sensitive. */
 export function parseAllowlist(raw = process.env.ENGINE_ALLOWLIST ?? ""): Set<string> {
   const out = new Set<string>();
   for (const part of raw.split(/[,\s]+/)) {
@@ -63,7 +63,7 @@ export function parseAllowlist(raw = process.env.ENGINE_ALLOWLIST ?? ""): Set<st
 export function decideAccess(paths: AccessVia[]): AccessResult {
   if (paths.length === 0) return { ok: false, via: null, paths: [], detail: "engine access is not open yet" };
   const via: AccessVia = paths.includes("allowlist") ? "allowlist" : "open";
-  const label: Record<AccessVia, string> = { allowlist: "operator-granted", open: "open to every signed-in wallet" };
+  const label: Record<AccessVia, string> = { allowlist: "granted to this wallet on the allowlist", open: "open to every signed-in wallet" };
   return { ok: true, via, paths, detail: `Engine access: ${label[via]}.` };
 }
 

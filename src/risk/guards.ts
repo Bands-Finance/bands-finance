@@ -246,7 +246,7 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
       violations.push(`circuit breaker: opens halted until ${iso(engine.haltedUntil)}`);
     }
     if (engine.standDownUntil !== null && ctx.now < engine.standDownUntil) {
-      violations.push(`stand-down: portfolio breaker is standing down until ${iso(engine.standDownUntil)} (operator clears it)`);
+      violations.push(`stand-down: portfolio breaker is standing down until ${iso(engine.standDownUntil)} (cleared by hand)`);
     }
     if (engine.benched) violations.push(engine.benchReason ?? "benched: repeated stop-loss closes in this pool");
     if (engine.sizeMultiplier <= 0 && !engine.benched) violations.push(engine.regimeReason ?? "regime: opens off");

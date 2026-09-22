@@ -24,7 +24,7 @@ interface EnsureResponse {
   settings?: AgentSettings;
   credits?: number;
   created?: boolean;
-  /** whether this host has a model behind the advisor at all */
+  /** whether this host has a model behind your mr bands at all */
   configured?: boolean;
 }
 
@@ -65,7 +65,7 @@ export function useMyAgent(token: string | null) {
       setError(null);
       try {
         const ensured = await apiJson<EnsureResponse>("/api/my-agent/ensure", { method: "POST", token });
-        if (!ensured.json?.ok) throw new Error(ensured.json?.error ?? (ensured.status === 401 ? "your session expired; sign in again" : "could not reach your advisor"));
+        if (!ensured.json?.ok) throw new Error(ensured.json?.error ?? (ensured.status === 401 ? "your session expired; sign in again" : "could not reach your mr bands"));
         if (cancelled) return;
         setSettings(ensured.json.settings ?? {});
         setAgentId(ensured.json.agentId ?? null);
@@ -79,7 +79,7 @@ export function useMyAgent(token: string | null) {
       } catch (e) {
         if (cancelled) return;
         provisionedFor.current = null;
-        setError(e instanceof Error ? e.message : "could not reach your advisor");
+        setError(e instanceof Error ? e.message : "could not reach your mr bands");
         setState("error");
       }
     })();
@@ -123,7 +123,7 @@ export function useMyAgent(token: string | null) {
             setState("ready");
             return;
           }
-          throw new Error(j?.error ?? (res.status === 401 ? "your session expired; sign in again" : `your advisor could not respond (HTTP ${res.status})`));
+          throw new Error(j?.error ?? (res.status === 401 ? "your session expired; sign in again" : `your mr bands could not respond (HTTP ${res.status})`));
         }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -156,7 +156,7 @@ export function useMyAgent(token: string | null) {
             } else if (event === "done") {
               if (typeof ev.credits === "number") setCredits(ev.credits);
             } else if (event === "error") {
-              failed = ev.error || "your advisor could not respond just now";
+              failed = ev.error || "your mr bands could not respond just now";
               if (typeof ev.credits === "number") setCredits(ev.credits);
             }
           }
@@ -188,7 +188,7 @@ export function useMyAgent(token: string | null) {
         setSettings(r.json.settings ?? {});
         return null;
       } catch {
-        return "could not reach your advisor.";
+        return "could not reach your mr bands.";
       }
     },
     [token],

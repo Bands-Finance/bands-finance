@@ -81,7 +81,7 @@ const close = (positionAddress: string, reasoning: string, headline: string, liq
 /** PURE. The rotation's headline from its reason: the exit list, a faded seat, consolidation, a better seat, or a pin. */
 export function rotateHeadline(reason: string): string {
   const r = reason.toLowerCase();
-  if (r.includes("operator's exit list")) return "Off the book by the operator's list. This band comes off.";
+  if (r.includes("operator's exit list")) return "Off the book by the exit list, kept by hand. This band comes off.";
   if (r.includes("its own flow faded")) return "Its flow faded. This band comes off.";
   if (r.includes("already held")) return "Consolidating into the best seat. This band comes off.";
   if (r.includes("would earn about")) return "A better seat is open. This band comes off.";

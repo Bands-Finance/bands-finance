@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { AgentRecord, BandCard, FeePoint, PoolFlow } from "../model";
 import { ago, duration, fmtPrice } from "../format";
 import { num } from "../narrative";
-import { PLATFORM_URL } from "../site";
+import { PLATFORM_URL, X_URL } from "../site";
 import { motionSystemReduced, setMotionPaused, useMotion } from "../motion";
 
 /**
@@ -55,7 +55,6 @@ export function BandBlock({ band: b, flow, now }: { band: BandCard; flow?: PoolF
           { label: "Fees earned", value: <>{b.fees < 0.00005 ? "0" : `+${num(b.fees)}`}<small> SOL</small></>, tone: b.fees > 0 ? "good" : undefined },
           { label: "Worth now", value: <>{num(b.worthNow)}<small> SOL</small></>, note: b.putIn !== null ? `he put in ${num(b.putIn)}` : undefined },
           ...(move !== null ? [{ label: "From the market", value: <>{signed(move)}<small> SOL</small></>, tone: (move >= 0 ? "good" : "bad") as "good" | "bad", note: "what price did to it, fees aside" }] : []),
-          ...(b.pacePerDay !== null ? [{ label: "His pace", value: <>{num(b.pacePerDay)}<small> SOL a day</small></> }] : []),
         ]}
       />
       {f && (
@@ -212,8 +211,9 @@ export function ClosingBlock({ agentName, walletAddress }: { agentName: string; 
       <div className="close__row">
         <p className="chap__p close__legal">
           {/* walletAddress is set only while the desk is live (DashboardApp.tsx): otherwise he is on paper and says so */}
-          {agentName} is experimental software.{" "}
-          {walletAddress ? "He trades a wallet of his own." : "He trades on paper now; his live desk, a wallet of his own, is stopped."} Nothing here is advice, and
+          {agentName}, the founder of bands.finance, is experimental software.{" "}
+          {walletAddress ? "He trades a wallet of his own." : "He trades on paper now; his live desk, a wallet of his own, is stopped."} Zach, his architect and advisor, holds
+          his keys and the legal responsibility.{X_URL ? " On X, his automated-account label names Zach's account as its manager." : ""} Nothing here is advice, and
           nothing on this page can touch your money. Every move above is published as it happened, including the ones that lost.
         </p>
       </div>

@@ -907,6 +907,11 @@ async function main(): Promise<void> {
     assert.match(gated.decision.reasoning, /A fresh band is off \(knife: -30.0% in 30 min\)/);
   });
   await test("decide() without a key uses the policy: source policy, model desk-policy, a note", async () => {
+    // pin the decider: this test is about the no-key path, and a developer's .env (DECIDER=openhermit on the
+    // paper desk since 22 Sep) must not change what it tests
+    const savedDecider = process.env.DECIDER;
+    delete process.env.DECIDER;
+    try {
     const r = await decide(obs());
     assert.equal(r.source, "policy");
     assert.equal(r.model, "desk-policy");
@@ -914,6 +919,10 @@ async function main(): Promise<void> {
     assert.equal(r.decision.action, "OPEN_POSITION");
     const off = await decide(obs({ screen: null }), { hot: [{ address: POOL, priceChange1hPct: 2, flags: [], heat: 35, surge: true }] });
     assert.equal(off.decision.action, "OPEN_POSITION");
+    } finally {
+      if (savedDecider === undefined) delete process.env.DECIDER;
+      else process.env.DECIDER = savedDecider;
+    }
   });
   await test("policy on a LIVE book: without POLICY_LIVE an open becomes a hold that says why; POLICY_LIVE=true lets it through; closes are never withheld", async () => {
     const { policyDecideResult } = await import("../agent/decide.js");

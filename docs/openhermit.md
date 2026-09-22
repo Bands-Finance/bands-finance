@@ -2,6 +2,11 @@
 
 Mr Bands the AGENT lives on OpenHermit. The desk stays the desk.
 
+Where it stands today: his proposals on the paper desk still come from his own rulebook (the desk
+policy; the paper desk's model share is 0%), and his model on the gateway takes over the proposing as
+it is switched on (`DECIDER=openhermit` with `OPENHERMIT_TOKEN` in `.env`). Either way he proposes and
+the guards decide. The live desk is halted and pins `DECIDER=policy`.
+
 OpenHermit (`/Users/zach/OpenHermit`) is a gateway that hosts agents: an agent is a model loop with
 instruction rows (`identity`, `soul`, `rules`), a model, secrets, MCP servers, skills, schedules and
 channels, all kept in Postgres and run by one gateway process. The Meridian fleet agents
@@ -44,7 +49,7 @@ Two things to know before touching it:
 ```
 
 - The desk builds the observation, asks, runs the answer through its guards, signs, journals. Nothing
-  about that moved. "The LLM proposes, the guards decide": the limits live in `src/risk`, never in a
+  about that moved. "He proposes, the guards decide": the limits live in `src/risk`, never in a
   prompt, and `DRY_RUN` still defaults on.
 - The agent holds the persona (the same text `buildSystemPrompt` in `src/agent/persona.ts` gives the
   Anthropic call today, split into the gateway's three rows) and the model. It answers each observation
@@ -81,12 +86,12 @@ the tokens go in `.env` (git-ignored); the rest may sit in `ops/live.env` or a p
 | `DECIDER` | unset | Who proposes. Unset (or an unknown word): today's behaviour (Anthropic when a key exists, else the desk policy). `anthropic`: Claude directly, as today. `openhermit`: `decide()` posts the observation to the agent on the gateway and parses the Decision out of the reply. `policy`: the desk policy proposes, no model is asked. Anything unusable from the agent (a timeout, a 5xx, prose, JSON that is not a Decision) falls back to the desk policy exactly as a bad Anthropic reply does today (`policyAfterModel`), with a note that says why. |
 | `OPENHERMIT_GATEWAY_URL` | `http://127.0.0.1:4000` | The gateway. |
 | `OPENHERMIT_AGENT_ID` | `mr-bands` | The agent's id on the gateway. |
-| `OPENHERMIT_TOKEN` | (none, required) | The gateway's admin bearer: `GATEWAY_ADMIN_TOKEN` from `~/.openhermit/gateway/.env`. The operator copies it into `.env`; no code here reads the gateway's file. |
+| `OPENHERMIT_TOKEN` | (none, required) | The gateway's admin bearer: `GATEWAY_ADMIN_TOKEN` from `~/.openhermit/gateway/.env`. Zach copies it into `.env`; no code here reads the gateway's file. |
 | `OPENHERMIT_TIMEOUT_MS` | `60000` | One deadline for the whole ask: opening the session and waiting for the answer (`?wait=true&timeout=`). Past it the desk policy proposes. It is per POOL and the pools are decided one after another, so this is the slowest a pool can make a cycle; raising it raises the whole cycle. Once one pool has missed the deadline (or the gateway was unreachable), the rest of that cycle goes straight to the policy without asking again, so a dead gateway costs one wait, not six. |
 | `OPENHERMIT_PROVIDER` | `openrouter` | Who serves the model (`provision` only; `--provider` overrides). `openrouter`: the gateway's shared `OPENROUTER_API_KEY`. `anthropic`: Anthropic directly on an `ANTHROPIC_API_KEY` the owner has given the agent (`hermit config secrets set ANTHROPIC_API_KEY <key> --agent mr-bands`); `provision` checks the secret is there by name and refuses otherwise. It never writes a key. |
 | `OPENHERMIT_MODEL` | (none) | A model id to pin (`provision` only). Unset: on OpenRouter the newest Anthropic Claude of the desk's `MODEL` family that OpenRouter offers; at Anthropic the desk's `MODEL` itself. |
 | `PLATFORM_HOUSE_TOKEN` | (none, required by `provision`) | The desk's house bearer (`src/platform/mcp/server.ts`). `provision` writes it into the gateway's MCP server rows as the `Authorization` header. The desk serves it the six read tools free of the paywall. It must differ from `PLATFORM_OPERATOR_TOKEN`: the desk does not treat an equal one as the house (it logs so once), and `provision` refuses it. Generate it with `openssl rand -hex 32`. |
-| `PLATFORM_OPERATOR_TOKEN` | (none) | The desk's operator bearer: decides proposals, settles stranded payments. Zach's alone; it stays in `.env` and `provision` never sends it anywhere. `status` reads it only to warn when a gateway row still holds it. |
+| `PLATFORM_OPERATOR_TOKEN` | (none) | The approval key (the desk's operator bearer, by its env name): decides proposals, settles stranded payments. Zach's alone; it stays in `.env` and `provision` never sends it anywhere. `status` reads it only to warn when a gateway row still holds it. |
 | `DATA_DIR` | `data-live` (for `ask`) | Where `ask` reads the newest journal entry from. |
 
 The model key: the agent runtime resolves a provider's key from the agent's own secrets first and from
@@ -94,7 +99,7 @@ the gateway's environment second (`apps/agent/src/agent-runner.ts`, `resolveApiK
 `.env` holds an `OPENROUTER_API_KEY` shared by every agent on it, so on OpenRouter the agent needs no
 secret of his own, but that key's credit is shared too (on 2026-09-21 it was empty: OpenRouter answered
 "can only afford 124 tokens", and the desk policy would have proposed every cycle). Two ways out, both
-the owner's: add credit at openrouter.ai/settings/credits, or `--provider anthropic` after giving the
+Zach's: add credit at openrouter.ai/settings/credits, or `--provider anthropic` after giving the
 agent the desk's own key, the one `DECIDER=anthropic` already spends on the same decisions:
 `hermit config secrets set ANTHROPIC_API_KEY sk-ant-... --agent mr-bands` (encrypted at rest by the
 gateway, returned masked by its API). An agent secret of either name also wins over the shared key.
@@ -239,13 +244,13 @@ the gateway needs to change. `hermit agents disable mr-bands` parks him if wante
   expire), the fast watch, the journal and the sites are the desk process and stay there. The agent has
   no wallet and no tool that moves money: his MCP tools read. A gateway that hosts many agents, a model
   that can be talked to from a chat window, and a sandbox are not where a hot wallet belongs.
-- **The doctrine.** "The LLM proposes, the guards decide." The limits are code in `src/risk`, enforced
+- **The doctrine.** "He proposes, the guards decide." The limits are code in `src/risk`, enforced
   before any transaction is built, and no instruction row can change them. What the agent answers is a
   proposal, taken the same way an Anthropic reply is today: the entry rules (`adviseWithPolicy`) and the
   guards still have the last word, and an unusable answer means the desk policy proposes.
 - **The paywall.** The desk's MCP server charges `bands_pool_snapshot`, `bands_screen` and
   `bands_pool_score` over x402. The gateway sends the house bearer with every call; the desk's `/mcp`
-  route lets the house bearer (and the operator's) past the paywall so the house's agent does not pay
+  route lets the house bearer (and the approval key) past the paywall so the house's agent does not pay
   the house. The house bearer buys nothing else: the read tools, no proposing, no deciding.
   Anyone else's agent on the same gateway pays as before - once `X402_TREASURY` (and `X402_VERIFY`) are
   set. Without them the gate is a stub that charges nobody, so on the paper desk today the bearer buys
@@ -254,10 +259,10 @@ the gateway needs to change. `hermit agents disable mr-bands` parks him if wante
 ## Next
 
 - **A Telegram channel.** OpenHermit's built-in Telegram adapter is a channel row on the agent; it needs
-  a bot token from the owner (`hermit` or the admin UI at `/admin/`). Then Mr Bands answers strap checks
+  a bot token from Zach (`hermit` or the admin UI at `/admin/`). Then Mr Bands answers strap checks
   in a chat with the same rules.
 - **The X voice as a schedule.** `src/talk` composes his posts from the journal today. A gateway
   schedule (`hermit schedules create`) can post a prompt into a session on a cron and let him write the
   line with his tools in front of him; the posting itself stays behind `src/talk`'s rate limits and the
-  operator's keys.
+  X keys Zach holds for his account.
 - **The trading loop itself does not move.** See above.

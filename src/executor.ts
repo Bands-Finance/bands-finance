@@ -25,7 +25,7 @@
  * Venues (src/venues): the context carries the venue and its pool handle; every transaction is built
  * by the venue (Meteora legacy transactions, Raydium versioned ones) and signed and sent by the
  * wallet. A venue that is tradable but not in LIVE_VENUES is refused before anything is built when
- * DRY_RUN=false: it trades in paper and dry-run only until the operator turns it on.
+ * DRY_RUN=false: it trades in paper and dry-run only until Zach turns it on.
  *
  * Swap legs (src/tools/jupiter.ts), the stock straddle's: a BOTH open with `acquireToken` buys the
  * token the wallet lacks before the deposit (ExactIn, sized at the pool price plus SWAP_SLIPPAGE_BPS;

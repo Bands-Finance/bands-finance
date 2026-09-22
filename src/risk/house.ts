@@ -2,7 +2,7 @@
  * H1: the desk keeps its hands off its own token (docs/sprint.md, "What the desk does with it: nothing").
  * PURE, apart from reading the environment the way the other guards do.
  *
- *   - The house mint is $MRBANDS: TOKEN_MINT once it is launched, plus anything on PAIR_HOUSE_MINTS (which stays
+ *   - The house mint is $BANDS: TOKEN_MINT once it is launched, plus anything on PAIR_HOUSE_MINTS (which stays
  *     unset through 8 Oct by decision, but if someone sets it, those mints are the house too).
  *   - The desk never swaps a house mint: no Jupiter leg (acquire, shortfall, liquidate, surplus, residue, sweep)
  *     whose input or output is one. The check sits in JupiterClient.quote, the one door every leg goes through.
@@ -50,7 +50,7 @@ export function houseSwapViolation(inputMint: string, outputMint: string, m: Unt
   for (const [side, mint] of [["input", inputMint], ["output", outputMint]] as const) {
     const who = whose(mint, m);
     if (who === "house") return `house token: the swap's ${side} is the house mint ${mint}; the desk never swaps its own token (H1)`;
-    if (who === "copycat") return `copycat token: the swap's ${side} is ${mint}, the "Mr Bands" $BANDS that is not ours; the desk never touches it (H1)`;
+    if (who === "copycat") return `copycat token: the swap's ${side} is ${mint}, the "Mr Bands" $BANDS that is not his; the desk never touches it (H1)`;
   }
   return null;
 }
@@ -61,7 +61,7 @@ export function housePoolViolation(pool: { address: string; label?: string; mint
     const who = whose(mint, m);
     const name = pool.label ? `${pool.label} (${pool.address})` : pool.address;
     if (who === "house") return `house token: ${name} holds the house mint ${mint}; the desk never opens a band in its own token's pool (H1)`;
-    if (who === "copycat") return `copycat token: ${name} holds ${mint}, the "Mr Bands" $BANDS that is not ours; the desk never seats it (H1)`;
+    if (who === "copycat") return `copycat token: ${name} holds ${mint}, the "Mr Bands" $BANDS that is not his; the desk never seats it (H1)`;
   }
   return null;
 }
