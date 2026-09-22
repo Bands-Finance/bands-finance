@@ -36,6 +36,10 @@
     <key>PAPER_SOL</key><string>100</string>
     <key>PAPER_USDC</key><string>10000</string>
     <key>BOOK</key><string>stocks</string>
+    <!-- Tokenized stocks and nothing else (Zach, 22 Sep: "we need to make sure we are trading tokenized stocks").
+         BOOK=stocks puts stocks first; STOCKS_ONLY=true refuses every token that is not one, on every seat path
+         (src/screener/memeFloor.ts memeRefusal). Bands already held in anything else are still managed out. -->
+    <key>STOCKS_ONLY</key><string>true</string>
     <key>LAUNCH_LANE</key><string>false</string>
     <key>PAIR_LANE</key><string>false</string>
     <key>MEME_MIN_AGE_HOURS</key><string>720</string>

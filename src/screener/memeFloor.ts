@@ -24,6 +24,8 @@ export interface MemeFloorEnv {
   minMarketCapUsd: number;
   maxMarketCapUsd: number | null;
   minAgeHours: number;
+  /** STOCKS_ONLY=true: the book is tokenized stocks and nothing else; every token that is not one is refused */
+  stocksOnly?: boolean;
 }
 
 const num = (v: string | undefined, d: number): number => {
@@ -39,6 +41,8 @@ export function memeFloorEnv(env: NodeJS.ProcessEnv = process.env): MemeFloorEnv
     minMarketCapUsd: Math.max(0, num(env.MEME_MIN_MARKET_CAP_USD, 1_000_000)),
     maxMarketCapUsd: maxN !== null && Number.isFinite(maxN) && maxN > 0 ? maxN : null,
     minAgeHours: Math.max(0, num(env.MEME_MIN_AGE_HOURS, 24)),
+    // only the literal "true", like every switch that narrows what the desk may do
+    stocksOnly: (env.STOCKS_ONLY ?? "").trim().toLowerCase() === "true",
   };
 }
 
@@ -64,6 +68,9 @@ const usd = (n: number): string => (n >= 1e6 ? `$${(n / 1e6).toFixed(n >= 1e7 ? 
 /** PURE. Null when the token may be picked, else the reason in the desk's voice, naming the number. */
 export function memeRefusal(c: MemeCandidate, env: MemeFloorEnv): string | null {
   if (c.stock || c.house) return null;
+  // Every seat that is not a stock lane of its own comes through here (the screen, the hot watch, the seat
+  // ranking), so this one line is what makes a stocks-only book stocks only.
+  if (env.stocksOnly) return `${c.symbol} is not a tokenized stock, and the book is stocks only (STOCKS_ONLY)`;
   if (env.minAgeHours > 0) {
     if (c.ageHours === null || !Number.isFinite(c.ageHours)) return `${c.symbol}: age unknown, and the desk does not pick a memecoin it cannot date`;
     if (c.ageHours < env.minAgeHours) return `${c.symbol} is ${c.ageHours.toFixed(1)}h old, under the ${env.minAgeHours}h memecoin floor: not on launch`;

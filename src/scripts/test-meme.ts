@@ -29,8 +29,8 @@ async function main(): Promise<void> {
   const env = memeFloorEnv({});
 
   await test("memeFloorEnv: $1M market cap and 24h by default; 0 turns a floor off; a ceiling only when set", () => {
-    assert.deepEqual(env, { minMarketCapUsd: 1_000_000, maxMarketCapUsd: null, minAgeHours: 24 });
-    assert.deepEqual(memeFloorEnv({ MEME_MIN_MARKET_CAP_USD: "0", MEME_MIN_AGE_HOURS: "0", MEME_MAX_MARKET_CAP_USD: "50000000" }), { minMarketCapUsd: 0, maxMarketCapUsd: 50_000_000, minAgeHours: 0 });
+    assert.deepEqual(env, { minMarketCapUsd: 1_000_000, maxMarketCapUsd: null, minAgeHours: 24, stocksOnly: false });
+    assert.deepEqual(memeFloorEnv({ MEME_MIN_MARKET_CAP_USD: "0", MEME_MIN_AGE_HOURS: "0", MEME_MAX_MARKET_CAP_USD: "50000000" }), { minMarketCapUsd: 0, maxMarketCapUsd: 50_000_000, minAgeHours: 0, stocksOnly: false });
     assert.equal(memeFloorEnv({ MEME_MAX_MARKET_CAP_USD: "junk" }).maxMarketCapUsd, null);
     assert.equal(memeFloorEnv({ MEME_MIN_AGE_HOURS: "-5" }).minAgeHours, 0);
   });
@@ -207,6 +207,18 @@ async function main(): Promise<void> {
     assert.equal(limited.error, "GeckoTerminal HTTP 429");
     const broken = await fetchPoolHistory("POOL1", 30, { fetch: async () => { throw new Error("socket hang up"); } });
     assert.equal(broken.error, "socket hang up");
+  });
+
+  await test("STOCKS_ONLY: every token that is not a tokenized stock is refused, a stock passes, and only the literal true turns it on", () => {
+    const only = memeFloorEnv({ STOCKS_ONLY: "true" } as NodeJS.ProcessEnv);
+    assert.equal(only.stocksOnly, true);
+    assert.equal(memeFloorEnv({ STOCKS_ONLY: "yes" } as NodeJS.ProcessEnv).stocksOnly, false, "a typo keeps the wider book, never a surprise");
+    assert.equal(memeFloorEnv({} as NodeJS.ProcessEnv).stocksOnly, false);
+    // a memecoin that clears every floor is still refused
+    assert.equal(memeRefusal({ symbol: "ZCAT", marketCapUsd: 121_273_935, ageHours: 214.4 }, only), "ZCAT is not a tokenized stock, and the book is stocks only (STOCKS_ONLY)");
+    // a tokenized stock passes, whatever its age or cap reads
+    assert.equal(memeRefusal({ symbol: "SKHY", marketCapUsd: null, ageHours: 2, stock: "backpack" } as Parameters<typeof memeRefusal>[0], only), null);
+    assert.equal(memeRefusal({ symbol: "NVDAx", marketCapUsd: 5_000, ageHours: 1, stock: "xstocks" } as Parameters<typeof memeRefusal>[0], only), null);
   });
 
   console.log(`\n${passed} memecoin floor tests passed`);
