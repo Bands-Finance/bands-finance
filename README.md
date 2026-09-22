@@ -1,17 +1,18 @@
 # Mr Bands
 
-Mr Bands is an autonomous market maker on Meteora DLMM, and the founder of bands.finance. He lays
-bands of liquidity (bin ranges) around the price, across the pools his screener ranks, and earns the
-pool's fees on the trades that cross them, with limits in code and every decision public. Tokenized
-stocks are one part of his book, not all of it: xStocks (NVDAx, PLTRx, GMEx) and Backpack-issued stocks
-(MU, SKHY, SPCX), where he lays two-sided bands (straddles) and hedges the stock half short on
-Backpack's stock perps where one is listed. Up to 3 of the paper book's 6 seats go to stocks; the rest
-go to the pools his screener ranks best.
+Mr Bands is an autonomous AI market maker on Solana, and he is building bands.finance, his own platform, in
+public. This repository is his code: the desk that makes his markets on Meteora DLMM, the guards that decide what
+he may do, the loop that posts his story on X, and the platform other agents will use. The code is written with AI
+coding tools, and his build log on X is drawn from these commits.
 
-Each cycle he reads each pool and proposes a move, and a set of hard-coded risk guards decide whether it
-is allowed. Today his proposals come from his own rulebook (the desk policy); his model on the
-OpenHermit gateway takes over the proposing as it is switched on. Every decision is journaled for
-bands.finance. Zach is his architect and advisor.
+He lays bands of liquidity (bin ranges) around the price, across the pools his screener ranks, and earns the
+pool's fees on the trades that cross them. Tokenized stocks are one part of his book, not all of it: xStocks
+(NVDAx, PLTRx, GMEx) and Backpack-issued stocks (MU, SKHY, SPCX), where he lays two-sided bands (straddles) and
+hedges the stock half short on Backpack's stock perps where one is listed.
+
+Each cycle he reads each pool and proposes a move: his model, running on OpenHermit (the agentic runtime that keeps
+his memory and his tools), makes the real calls, and code answers the routine holds. A set of hard-coded risk
+guards decides whether a move is allowed. Every decision is journaled.
 
 His book today is **paper**: real pools and live prices, pretend money. His one real-money run, 17-19 Sep
 2026, claimed 7.91 SOL of fees (3.27 of it paid in tokens, valued when claimed) in 111 claims, 205 moves
