@@ -78,15 +78,19 @@ export class Wallet {
    * different pubkey, live mode refuses to start and dry-run warns. A key rotated without
    * updating EXPECTED_WALLET would otherwise sign from one wallet while the journal and the
    * lock file explain another.
+   *
+   * `pin` swaps the address checked, for ONE caller only: the token launch (src/scripts/clawpump.ts) pays from
+   * the treasury keypair and pins it with TOKEN_PAYER_EXPECTED instead. The desk never passes it, so its own
+   * EXPECTED_WALLET check is exactly as strict as before.
    */
-  static fromConfig(connection: Connection): Wallet {
+  static fromConfig(connection: Connection, pin: { address: string; name: string } = { address: config.engine.expectedWallet, name: "EXPECTED_WALLET" }): Wallet {
     const wallet = config.walletSecretKey
       ? new Wallet(connection, loadKeypair(config.walletSecretKey), false)
       : new Wallet(connection, Keypair.generate(), true);
-    const expected = config.engine.expectedWallet;
+    const expected = pin.address;
     if (expected && wallet.publicKey.toBase58() !== expected) {
-      const msg = `${wallet.ephemeral ? "the ephemeral wallet" : "WALLET_SECRET_KEY"} derives to ${wallet.publicKey.toBase58()}, but EXPECTED_WALLET is ${expected}`;
-      if (!config.dryRun) throw new Error(`${msg}. Refusing to start live: a key rotation must update EXPECTED_WALLET in the same change.`);
+      const msg = `${wallet.ephemeral ? "the ephemeral wallet" : "WALLET_SECRET_KEY"} derives to ${wallet.publicKey.toBase58()}, but ${pin.name} is ${expected}`;
+      if (!config.dryRun) throw new Error(`${msg}. Refusing to start live: a key rotation must update ${pin.name} in the same change.`);
       console.warn(`[wallet] warning: ${msg} (dry-run continues)`);
     }
     return wallet;

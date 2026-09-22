@@ -4,14 +4,23 @@
  *   status   the agent on ClawPump (public earnings; the record and its linked token when a key is set)
  *   pairs    pump.fun creation pairs and the creator-fee range (key)
  *   cost     what a self-funded launch costs today (key)
- *   quote    a payment quote for OUR token from the desk wallet: amount, pay-to, validity (key; pays nothing)
- *   launch   the whole self-funded flow: quote -> send the SOL from the desk wallet -> complete -> print
- *            the mint and the PAIR_HOUSE_MINTS line. Refused unless DRY_RUN=false AND --confirm AND the
- *            key and a real wallet exist. The token is the Clawrena entry (docs/clawrena.md).
+ *   quote    a payment quote for OUR token from the paying wallet: amount, pay-to, validity, and who the
+ *            creator fees go to for good (key; pays nothing)
+ *   launch   the whole self-funded flow: quote -> send the SOL from the paying wallet -> complete -> print
+ *            the mint as TOKEN_MINT. Refused unless DRY_RUN=false AND --confirm AND the key exists AND the
+ *            paying wallet is the treasury pinned by TOKEN_PAYER_EXPECTED (never the desk wallet). The token
+ *            is $MRBANDS, the Clawrena entry (docs/token.md).
+ *
+ * The payer is WALLET_SECRET_KEY, and for the launch that is the treasury keypair, not the desk's. With
+ * TOKEN_PAYER_EXPECTED set, this command checks the key against it INSTEAD of EXPECTED_WALLET; nothing else
+ * does, so the desk's own check is untouched.
+ *
+ * PAIR_HOUSE_MINTS stays unset through 8 Oct by decision (docs/sprint.md): it would seat and market-make the
+ * house token. The desk never touches $MRBANDS (H1, src/risk/house.ts), which reads TOKEN_MINT.
  */
 import { Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { config } from "../config";
-import { ClawPumpClient, clawpumpEnv, isSolPair, launchRefusal, resolvePumpPair, tokenSpec, type LaunchRequest } from "../tools/clawpump";
+import { ClawPumpClient, clawpumpEnv, isSolPair, launchRefusal, payerExpectedOf, resolvePumpPair, tokenSpec, type LaunchRequest } from "../tools/clawpump";
 import { Wallet } from "../tools/wallet";
 
 const usd = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 4 });
@@ -33,7 +42,7 @@ async function main(): Promise<void> {
     if (env.apiKey) {
       const a = await client.agent(agentId);
       console.log(`  record: ${a.name || "(unnamed)"} status ${a.status ?? "?"} wallet ${a.walletAddress ?? "none"} token ${a.tokenAddress ?? "none linked yet"}${a.isPublic === null ? "" : a.isPublic ? " public" : " private"}`);
-      if (a.tokenAddress) console.log(`  -> PAIR_HOUSE_MINTS=${a.tokenAddress}`);
+      if (a.tokenAddress) console.log(`  -> TOKEN_MINT=${a.tokenAddress}  (PAIR_HOUSE_MINTS stays unset through 8 Oct by decision)`);
     } else console.log("  (set CLAWPUMP_API_KEY to read the agent record and its linked token)");
     return;
   }
@@ -52,7 +61,9 @@ async function main(): Promise<void> {
     const agentId = need(cmd);
     const token = tokenSpec();
     const connection = new Connection(config.rpcUrl, "confirmed");
-    const wallet = Wallet.fromConfig(connection);
+    // the payer: the treasury keypair, pinned by TOKEN_PAYER_EXPECTED for this command only (the desk keeps EXPECTED_WALLET)
+    const payerExpected = payerExpectedOf();
+    const wallet = Wallet.fromConfig(connection, payerExpected ? { address: payerExpected, name: "TOKEN_PAYER_EXPECTED" } : undefined);
     const req: LaunchRequest = { agentId, agentName: config.agentName, walletAddress: wallet.keypair.publicKey.toBase58(), token };
     // the creation pair: SOL, or a custom pair from ClawPump's live catalogue (the Clawrena entry is paired with NVDA)
     if (!isSolPair(token.pumpPair)) {
@@ -67,14 +78,22 @@ async function main(): Promise<void> {
       req.pumpCreatorFeeBps = token.creatorFeeBps ?? catalogue.creatorFeeBps.default;
       console.log(`  paired with ${pair.asset!.symbol} (${pair.asset!.mint}), creator fee ${req.pumpCreatorFeeBps} bps; creator fees accrue in ${pair.asset!.symbol}`);
     }
+    const deskWallet = config.engine.expectedWallet || null;
+    const payer = req.walletAddress;
+    console.log(`${token.name} (${token.symbol}) by ${config.agentName}, agent ${agentId}, pair ${isSolPair(token.pumpPair) ? "SOL" : token.pumpPair}, dev buy ${token.devBuySol} SOL, buybackBps 0`);
+    console.log(`  payer ${payer}${wallet.ephemeral ? " (EPHEMERAL: no WALLET_SECRET_KEY set)" : ""}`);
+    console.log(`  creator fees go to ${payer} for good`);
+    if (deskWallet && payer === deskWallet) console.log(`  WARNING: ${payer} is the desk wallet (EXPECTED_WALLET). The launch will refuse it: pay from the treasury keypair.`);
+    if (!payerExpected) console.log("  WARNING: TOKEN_PAYER_EXPECTED is not set. The launch will refuse until it names the treasury address.");
+    else if (payer !== payerExpected) console.log(`  WARNING: the key derives to ${payer}, but TOKEN_PAYER_EXPECTED is ${payerExpected}. Wrong key: the launch will refuse it.`);
+    if (token.devBuySol > 0) console.log(`  WARNING: TOKEN_DEV_BUY_SOL is ${token.devBuySol}. The decision of 22 Sep is no dev buy (0).`);
     const q = await client.launchPreflight(req);
-    console.log(`${token.name} (${token.symbol}) by ${config.agentName}, agent ${agentId}, from wallet ${req.walletAddress}`);
     console.log(`  quote: ${q.amountSol} SOL (${q.amountLamports} lamports) to ${q.payTo}, valid ${q.validForSeconds} s${q.creationFeeSol !== null ? `; creation fee ${q.creationFeeSol} SOL` : ""}${q.devBuySol ? `, dev buy ${q.devBuySol} SOL` : ""}${q.requestId ? ` (request ${q.requestId})` : ""}`);
     if (cmd === "quote") {
       console.log("  nothing paid, nothing minted: `npm run clawpump -- launch --confirm` with DRY_RUN=false does it");
       return;
     }
-    const refusal = launchRefusal({ dryRun: config.dryRun, confirm: rest.includes("--confirm"), apiKey: env.apiKey, agentId, ephemeralWallet: wallet.ephemeral });
+    const refusal = launchRefusal({ dryRun: config.dryRun, confirm: rest.includes("--confirm"), apiKey: env.apiKey, agentId, ephemeralWallet: wallet.ephemeral, payer, payerExpected, deskWallet });
     if (refusal) {
       console.log(`  launch refused: ${refusal}`);
       process.exitCode = 2;
@@ -87,7 +106,9 @@ async function main(): Promise<void> {
     console.log(`  paid: ${sig}`);
     const done = await client.launchComplete(req, sig, q.preflightToken);
     console.log(`  ${done.status}: mint ${done.mintAddress}${done.txHash ? ` (launch tx ${done.txHash})` : ""}${done.pumpUrl ? `\n  pump.fun: ${done.pumpUrl}` : ""}${done.explorerUrl ? `\n  explorer: ${done.explorerUrl}` : ""}`);
-    console.log(`\n  add to .env and restart the desk:\n  PAIR_HOUSE_MINTS=${done.mintAddress}${req.pumpQuoteMint ? "\n  (the token is paired with a custom quote on pump.fun; the desk works Meteora pools only)" : ""}`);
+    console.log(`  creator fees go to ${payer} for good`);
+    console.log(`\n  record the mint in .env (the desk's H1 guard and the talk lint read it; the desk never trades it):\n  TOKEN_MINT=${done.mintAddress}`);
+    console.log("  PAIR_HOUSE_MINTS stays unset through 8 Oct by decision (docs/sprint.md): it would seat and market-make the token.");
     return;
   }
   console.log("usage: npm run clawpump -- status | pairs | cost | quote | launch [--confirm]");

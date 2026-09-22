@@ -78,6 +78,10 @@ for this". What that means on chain, checked 2026-09-15:
 
 ### A. The token (Zach, by 1 October; sooner is worth points)
 
+**Superseded on 22 Sep.** The token is now $MRBANDS on the SOL pair, no dev buy, `buybackBps` 0, paid for by a new
+treasury keypair, and the desk never touches it; `PAIR_HOUSE_MINTS` stays unset. The steps are in docs/token.md
+and the reasons in docs/sprint.md. What follows is the 20 Sep spec, kept for the record.
+
 Locked 2026-09-20. The spec lives in `ops/live.env` under "the Clawrena token" and is validated by
 `tokenSpec()` before any call is made:
 

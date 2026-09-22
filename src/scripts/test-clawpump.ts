@@ -3,7 +3,10 @@
  *   npx tsx src/scripts/test-clawpump.ts
  */
 import assert from "node:assert/strict";
-import { ClawPumpClient, ClawPumpError, clawpumpEnv, isSolPair, launchBody, launchRefusal, resolvePumpPair, SOL_MINT, tokenSpec, type LaunchRequest } from "../tools/clawpump";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { Connection, Keypair } from "@solana/web3.js";
+import { ClawPumpClient, ClawPumpError, clawpumpEnv, isSolPair, launchBody, launchRefusal, payerExpectedOf, resolvePumpPair, SOL_MINT, tokenSpec, type LaunchRequest } from "../tools/clawpump";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -29,6 +32,8 @@ const fake = (handler: (url: string, init?: RequestInit) => Response) => {
   return { f, calls };
 };
 const goodToken = { TOKEN_NAME: "Mr Bands", TOKEN_SYMBOL: "bands", TOKEN_DESCRIPTION: "An autonomous market maker for Meteora that publishes every decision.", TOKEN_IMAGE_URL: "https://bands.finance/logo.png", TOKEN_DEV_BUY_SOL: "0" };
+const DESK = "9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW";
+const TREASURY = "TreasuryXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
 const req = (): LaunchRequest => ({ agentId: "00000000-0000-4000-8000-000000000001", agentName: "Mr Bands", walletAddress: "9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW", token: tokenSpec(goodToken) });
 
 async function main(): Promise<void> {
@@ -49,7 +54,7 @@ async function main(): Promise<void> {
   });
   await test("launchBody: the partner API's fields; the SOL pair omits pumpQuoteMint and the creator fee; the proof rides on completion", () => {
     const b = launchBody(req(), { preflight: true });
-    assert.deepEqual(Object.keys(b).sort(), ["agentId", "agentName", "description", "devBuySol", "imageUrl", "name", "preflight", "symbol", "walletAddress"]);
+    assert.deepEqual(Object.keys(b).sort(), ["agentId", "agentName", "buybackBps", "description", "devBuySol", "imageUrl", "name", "preflight", "symbol", "walletAddress"]);
     assert.equal(launchBody({ ...req(), pumpQuoteMint: SOL_MINT, pumpCreatorFeeBps: 250 }).pumpQuoteMint, undefined, "the SOL pair is the default and cannot carry a creator fee");
     const custom = launchBody({ ...req(), pumpQuoteMint: "PAIRmint", pumpCreatorFeeBps: 250 });
     assert.equal(custom.pumpQuoteMint, "PAIRmint");
@@ -58,6 +63,30 @@ async function main(): Promise<void> {
     assert.equal(done.txSignature, "5Kd");
     assert.equal(done.preflightToken, "tok");
     assert.equal(done.preflight, undefined);
+  });
+
+  await test("launchBody: buybackBps is 0 in so many words, on preflight and on completion, on any pair; nothing that could split the fee or buy after launch is sent", () => {
+    for (const b of [launchBody(req(), { preflight: true }), launchBody(req(), { txSignature: "5Kd", preflightToken: "tok" }), launchBody({ ...req(), pumpQuoteMint: "PAIRmint", pumpCreatorFeeBps: 100 })]) {
+      assert.equal(b.buybackBps, 0);
+      assert.equal(b.devBuyAmountUsd, undefined, "no post-launch buy");
+      assert.equal(b.devBuySol, 0);
+    }
+  });
+
+  await test("ops/live.env: the $MRBANDS spec decided on 22 Sep parses (SOL pair, no dev buy, no creator fee, name Mr Bands)", () => {
+    const env: Record<string, string> = {};
+    for (const line of readFileSync(path.resolve(__dirname, "../../ops/live.env"), "utf8").split("\n")) {
+      const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
+      if (m) env[m[1]] = m[2].replace(/^"(.*)"$/, "$1");
+    }
+    const t = tokenSpec(env);
+    assert.equal(t.name, "Mr Bands");
+    assert.equal(t.symbol, "MRBANDS");
+    assert.equal(isSolPair(t.pumpPair), true);
+    assert.equal(t.devBuySol, 0);
+    assert.equal(t.creatorFeeBps, null);
+    assert.equal(env.TOKEN_CREATOR_FEE_BPS, undefined, "a SOL pair cannot carry one");
+    assert.equal(env.PAIR_HOUSE_MINTS ?? "", "", "the house lane stays off through 8 Oct");
   });
 
   await test("the launch pair: SOL by default; NVDA resolves to NVDAx in the catalogue by symbol, ticker or mint; an absent pair lists what is offered; the creator fee only on a custom pair", () => {
@@ -145,13 +174,37 @@ async function main(): Promise<void> {
 
   console.log("the gate");
   await test("launchRefusal: every reason in order, and none when all hold", () => {
-    const ok = { dryRun: false, confirm: true, apiKey: "cpk_x", agentId: "a", ephemeralWallet: false };
+    const ok = { dryRun: false, confirm: true, apiKey: "cpk_x", agentId: "a", ephemeralWallet: false, payer: TREASURY, payerExpected: TREASURY, deskWallet: DESK };
     assert.equal(launchRefusal(ok), null);
     assert.match(launchRefusal({ ...ok, agentId: null })!, /CLAWPUMP_AGENT_ID/);
     assert.match(launchRefusal({ ...ok, apiKey: null })!, /CLAWPUMP_API_KEY/);
     assert.match(launchRefusal({ ...ok, ephemeralWallet: true })!, /WALLET_SECRET_KEY/);
+    assert.match(launchRefusal({ ...ok, payer: DESK, payerExpected: DESK })!, /is the desk wallet \(EXPECTED_WALLET\): launch from the treasury keypair/, "never from the desk, even if pinned to it");
+    assert.match(launchRefusal({ ...ok, payerExpected: null })!, /TOKEN_PAYER_EXPECTED is not set/);
+    assert.match(launchRefusal({ ...ok, payer: "Other1111" })!, /derives to Other1111, but TOKEN_PAYER_EXPECTED is .*wrong key/);
+    assert.equal(launchRefusal({ ...ok, deskWallet: null }), null, "no EXPECTED_WALLET set: the pin alone decides");
     assert.match(launchRefusal({ ...ok, dryRun: true })!, /DRY_RUN is on/);
     assert.match(launchRefusal({ ...ok, confirm: false })!, /--confirm/);
+  });
+
+  await test("payerExpectedOf: TOKEN_PAYER_EXPECTED trimmed, empty reads as unset", () => {
+    assert.equal(payerExpectedOf({}), null);
+    assert.equal(payerExpectedOf({ TOKEN_PAYER_EXPECTED: "  " }), null);
+    assert.equal(payerExpectedOf({ TOKEN_PAYER_EXPECTED: ` ${TREASURY} ` }), TREASURY);
+  });
+
+  await test("the wallet pin: live, the desk's EXPECTED_WALLET still refuses a treasury key; the launch's own pin takes it, and refuses any other", async () => {
+    // a throwaway key made here, never funded; nothing is signed or sent
+    const treasury = Keypair.generate();
+    process.env.DRY_RUN = "false";
+    process.env.WALLET_SECRET_KEY = JSON.stringify([...treasury.secretKey]);
+    process.env.EXPECTED_WALLET = DESK;
+    const { Wallet } = await import("../tools/wallet.js");
+    const conn = new Connection("http://127.0.0.1:1");
+    assert.throws(() => Wallet.fromConfig(conn), /but EXPECTED_WALLET is .*Refusing to start live/);
+    const w = Wallet.fromConfig(conn, { address: treasury.publicKey.toBase58(), name: "TOKEN_PAYER_EXPECTED" });
+    assert.equal(w.publicKey.toBase58(), treasury.publicKey.toBase58());
+    assert.throws(() => Wallet.fromConfig(conn, { address: TREASURY, name: "TOKEN_PAYER_EXPECTED" }), /but TOKEN_PAYER_EXPECTED is .*Refusing to start live/);
   });
 
   console.log(`\n${passed} clawpump tests passed`);

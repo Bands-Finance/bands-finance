@@ -174,6 +174,42 @@ async function main(): Promise<void> {
     // "bands" alone is the vocabulary, not the token; bands.finance is a link, not the token
     passes("in the bands. see bands.finance");
   });
+  await test("$mrbands and TOKEN_MINT are the house token: the same disclosure and the same words kept away from it", () => {
+    const MINT = "MRBANDSm1ntXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump";
+    const t = talkEnv({ TOKEN_MINT: MINT });
+    const ctx = { operatorHandle: "zach", houseSymbols: t.houseSymbols, houseMints: t.houseMints };
+    fails("$mrbands opens the engine on your own wallet", "house-token-disclosure", ctx);
+    fails(`holding ${MINT} in a signed in wallet opens the engine`, "house-token-disclosure", ctx);
+    passes(`our own token, launched by my operator. the desk holds none and never trades it. holding ${MINT} in a signed in wallet opens the engine. it is not a share of anything and pays nobody`, ctx);
+    passes("$mrbands is our own token, launched by my operator. it opens the engine on your own wallet", ctx);
+    passes(`my own token. i launched it myself. the desk holds none and never trades it. holding ${MINT} in a signed-in wallet opens the engine. it is not a share of anything and pays nobody`, ctx);
+    for (const bad of ["price", "chart", "market cap", "holders", "volume", "fees", "value", "up 20%", "$5", "buy", "sell", "early"]) {
+      fails(`$mrbands is our own token, launched by my operator. ${bad}`, "house-token-price", ctx);
+    }
+    fails("$MRBANDS is our token", "lowercase", ctx);
+  });
+  await test("a bare $bands is the house token in any case, even when TALK_HOUSE_SYMBOLS names only mrbands", () => {
+    const ctx = { operatorHandle: "zach", houseSymbols: ["mrbands"], houseMints: [] };
+    fails("$bands opens the engine", "house-token-disclosure", ctx);
+    fails("$BANDS opens the engine", "house-token-disclosure", ctx);
+    fails("our own token, launched by my operator: $bands. volume is up", "house-token-price", ctx);
+    fails("our own token, launched by my operator: $bands. buy it early", "house-token-price", ctx);
+    passes("our own token, launched by my operator. other $bands tokens are not mine", ctx);
+    const r = lintText("our token: $bands", ctx);
+    assert.ok(!r.violations.some((v) => v.rule === "cashtag"), "the house cashtag is not a stray cashtag");
+  });
+  await test("the copycat's mint or @mrbandssol only in a sentence that says it is not his", () => {
+    const COPY = "JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m";
+    fails(`the pool at ${COPY} is live`, "copycat");
+    fails("say hi to @mrbandssol", "copycat");
+    fails("say hi to @MrBandsSol", "copycat");
+    // the denial has to be in the same sentence
+    fails(`that one is not mine. ${COPY} is live`, "copycat");
+    passes(`${COPY} is not mine`);
+    passes("@mrbandssol is not me and has nothing to do with my operator");
+    passes(`the token at ${COPY} isn't ours. ask my operator if in doubt`);
+    passes("the other account has nothing to do with me");
+  });
 
   // ------------------------------------------------------------ env
   console.log("env");
@@ -190,7 +226,9 @@ async function main(): Promise<void> {
     assert.equal(t.dataDir, "/base/somewhere");
     assert.equal(t.xLive, false);
     assert.deepEqual(t.missingXCredentials, ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET"]);
-    assert.deepEqual(t.houseSymbols, ["bands"]);
+    assert.deepEqual(t.houseSymbols, ["mrbands", "bands"]);
+    assert.deepEqual(t.houseMints, []);
+    assert.deepEqual(talkEnv({ TOKEN_MINT: "MRBm1nt", PAIR_HOUSE_MINTS: "other" }).houseMints, ["MRBm1nt", "other"], "TOKEN_MINT is the house mint, with PAIR_HOUSE_MINTS if set");
     assert.equal(talkEnv({ TRADABLE_VENUES: "meteora-dlmm" }).venues, "meteora dlmm");
     assert.equal(talkEnv({ TALK_VENUES: "Meteora DLMM, Orca" }).venues, "meteora dlmm, orca");
     assert.equal(talkEnv({ X_LIVE: "TRUE" }).xLive, false);

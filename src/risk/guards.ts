@@ -19,6 +19,7 @@ import { MARKS_STALE_CYCLES } from "../engine/marks";
 import { OPEN_COST_ESTIMATE_SOL, PoolSnapshot, PositionSnapshot, quoteOf } from "../tools/dlmm";
 import { jupiterEnv } from "../tools/jupiter";
 import { isTradableVenue, tradableVenues } from "../venues/env";
+import { housePoolViolation, untouchableMints } from "./house";
 import type { RiskLimits } from "./limits";
 import type { RiskState } from "./state";
 
@@ -86,6 +87,8 @@ export interface GuardContext {
   source?: "llm" | "engine";
   /** the venue's up-front cost of the proposed open in SOL (position rent plus whatever the band must initialise); defaults to the Meteora estimate */
   openCostSol?: number;
+  /** H1 (src/risk/house.ts): the house mints (TOKEN_MINT, PAIR_HOUSE_MINTS) and the copycat's; defaults to the environment's */
+  untouchable?: { house: readonly string[]; copycat: readonly string[] };
 }
 
 export interface Verdict {
@@ -261,6 +264,16 @@ export function evaluate(proposal: Decision, ctx: GuardContext, limits: RiskLimi
   //    brings the token in: acquireToken x price x (1 + maxSlippagePct), so the quote must cover
   //    the quote half AND the purchase; the token check counts what the swap brings in (and, on a
   //    REBALANCE, the base token the closing band hands back). Both legs count toward the size.
+  // 7b. H1 (src/risk/house.ts): never a band in a pool that holds the house mint or the copycat's, on either side.
+  //     That covers the acquire leg too: its output is the pool's base token. Not an exit: a close still goes
+  //     through, and any swap of the token on the way out is refused at the Jupiter door (JupiterClient.quote).
+  if (isOpening(decision)) {
+    const s = ctx.snapshot;
+    const h1 = housePoolViolation({ address: s.address, label: s.label, mints: [s.tokenX?.mint, s.tokenY?.mint, s.baseToken?.mint, s.quoteToken?.mint].filter((m): m is string => !!m) }, ctx.untouchable ?? untouchableMints());
+    if (h1) violations.push(h1);
+    else passed.push("house-token");
+  }
+
   if (isOpening(decision)) {
     // the venue gate: we manage what we hold on any venue, but we only OPEN on a tradable one
     const venueId = ctx.snapshot.venue ?? "meteora-dlmm";
