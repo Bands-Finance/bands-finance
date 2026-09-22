@@ -7,12 +7,12 @@
  *   npx tsx src/scripts/test-web-model.ts
  */
 import assert from "node:assert/strict";
-import { actionsOf, bookOf, flowOf, flowTotalsOf, recordOf, verdictOf } from "../../web/src/model";
+import { actionsOf, bookOf, flowOf, flowTotalsOf, realEntries, realPoints, recordOf, statusOf, verdictOf } from "../../web/src/model";
 import { bookCycle, completeCycles, cycleEquity, cyclesOf, equitySeriesOf, summarize } from "../../web/src/derive";
 import type { EquityHistoryPoint, JournalEntry, Position } from "../../web/src/types";
-import { dayWord, narrativeOf, num, sinceWord } from "../../web/src/narrative";
+import { dayWord, narrativeOf, noBookNarrative, num, sinceWord } from "../../web/src/narrative";
 import { trimEntries } from "../publish/live";
-import { liveRunOf, type LiveRunFile } from "../../web/src/liveRun";
+import { liveRunOf, runDays, type LiveRunFile } from "../../web/src/liveRun";
 import { readFileSync } from "node:fs";
 
 let passed = 0;
@@ -366,7 +366,7 @@ async function main() {
 
   await test("narrativeOf: a headline and a short honest story from the record; the worst day named, today reported, the mode said plainly", () => {
     const now = Date.parse("2026-09-17T03:00:00Z");
-    const status = { mode: "paper", lastTs: now, ageMs: 0, sentence: "s", short: "paper" } as const;
+    const status = { mode: "dry-run", lastTs: now, ageMs: 0, sentence: "s", short: "dry run" } as const;
     const rec = {
       startTs: Date.parse("2026-09-14T22:42:00Z"),
       startEquity: 246.9,
@@ -388,7 +388,7 @@ async function main() {
       "He has earned 22.7 SOL in fees over 2 days.",
       "Tuesday cost 30.4 SOL: 17.2 earned in fees, 47.6 lost to the price.",
       "Today he banked 2.1 SOL of fees and the book is up 0.25.",
-      "This is paper: real pools, a pretend wallet.",
+      "This is a rehearsal: real pools, a wallet that sends nothing.",
     ]);
     const flat = narrativeOf({ record: { ...(rec as object), net: 0.01 } as never, status: status as never, agentName: "Mr Bands", now });
     assert.equal(flat.headline, "Mr Bands is about flat since Monday.");
@@ -405,7 +405,33 @@ async function main() {
     assert.deepEqual([num(0.0031), num(0.15), num(0.0001)], ["0.0031", "0.15", "0.0001"]);
     const none = narrativeOf({ record: null, status: { ...status, mode: "live" } as never, agentName: "Mr Bands", now });
     assert.equal(none.headline, "Reading the journal.");
-    assert.match(none.story[0], /his own wallet on Solana/);
+    assert.deepEqual(none.story, [], "while the journal loads the story says nothing about the money");
+    // no book open (the snapshot's empty journal): the headline says so and the story points at the real-money run
+    const idle = { mode: "none", lastTs: null, ageMs: null, sentence: "No book open right now.", short: "no book open" } as const;
+    const empty = narrativeOf({ record: null, status: idle, agentName: "Mr Bands", now, runDays: "17 to 19 Sep" });
+    assert.deepEqual(empty, { headline: "No book open right now.", story: ["His real-money run, 17 to 19 Sep, is below."] });
+    assert.deepEqual(noBookNarrative(null).story, ["He has no money at work right now."]);
+    assert.equal(narrativeOf({ record: null, status: idle, agentName: "Mr Bands", now, loading: true }).headline, "Reading the journal.");
+  });
+
+  await test("no book open: an empty journal, or one of practice entries only, is status none and never 'paper'; the feed drops practice rows", () => {
+    const now = T0 + 3600e3;
+    const s = statusOf([], now, false);
+    assert.equal(s.mode, "none");
+    assert.equal(s.short, "no book open");
+    assert.equal(s.sentence, "No book open right now.");
+    const practice = [entry({ cycle: 1, min: 1, pool: "AAA", sol: 5 })];
+    assert.equal(statusOf(practice, now, false).mode, "none", "a practice journal is not his book");
+    assert.deepEqual(realEntries(practice), []);
+    const real = { ...practice[0], mode: "live", execution: { ...practice[0].execution, mode: "live" } } as JournalEntry;
+    assert.deepEqual(realEntries([...practice, real]), [real]);
+    assert.equal(statusOf([real], now, false).mode, "live");
+    assert.equal(statusOf(practice, now, true).mode, "demo", "a demo keeps its entries");
+    const pts = [{ t: 1, mode: "paper" }, { t: 2, mode: "live" }] as unknown as EquityHistoryPoint[];
+    assert.deepEqual(realPoints(pts).map((p) => p.t), [2]);
+    for (const st of [s, statusOf(practice, now, false)]) assert.ok(!/paper/i.test(`${st.short} ${st.sentence}`), "no status word says paper");
+    assert.equal(runDays(Date.parse("2026-09-17T10:00:00Z"), Date.parse("2026-09-19T01:44:00Z")), "17 to 19 Sep");
+    assert.equal(runDays(Date.parse("2026-09-30T10:00:00Z"), Date.parse("2026-10-02T01:44:00Z")), "30 Sep to 2 Oct");
   });
 
   await test("liveRunOf on the shipped live-run.json: the one headline number (docs/sprint.md), not the last mark, and every executed move", () => {

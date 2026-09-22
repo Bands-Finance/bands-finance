@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
 import { Actions } from "../components/Actions";
-import { dayOf, lengthWords, loadLiveRun, spanWords, type LiveRun } from "../liveRun";
+import { dayOf, lengthWords, spanWords, type LiveRun } from "../liveRun";
 import { Figures } from "./Chapters";
 import type { Beat } from "./Journey";
 import "./LiveRun.css";
+
+export { useLiveRun } from "../hooks/useLiveRun";
 
 /**
  * The chapter of the run he made live on Solana (src/liveRun.ts): the figures of the run, the result
@@ -15,18 +16,6 @@ import "./LiveRun.css";
 /** SOL to the hundredth, the way the ledger rows print it, so start, end and the change add up on the page */
 const sol = (n: number) => n.toFixed(2);
 const signed = (n: number, d = 2) => `${n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(n).toFixed(d)}`;
-
-export function useLiveRun(): LiveRun | null {
-  const [run, setRun] = useState<LiveRun | null>(null);
-  useEffect(() => {
-    let alive = true;
-    void loadLiveRun().then((r) => alive && r && setRun(r));
-    return () => {
-      alive = false;
-    };
-  }, []);
-  return run;
-}
 
 export function LiveRunBlock({ run, now }: { run: LiveRun; now: number }) {
   // what the run made and what it cost, both from the record: the change in the book is the fees he earned less what the rest took.

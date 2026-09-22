@@ -7,7 +7,8 @@ import react from "@vitejs/plugin-react";
  */
 const DASH_URL = "https://mrbands.finance";
 const DASH_TITLE = "Mr Bands · Market maker on Solana";
-const DASH_DESC = "Mr Bands makes markets on Meteora DLMM, Solana. His book is paper: real pools, a pretend wallet.";
+// the page shows only his real-money record: no book is open now, and his real-money run is the record
+const DASH_DESC = "Mr Bands makes markets on Meteora DLMM, Solana. His record is his real-money run, 17 to 19 Sep.";
 function dashboardHead(): Plugin {
   return {
     name: "dashboard-head",
@@ -41,7 +42,7 @@ function dashboardHead(): Plugin {
         // what a crawler reads: the page's substance in plain HTML, replaced by the app the moment it mounts
         .replace(
           '<div id="root"></div>',
-          `<div id="root"><main style="max-width:calc(1080px + 2 * clamp(18px,4vw,56px));margin:0 auto;padding:clamp(120px,19vh,210px) clamp(18px,4vw,56px) 0;color:#16120f;font-family:Fraunces,Georgia,serif"><p style="margin:0 0 18px;font:600 12px 'Cormorant SC',Georgia,serif;letter-spacing:.24em;text-transform:uppercase;color:#c9560a">Meteora DLMM · Solana</p><h1 style="max-width:640px;margin:0;font-weight:600;font-size:clamp(44px,6.6vw,104px);line-height:1;letter-spacing:-.025em">Mr Bands makes markets<br>on Solana.</h1><p style="max-width:44ch;margin:26px 0 0;font-size:clamp(17px,1.3vw,20px);line-height:1.5;color:#3d362f">His book is paper: real pools, a pretend wallet.</p><p style="max-width:44ch;margin:.7em 0 0;font-size:clamp(17px,1.3vw,20px);line-height:1.5;color:#3d362f">He lays SOL under the price and earns the fee when traders cross it. He proposes, the guards decide, every move is published. <a href="https://bands.finance/#/learn" style="color:#c9560a">How it works</a></p></main></div>`,
+          `<div id="root"><main style="max-width:calc(1080px + 2 * clamp(18px,4vw,56px));margin:0 auto;padding:clamp(120px,19vh,210px) clamp(18px,4vw,56px) 0;color:#16120f;font-family:Fraunces,Georgia,serif"><p style="margin:0 0 18px;font:600 12px 'Cormorant SC',Georgia,serif;letter-spacing:.24em;text-transform:uppercase;color:#c9560a">Meteora DLMM · Solana</p><h1 style="max-width:640px;margin:0;font-weight:600;font-size:clamp(44px,6.6vw,104px);line-height:1;letter-spacing:-.025em">Mr Bands makes markets<br>on Solana.</h1><p style="max-width:44ch;margin:26px 0 0;font-size:clamp(17px,1.3vw,20px);line-height:1.5;color:#3d362f">No book open right now. His record is his real-money run, 17 to 19 Sep.</p><p style="max-width:44ch;margin:.7em 0 0;font-size:clamp(17px,1.3vw,20px);line-height:1.5;color:#3d362f">He lays SOL under the price and earns the fee when traders cross it. He proposes, the guards decide, every move is published. <a href="https://bands.finance/#/learn" style="color:#c9560a">How it works</a></p></main></div>`,
         );
     },
   };

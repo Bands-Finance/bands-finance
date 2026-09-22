@@ -18,7 +18,7 @@ function Dev() {
   return (
     <div className="dash">
       <EngraveDefs />
-      <Journey beats={[hero, liveRunBeat(run, now, "paper")]} data={{ bands: [], feesSol: 0 }} />
+      <Journey beats={[hero, liveRunBeat(run, now, "none")]} data={{ bands: [], feesSol: 0 }} />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { dataStamp, isEmbedded, loadEquity, loadJournal, loadLimits, loadLiveFeed, loadScreen, type DataStamp } from "../api";
 import type { EquityHistoryPoint, JournalEntry, RiskLimits, ScreenResult } from "../types";
 import { SITE } from "../site";
+import { realEntries, realPoints } from "../model";
 
 // the desk writes a cycle every minute and a half or so; asking more often than this only re-reads the same feed
 const POLL_MS = 45_000;
@@ -42,10 +43,13 @@ export function useJournalFeed(): JournalFeed {
     let last = "";
     const tick = async () => {
       // the journal first: it settles which source the page is on, and the equity follows that choice
-      const j = await loadJournal().catch((e: Error) => ({ error: e }));
+      // his real-money book only: a practice entry or point never reaches either site (model.ts realEntries)
+      const j0 = await loadJournal().catch((e: Error) => ({ error: e }));
+      const j = Array.isArray(j0) ? realEntries(j0) : j0;
       // the dashboard reads nothing from the screener but the SOL price, and the live feed carries that
-      const [l, s0, q, live] = await Promise.all([loadLimits(), SITE === "dashboard" ? Promise.resolve(null) : loadScreen(), loadEquity(), loadLiveFeed()]);
+      const [l, s0, q0, live] = await Promise.all([loadLimits(), SITE === "dashboard" ? Promise.resolve(null) : loadScreen(), loadEquity(), loadLiveFeed()]);
       if (!alive) return;
+      const q = q0 ? realPoints(q0) : q0;
       // the feed's SOL price is a cycle old at most; the bundled screen's is as old as the last rebuild
       const s = s0 && live && typeof live.solPriceUsd === "number" && dataStamp().source === "live" ? { ...s0, solPriceUsd: live.solPriceUsd } : s0;
       setStamp(dataStamp());

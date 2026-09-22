@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { useReveal } from "../hooks/useReveal";
 import { GLOSS, type AgentRecord, type Status } from "../model";
 import type { ScreenResult } from "../types";
+import type { LiveRun } from "../liveRun";
 import "./Hero.css";
 
 const ri = (n: number) => ({ "--ri": n }) as CSSProperties;
@@ -13,6 +14,8 @@ export interface HeroProps {
   /** pool labels the agent is working right now; empty when he has no band open */
   workingNow: string[];
   agentName: string;
+  /** his real-money run (liveRun.ts): while no book is open its settled figures stand in for the book's */
+  run?: LiveRun | null;
 }
 
 /**
@@ -21,30 +24,36 @@ export interface HeroProps {
  * comes in as a prop from the same model the desk below reads, so the hero
  * can never disagree with the page under it. No fetches, no WebGL.
  */
-export function Hero({ record, screen, status, workingNow, agentName }: HeroProps) {
+export function Hero({ record, screen, status, workingNow, agentName, run = null }: HeroProps) {
   const ref = useReveal<HTMLElement>();
   const live = status.mode === "live";
-  const chips = workingNow.length ? [...new Set(workingNow)] : ["no pool yet"];
+  const idle = status.mode === "none";
+  const chips = workingNow.length ? [...new Set(workingNow)] : [idle ? "no book open" : "no pool yet"];
   const active = useTickerCycle(chips.length, 2600);
 
   const eyebrow =
     status.mode === "live"
       ? "bands.finance · live · Meteora DLMM"
-      : status.mode === "paper"
-        ? "bands.finance · paper trading · nothing broadcast"
+      : idle
+        ? "bands.finance · no book open · Meteora DLMM"
         : status.mode === "dry-run"
           ? "bands.finance · rehearsal · nothing broadcast"
           : "bands.finance · demo · nothing broadcast";
 
+  // no book open: the book's two figures are his real-money run's, settled, and labelled as that run's
   const stats = [
     { value: screen ? screen.scannedPools.toLocaleString() : "·", label: "pools scanned" },
-    { value: record ? String(record.counts.decisions) : "·", label: "decisions published" },
-    { value: record ? (record.feesRealized + record.feesUnclaimed).toFixed(4) : "·", label: "SOL fees earned" },
+    idle
+      ? { value: run ? run.decisions.toLocaleString() : "·", label: "decisions, real-money run" }
+      : { value: record ? String(record.counts.decisions) : "·", label: "decisions published" },
+    idle
+      ? { value: run ? run.feesClaimed.toFixed(2) : "·", label: "SOL fees claimed, real-money run" }
+      : { value: record ? (record.feesRealized + record.feesUnclaimed).toFixed(4) : "·", label: "SOL fees earned" },
   ];
 
   return (
     <section className="hero reveal" ref={ref}>
-      <SystemTelemetry live={live} />
+      <SystemTelemetry state={live ? "LIVE" : idle ? "STANDBY" : "REHEARSAL"} />
 
       <div className="hero__content">
         <span className="eyebrow hero__eyebrow r-item" style={ri(0)}>
@@ -60,12 +69,12 @@ export function Hero({ record, screen, status, workingNow, agentName }: HeroProp
         </p>
 
         <div className="hero__cta r-item" style={ri(3)}>
-          <a className="hero__btn hero__btn--primary" href="#desk">Watch him work ↓</a>
+          <a className="hero__btn hero__btn--primary" href="#desk">{idle ? "See his record ↓" : "Watch him work ↓"}</a>
           <a className="hero__btn hero__btn--ghost" href="#/pools">See every pool ranked →</a>
         </div>
 
         <div className="hero__tickers r-item" style={ri(5)}>
-          <span className="hero__tickers-label">{live ? "Working now" : "Rehearsing in"}</span>
+          <span className="hero__tickers-label">{live ? "Working now" : idle ? "Right now" : "Rehearsing in"}</span>
           {chips.map((t, i) => (
             <span key={t} className={`hero__ticker${i === active ? " is-active" : ""}`}>{t}</span>
           ))}
@@ -98,8 +107,7 @@ function useTickerCycle(count: number, intervalMs: number): number {
 }
 
 /** Ambient system telemetry, mirrored corner readouts framing the hero. */
-function SystemTelemetry({ live }: { live: boolean }) {
-  const state = live ? "LIVE" : "REHEARSAL";
+function SystemTelemetry({ state }: { state: "LIVE" | "STANDBY" | "REHEARSAL" }) {
   return (
     <div className="hero__telemetry" aria-hidden="true">
       <div className="hero__telemetry-block hero__telemetry-block--left">

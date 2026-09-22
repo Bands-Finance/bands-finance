@@ -183,7 +183,7 @@ export function Guards({ limits, record, maxActivePools = 6 }: GuardsProps) {
             <b>{plural(counts.vetoed, "proposal")}</b> vetoed · <b>{plural(counts.overrides, "override")}</b> · <b>{counts.holds}</b> holds of {counts.decisions} decisions
           </span>
         ) : (
-          <span className="tools__family-blurb">No decisions on file yet.</span>
+          <span className="tools__family-blurb">No decisions on file.</span>
         )}
       </div>
       <p className="tools__sub r-item" style={ri(idx++)} />

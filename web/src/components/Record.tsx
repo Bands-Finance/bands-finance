@@ -1,6 +1,7 @@
 import { Component, Fragment, useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { GLOSS, type AgentRecord, type DayRow, type FeePoint, type Status } from "../model";
 import { ago, clock, dayClock, fmtSigned } from "../format";
+import { runDays, type LiveRun } from "../liveRun";
 import "./ProfitTracker.css";
 
 /**
@@ -18,6 +19,8 @@ export interface RecordProps {
   agentName: string;
   /** the dashboard: the chart and the daily board only; the page's first screen already said the number */
   compact?: boolean;
+  /** his real-money run (liveRun.ts): with no book open the Record states it, settled, in place of a book */
+  run?: LiveRun | null;
 }
 
 /* ---------- money words ---------- */
@@ -58,7 +61,32 @@ class SectionBoundary extends Component<{ children: ReactNode }, { dead: boolean
   render() { return this.state.dead ? null : this.props.children; }
 }
 
-export function Record({ record, solPriceUsd, status, agentName, compact = false }: RecordProps) {
+export function Record({ record, solPriceUsd, status, agentName, compact = false, run = null }: RecordProps) {
+  if (!record && status.mode === "none") {
+    // no book open: the Record is his real-money run, settled, the same figures as its chapter on mrbands.finance
+    return (
+      <section className="pnl" aria-label={`The record of ${agentName}`}>
+        <div className="pnl__num">
+          <span className="pnl__label">{run ? `His real-money run, ${runDays(run.firstTs, run.lastTs)}` : "No book open right now"}</span>
+          {run && (
+            <>
+              <span className={`pnl__value ${run.change >= 0 ? "pnl__value--up" : "pnl__value--down"}`}>{signedSol(run.change, 2)}</span>
+              <span className="pnl__sub">
+                Started with {solFmt(run.startEquity, 2)}, stopped with {solFmt(run.endEquity, 2)}{run.settled ? ", all cash" : ""}. {solFmt(run.feesClaimed, 2)} of fees claimed.
+              </span>
+              <span className="pnl__links">
+                <span>
+                  {plural(run.moves, "move")} · {plural(run.claims, "claim")} · {plural(run.transactions, "transaction")} ·{" "}
+                  <a href={`https://solscan.io/account/${run.wallet}`} target="_blank" rel="noreferrer">the wallet on Solscan ↗</a>
+                </span>
+              </span>
+            </>
+          )}
+          {!run && <span className="pnl__sub">No band is open and no money is at work.</span>}
+        </div>
+      </section>
+    );
+  }
   if (!record) {
     return (
       <section className="pnl" aria-label={`The record of ${agentName}, loading`}>
@@ -74,7 +102,7 @@ export function Record({ record, solPriceUsd, status, agentName, compact = false
 
   const up = record.net >= 0;
   const simulated = status.mode !== "live";
-  const simGloss = status.mode === "demo" ? GLOSS.demo : status.mode === "paper" ? GLOSS.paper : GLOSS.dryRun;
+  const simGloss = status.mode === "demo" ? GLOSS.demo : GLOSS.dryRun;
   const tokensHeld = record.tokens.map((t) => `${fmtAmount(t.amount)} ${t.symbol} (${solFmt(t.inSol)})`).join(", ");
 
   const c = record.counts;
@@ -103,7 +131,7 @@ export function Record({ record, solPriceUsd, status, agentName, compact = false
       <div className="pnl__num">
         <span className="pnl__label">
           Net result, wallet and bands
-          {simulated && <> · <span className="term" title={simGloss}>{status.mode === "paper" ? "paper" : "simulated"}</span></>}
+          {simulated && <> · <span className="term" title={simGloss}>simulated</span></>}
         </span>
         <span className={`pnl__value ${up ? "pnl__value--up" : "pnl__value--down"}`}>
           {signedSol(record.net)}

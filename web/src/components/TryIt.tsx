@@ -2,6 +2,7 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import { useReveal } from "../hooks/useReveal";
 import { loadJournal, loadLimits, loadScreen } from "../api";
 import { ago } from "../format";
+import { NO_BOOK, realEntries } from "../model";
 import type { JournalEntry, RiskLimits, ScreenResult } from "../types";
 import "./TryIt.css";
 
@@ -46,8 +47,8 @@ const TOOLS: Tool[] = [
     label: "Where Mr Bands is standing",
     source: "/api/journal?limit=3",
     run: async () => {
-      const entries = latestPerPool(await loadJournal(3), 3);
-      return entries.length ? { kind: "journal", entries } : null;
+      // his real-money book only (model.ts realEntries); an empty one is an answer, not a failure
+      return { kind: "journal", entries: latestPerPool(realEntries(await loadJournal(3)), 3) };
     },
   },
   {
@@ -66,6 +67,7 @@ function summaryOf(r: Result): string {
     case "screen":
       return `${r.screen.rankedPools} pools ranked from ${r.screen.scannedPools.toLocaleString()} scanned · ${ago(r.screen.generatedAt)}`;
     case "journal":
+      if (r.entries.length === 0) return `${NO_BOOK.short} · the journal is empty`;
       return `${r.entries.length} pool${r.entries.length === 1 ? "" : "s"} in the journal · newest decision ${ago(r.entries[0].ts)}`;
     case "limits":
       return `${Object.keys(r.limits).length} rules`;
