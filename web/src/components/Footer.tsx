@@ -12,7 +12,6 @@ const LINKS: { label: string; href: string; title?: string; external?: boolean }
   { label: "API", href: "/api/journal", title: "The journal as JSON" },
   { label: "GitHub", href: "https://github.com/louz514/bands-finance", external: true },
   { label: "Meteora", href: "https://app.meteora.ag", external: true },
-  { label: "Meridian · sister desk", href: "https://meridian402.xyz", external: true },
 ];
 
 const ECOSYSTEM: { name: string; href: string }[] = [
@@ -20,7 +19,6 @@ const ECOSYSTEM: { name: string; href: string }[] = [
   { name: "Solana", href: "https://solana.com" },
   { name: "Solscan", href: "https://solscan.io" },
   { name: "GeckoTerminal", href: "https://www.geckoterminal.com" },
-  { name: "Meridian", href: "https://meridian402.xyz" },
 ];
 
 export function Footer() {
