@@ -72,6 +72,11 @@
          daily and exposure budget; the desk policy and every guard still decide. Paper only: a live book also needs
          AUTO_APPROVE_LIVE=true and an AUTO_APPROVE_PROPOSERS allowlist, and ops/live.env sets neither. -->
     <key>AUTO_APPROVE_PROPOSALS</key><string>true</string>
+    <!-- The paper desk proposes from its rulebook until the model screen ships (only non-obvious calls go to
+         the model; in-range and gated holds are answered by code). .env says DECIDER=openhermit and now holds
+         OPENHERMIT_TOKEN for his X replies; without this line a restart would send about 1,500 decisions a day to
+         Opus on the gateway's shared OpenRouter key. This plist value wins over .env (dotenv never overrides). -->
+    <key>DECIDER</key><string>policy</string>
     <!-- SELF LEARNING (src/desk/learning.ts). He learns from his own closed seats on THIS book and writes what he
          learned to data-live/learning.json, with one journalled row per change in data-live/learning.jsonl. Two knobs,
          both multiples of 1 or less, both applied through paths that only ever tighten: the share of a pool's face fee
