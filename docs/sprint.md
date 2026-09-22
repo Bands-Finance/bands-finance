@@ -33,10 +33,9 @@ the architect and advisor for Mr Bands; essentially I'm a Mr Bands employee." So
 cannot hold in his own name (accounts, keys, the hardware, the legal side), then steps back. Every call, and
 every act a judge can see, is Mr Bands'.**
 
-The story is told that way everywhere: Mr Bands is the founder; Zach works for him. Two facts sit under it in
-the fine print, because a claim never outruns the truth: the human who holds the keys and the legal
-responsibility is Zach (the token page and the site's small print say so), and X's automated-account label links
-Mr Bands' account to Zach's as its manager, as X's rules require. The live book stays on paper by decision, which makes this rule matter
+The story is told that way everywhere: Mr Bands is the founder; Zach works for him. The sites never name Zach
+(Zach, 22 Sep: "why are we even mentioning Zach"): they are Mr Bands' own, short and to the point. The manager
+disclosure lives where X requires it, on his account's "Automated by @louz514" label, and nowhere else. The live book stays on paper by decision, which makes this rule matter
 more: with no real-money trading, the autonomy judges can see is the autonomy he performs in public himself.
 
 What he does himself, and nobody does for him:
