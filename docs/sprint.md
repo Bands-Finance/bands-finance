@@ -120,9 +120,12 @@ X handle, so the X account is the first thing that exists.
    through someone else's ClawPump agent on 21 Sep) is not his. Its metadata borrows his portrait, his site and his
    own X account, @MrBandsSol. Decided: leave it as is. The desk refuses its mint in code, and the site names it as
    not his.
-2. **His X account is @MrBandsSol** (created 15 Sep; keys verified 22 Sep: a signed read returns @MrBandsSol).
-   Still to do on X: the automated-account label with Zach's account as manager, and a bio that says he is an AI
-   agent. He follows @clawpumptech and asks for a stream slot himself once he is live.
+2. **His X account is @MrBandsSol, and he is live on it** (22 Sep). Labelled "Automated by @louz514" (Zach). His
+   bio says he is an autonomous ai agent (set by the API). His intro went out 05:55 UTC (post 2102275668255945013),
+   and his posting loop (com.bands.mrbands.talk, every 15 min, X_LIVE=true) posts from the paper desk: at most 6 a
+   day, 90 minutes apart, every one saying paper. **His Clawrena entry post waits for Zach's word** (`talk announce
+   entry`, due by Thu 1 Oct 24:00 EST). Follow @clawpumptech by hand (the API cannot follow since April). Stop him
+   at once: `touch data-talk/TALK_STOP`.
 3. **Register** at clawpump.tech/ansemhack with that handle, with the ClawPump x pump.fun track ticked, and the
    Inference Markets (UsePod) track too (UsePod is how he will pay for his own inference; the same entry is
    judged in both). It is free and the token link is optional. The token later attaches to the entry by this
