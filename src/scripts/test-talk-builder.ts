@@ -141,6 +141,29 @@ async function main(): Promise<void> {
     for (const ok of ["My book is paper for now.", "Judging runs 28 Sep to 7 Oct."]) assert.ok(!g.BUILDER_NEVER.find((n) => n.rule === "paper-end")!.re.test(ok), ok);
   });
 
+  await test("the auto build log: commits become one plain row per day and area; private subjects, merges and unknown areas never do", async () => {
+    const ab = await import("../talk/autoBuild.js");
+    const at = Date.parse("2026-09-22T12:00:00Z");
+    const rows = ab.rowsFromCommits([
+      { sha: "a".repeat(40), at, subject: "paper: fees accrue from his own bins" },
+      { sha: "b".repeat(40), at, subject: "paper: swaps pay price impact" },
+      { sha: "c".repeat(40), at, subject: "openhermit: keep the clock out of the cached prompt" },
+      { sha: "d".repeat(40), at, subject: "talk: the craft, learned from Merd's record" },
+      { sha: "e".repeat(40), at, subject: "site: $MRBANDS off the page" },
+      { sha: "f".repeat(40), at, subject: "launch: the bridge and the arm" },
+      { sha: "0".repeat(40), at, subject: "model: the default is Opus 5.5" },
+      { sha: "1".repeat(40), at, subject: "ops: DECIDER=openhermit on the paper desk" },
+      { sha: "2".repeat(40), at, subject: "desk: half the triangles" },
+      { sha: "3".repeat(40), at, subject: "Merge x-builder: the builder voice" },
+      { sha: "4".repeat(40), at, subject: "security: rotate the admin token" },
+    ]);
+    assert.deepEqual(rows.map((r) => r.id).sort(), ["auto-20260922-openhermit", "auto-20260922-paper"]);
+    const paper = rows.find((r) => r.id === "auto-20260922-paper")!;
+    assert.match(paper.text, /^On 22 Sept? I changed my paper book: fees accrue from his own bins; swaps pay price impact\.$/);
+    assert.match(rows.find((r) => r.id === "auto-20260922-openhermit")!.text, /OpenHermit, the agentic runtime I run on/);
+    for (const r of rows) assert.ok(!/merd|mrbands|opus|zach|launch|token/i.test(r.text), r.text);
+  });
+
   // ------------------------------------------------------------ the picker
   console.log("the picker");
   await test("the daily card: only 14:00-15:00 UTC, first in line, with a template built from the same facts that passes the guards", () => {
@@ -366,14 +389,14 @@ async function main(): Promise<void> {
       [`${b} Keep the powder dry.`, "epigram"],
     ] as const) assert.equal(ruleOf(vC(t)), rule, t);
   });
-  await test("never the architect, the operator, a model or vendor name, a mint, the copycat or his token", () => {
+  await test("never the architect, the operator, a model or vendor name, a mint, the copycat or his token; OpenHermit is allowed", () => {
     const b = "On paper I closed my band on ORE/SOL, a loss of 0.55 SOL.";
     for (const [t, rule] of [
       [`${b} Zach fixed it.`, "architect"],
       [`${b} Thanks louz514.`, "architect"],
       [`${b} My model chose it.`, "meta"],
       [`${b} Opus called it.`, "meta"],
-      [`${b} The gateway, OpenHermit, was slow.`, "meta"],
+      [`${b} The gateway, OpenRouter, was slow.`, "meta"],
       [`${b} ${COPYCAT_MINTS[0]}.`, "token"],
       [`${b} Not ${COPYCAT_MINTS[0].slice(0, 10)}.`, "token"],
       [`${b} So11111111111111111111111111111111111111112.`, "token"],
@@ -381,6 +404,8 @@ async function main(): Promise<void> {
       [`${b} The copycat is not mine.`, "token"],
       [`${b} Bands token soon.`, "token"],
     ] as const) assert.equal(ruleOf(vC(t)), rule, t);
+    // OpenHermit is the runtime he runs on and is named in public on purpose (Zach, 22 Sep)
+    assert.equal(ruleOf(vC(`${b} I run on OpenHermit, so the band's lesson stays in my memory.`)), null);
   });
   await test("books: a paper figure is never called real money, in its sentence or anywhere in an all-paper post", () => {
     assert.equal(ruleOf(vC("With real money I closed my band on ORE/SOL at 16:00 UTC, a loss of 0.55 SOL. My paper book is untouched.")), "books");

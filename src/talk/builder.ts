@@ -16,6 +16,7 @@
  * Nothing here trades, reads mentions or replies.
  */
 import fs from "node:fs";
+import { syncAutoBuild } from "./autoBuild";
 import path from "node:path";
 import { readLessons, LESSONS_FILE } from "../learn/lessons";
 import { loadTalkData, stackFiguresOf } from "./data";
@@ -239,6 +240,10 @@ export async function runBuilderTick(o: BuilderTickOptions): Promise<BuilderOutc
   // real): only the daily's template could go out then. Never the token, only why (brainProblem).
   const brainWhy = brainProblem(env);
   if (brainWhy) console.log(`[talk] builder: his model cannot be asked: ${brainWhy}; only the daily card's template can go out`);
+  // the auto build log: new commits (his own repo, and his work on the runtime he runs on) become build rows first
+  const auto = syncAutoBuild({ cwd: o.cwd ?? process.cwd(), statePath: t.statePath, runtimeRepo: (env.TALK_RUNTIME_REPO ?? "").trim() || null });
+  if (auto.added.length) console.log(`[talk] build log: ${auto.added.length} new row(s): ${auto.added.join(", ")}`);
+  if (auto.note) console.log(`[talk] ${auto.note}`);
   const { inputs, recent, linksToday } = await momentInputsOf(o);
   const plan = pickMoment(inputs, {
     postsPerDay: o.postsPerDay,

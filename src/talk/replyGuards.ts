@@ -217,7 +217,7 @@ export const MODEL_MIN_WORDS = 3;
 export const NON_ANSWER_RE = /^\W*(n\/?a|none|nothing|pass|null|undefined|empty|skip(ped)?|ok(ay)?|no (response|comment|answer|reply)( (needed|required|necessary))?)\W*$/;
 /** talk about the prompt, the loop or the model behind him */
 export const META_RE =
-  /\b(as instructed|i was told|i'?ve been told|i'?m told|my (prompt|instructions|rules|guidelines|guards|system prompt)|opus|claude|anthropic|openai|gpt|chatgpt|sonnet|haiku|gemini|llama|mistral|deepseek|grok|system (message|prompt)|operators?|my (model|weights|training)|fine ?tun\w*|openhermit|openrouter|the (talk )?loop|language model|llm|here is my (reply|answer|response))\b/;
+  /\b(as instructed|i was told|i'?ve been told|i'?m told|my (prompt|instructions|rules|guidelines|guards|system prompt)|opus|claude|anthropic|openai|gpt|chatgpt|sonnet|haiku|gemini|llama|mistral|deepseek|grok|system (message|prompt)|operators?|my (model|weights|training)|fine ?tun\w*|openrouter|the (talk )?loop|language model|llm|here is my (reply|answer|response))\b/;
 const BASE58_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
 const HANDLE_RE = /@(\w{1,15})/g;
 const CASHTAG_RE = /\$([a-z][a-z0-9_]{0,19})\b/gi;

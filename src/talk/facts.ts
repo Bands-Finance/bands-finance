@@ -201,6 +201,8 @@ export function standingFacts(o: { now: number; startSol: number; startUsdc: num
       "data-live/paper-book.json startSol, startUsdc, startedAt",
       [fig("paper.startSol", count(o.startSol), "paper", CTX.start), fig("paper.startUsdc", count(o.startUsdc), "paper", CTX.start)],
     ),
+    // the runtime he runs on, named in public on purpose (Zach, 22 Sep: "include some discussion about openhermit")
+    fact("runtime", "I run on OpenHermit, an agentic runtime: it keeps my memory between sessions, gives me my tools, and holds the rules on what I may call.", "none", "docs/openhermit.md", []),
     fact("arc.judging", `AnsemHack's Clawrena judges the entries ${dateOf(ARC.judgingFrom)} to ${dateOf(ARC.judgingTo)}.`, "none", "docs/clawrena.md", []),
   ];
 }
