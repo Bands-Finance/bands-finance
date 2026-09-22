@@ -84,14 +84,16 @@
          obvious holds in code (in range, gated, no size, flagged, not worth it: about 88% of his decisions) and labels
          them "screen", so only the real calls reach the model, about 160 a day. MODEL_CALLS_PER_DAY is a hard cap
          counted on disk in data-live/model-budget.json (UTC day; clamped to 500); once spent he decides from the desk
-         policy with a note until the next UTC day. At Opus list price that is about 11 to 18 dollars a day, 14 to 22 at
-         the cap, on the OpenRouter key the gateway shares with the Meridian fleet. Switch back with DECIDER=policy, then
+         policy with a note until the next UTC day. MEASURED 22 Sep from the gateway's own usage rows: about 0.29 dollars a
+         call (each call writes about 41k tokens to the prompt cache and reads none back), not the 0.07 to 0.11 first
+         estimated, so the cap came down from 200 to 60 (about 17 dollars a day) on the OpenRouter key the gateway
+         shares with the Meridian fleet. Switch back with DECIDER=policy, then
          bootout and bootstrap this service. (No double hyphens in this comment: they are not legal inside XML comments.) -->
     <key>DECIDER</key><string>openhermit</string>
     <key>OPENHERMIT_GATEWAY_URL</key><string>http://127.0.0.1:4000</string>
     <key>OPENHERMIT_AGENT_ID</key><string>mr-bands</string>
     <key>OPENHERMIT_TIMEOUT_MS</key><string>60000</string>
-    <key>MODEL_CALLS_PER_DAY</key><string>200</string>
+    <key>MODEL_CALLS_PER_DAY</key><string>60</string>
     <!-- SELF LEARNING (src/desk/learning.ts). He learns from his own closed seats on THIS book and writes what he
          learned to data-live/learning.json, with one journalled row per change in data-live/learning.jsonl. Two knobs,
          both multiples of 1 or less, both applied through paths that only ever tighten: the share of a pool's face fee
