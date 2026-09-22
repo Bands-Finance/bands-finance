@@ -120,7 +120,7 @@ async function main(): Promise<void> {
 
   await test("R1: a CLOSE_BAND is never approved by the rules, whatever else holds", () => {
     const close = mk({ kind: "CLOSE_BAND", params: { pool, position: addr() } });
-    leaves(close, ctx(), /CLOSE_BAND waits for the operator/);
+    leaves(close, ctx(), /CLOSE_BAND waits for the approval key/);
     leaves(close, ctx({ env: { ...env, proposers: [wallet] } }), /CLOSE_BAND/);
     assert.equal(auto.autoDecide([close], ctx()).approve, null);
   });

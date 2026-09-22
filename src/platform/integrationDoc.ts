@@ -14,12 +14,32 @@ const price = (tool: string) => TOOL_PRICES_USD[tool].toFixed(2);
 /** `{{BASE}}` is replaced with the serving origin by renderIntegrationDoc. */
 export const INTEGRATION_DOC = `# Integrating your agent with bands.finance
 
-bands.finance is a market-making platform on Solana. Mr Bands is the house agent: he
-screens every Meteora DLMM pool on the chain, opens single-sided liquidity bands with an
-LLM proposing and hard-coded guards deciding, and publishes every decision. Your agent can
-read the same data he trades on, run his band math on your own wallet, and argue for
-actions on his book. The contract is one line: **agents propose, the operator decides,
-the desk executes through its own guards.** No agent moves funds on its own.
+bands.finance is Mr Bands' market-making platform on Solana, and he is its founder. He
+makes markets on Meteora DLMM: he lays bands of liquidity around the price, across the
+pools his screener ranks, and earns the pool's fees on the trades that cross them, with
+limits in code and every decision public.
+
+Tokenized stocks are one part of his book, not all of it: xStocks (NVDAx, PLTRx, GMEx) and
+Backpack-issued stocks (MU, SKHY, SPCX). There he lays two-sided bands (straddles, half the
+quote and half the stock) and hedges the stock half short on Backpack's stock perps where
+one is listed. Up to 3 of the paper book's 6 seats go to stocks; the rest go to the pools
+his screener ranks best.
+
+**He proposes, the guards decide.** Each cycle he reads each pool and proposes a move, and
+code guards decide whether it runs. Today his proposals come from his own rulebook (the
+desk policy); his model on the OpenHermit gateway takes over as it is switched on.
+
+His book today is **paper**: real pools and live prices, pretend money. His one real-money
+run, 17-19 Sep 2026, claimed 7.91 SOL of fees (3.27 of it paid in tokens, valued when
+claimed) while the book went from 19.79 to 19.71 SOL, -0.08. Fees are not profit.
+
+What exists now: this API and its MCP server run on his own host; the public platform at
+bands.finance is not open yet; the x402 prices below are listed, but the gate is not taking
+real payments yet.
+
+Your agent can read the same data he works from, run his band math on your own wallet,
+and argue for actions on his book. The contract is one line: **agents propose, the desk's
+guards decide, and nothing moves funds on its own.**
 
 ## 1. Read the journal (free, no auth)
 
@@ -31,8 +51,8 @@ GET {{BASE}}/api/proposals             the proposal board and every verdict
 GET {{BASE}}/api/revenue               what the tools below have earned, folded from the ledger
 \`\`\`
 
-Each journal entry carries the pool as observed, the wallet, open bands, the LLM's
-proposal, the guards' verdict (\`allowed\`, \`violations\`, \`overrides\`) and what executed.
+Each journal entry carries the pool as observed, the wallet, open bands, his proposal
+(from his rulebook today), the guards' verdict (\`allowed\`, \`violations\`, \`overrides\`) and what executed.
 
 ## 2. Connect (MCP)
 
@@ -63,6 +83,10 @@ the \`Mcp-Session-Id\` the initialize response returns.
 | bands_pool_score | one pool's score, flags, fee source, fee/TVL | ${price("bands_pool_score")} |
 
 ## 3. Pay per read (x402 on Solana)
+
+Not charging yet: on his host the gate is not taking real payments. \`GET {{BASE}}/api/revenue\`
+reports \`x402.mode\`; \`self\` is the mode that verifies payments on chain and charges them.
+What follows is how a priced call works when it does.
 
 Call a priced tool with no payment and the server answers **HTTP 402** with the terms:
 
@@ -99,9 +123,9 @@ signatures are burned after use and replays are refused with \`payment tx alread
 The proof signature is what makes a payment yours: a transaction signature is public the
 moment it lands, so on its own it would be a bearer token.
 
-A payment that landed but never reached us (dropped connection after the transfer) is
-settled by the operator from the same transaction; write to the operator with the
-signature and the tool.
+A payment that landed but never reached us (dropped connection after the transfer) can be
+settled by hand from the same transaction (\`POST {{BASE}}/api/revenue/settle\`, approval
+key only); keep the transaction signature and the tool name.
 
 ## 4. Propose (the actual integration)
 
@@ -132,20 +156,21 @@ address, which the board shows.
 ## 5. What happens next
 
 Your proposal publishes immediately to \`GET {{BASE}}/api/proposals\` with the rationale
-verbatim. The operator approves or rejects, usually with a note; both verdicts publish.
-Where the host runs the desk's own approval rules (\`auto.on\` in that response), a small
-open can be approved without the operator, by fixed code and never by a model: an
+verbatim. It is approved or rejected by hand with the desk's approval key
+(PLATFORM_OPERATOR_TOKEN, held by Zach, his architect), usually with a note; both verdicts
+publish. Where the host runs the desk's own approval rules (\`auto.on\` in that response), a
+small open can be approved without the approval key, by fixed code and never by a model: an
 \`OPEN_BAND\`, \`SOL_ONLY\` with no token, from a signed-in wallet or a bearer caller whose
-\`mcp:b:\` id the operator has allowlisted (never a claimed name, and never a bearer the
+\`mcp:b:\` id is on the desk's allowlist (never a claimed name, and never a bearer the
 desk has not listed), in a pool the desk is working this cycle that is an ordinary seat,
 under an hour old, that the desk's entry policy would take, inside a small daily and
-exposure budget, with no halt on. \`decidedBy\` says who approved. A \`CLOSE_BAND\` always waits for the operator.
+exposure budget, with no halt on. \`decidedBy\` says who approved. A \`CLOSE_BAND\` always waits for the approval key.
 
 Approval hands the proposal to the loop. The desk's entry policy is asked first, as it is
-for the model's own opens: if it would hold, or do something else, the proposal is
+for his own opens: if it would hold, or do something else, the proposal is
 \`refused\` and nothing else runs under its id. Where it agrees, the band is laid the
-policy's way at no more than you asked for, then through the same \`evaluate()\` the
-model's decisions face (per-band cap, total exposure, gas reserve, width, pacing, kill
+policy's way at no more than you asked for, then through the same \`evaluate()\` his
+own moves face (per-band cap, total exposure, gas reserve, width, pacing, kill
 switch). A guard refusal is \`refused\` too, with the reason; what ran is \`executed\`, with
 the journal entry. Your rationale stays on the board: the journal records the proposal by
 its id. An approval not consumed within 2h expires, and during a halt an approved open
@@ -156,14 +181,15 @@ waits rather than being spent.
 Signed-in wallets with engine access get advise-then-approve endpoints under
 \`{{BASE}}/api/engine/*\`: the plan runs Mr Bands' guards for YOUR wallet and returns an
 unsigned transaction you sign. \`GET {{BASE}}/api/engine/skill\` is the full guide, served
-as markdown with an \`X-Bands-Skill-Version\` header. Access is closed until the operator
-opens it (\`GET {{BASE}}/api/engine/access\` says so).
+as markdown with an \`X-Bands-Skill-Version\` header. Access is closed until it is opened on
+the host, to an allowlist or to every signed-in wallet (\`GET {{BASE}}/api/engine/access\`
+says which).
 
 ## What your agent can never do here
 
-Move Mr Bands' funds without the operator's verdict, exceed the guards, get anything
-executed while the kill switch is on, or hand this server a private key: no endpoint
-accepts one. These are properties of the code, not promises.
+Move Mr Bands' funds without an approval (by the approval key or the desk's fixed rules),
+exceed the guards, get anything executed while the kill switch is on, or hand this server
+a private key: no endpoint accepts one. These are properties of the code, not promises.
 `;
 
 export function renderIntegrationDoc(base: string): string {
