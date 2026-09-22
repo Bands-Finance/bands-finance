@@ -393,7 +393,7 @@ prints every row as agreeing, and test-web-model pins the shipped file to these 
 ## Decisions (Zach, Tue 22 Sep)
 
 1. **The copycat token: not his, and left as is.** No report to ClawPump or pump.fun, and no email to ClawPump at
-   all. The desk refuses its mint in code; the site names it as not his. @MrBandsSol, which its metadata links, is
+   all. The desk refuses its mint in code; the site names it as not his once the token is on the site (8 below). @MrBandsSol, which its metadata links, is
    his own X account.
 2. **The token: $BANDS**, chosen over $MRBANDS knowingly, with the copycat sharing the ticker: the mint is the
    only way to tell them apart, so his mint leads everywhere and the copycat is named by its mint. SOL pair, no
@@ -410,6 +410,10 @@ prints every row as agreeing, and test-web-model pins the shipped file to these 
    Until it runs, public surfaces say "coming" at most.
 7. **How we tell it:** Mr Bands is the founder and the one who acts; Zach is his architect and advisor. "He
    proposes, the guards decide." The book is paper wherever it is described.
+8. **The token is not linked to the website yet** ("I dont want to link our clawpump token to the website just
+   yet"). Neither site says anything about $BANDS or the copycat, and prints no ClawPump link, until
+   `TOKEN_ON_SITE=true` (ops/live.env, read by web/scripts/deploy-dash.mjs). The token's ClawPump description
+   names no site, and his X posts that name the token carry no site link. Everything else waits on this switch.
 
 ## Open questions (not asked: Zach, 22 Sep, "lets ignore emailing clawpump team")
 

@@ -12,7 +12,7 @@ import type { StageData } from "./stage/DeskStage";
 import { BandBlock, ClosingBlock, MadeBlock, StatementList, bandLabels, bandStatus, feeChartOf, pairWords } from "./stage/Chapters";
 import { liveRunBeat, useLiveRun } from "./stage/LiveRun";
 import { useMotion } from "./motion";
-import { PLATFORM_URL, TOKEN_URL, X_URL } from "./site";
+import { PLATFORM_URL, TOKEN_ON_SITE, TOKEN_URL, X_URL } from "./site";
 import { dayOf, runDays } from "./liveRun";
 import "lenis/dist/lenis.css";
 
@@ -206,11 +206,11 @@ export default function DashboardApp() {
           } satisfies Beat]
         : []),
       {
-        // the ask, at the cigar hand. Only what is true: the tools are not open, the token is coming and not minted, and the
-        // copycat $BANDS is named as not his by its full mint (docs/mr-bands-agent.md, hard rule 6: only the mint tells them
-        // apart; the <wbr>s let a phone break it). The ClawPump and X links print only once those pages exist (site.ts).
+        // the ask, at the cigar hand. Only what is true: the tools are not open. The token paragraph (coming, not minted, and
+        // the copycat $BANDS named as not his by its full mint; docs/mr-bands-agent.md hard rule 6; the <wbr>s let a phone
+        // break it) prints only with TOKEN_ON_SITE: Zach, 22 Sep, the token is not linked from the site yet (site.ts).
         id: "hire", station: "hands", side: "left", frame: { x: 0.04, y: 0.06 }, frameTall: { x: 0.04, y: 0.12 }, eyebrow: "For other agents", line1: "His tools,", line2: "soon for yours.",
-        body: <><p>His screener, pool reads and guards, as tools for other agents. Not open yet.</p><p>His token, $BANDS, is coming to ClawPump: his own, it pays holders nothing and the desk never trades it. The $BANDS at mint JAARLUawF9DT<wbr />auc9pHUyYpga<wbr />8mDU3172cY7N<wbr />zLfhpJ6m is not his.</p></>,
+        body: <><p>His screener, pool reads and guards, as tools for other agents. Not open yet.</p>{TOKEN_ON_SITE ? <p>His token, $BANDS, is coming to ClawPump: his own, it pays holders nothing and the desk never trades it. The $BANDS at mint JAARLUawF9DT<wbr />auc9pHUyYpga<wbr />8mDU3172cY7N<wbr />zLfhpJ6m is not his.</p> : null}</>,
         links: [
           { href: `${PLATFORM_URL}/#/learn`, label: "His tools", external: true },
           ...(TOKEN_URL ? [{ href: TOKEN_URL, label: "$BANDS on ClawPump", external: true }] : []),

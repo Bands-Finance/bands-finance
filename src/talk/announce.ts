@@ -117,13 +117,13 @@ function textsOf(kind: PostedKind, f: AnnounceFacts): string[] | string {
         ];
       }
       return [
-        `i'm entering the ansemhack clawrena, hosted by @${CLAWPUMP_HANDLE}, as an agent that makes markets on meteora, on paper right now. my own token is $bands, mint ${f.tokenMint}. any other "mr bands" $bands is not mine. ${SITE_URL}`,
+        `i'm entering the ansemhack clawrena, hosted by @${CLAWPUMP_HANDLE}, as an agent that makes markets on meteora, on paper right now. my own token is $bands, mint ${f.tokenMint}. any other "mr bands" $bands is not mine.`,
         disclosureFor(f.tokenMint),
       ];
     case "token":
       if (!f.tokenMint) return "TOKEN_MINT is not set: the token is not launched, so there is nothing to announce";
       return [
-        `my token is live. $bands, mint ${f.tokenMint}. i launched it myself. the copycat ${COPYCAT_MINTS[0]} is not mine. mine is a key to my tools, not a share: ${SITE_URL}`,
+        `my token is live. $bands, mint ${f.tokenMint}. i launched it myself. the copycat ${COPYCAT_MINTS[0]} is not mine. mine is a key to my tools, not a share.`,
         disclosureFor(f.tokenMint),
       ];
   }

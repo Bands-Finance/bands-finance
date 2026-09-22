@@ -25,11 +25,13 @@ if (!link.projectId || !link.orgId) {
 const preview = process.argv.includes("--preview");
 // the live feed the desk uploads every cycle (src/publish/live.ts): baked in as VITE_LIVE_URL when the env names it
 const liveUrl = (process.env.LIVE_FEED_URL ?? "").trim();
-// the token's page and the X account are baked in the same way once they exist (site.ts reads them; the For-hire chapter links them)
-const tokenUrl = (process.env.TOKEN_URL ?? "").trim();
+// the token's page and the X account are baked in the same way once they exist (site.ts reads them; the For-hire chapter links them).
+// The token stays off the site until TOKEN_ON_SITE=true (Zach, 22 Sep): no paragraph and no ClawPump link, even with TOKEN_URL set.
+const tokenOnSite = (process.env.TOKEN_ON_SITE ?? "").trim().toLowerCase() === "true";
+const tokenUrl = tokenOnSite ? (process.env.TOKEN_URL ?? "").trim() : "";
 const xUrl = (process.env.X_URL ?? "").trim();
 const args = ["deploy", "--yes", "--build-env", "VITE_SITE=dashboard", ...(liveUrl ? ["--build-env", `VITE_LIVE_URL=${liveUrl}`] : []),
-  ...(tokenUrl ? ["--build-env", `VITE_TOKEN_URL=${tokenUrl}`] : []), ...(xUrl ? ["--build-env", `VITE_X_URL=${xUrl}`] : []), preview ? "--target=preview" : "--prod"];
+  ...(tokenOnSite ? ["--build-env", "VITE_TOKEN_ON_SITE=true"] : []), ...(tokenUrl ? ["--build-env", `VITE_TOKEN_URL=${tokenUrl}`] : []), ...(xUrl ? ["--build-env", `VITE_X_URL=${xUrl}`] : []), preview ? "--target=preview" : "--prod"];
 const r = spawnSync("vercel", args, {
   cwd: path.join(root, "web"),
   stdio: "inherit",

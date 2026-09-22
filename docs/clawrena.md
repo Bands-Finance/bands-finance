@@ -149,7 +149,7 @@ on paper once it does; it never says the model trades real money.
 
 - "Fees are not profit": the real-money record from one sourced number (docs/sprint.md), with the
   casebook of every real seat, losses at the same size as wins.
-- The entry itself: a line on the home page naming the Clawrena entry and the official mint, linking the
+- (Held, Zach 22 Sep: the token is not linked to the website yet; see docs/sprint.md Decisions 8.) The entry itself: a line on the home page naming the Clawrena entry and the official mint, linking the
   ClawPump token page and the X post once they exist, and a notice, naming the copycat by its mint, that it is not his.
 - Nothing on the page may disagree with the journal or the ledger.
 

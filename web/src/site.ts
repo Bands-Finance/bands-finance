@@ -20,5 +20,10 @@ export const PLATFORM_URL = (import.meta.env.VITE_PLATFORM_URL ?? "https://bands
  * token is coming and claims nothing more.
  */
 const optionalUrl = (v: string | undefined): string | null => (v && v.trim() ? v.trim() : null);
-export const TOKEN_URL = optionalUrl(import.meta.env.VITE_TOKEN_URL);
+/**
+ * Zach, 22 Sep: the token is not linked from the site yet. The chapter says nothing about $BANDS and prints no
+ * ClawPump link, even once VITE_TOKEN_URL is set, until VITE_TOKEN_ON_SITE=true is baked in at deploy.
+ */
+export const TOKEN_ON_SITE = (import.meta.env.VITE_TOKEN_ON_SITE ?? "").trim().toLowerCase() === "true";
+export const TOKEN_URL = TOKEN_ON_SITE ? optionalUrl(import.meta.env.VITE_TOKEN_URL) : null;
 export const X_URL = optionalUrl(import.meta.env.VITE_X_URL);

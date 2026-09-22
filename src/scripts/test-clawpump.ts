@@ -73,7 +73,7 @@ async function main(): Promise<void> {
     }
   });
 
-  await test("ops/live.env: the $BANDS spec decided on 22 Sep parses (SOL pair, no dev buy, no creator fee, name Mr Bands, ticker BANDS)", () => {
+  await test("ops/live.env: the $BANDS spec decided on 22 Sep parses (SOL pair, no dev buy, no creator fee, name Mr Bands, ticker BANDS, no website link)", () => {
     const env: Record<string, string> = {};
     for (const line of readFileSync(path.resolve(__dirname, "../../ops/live.env"), "utf8").split("\n")) {
       const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
@@ -82,7 +82,8 @@ async function main(): Promise<void> {
     const t = tokenSpec(env);
     assert.equal(t.name, "Mr Bands");
     assert.equal(t.symbol, "BANDS");
-    assert.match(t.description ?? env.TOKEN_DESCRIPTION ?? "", /official mint is the one listed on mrbands\.finance/, "the ticker is shared with a copycat, so the metadata says where to check the mint");
+    assert.doesNotMatch(t.description ?? env.TOKEN_DESCRIPTION ?? "", /bands\.finance|https?:\/\//i, "Zach, 22 Sep: the token is not linked to the website yet");
+    assert.equal(env.TOKEN_ON_SITE, "false", "the site prints nothing about the token until this reads true");
     assert.equal(isSolPair(t.pumpPair), true);
     assert.equal(t.devBuySol, 0);
     assert.equal(t.creatorFeeBps, null);

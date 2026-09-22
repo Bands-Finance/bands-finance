@@ -114,15 +114,16 @@ async function main(): Promise<void> {
     for (const w of ["ansemhack clawrena", "meteora", "paper", "https://mrbands.finance"]) assert.ok(c.parts[0].includes(w), w);
     assert.ok(!/\$|claw\b|powered by/i.test(c.parts[0]), c.parts[0]);
   });
-  await test("entry with a mint: names it by mint, says others are not his, the disclosure as part 2", () => {
+  await test("entry with a mint: names it by mint, says others are not his, the disclosure as part 2, no site link", () => {
     const c = a.composeAnnouncement("entry", paperFacts(MINT), CTX);
     assert.ok(c.ok, JSON.stringify(c));
     assert.equal(c.parts.length, 2);
     assert.ok(c.parts[0].includes(`mint ${MINT}`) && /is not mine/.test(c.parts[0]));
     assert.equal(c.parts[1], a.disclosureFor(MINT));
     assert.deepEqual(a.mentionsIn(c.parts.join(" ")), ["clawpumptech"]);
+    for (const p of c.parts) assert.ok(!/bands\.finance|https?:\/\//.test(p), `Zach, 22 Sep: a post naming the token links no site: ${p}`);
   });
-  await test("token: only with a mint; the copycat by its mint as not his; the disclosure; no price talk", () => {
+  await test("token: only with a mint; the copycat by its mint as not his; the disclosure; no price talk; no site link", () => {
     const none = a.composeAnnouncement("token", paperFacts(), CTX_NO_MINT);
     assert.ok(!none.ok && /TOKEN_MINT is not set/.test(none.reason));
     const c = a.composeAnnouncement("token", paperFacts(MINT), CTX);
@@ -130,6 +131,7 @@ async function main(): Promise<void> {
     assert.ok(c.parts[0].includes(MINT) && c.parts[0].includes(`${COPY} is not mine`));
     assert.equal(c.parts[1], a.disclosureFor(MINT));
     for (const p of c.parts) assert.ok(!/\b(price|chart|buy|sell|holders|volume|apy)\b|%|\$\d/.test(p), p);
+    for (const p of c.parts) assert.ok(!/bands\.finance|https?:\/\//.test(p), `Zach, 22 Sep: a post naming the token links no site: ${p}`);
     assert.deepEqual(a.mentionsIn(c.parts.join(" ")), []);
   });
   await test("the disclosure line passes the lint with a 44-character mint", () => {
