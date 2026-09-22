@@ -31,7 +31,7 @@ window over `DATA_DIR`, and a restart on `data-mainnet` would print that run a s
    (the engine state it held - stops, seats, cooldowns - belongs to positions that are closed; the wallet was emptied).
    If the token launched first, put its mint in `ops/live.env` as `PAIR_HOUSE_MINTS=<mint>` before starting, so the
    desk makes and works BANDS/SOL on Meteora from its first cycle; and fill `TOKEN_URL=` / `X_URL=` there once the
-   token page and the announcement exist, then deploy the dashboard so the "For hire" chapter links them.
+   token page and the announcement exist, then deploy the dashboard so the "For other agents" chapter links them.
 
 
 1. Zach sends 20 SOL to the wallet above.

@@ -15,11 +15,11 @@ interface Idea {
   n: string;
   title: string;
   body: ReactNode;
-  /** The closing card spans the full row: title on the left, body on the right. */
+  /** A wide card spans the full row: title on the left, body on the right (the cost of it, and the guards that close). */
   wide?: boolean;
 }
 
-// The concept layer for newcomers: five plain-language ideas, no finance
+// The concept layer for newcomers: six plain-language ideas, no finance
 // background required. It teaches the business before the site asks you to
 // read a journal or a ranked table.
 const IDEAS: Idea[] = [
@@ -30,7 +30,7 @@ const IDEAS: Idea[] = [
       <>
         Every token on Solana trades in a{" "}
         <T t="A pool is a pot of two tokens that anyone can trade against. The people who fill the pot are paid a cut of every trade.">pool</T>: a pot of the token and{" "}
-        <T t="SOL is Solana's own coin. It pays for transactions and is the money side of the pools Mr Bands works.">SOL</T> that anyone can swap against. Whoever puts money in the pot earns a cut of every trade. That is the whole business. Not guessing where the price goes; being there when trades happen.
+        <T t="SOL is Solana's own coin. It pays for transactions and is the money side of most pools Mr Bands works; some are paired with USDC, a dollar token, instead.">SOL</T> that anyone can swap against. Whoever puts money in the pot earns a cut of every trade. That is the whole business. Not guessing where the price goes; being there when trades happen.
       </>
     ),
   },
@@ -39,12 +39,12 @@ const IDEAS: Idea[] = [
     title: "He picks where to stand.",
     body: (
       <>
-        Most pools pay too little for the risk. Every 15 minutes Mr Bands reads all 157,000 pools on the chain, keeps the 1,500 that actually traded today, and ranks them by fees earned per dollar of{" "}
+        Most pools pay too little for the risk. Every half hour Mr Bands reads every pool on the chain, well over 150,000 of them, keeps up to 1,500 of the busiest from the last day, and ranks them by fees earned per dollar of{" "}
         <T t="Liquidity is the money sitting in a pool, ready to be traded against.">liquidity</T>, marked down for being{" "}
         <T t="Thin: under about $20k of money in the pool. A few trades can move it a long way.">thin</T>,{" "}
         <T t="Brand new: under 24 hours old. No track record, and most new pools die within the day.">brand new</T>,{" "}
         <T t="Wild: the price swung hard in the last day, which is when a narrow band gets left behind.">wild</T>, or{" "}
-        <T t="One-sided: almost all the money sits on one side of the price, so trades in one direction find nothing to trade against.">one-sided</T>. He works at most three at a time.
+        <T t="One-sided: almost all the money sits on one side of the price, so trades in one direction find nothing to trade against.">one-sided</T>. He works only a few at a time: the guards cap how many.
       </>
     ),
   },
@@ -54,7 +54,7 @@ const IDEAS: Idea[] = [
     body: (
       <>
         On{" "}
-        <T t="Meteora is an exchange on Solana. DLMM is its pool design: the money sits in small price steps called bins instead of being spread across every price.">Meteora DLMM</T>, price is cut into small steps called bins. Instead of spreading money across every price, Mr Bands stacks it in a band of 10 to 30 bins right around today's price. Narrow means more fees per trade. It also means the price can walk out of the band, and then he earns nothing until it comes back or he moves.
+        <T t="Meteora is an exchange on Solana. DLMM is its pool design: the money sits in small price steps called bins instead of being spread across every price.">Meteora DLMM</T>, price is cut into small steps called bins. Instead of spreading money across every price, Mr Bands stacks it in a band right around today's price, from a few bins to a few dozen wide, sized to how far the price has been moving and never wider than the guards allow. Narrow means a bigger share of each trade. It also means the price can walk out of the band, and then he earns nothing until it comes back or he moves.
       </>
     ),
   },
@@ -71,13 +71,24 @@ const IDEAS: Idea[] = [
   },
   {
     n: "05",
+    title: "Fees are not profit.",
+    wide: true,
+    body: (
+      <>
+        A band is not a savings account. When the price falls through a band of SOL, every bin it crosses swaps that SOL for the token, so the band ends up holding the token that is falling. When the price climbs through a band of the token, it sells the token on the way up and misses the rise. Either way the band is worth less than the same money left sitting in the wallet. That gap is{" "}
+        <T t="Impermanent loss: what a band gives up against simply holding. It can shrink if the price comes back; once the band is closed, it is permanent.">impermanent loss</T>. The fees can be smaller than it, and on his own real-money run they were: he claimed fees and the book still finished down. And a band the price has left earns nothing at all until the price comes back or he moves it.
+      </>
+    ),
+  },
+  {
+    n: "06",
     title: "The guards have the last word.",
     wide: true,
     body: (
       <>
         Mr Bands is an AI. Around him sits plain code that cannot be argued with: a cap per band, a cap on total money out, a{" "}
         <T t="Gas reserve: SOL kept back in the wallet so there is always enough to pay for transactions.">gas reserve</T>, a{" "}
-        <T t="Stop-loss: a line below what went in. When a band's value falls through it, the guards close the band, whatever he proposed.">stop-loss</T> that forces a band closed at 15% down, a daily action cap, a{" "}
+        <T t="Stop-loss: a line below what went in. When a band's value, fees aside, falls through it, the guards close the band, whatever he proposed.">stop-loss</T> that forces a band closed before it is 15% down (each band's line is drawn at random between 12% and 15%, so nobody can aim at it), a daily action cap, a{" "}
         <T t="Cooldown: a minimum wait between one action and the next.">cooldown</T>. When his proposal breaks a rule it is vetoed and he holds. When a band is bleeding, the guards close it whether he likes it or not. Both are printed in the journal.
       </>
     ),
@@ -86,7 +97,7 @@ const IDEAS: Idea[] = [
 
 /**
  * "Learn" — the plain-language explainer for people who came to understand
- * Mr Bands, not to read a table. Five ideas, then two doors: the ranked pools
+ * Mr Bands, not to read a table. Six ideas, then two doors: the ranked pools
  * and the journal where the ideas play out.
  */
 export function Learn() {
@@ -98,7 +109,7 @@ export function Learn() {
         <span className="eyebrow learn__eyebrow">How it works · the 2-minute version</span>
         <h1 className="learn__title">How an agent earns fees by standing in the right place.</h1>
         <p className="learn__sub">
-          Five ideas. No finance background needed. If you can follow "a shop that earns a cut of every sale that walks past it," you're already there.
+          Six ideas. No finance background needed. If you can follow "a shop that earns a cut of every sale that walks past it," you're already there.
         </p>
       </div>
 
