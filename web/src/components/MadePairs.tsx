@@ -1,4 +1,4 @@
-import { GLOSS, type MadePair, type Status } from "../model";
+import type { MadePair, Status } from "../model";
 import { ago, short } from "../format";
 import "./LivePositions.css";
 import "./MadePairs.css";
@@ -22,18 +22,19 @@ const venueWord = (v: string | null) => (v === "pumpswap" ? "PumpSwap" : v === "
 
 export function MadePairs({ pairs, status, agentName }: MadePairsProps) {
   const now = Date.now();
-  const paper = status.mode === "paper";
+  // a rehearsal's fees are modelled, not banked: the gloss says so wherever the book is not live
+  const modelled = status.mode === "dry-run";
   return (
     <section className="livepos madepairs" aria-label={`Pools ${agentName} made`}>
       <div className="livepos__head">
         <h2 className="livepos__title">Pools he made</h2>
-        <span className="livepos__pulse livepos__pulse--rehearsal" title={paper ? GLOSS.paper : undefined}>
+        <span className="livepos__pulse livepos__pulse--rehearsal">
           {pairs.length} pool{pairs.length === 1 ? "" : "s"}
         </span>
       </div>
       <p className="livepos__gloss">
         // pools {agentName} made on Meteora DLMM · ‘share’ is the slice of the token's flow his pool routes
-        {paper ? " · on paper the fees are modelled" : ""}
+        {modelled ? " · in a rehearsal the fees are modelled" : ""}
       </p>
       <div className="livepos__grid">
         {pairs.map((p) => (

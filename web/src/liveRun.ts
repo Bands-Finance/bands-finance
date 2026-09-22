@@ -3,13 +3,14 @@ import type { EquityHistoryPoint, JournalEntry } from "./types";
 
 /**
  * THE LIVE RUN, frozen. The desk traded its own wallet on Solana from 17 to 19 September 2026 and was
- * then stopped and emptied; it trades paper until it is funded again. The live feed (api.ts) is a
- * window the next live desk overwrites and the page discards once the paper snapshot is newer, so
- * the run's transactions, the one thing a reader can check for himself, had fallen off the page.
+ * then stopped and emptied; the live desk is halted until it is funded again. The live feed (api.ts) is
+ * a window the next live desk overwrites and the page discards once the snapshot is newer, so the
+ * run's transactions, the one thing a reader can check for himself, had fallen off the page.
  * src/scripts/freeze-live-run.ts writes the run once to /live-run.json (the executed moves with their
  * transactions, and the equity history), and this module reads it: the same record and the same
  * ledger rows as the rest of the page (model.ts recordOf, actionsOf), so nothing here is counted
- * differently from the paper desk beside it.
+ * differently from any other book the page shows. While no book is open (statusOf "none") this run
+ * is his whole record, and the empty chapters point at it (runDays).
  */
 export interface LiveRunFile {
   frozenAt: string;
@@ -142,6 +143,16 @@ export function spanWords(a: number, b: number): string {
   if (da.getUTCMonth() === db.getUTCMonth()) return da.getUTCDate() === db.getUTCDate() ? dayOf(a) : `${da.getUTCDate()}–${db.getUTCDate()} ${MONTH[da.getUTCMonth()]}`;
   return `${dayOf(a)} – ${dayOf(b)}`;
 }
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "17 to 19 Sep", or "30 Sep to 2 Oct" across a month: the run's days in a sentence (UTC) */
+export function runDays(a: number, b: number): string {
+  const da = new Date(a);
+  const db = new Date(b);
+  const d = (x: Date) => `${x.getUTCDate()} ${MON[x.getUTCMonth()]}`;
+  if (da.getUTCMonth() !== db.getUTCMonth()) return `${d(da)} to ${d(db)}`;
+  return da.getUTCDate() === db.getUTCDate() ? d(da) : `${da.getUTCDate()} to ${d(db)}`;
+}
+
 /** "39 hours" under two days, "3 days" past it: the run's length the way a person says it */
 export function lengthWords(hours: number): string {
   if (hours < 48) {

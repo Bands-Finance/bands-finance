@@ -11,6 +11,8 @@
  *   - outrun the code. While his model is off the panel says so, and says these knobs are his
  *     rulebook's; while learning is frozen it says frozen; the book's label rides on the header
  *   - leave out what learning may never touch: the last line names the limits a human sets
+ *   - show a practice book. The site shows only his real-money record (Zach, 22 Sep): a view learned on
+ *     any book but the live one is refused by loadLearned, and the panel says its seats are real money
  * Mounted by Learn.tsx.
  */
 import { useEffect, useState } from "react";
@@ -68,7 +70,10 @@ export interface LearnedFile {
 
 const env = import.meta.env as Record<string, string | undefined>;
 
-/** Where the panel looks, in order: an override, the desk's API, the static snapshot beside the page. */
+/** The book the site shows: his real-money seats (the snapshot builds learned.json from data-mainnet). */
+const REAL_BOOK = "live";
+
+/** Where the panel looks, in order: an override, the desk's API, the static snapshot beside the page. A view learned on any other book is skipped. */
 export async function loadLearned(): Promise<LearnedFile | null> {
   const urls = [env.VITE_LEARNED_URL, `${API_BASE}/api/learning`, `${API_BASE}/learned.json`].filter((u): u is string => Boolean(u));
   for (const url of urls) {
@@ -76,7 +81,7 @@ export async function loadLearned(): Promise<LearnedFile | null> {
       const res = await fetch(url, { headers: { accept: "application/json" }, cache: "no-store" });
       if (!res.ok) continue;
       const json = (await res.json()) as LearnedFile;
-      if (json && Array.isArray(json.factors) && Array.isArray(json.changes) && json.lessons) return json;
+      if (json && json.mode === REAL_BOOK && Array.isArray(json.factors) && Array.isArray(json.changes) && json.lessons) return json;
     } catch {
       /* next */
     }
@@ -120,8 +125,10 @@ export function Learned({ view }: LearnedProps = {}) {
     };
   }, [view]);
 
-  const v = view ?? loaded;
-  if (!v) return null;
+  const v0 = view ?? loaded;
+  if (!v0 || v0.mode !== REAL_BOOK) return null;
+  // only the real-money book's own rows: a change journalled on another book is not his record
+  const v = { ...v0, changes: v0.changes.filter((c) => c.mode === REAL_BOOK) };
   const ratio = v.lessons.ratio;
   const ends = Object.entries(v.lessons.byEndReason).sort((a, b) => b[1] - a[1]);
   const refused = Object.entries(v.refused?.lessons ?? {}).filter(([, n]) => n > 0);
@@ -131,12 +138,13 @@ export function Learned({ view }: LearnedProps = {}) {
       <div className="learned__head r-item">
         <span className="eyebrow learned__eyebrow">What he learned</span>
         <div className="learned__badges">
-          <span className="learned__badge learned__badge--book">{v.mode}</span>
+          <span className="learned__badge learned__badge--book">real-money run</span>
           {v.frozen.all && <span className="learned__badge learned__badge--frozen">learning frozen</span>}
           {!v.modelOn && <span className="learned__badge">model off</span>}
         </div>
         <h2 className="learned__title">He keeps the receipts, then moves one knob.</h2>
         <p className="learned__sub">
+          These seats are from his real-money run.{" "}
           Every seat he closes is written down: how long it sat, how wide, how it ended, what it earned against what he expected. A handful of his own settings move off that record, one
           bounded step at a time, never without a minimum sample, and every move is journalled with the evidence you can read below.{" "}
           {v.modelOn ? "His model is answering." : "His model is off today, so these knobs are his rulebook's, not his model's."}
@@ -204,7 +212,7 @@ export function Learned({ view }: LearnedProps = {}) {
                 </span>
                 <span className="learned__why">{c.why}</span>
                 <span className="learned__n">
-                  {c.n} seats · {c.windowH}h · {c.mode}
+                  {c.n} seats · {c.windowH}h · real money
                 </span>
               </li>
             ))}
@@ -214,7 +222,7 @@ export function Learned({ view }: LearnedProps = {}) {
 
       {refused.length > 0 && (
         <p className="learned__never r-item">
-          Not counted above: {refused.map(([m, n]) => `${n} seat${n === 1 ? "" : "s"} from the ${m} book`).join(", ")}. A number learned on one book does not carry to another, so those rows are
+          Not counted above: {(() => { const n = refused.reduce((t, [, k]) => t + k, 0); return `${n} seat${n === 1 ? "" : "s"} that were not real money`; })()}. A number learned on one book does not carry to another, so those rows are
           shown as refused rather than folded in.
         </p>
       )}
