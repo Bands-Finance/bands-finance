@@ -288,6 +288,36 @@ async function main(): Promise<void> {
     // out of range with a reading: nothing
     assert.equal(paper.accrueFees(b, snapAt(262), { now, fees: null, solPriceUsd: 100, flow }, "SOL").feeQuoteTotal, 0);
   });
+  await test("price impact: a paper swap walks the pool's bins away from the price and pays their average (0 inside the active bin)", () => {
+    // quote Y (SOL), bin step 100 bps: 10 tokens in the active bin and each bin above, 5 SOL in the active bin and each bin below
+    const bins = Array.from({ length: 11 }, (_, k) => k - 5).map((d) => ({ binId: 100 + d, xAmount: d >= 0 ? 10 : 0, yAmount: d <= 0 ? 5 : 0 }));
+    const i = { bins, activeBinId: 100, quoteSide: "Y" as const, binStepBps: 100, tokenPriceInQuote: 1 };
+    near(paper.binWalkImpactPct(i, "buy", 10), 0, 1e-12, "the active bin absorbs it whole");
+    // 20 tokens: 10 at 1.00, 10 at 1.01 -> average 1.005, so 0.5% against the buyer
+    near(paper.binWalkImpactPct(i, "buy", 20), 0.5, 1e-9, "two bins");
+    // a sale of 10 tokens: 5 at 1.00 (the active bin's 5 SOL), then 5 SOL at 1/1.01 -> 4.95 tokens, then 0.05 at 1/1.01^2
+    const sold = paper.binWalkImpactPct(i, "sell", 10);
+    assert.ok(sold > 0.4 && sold < 0.6, `a sale walks down: ${sold}`);
+    // past the snapshot the walk assumes bins like the ones it saw, so a big buy keeps paying more, never less
+    assert.ok(paper.binWalkImpactPct(i, "buy", 200) > paper.binWalkImpactPct(i, "buy", 60));
+    // quote X: the token sits below the active bin, so a buy walks down
+    const ix = { bins: bins.map((b) => ({ binId: 200 - (b.binId - 100), xAmount: b.yAmount, yAmount: b.xAmount })), activeBinId: 200, quoteSide: "X" as const, binStepBps: 100, tokenPriceInQuote: 1 };
+    near(paper.binWalkImpactPct(ix, "buy", 20), 0.5, 1e-9, "mirror image when the quote is X");
+    // the swap pays it: a buy with 2% impact spends 2% more quote for the same tokens, and tallies it as swap cost
+    const b1 = paper.emptyBook(100, 0, T0);
+    const plain = paper.buyToken(paper.emptyBook(100, 0, T0), { quoteSymbol: "SOL", tokenMint: ANSEM, tokenSymbol: "ANSEM", tokenPriceInQuote: 0.5, quotePriceInSol: 1, feePct: 0.1, tokenOut: 10 });
+    const hit = paper.buyToken(b1, { quoteSymbol: "SOL", tokenMint: ANSEM, tokenSymbol: "ANSEM", tokenPriceInQuote: 0.5, quotePriceInSol: 1, feePct: 0.1, tokenOut: 10, impactPct: 2 });
+    near(hit.amountIn, plain.amountIn * 1.02, 1e-9);
+    near(hit.impactSol, 10 * 0.5 * 0.02, 1e-9);
+    near(b1.swapCostSol ?? 0, hit.feeSol + hit.impactSol, 1e-9);
+    // a sale with 3% impact receives 3% less than the same sale without it
+    const holder = paper.emptyBook(100, 0, T0);
+    paper.buyToken(holder, { quoteSymbol: "SOL", tokenMint: ANSEM, tokenSymbol: "ANSEM", tokenPriceInQuote: 0.5, quotePriceInSol: 1, feePct: 0, tokenOut: 10 });
+    const sPlain = paper.sellToken(holder, { quoteSymbol: "SOL", tokenMint: ANSEM, tokenSymbol: "ANSEM", tokenPriceInQuote: 0.5, quotePriceInSol: 1, feePct: 0.1, tokenIn: 10 });
+    const sHit = paper.sellToken(b1, { quoteSymbol: "SOL", tokenMint: ANSEM, tokenSymbol: "ANSEM", tokenPriceInQuote: 0.5, quotePriceInSol: 1, feePct: 0.1, tokenIn: 10, impactPct: 3 });
+    near(sHit.amountOut, sPlain.amountOut * 0.97, 1e-9);
+    assert.ok(sHit.impactSol > 0);
+  });
   await test("claim: the accrued fees move to the wallet, the band's fees zero, feesClaimedSol tallies", () => {
     paper.markPool(book, s260, { now: T0 + 1800e3, fees: null, solPriceUsd: 100 });
     const b = band();

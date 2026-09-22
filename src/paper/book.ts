@@ -587,6 +587,8 @@ export interface PaperSwapInput {
   quotePriceInSol: number;
   /** the swap fee in percent of the input (default SWAP_FEE_PCT) */
   feePct?: number;
+  /** price impact in percent against the trader, from the pool's own bins (src/paper/impact.ts); 0 when absent */
+  impactPct?: number;
 }
 
 export interface PaperSwapResult {
@@ -598,6 +600,9 @@ export interface PaperSwapResult {
   feeIn: number;
   feeSol: number;
   feePct: number;
+  /** the price impact charged, percent, and what it cost in SOL (on top of the fee) */
+  impactPct: number;
+  impactSol: number;
 }
 
 /**
@@ -607,15 +612,19 @@ export interface PaperSwapResult {
 export function buyToken(book: PaperBook, i: PaperSwapInput & { tokenOut: number }): PaperSwapResult {
   if (!(i.tokenOut > 0) || !Number.isFinite(i.tokenOut)) throw new Error(`paper buy: bad amount ${i.tokenOut}`);
   const feePct = i.feePct ?? paperSwap(1, 1).feePct;
-  const amountIn = paperCostToBuy(i.tokenOut, i.tokenPriceInQuote, feePct);
-  const fill = paperSwap(amountIn, 1 / i.tokenPriceInQuote, feePct);
+  const impactPct = Math.max(0, i.impactPct ?? 0);
+  // the price the buy actually pays per token: the mark plus the impact of walking the pool's bins
+  const paid = i.tokenPriceInQuote * (1 + impactPct / 100);
+  const amountIn = paperCostToBuy(i.tokenOut, paid, feePct);
+  const fill = paperSwap(amountIn, 1 / paid, feePct);
   const have = quoteBalance(book, i.quoteSymbol);
   if (have < amountIn) throw new Error(`paper wallet holds ${have.toFixed(i.quoteSymbol === "SOL" ? 4 : 2)} ${i.quoteSymbol}, needs ${amountIn.toFixed(i.quoteSymbol === "SOL" ? 4 : 2)} to buy ${i.tokenOut} ${i.tokenSymbol}`);
   creditQuote(book, i.quoteSymbol, -amountIn);
   creditToken(book, i.tokenMint, fill.amountOut, i.tokenPriceInQuote * i.quotePriceInSol);
   const feeSol = fill.feeIn * i.quotePriceInSol;
-  tallySwapCost(book, i.tokenMint, feeSol);
-  return { amountIn, amountOut: fill.amountOut, feeIn: fill.feeIn, feeSol, feePct: fill.feePct };
+  const impactSol = fill.amountOut * (paid - i.tokenPriceInQuote) * i.quotePriceInSol;
+  tallySwapCost(book, i.tokenMint, feeSol + impactSol);
+  return { amountIn, amountOut: fill.amountOut, feeIn: fill.feeIn, feeSol, feePct: fill.feePct, impactPct, impactSol };
 }
 
 /** A paper Jupiter leg: SELL `tokenIn` base tokens into the quote at the pool's price less the fee. Throws when the wallet holds less. */
@@ -623,12 +632,16 @@ export function sellToken(book: PaperBook, i: PaperSwapInput & { tokenIn: number
   if (!(i.tokenIn > 0) || !Number.isFinite(i.tokenIn)) throw new Error(`paper sell: bad amount ${i.tokenIn}`);
   const have = paperTokenBalance(book, i.tokenMint);
   if (have + 1e-9 < i.tokenIn) throw new Error(`paper wallet holds ${have} ${i.tokenSymbol}, cannot sell ${i.tokenIn}`);
-  const fill = paperSwap(i.tokenIn, i.tokenPriceInQuote, i.feePct);
+  const impactPct = Math.min(99, Math.max(0, i.impactPct ?? 0));
+  // the price the sale actually gets per token: the mark less the impact of walking the pool's bins
+  const got = i.tokenPriceInQuote * (1 - impactPct / 100);
+  const fill = paperSwap(i.tokenIn, got, i.feePct);
   creditToken(book, i.tokenMint, -Math.min(have, i.tokenIn), i.tokenPriceInQuote * i.quotePriceInSol);
   creditQuote(book, i.quoteSymbol, fill.amountOut);
   const feeSol = fill.feeIn * i.tokenPriceInQuote * i.quotePriceInSol;
-  tallySwapCost(book, i.tokenMint, feeSol);
-  return { amountIn: i.tokenIn, amountOut: fill.amountOut, feeIn: fill.feeIn, feeSol, feePct: fill.feePct };
+  const impactSol = (i.tokenIn - fill.feeIn) * (i.tokenPriceInQuote - got) * i.quotePriceInSol;
+  tallySwapCost(book, i.tokenMint, feeSol + impactSol);
+  return { amountIn: i.tokenIn, amountOut: fill.amountOut, feeIn: fill.feeIn, feeSol, feePct: fill.feePct, impactPct, impactSol };
 }
 
 function tallySwapCost(book: PaperBook, mint: string, feeSol: number): void {

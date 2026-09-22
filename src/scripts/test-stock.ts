@@ -647,7 +647,7 @@ async function main(): Promise<void> {
     const sw = r.ledger![0];
     near(sw.quoteDelta!, -cost, 1e-6);
     near(sw.tokenDelta, tokenHalf, 1e-9);
-    assert.match(sw.note, /acquire swap USDC -> SPYx .*\(price impact ignored\)/);
+    assert.match(sw.note, /acquire swap USDC -> SPYx .* price impact from the pool's bins/);
     // the day's realized from the ledger counts the swap's fee, never its notional
     const realized = ledger.realizedOnDaySol(r.ledger!, "dry-run", ledger.dayOf(T0));
     assert.ok(realized < 0 && realized > -0.02, `realized ${realized} SOL is the fee and the tx fees, not 11 SOL of notional`);

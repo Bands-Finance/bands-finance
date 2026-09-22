@@ -103,3 +103,4 @@ export function paperRoutes(app: Hono): void {
     return c.json({ enabled, env: paperEnv(), book, summary: paperSummary(book, readRecent(5000)), generatedAt: new Date().toISOString() });
   });
 }
+export { binWalkImpactPct, MAX_WALK_BINS, type ImpactInput } from "./impact";

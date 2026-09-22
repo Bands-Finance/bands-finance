@@ -21,6 +21,7 @@
  * or someone else's on chain) pays the ordinary open cost.
  */
 import type { OpenParams } from "../agent/schema";
+import { binWalkImpactPct } from "./impact";
 import { LedgerRow, recordLedger } from "../engine/ledger";
 import type { ExecutionResult, TxReport } from "../executor";
 import type { Verdict } from "../risk/guards";
@@ -115,23 +116,31 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
       rentSol: 0,
       txFeeSol: -PAPER_TX_FEE_SOL,
       basis: "marked",
-      note: `paper: ${leg} swap ${buy ? `${q.symbol} -> ${s.baseToken.symbol}` : `${s.baseToken.symbol} -> ${q.symbol}`} at the pool price less ${r.feePct}% (price impact ignored)`,
+      note: `paper: ${leg} swap ${buy ? `${q.symbol} -> ${s.baseToken.symbol}` : `${s.baseToken.symbol} -> ${q.symbol}`} at the pool price less ${r.feePct}% fee and ${r.impactPct.toFixed(2)}% price impact from the pool's bins`,
     };
   };
   const swapInput = { quoteSymbol: q.symbol, tokenMint: s.baseToken.mint, tokenSymbol: s.baseToken.symbol, tokenPriceInQuote: q.tokenPriceInQuote, quotePriceInSol: q.priceInSol, feePct: swapFeePct };
+  // Every paper leg walks this pool's bins for its price impact, as a real swap would move the price, and pays at
+  // most the live path's hard cap (SWAP_IMPACT_HARD_PCT, 8%: past it the live desk refuses the sale). A pool the desk
+  // made itself holds nothing but its own band, so its legs route elsewhere and walk nothing.
+  const impactCapPct = Number(process.env.SWAP_IMPACT_HARD_PCT ?? 8) || 8;
+  const impactOf = (side: "buy" | "sell", amountToken: number): number =>
+    s.pair
+      ? 0
+      : Math.min(impactCapPct, binWalkImpactPct({ bins: s.bins ?? [], activeBinId: s.activeBinId, quoteSide: q.side, binStepBps: s.binStep, tokenPriceInQuote: q.tokenPriceInQuote }, side, amountToken));
   /** buy `tokenOut` base with the quote: a tx entry, a swap row, the wallet moves */
   const buy = (tokenOut: number, leg: "acquire" | "shortfall") => {
-    const r = buyToken(book, { ...swapInput, tokenOut });
+    const r = buyToken(book, { ...swapInput, tokenOut, impactPct: impactOf("buy", tokenOut) });
     chargeTxFee(book);
-    push({ label: `swap ${fmt(r.amountIn, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} -> ${fmt(r.amountOut, tokenDec)} ${s.baseToken.symbol}`, ok: true, skipped: `paper: ${leg} leg filled at ${fmt(q.tokenPriceInQuote, 4)} ${q.symbol} per ${s.baseToken.symbol} less ${r.feePct}% (${fmt(r.feeIn, q.symbol === "SOL" ? 6 : 4)} ${q.symbol} fee)` });
+    push({ label: `swap ${fmt(r.amountIn, q.symbol === "SOL" ? 4 : 2)} ${q.symbol} -> ${fmt(r.amountOut, tokenDec)} ${s.baseToken.symbol}`, ok: true, skipped: `paper: ${leg} leg filled at ${fmt(q.tokenPriceInQuote, 4)} ${q.symbol} per ${s.baseToken.symbol} less ${r.feePct}% (${fmt(r.feeIn, q.symbol === "SOL" ? 6 : 4)} ${q.symbol} fee) and ${r.impactPct.toFixed(2)}% impact` });
     ledger(swapRow(r, leg));
     return r;
   };
   /** sell `tokenIn` base into the quote */
   const sell = (tokenIn: number, leg: "liquidate" | "surplus") => {
-    const r = sellToken(book, { ...swapInput, tokenIn });
+    const r = sellToken(book, { ...swapInput, tokenIn, impactPct: impactOf("sell", tokenIn) });
     chargeTxFee(book);
-    push({ label: `swap ${fmt(r.amountIn, tokenDec)} ${s.baseToken.symbol} -> ${fmt(r.amountOut, q.symbol === "SOL" ? 4 : 2)} ${q.symbol}`, ok: true, skipped: `paper: ${leg} leg filled at ${fmt(q.tokenPriceInQuote, 4)} ${q.symbol} per ${s.baseToken.symbol} less ${r.feePct}% (${fmt(r.feeIn, tokenDec)} ${s.baseToken.symbol} fee)` });
+    push({ label: `swap ${fmt(r.amountIn, tokenDec)} ${s.baseToken.symbol} -> ${fmt(r.amountOut, q.symbol === "SOL" ? 4 : 2)} ${q.symbol}`, ok: true, skipped: `paper: ${leg} leg filled at ${fmt(q.tokenPriceInQuote, 4)} ${q.symbol} per ${s.baseToken.symbol} less ${r.feePct}% (${fmt(r.feeIn, tokenDec)} ${s.baseToken.symbol} fee) and ${r.impactPct.toFixed(2)}% impact` });
     ledger(swapRow(r, leg));
     return r;
   };
