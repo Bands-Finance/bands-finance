@@ -90,11 +90,13 @@ export function resetStatus(): void {
 export interface DecisionSources {
   sinceMs: number;
   total: number;
-  /** count per llm.source ("llm", "policy", "engine", "proposal", "fallback") */
+  /** count per llm.source ("llm", "policy", "screen", "engine", "proposal", "fallback"); "screen" is a desk-policy hold the model was never asked about */
   bySource: Record<string, number>;
   /** share of the window's decisions, 0..1; null when there were none */
   llmShare: number | null;
   policyShare: number | null;
+  /** the share the screen answered without the model (src/agent/decide.ts screenDecision); never counted in llmShare */
+  screenShare: number | null;
   /** true when the byte cap stopped the read before it reached the start of the window */
   truncated: boolean;
 }
@@ -163,7 +165,7 @@ export function decisionSources(file: string, sinceMs: number, opts: { chunkByte
     if (fd !== null) fs.closeSync(fd);
   }
   const share = (k: string) => (total > 0 ? (bySource[k] ?? 0) / total : null);
-  return { sinceMs, total, bySource, llmShare: share("llm"), policyShare: share("policy"), truncated };
+  return { sinceMs, total, bySource, llmShare: share("llm"), policyShare: share("policy"), screenShare: share("screen"), truncated };
 }
 
 /* ---------------------------------------------------------------------------------------------

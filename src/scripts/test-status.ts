@@ -96,7 +96,7 @@ async function main(): Promise<void> {
     const res = await app.request("/api/status");
     assert.equal(res.status, 200);
     const j = (await res.json()) as Record<string, any>;
-    for (const k of ["now", "mode", "killSwitch", "killSwitchSources", "killSwitchSource", "circuit", "portfolio", "decider", "openhermitTokenPresent", "lastIterationAt", "decisionsLastHour", "iterations", "screen", "deploy", "marks", "autoApprove", "hostSleep"]) {
+    for (const k of ["now", "mode", "killSwitch", "killSwitchSources", "killSwitchSource", "circuit", "portfolio", "decider", "openhermitTokenPresent", "lastIterationAt", "decisionsLastHour", "modelCallsToday", "iterations", "screen", "deploy", "marks", "autoApprove", "hostSleep"]) {
       assert.ok(k in j, `missing ${k}`);
     }
     assert.equal(j.mode, "dry-run");
@@ -114,6 +114,10 @@ async function main(): Promise<void> {
     assert.deepEqual(j.decisionsLastHour.bySource, { llm: 3, policy: 1, engine: 1 });
     assert.equal(j.decisionsLastHour.llmShare, 3 / 5);
     assert.equal(j.decisionsLastHour.policyShare, 1 / 5);
+    assert.equal(j.decisionsLastHour.screenShare, 0, "no screened holds in this hour");
+    assert.equal(j.modelCallsToday.used, 0, "no model call spent yet today");
+    assert.equal(j.modelCallsToday.cap, 200);
+    assert.equal(j.modelCallsToday.day, new Date(now).toISOString().slice(0, 10));
     assert.deepEqual(j.screen, { lastAt: now - MIN, ok: false, lastOkAt: now - 5 * MIN });
     assert.deepEqual(j.deploy, { lastAt: now - 3 * MIN, ok: true });
     assert.equal(j.marks, null, "nothing in this process has noted the marks yet");

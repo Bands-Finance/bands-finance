@@ -206,7 +206,9 @@ function blockOf(e: JournalEntry): DeskBlock {
         ? e.llm.note ?? "the model did not answer; he held"
         : e.llm.source === "policy"
           ? e.llm.note ?? "the desk policy decided: no model was asked"
-          : null,
+          : e.llm.source === "screen"
+            ? e.llm.note ?? "screened by the desk policy: the model was not asked"
+            : null,
   };
 }
 

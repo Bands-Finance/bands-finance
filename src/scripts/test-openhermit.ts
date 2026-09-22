@@ -5,7 +5,10 @@
  *   npx tsx src/scripts/test-openhermit.ts
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Observation } from "../agent/observation";
 import type { PoolSnapshot } from "../tools/dlmm";
@@ -19,6 +22,9 @@ process.env.DECIDER = "openhermit";
 process.env.OPENHERMIT_TOKEN = "test-admin-token";
 process.env.OPENHERMIT_AGENT_ID = "mr-bands-test";
 process.env.OPENHERMIT_TIMEOUT_MS = "2000";
+// the day's model-call count (src/agent/decide.ts spendModelCall) is written under DATA_DIR: never a real desk's
+process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "mrbands-openhermit-"));
+delete process.env.MODEL_CALLS_PER_DAY;
 
 const POOL = "6e7V9eegCHw997T72MxgwwJipZ6GJyZF8NvjkzT1rvpN";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -150,13 +156,15 @@ async function main(): Promise<void> {
     mode: "dry-run",
     poolLabel: "ANSEM/SOL",
     snapshot,
-    positions: [],
+    // a band the price has left, fresh out of range: the desk policy waits (churn-wait), a branch the model screen
+    // (src/agent/decide.ts screenDecision) passes to the model, so every case below reaches the fake gateway
+    positions: [{ address: "BandAddr1111111111111111111111111111111111", lowerBinId: 280, upperBinId: 300, lowerPrice: p(280), upperPrice: p(300), widthBins: 21, inRange: false, binsFromRange: -20, amountX: 0, amountY: 2, feeX: 0, feeY: 0.001, valueInSol: 2, solInPosition: 2, lastUpdatedAt: T0 }],
     wallet: { address: "wallet", sol: 100, token: 0, tokenSymbol: "ANSEM", quote: 100, quoteSymbol: "SOL" },
     analytics: null,
     state: { actionsToday: 0, lastActionAt: null, lastPrice: null, killSwitch: false },
     recent: [],
     screen: null,
-    portfolio: { activePools: ["ANSEM/SOL"], poolsWithBands: 0, maxActivePools: 3, otherExposureSol: 0 },
+    portfolio: { activePools: ["ANSEM/SOL"], poolsWithBands: 1, maxActivePools: 3, otherExposureSol: 0 },
     engine: null,
   };
   const hold = { action: "HOLD", open: null, positionAddress: null, reasoning: "The active bin holds 1 SOL and the pool prints nothing. Nothing to do.", confidence: 0.8, headline: "Bands stay in the pocket." };

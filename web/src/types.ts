@@ -120,7 +120,7 @@ export interface JournalEntry {
   positions: Position[];
   analytics: Analytics | null;
   /** who authored the decision: the model, the desk policy standing in for it, an engine directive, an approved outside proposal, or a bare hold when nothing answered */
-  llm: { source: "llm" | "fallback" | "policy" | "engine" | "proposal"; model: string; note?: string; usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } };
+  llm: { source: "llm" | "fallback" | "policy" | "screen" | "engine" | "proposal"; model: string; note?: string; usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } };
   proposal: Decision;
   decision: Decision;
   allowed: boolean;

@@ -7,7 +7,7 @@
  *   npx tsx src/scripts/test-web-model.ts
  */
 import assert from "node:assert/strict";
-import { actionsOf, bookOf, flowOf, flowTotalsOf, realEntries, realPoints, recordOf, statusOf, verdictOf } from "../../web/src/model";
+import { actionsOf, bookOf, deskBlocks, flowOf, flowTotalsOf, realEntries, realPoints, recordOf, statusOf, verdictOf } from "../../web/src/model";
 import { bookCycle, completeCycles, cycleEquity, cyclesOf, equitySeriesOf, summarize } from "../../web/src/derive";
 import type { EquityHistoryPoint, JournalEntry, Position } from "../../web/src/types";
 import { dayWord, narrativeOf, noBookNarrative, num, sinceWord } from "../../web/src/narrative";
@@ -460,6 +460,14 @@ async function main() {
     assert.equal(m.settled, false);
     assert.equal(m.endEquity.toFixed(2), "19.68");
     assert.equal(m.feesInTokens, null);
+  });
+
+  await test("a screened hold says the model was not asked", () => {
+    const e = entry({ cycle: 9, min: 1, pool: "AAA", sol: 5, positions: [band("a1", 20)] });
+    const screened = { ...e, llm: { source: "screen", model: "desk-policy" } } as unknown as JournalEntry;
+    const noted = { ...e, llm: { source: "screen", model: "desk-policy", note: "Screened (in-range). The model was not asked." } } as unknown as JournalEntry;
+    assert.equal(deskBlocks([screened])[0]!.fallbackNote, "screened by the desk policy: the model was not asked");
+    assert.equal(deskBlocks([noted])[0]!.fallbackNote, "Screened (in-range). The model was not asked.");
   });
 
   console.log(`\n${passed} web model tests passed`);

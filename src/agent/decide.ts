@@ -11,11 +11,13 @@
  * answers, the reply walks the same road: exitAsk dropped, the desk policy advises on any move of
  * money, the guards decide.
  */
+import fs from "node:fs";
+import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { config, riskLimits } from "../config";
 import { buildSystemPrompt } from "./persona";
-import { policyDecide, type PolicyExtras, type PolicyResult } from "./policy";
+import { policyDecide, type PolicyBranch, type PolicyExtras, type PolicyResult } from "./policy";
 import { Decision, DecisionSchema, holdDecision } from "./schema";
 import { formatObservation, Observation } from "./observation";
 import { abandonDecisionSession, askForDecision, extractDecision, openHermitAvailable, OpenHermitError, openHermitSettings } from "./openhermit";
@@ -29,8 +31,8 @@ export interface LlmUsage {
 
 export interface DecideResult {
   decision: Decision;
-  /** "llm" when the model answered; "policy" when the desk policy proposed (no key, or the call failed); "fallback" when we substituted a bare HOLD; "engine" when a directive replaced the call */
-  source: "llm" | "fallback" | "engine" | "proposal" | "policy";
+  /** "llm" when the model answered; "policy" when the desk policy proposed (no key, the call failed, the day's model budget is spent); "screen" when the desk policy's hold needed no model (the model was not asked); "fallback" when we substituted a bare HOLD; "engine" when a directive replaced the call */
+  source: "llm" | "fallback" | "engine" | "proposal" | "policy" | "screen";
   model: string;
   usage?: LlmUsage;
   note?: string;
@@ -233,6 +235,138 @@ function acceptModelDecision(raw: Decision, observation: Observation, opts: Deci
   return { decision: parsed, source: "llm", model, usage };
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * THE SCREEN AND THE CAP. The model proposes, the guards decide; these two only make the model be
+ * asked LESS. Neither changes what the policy or the guards decide, and every answer the model does
+ * give still walks acceptModelDecision (the advice) and then the guards.
+ *
+ * THE SCREEN. Most cycles need no judgement: the band is in range and earning, or a gate refuses any
+ * open. When the desk policy's own answer is a HOLD from one of SCREENED_BRANCHES, that hold is the
+ * cycle's decision, journalled with source "screen" and model "desk-policy" so nothing downstream (his
+ * X loop, his site, /api/status) calls it a model decision. The gated holds are the policy's hard
+ * refusals: "gated" (kill switch, breakers, bench, regime, knife, basis and session, the action cap,
+ * the cooldown, the price-move limit, a full book), "no-size" (no room in the budget for a minimum
+ * seat), "flagged" (a pool flagged thin, dumping, new or wild) and "not-worth" (under a floor: volume,
+ * score, seat yield, payback). None of those has a band to close, and a model OPEN there is refused by
+ * adviseWithPolicy anyway, so asking would only cost money. Every other branch (an open, a close, a
+ * rebalance, the waits, "moved", "lively", "hot-hold", the ask exit's branches) reaches the model as
+ * before, and so does a policy that throws: a screen that cannot read the policy screens nothing.
+ *
+ * THE CAP. MODEL_CALLS_PER_DAY (default 200, never above 500) model calls a UTC day, counted in
+ * DATA_DIR/model-budget.json before each call, so a restart cannot reset it and a call that times out
+ * still counts. Past the cap the desk policy proposes with the note "model budget spent for the day".
+ * ------------------------------------------------------------------------------------------- */
+
+/** The policy branches whose HOLD is answered without the model: in range (the band is earning), and the gated holds (a gate, the budget or a floor refuses any open). */
+export const SCREENED_BRANCHES: readonly PolicyBranch[] = ["in-range", "gated", "no-size", "flagged", "not-worth"];
+
+const SCREENED_WHY: Partial<Record<PolicyBranch, string>> = {
+  "in-range": "in-range hold, the band is earning",
+  gated: "gated hold, a gate refuses any open",
+  "no-size": "gated hold, no room for a minimum seat",
+  flagged: "gated hold, the pool is flagged",
+  "not-worth": "gated hold, under the desk's floor",
+};
+
+/** The screened answer, or null when this cycle goes to the model. PURE but for the policy's clock. */
+export function screenDecision(observation: Observation, opts: DecideOptions = {}): DecideResult | null {
+  let r: PolicyResult;
+  try {
+    r = policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow, askExit: opts.askExit });
+  } catch {
+    return null;
+  }
+  if (r.decision.action !== "HOLD" || !SCREENED_BRANCHES.includes(r.branch)) return null;
+  return { decision: r.decision, source: "screen", model: "desk-policy", note: `Screened (${r.branch}: ${SCREENED_WHY[r.branch]}): ${r.reason}. The model was not asked.` };
+}
+
+export const MODEL_CALLS_DEFAULT = 200;
+export const MODEL_CALLS_CEILING = 500;
+
+/** The day's cap on model calls. A whole number from 0 up to the ceiling applies; above the ceiling is the ceiling; anything else is the default. */
+export function modelCallCap(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.MODEL_CALLS_PER_DAY ?? "").trim();
+  if (!/^\d+$/.test(raw)) return MODEL_CALLS_DEFAULT;
+  return Math.min(Number(raw), MODEL_CALLS_CEILING);
+}
+
+export const modelBudgetFile = (): string => path.join(path.resolve(process.cwd(), config.dataDir), "model-budget.json");
+
+export interface ModelBudget {
+  /** the UTC day, YYYY-MM-DD */
+  day: string;
+  used: number;
+  cap: number;
+}
+
+const utcDay = (now: number): string => new Date(now).toISOString().slice(0, 10);
+
+/** The day's count as the file holds it; a new UTC day starts at 0. Null when the file is there and unreadable. */
+function readUsed(file: string, day: string): number | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? 0 : null;
+  }
+  try {
+    const j = JSON.parse(text) as { day?: unknown; used?: unknown };
+    if (typeof j.day !== "string" || typeof j.used !== "number" || !Number.isFinite(j.used) || j.used < 0) return null;
+    return j.day === day ? j.used : 0;
+  } catch {
+    return null;
+  }
+}
+
+function writeUsed(file: string, day: string, used: number): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ day, used }) + "\n");
+  fs.renameSync(tmp, file);
+}
+
+/** What /api/status reports: the day's model calls and the cap. Read-only. An unreadable file reads as the cap spent, as spendModelCall treats it. */
+export function modelBudget(now: number = Date.now(), env: NodeJS.ProcessEnv = process.env, file: string = modelBudgetFile()): ModelBudget {
+  const day = utcDay(now);
+  const cap = modelCallCap(env);
+  return { day, used: readUsed(file, day) ?? cap, cap };
+}
+
+/**
+ * Spend one model call from the day's budget, written to disk BEFORE the call is made. Returns the
+ * budget after the spend, or ok false (nothing spent) when the cap is reached. Fails closed: a file that
+ * cannot be read is taken as the day spent (and written so, so the next day starts clean), and a count
+ * that cannot be written is a call not made.
+ */
+export function spendModelCall(now: number = Date.now(), env: NodeJS.ProcessEnv = process.env, file: string = modelBudgetFile()): { ok: boolean; budget: ModelBudget; why?: string } {
+  const day = utcDay(now);
+  const cap = modelCallCap(env);
+  const used = readUsed(file, day);
+  if (used === null) {
+    try {
+      writeUsed(file, day, cap);
+    } catch {
+      /* the refusal below stands either way */
+    }
+    return { ok: false, budget: { day, used: cap, cap }, why: "the budget file was unreadable, taken as spent" };
+  }
+  if (used >= cap) return { ok: false, budget: { day, used, cap } };
+  try {
+    writeUsed(file, day, used + 1);
+  } catch (err) {
+    return { ok: false, budget: { day, used, cap }, why: `the count could not be written (${(err as Error).message})` };
+  }
+  return { ok: true, budget: { day, used: used + 1, cap } };
+}
+
+/** The cap: null when the call is paid for and may be made, else the desk policy's proposal with the note. */
+function budgetRefusal(observation: Observation, opts: DecideOptions): DecideResult | null {
+  const spend = spendModelCall();
+  if (spend.ok) return null;
+  const b = spend.budget;
+  return policyDecideResult(observation, `model budget spent for the day (${b.used}/${b.cap} calls, UTC ${b.day}${spend.why ? `; ${spend.why}` : ""}).`, opts);
+}
+
 const NO_USAGE: LlmUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
 /**
@@ -252,9 +386,13 @@ async function decideWithOpenHermit(observation: Observation, opts: DecideOption
   const settings = openHermitSettings();
   const model = `openhermit:${settings.agentId}`;
   if (!settings.token) return policyDecideResult(observation, "DECIDER=openhermit but OPENHERMIT_TOKEN is not set.", opts);
+  const screened = screenDecision(observation, opts);
+  if (screened) return screened;
   if (gatewayDownInCycle === observation.cycle) {
     return policyAfterModel(observation, "OpenHermit did not answer an earlier pool this cycle; not asked again.", opts, NO_USAGE, model);
   }
+  const refused = budgetRefusal(observation, opts);
+  if (refused) return refused;
   try {
     const reply = await askForDecision(observation, { settings });
     const found = extractDecision(reply.text, { cycle: observation.cycle });
@@ -287,6 +425,8 @@ export async function decide(observation: Observation, opts: DecideOptions = {})
   if (decider === "openhermit") return decideWithOpenHermit(observation, opts);
   if (decider === "policy") return policyDecideResult(observation, hasAnthropicCredentials() ? "DECIDER=policy: the model is not asked." : "No ANTHROPIC_API_KEY configured.", opts);
   if (!hasAnthropicCredentials()) return policyDecideResult(observation, "No ANTHROPIC_API_KEY configured.", opts);
+  const notAsked = screenDecision(observation, opts) ?? budgetRefusal(observation, opts);
+  if (notAsked) return notAsked;
   try {
     const response = await getClient().messages.parse({
       model: config.model,
