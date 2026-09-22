@@ -14,7 +14,9 @@
  *   npx tsx src/scripts/talk.ts drift
  *   npx tsx src/scripts/talk.ts tick [--force strap|daily|lesson|stack]   the posting loop, one tick (src/talk/tick.ts); --force only previews
  *   npx tsx src/scripts/talk.ts check                                     which account the X keys sign in as (a read)
- *   npx tsx src/scripts/talk.ts announce <intro|entry|token|follow> [--preview]
+ *   npx tsx src/scripts/talk.ts announce <intro|entry|token|follow|correction|pinned> [--preview]
+ *   npx tsx src/scripts/talk.ts build list                                the build ledger (seed + TALK_STATE_PATH/build.jsonl)
+ *   npx tsx src/scripts/talk.ts build add '<json row>'                    append one row (src/talk/buildLedger.ts)
  *   npx tsx src/scripts/talk.ts engage                                    one pass of the engage loop (src/talk/engage.ts)
  *   npx tsx src/scripts/talk.ts engage status                             free: mode, cursor, pending, today's counts, hold
  *   npx tsx src/scripts/talk.ts engage preview <mentions.json> [--no-model]   screen, brain and vet on a saved X response;
@@ -35,6 +37,7 @@ import { strapOf, windowLabel, fmtAge } from "../talk/strap";
 import { getEngagement, postTweet, readPosts, verifyCredentials } from "../talk/x";
 import { FORCE_KINDS, runTick, type ForceKind } from "../talk/tick";
 import { runAnnounce } from "../talk/announce-cli";
+import { appendBuildRow, readBuildLedger } from "../talk/buildLedger";
 import { engageResume, engageStatus, previewMentions, readOptOuts, runEngagePass } from "../talk/engage";
 import { mentionsFromResponse } from "../talk/x";
 import fs from "node:fs";
@@ -209,6 +212,7 @@ async function main(): Promise<number> {
       const r = await runTick({ env: process.env, paperDesk: config.dryRun, now, force: force as ForceKind | null });
       out(`${new Date(now).toISOString()} tick ${r.status}: ${r.detail}`);
       if (r.pick) out(`  ${r.pick.kind} ${r.pick.key}\n${r.pick.text.replace(/^/gm, "  | ")}`);
+      if (r.moment && r.text) out(`  ${r.moment.type} ${r.moment.key}${r.source ? ` (${r.source})` : ""}\n${r.text.replace(/^/gm, "  | ")}`);
       for (const n of r.plan?.notes ?? []) if (r.status !== "idle") out(`  note: ${n}`);
       return r.status === "error" ? 1 : 0;
     }
@@ -225,6 +229,28 @@ async function main(): Promise<number> {
     }
     case "announce":
       return runAnnounce(args, t, now, out);
+    case "build": {
+      if (args[0] === "list") {
+        const l = readBuildLedger(t.statePath);
+        for (const r of l.rows) out(`${new Date(r.at).toISOString().slice(0, 10)}  ${r.public ? "public " : "private"}  ${r.kind.padEnd(7)} ${r.id}${r.promise ? ` (promise, due ${new Date(r.promise.due).toISOString().slice(0, 10)})` : ""}${r.resolves ? ` (keeps ${r.resolves})` : ""}\n    ${r.text}`);
+        for (const p of l.problems) out(`problem: ${p}`);
+        return l.problems.length ? 2 : 0;
+      }
+      if (args[0] === "add" && args[1]) {
+        let raw: Record<string, unknown>;
+        try {
+          raw = JSON.parse(args[1]) as Record<string, unknown>;
+        } catch {
+          out("build add: the row is not json");
+          return 2;
+        }
+        const problem = appendBuildRow(t.statePath, raw);
+        out(problem ? `not added: ${problem}` : `added to ${t.statePath}/build.jsonl`);
+        return problem ? 2 : 0;
+      }
+      out(`usage: build list | build add '{"id":"...","at":"YYYY-MM-DD","kind":"shipped","public":true,"text":"...","source":"..."}'`);
+      return 2;
+    }
     case "engage": {
       const sub = args[0] ?? "";
       if (sub === "") {
@@ -259,7 +285,7 @@ async function main(): Promise<number> {
       return 2;
     }
     default:
-      out("usage: talk.ts strap | draft <strap|rebalance|stack|chop|lesson> [topic] | lint \"<text>\" | post <type> [topic] | proposals | approve <id> --operator <handle> | veto <id> --operator <handle> --reason \"<r>\" | use <bit-id> <landed|flopped> | reflect | drift | tick [--force strap|daily|lesson|stack] | check | announce <intro|entry|token|follow> [--preview] | engage [status | preview <file> [--no-model] | resume | optouts]");
+      out("usage: talk.ts strap | draft <strap|rebalance|stack|chop|lesson> [topic] | lint \"<text>\" | post <type> [topic] | proposals | approve <id> --operator <handle> | veto <id> --operator <handle> --reason \"<r>\" | use <bit-id> <landed|flopped> | reflect | drift | tick [--force strap|daily|lesson|stack] | check | announce <intro|entry|token|follow|correction|pinned> [--preview] | build list | build add '<json>' | engage [status | preview <file> [--no-model] | resume | optouts]");
       return cmd ? 2 : 0;
   }
 }

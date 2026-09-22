@@ -123,12 +123,13 @@ async function main(): Promise<void> {
     assert.deepEqual(a.mentionsIn(c.parts.join(" ")), ["clawpumptech"]);
     for (const p of c.parts) assert.ok(!/bands\.finance|https?:\/\//.test(p), `Zach, 22 Sep: a post naming the token links no site: ${p}`);
   });
-  await test("token: only with a mint; the copycat by its mint as not his; the disclosure; no price talk; no site link", () => {
+  await test("token: only with a mint; never another token's mint, whole or in part; the disclosure; no price talk; no site link", () => {
     const none = a.composeAnnouncement("token", paperFacts(), CTX_NO_MINT);
     assert.ok(!none.ok && /TOKEN_MINT is not set/.test(none.reason));
     const c = a.composeAnnouncement("token", paperFacts(MINT), CTX);
     assert.ok(c.ok, JSON.stringify(c));
-    assert.ok(c.parts[0].includes(MINT) && c.parts[0].includes(`${COPY} is not mine`));
+    assert.ok(c.parts[0].includes(MINT) && /the only mint that is mine/.test(c.parts[0]));
+    for (const p of c.parts) assert.ok(!p.includes(COPY.slice(0, 5)) && !p.includes(COPY.slice(-5)), `no other token's mint: ${p}`);
     assert.equal(c.parts[1], a.disclosureFor(MINT));
     for (const p of c.parts) assert.ok(!/\b(price|chart|buy|sell|holders|volume|apy)\b|%|\$\d/.test(p), p);
     for (const p of c.parts) assert.ok(!/bands\.finance|https?:\/\//.test(p), `Zach, 22 Sep: a post naming the token links no site: ${p}`);
@@ -159,7 +160,7 @@ async function main(): Promise<void> {
 
   console.log("the mention exception is narrow");
   await test("only the entry may tag, only @clawpumptech, and the entry must", () => {
-    assert.deepEqual(a.ALLOWED_MENTIONS, { intro: [], entry: ["clawpumptech"], token: [] });
+    assert.deepEqual(a.ALLOWED_MENTIONS, { intro: [], entry: ["clawpumptech"], token: [], correction: [], pinned: [] });
     const ok = "i'm entering the ansemhack clawrena, hosted by @clawpumptech";
     assert.deepEqual(a.checkParts("entry", [ok], false, CTX), []);
     assert.ok(a.checkParts("entry", [`${ok} with @someone`], false, CTX).some((v) => v.rule === "mention" && v.detail.includes("@someone")));

@@ -44,7 +44,8 @@ const FAKE_CREDS = { X_API_KEY: "ck-test", X_API_SECRET: "cs-test-secret", X_ACC
 async function main(): Promise<void> {
   const tickModule = await import("../talk/tick.js");
   // the loop's tests read the templates in tick.ts: the craft hook (src/talk/craft.ts, its own tests) is pinned off
-  const tick = { ...tickModule, runTick: (o: Parameters<typeof tickModule.runTick>[0]) => tickModule.runTick({ shape: null, ...o }) };
+  // and the older ledger voice is pinned (TALK_VOICE=ledger): the builder voice has its own tests (test-talk-builder.ts)
+  const tick = { ...tickModule, runTick: (o: Parameters<typeof tickModule.runTick>[0]) => tickModule.runTick({ shape: null, voice: "ledger", ...o }) };
   const lock = await import("../talk/lock.js");
   const x = await import("../talk/x.js");
   const lint = await import("../talk/lint.js");

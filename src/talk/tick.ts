@@ -69,6 +69,8 @@ import { bandLifeOf } from "./bandlife";
 import { shapePost, type CraftFacts, type DayFigure } from "./craft";
 import { backingOff, backoff, DEFAULT_RETRY_BACKOFF_MIN, eventCaps, EVENT_KINDS, jitterMin, markersIn, POOL_EVENT_POSTS_PER_DAY, repeatedStat, selfEcho, STRAP_POSTS_PER_DAY, tooSimilar, type RecentText, type TodayEntry } from "./guards";
 import { blockedWordsIn, labelBlocked } from "./wordguard";
+import type { Moment } from "./moments";
+import type { AskImpl } from "./postBrain";
 
 export { DEFAULT_RETRY_BACKOFF_MIN, POOL_EVENT_POSTS_PER_DAY, STRAP_POSTS_PER_DAY };
 
@@ -927,6 +929,10 @@ export interface TickOutcome {
   violations?: VetViolation[];
   plan?: TickPlan;
   id?: string;
+  /** the builder voice (src/talk/builder.ts): the moment picked, its text, and who wrote it */
+  moment?: Moment | null;
+  text?: string;
+  source?: "model" | "template";
 }
 
 export interface TickOptions {
@@ -941,6 +947,13 @@ export interface TickOptions {
   cwd?: string;
   /** the craft hook; absent: src/talk/craft.ts shapePost; null: the templates in this file */
   shape?: ShapePost | null;
+  /**
+   * "builder" (the default, TALK_VOICE unset): the builder voice, src/talk/builder.ts. "ledger" (TALK_VOICE=ledger):
+   * the older lowercase ledger cards below (close, open, strap, milestone, daily, lesson, stack), kept for a rollback.
+   */
+  voice?: "builder" | "ledger";
+  /** the builder voice's transport to his agent (tests hand in a fake) */
+  askImpl?: AskImpl;
 }
 
 const intEnv = (env: NodeJS.ProcessEnv, key: string, d: number, min: number, max: number) => {
@@ -1011,6 +1024,14 @@ export async function runTick(o: TickOptions): Promise<TickOutcome> {
     if (!o.force && backingOff(st, now)) {
       writeTickState(t.statePath, { ...st, lastTickAt: now });
       return { status: "backoff", detail: `x: backing off until ${new Date(st.backoffUntil!).toISOString().slice(11, 16)} utc after ${st.transientFails ?? 0} transient failures in a row; nothing sent this tick` };
+    }
+    const voice = o.voice ?? ((env.TALK_VOICE ?? "").trim() === "ledger" ? "ledger" : "builder");
+    if (voice === "builder") {
+      const { runBuilderTick } = await import("./builder.js");
+      const r = await runBuilderTick({ t, env, now, st, paperDesk: o.paperDesk, force: !!o.force, postsPerDay, dailyHourUtc, retryBackoffMin, fetch: o.fetch, askImpl: o.askImpl, cwd: o.cwd, tailBytes: o.tailBytes });
+      const { state, ...out } = r;
+      if (!o.force) writeTickState(t.statePath, state);
+      return out;
     }
     const data = loadTalkData(t, now, o.tailBytes ?? 8 * 1024 * 1024);
     const lessons = readLessons(path.join(t.dataDir, LESSONS_FILE), now - 2 * DAY);

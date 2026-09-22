@@ -53,6 +53,32 @@ export const X_API_BASE = "https://api.x.com";
 export const RATE_FILE = "x-rate.json";
 export const POSTS_FILE = "x-posts.jsonl";
 export const DRAFTS_FILE = "x-drafts.jsonl";
+/**
+ * The POST intents (opts.intent): a row {key, text, at} written right before the POST, and a row {key, resolved, at}
+ * once X answers. An intent never resolved (the request timed out after X took it, or the process died between X's
+ * answer and x-posts.jsonl) means X may hold the post: its key counts as used (unresolvedIntentKeys).
+ */
+export const INTENTS_FILE = "x-intents.jsonl";
+
+export interface XIntentRow {
+  key: string;
+  at: string;
+  text?: string;
+  resolved?: "posted" | "refused";
+  id?: string;
+}
+
+/** The keys whose POST went out and never got X's answer, since `since` (ms). */
+export function unresolvedIntentKeys(statePath: string, since: number): Set<string> {
+  const open = new Map<string, number>();
+  for (const r of readJsonl<XIntentRow>(statePath, INTENTS_FILE)) {
+    if (!r || typeof r.key !== "string") continue;
+    const at = Date.parse(r.at);
+    if (r.resolved) open.delete(r.key);
+    else if (at >= since) open.set(r.key, at);
+  }
+  return new Set(open.keys());
+}
 /** held around read-rate, post, write-rate so two processes can never both post on the same rate state */
 export const RATE_LOCK_FILE = "x-rate.lock";
 /** present in TALK_STATE_PATH: nothing is posted, by any path (the loop, an announcement, a manual post) */
@@ -68,7 +94,9 @@ export function retryableReason(reason: string): boolean {
 }
 
 /** the draft types, plus the posting loop's own event posts (src/talk/tick.ts) and "announce": his one-off posts (src/talk/announce.ts), each posted once */
-export type XPostType = DraftType | "open" | "close" | "daily" | "milestone" | "announce";
+/** the builder voice's shapes (src/talk/moments.ts), recorded as their own types */
+export type BuilderPostType = "desk" | "followup" | "build" | "miss" | "learner" | "screener" | "arc" | "promise" | "halt";
+export type XPostType = DraftType | BuilderPostType | "open" | "close" | "daily" | "milestone" | "announce";
 
 export interface XPostRecord {
   id: string;
@@ -275,6 +303,16 @@ export interface PostOptions {
   bits?: string[];
   /** the posting loop's stable event key, carried into the post or draft record */
   key?: string;
+  /**
+   * Write an intent row (INTENTS_FILE) before the POST and resolve it on X's answer; needs `key`. The builder voice
+   * sets it: its wording changes from ask to ask, so X's duplicate refusal cannot catch a second post of one moment.
+   */
+  intent?: boolean;
+  /**
+   * The builder voice (sentence case): the lint here runs without its lowercase rule, because the caller has already
+   * passed the text through vetBuilderPost (src/talk/postGuards.ts), whose sentence-case check replaces it.
+   */
+  sentenceCase?: boolean;
 }
 
 /** ": <title>; <detail>" from an X error body (title 80, detail 200 characters), or "" when it carries neither. */
@@ -304,7 +342,7 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
   // a reply always names the post it answers, and only a reply may: never a top-level post by accident
   if (opts.type === "reply" && !opts.replyTo) return draft("reply: a reply without the post it answers; never a top-level post by accident");
   if (opts.replyTo && opts.type !== "reply") return draft(`reply: replyTo is set on a ${opts.type} post; only a reply may answer a post`);
-  const lint = lintText(text, lintContextOf(t));
+  const lint = lintText(text, { ...lintContextOf(t), ...(opts.sentenceCase && !opts.replyTo ? { caseRule: "sentence" as const } : {}) });
   if (!lint.ok) return draft(`lint: ${describeViolations(lint.violations)}`, lint.violations);
   if (opts.replyTo) {
     if (!replyToHandle) return draft("reply: the account handle is not a valid x handle");
@@ -341,6 +379,22 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
     // only when there is someone to leave out: a plain reply keeps its plain body
     const exclude = [...new Set((opts.replyTo?.excludeUserIds ?? []).filter((id) => /^\d{1,20}$/.test(id)))];
     const body = { text, ...(inReplyTo ? { reply: { in_reply_to_tweet_id: inReplyTo, ...(exclude.length ? { exclude_reply_user_ids: exclude } : {}) } } : {}) };
+    const intent = opts.intent && opts.key ? opts.key : null;
+    const resolve = (resolved: "posted" | "refused", id?: string) => {
+      if (!intent) return;
+      try {
+        appendJsonl(t.statePath, INTENTS_FILE, { key: intent, resolved, at: new Date(now).toISOString(), ...(id ? { id } : {}) } satisfies XIntentRow);
+      } catch {
+        /* unresolved reads as used: the safe side */
+      }
+    };
+    if (intent) {
+      try {
+        appendJsonl(t.statePath, INTENTS_FILE, { key: intent, text, at: new Date(now).toISOString() } satisfies XIntentRow);
+      } catch (err) {
+        return draft(`rate: ${INTENTS_FILE} cannot be written (${(err as Error).message.slice(0, 80)}); not posting`);
+      }
+    }
     let res: Response;
     try {
       res = await (deps.fetch ?? fetch)(url, {
@@ -359,6 +413,8 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
     }
     // X's `detail` beside its title, never the request: a 402 reads "credits depleted" in one grep of the drafts
     if (!res.ok || !json.data?.id) {
+      // X answered with a refusal: it holds nothing (a 5xx may have taken it, so that one stays open)
+      if (!(res.status >= 500)) resolve("refused");
       const refused = draft(`x api ${res.status}${describeXError(json)}`);
       const reset = Number(res.headers?.get?.("x-rate-limit-reset") ?? NaN);
       return res.status === 429 && Number.isFinite(reset) && reset > 0 && !refused.posted ? { ...refused, resetAt: reset * 1000 } : refused;
@@ -369,6 +425,7 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
     writeRate(t.statePath, rate, now);
     const record: XPostRecord = { id, text, type: opts.type, at: new Date(now).toISOString(), replyTo: inReplyTo ?? null, replyToHandle, ...(opts.bits?.length ? { bits: opts.bits } : {}), ...(opts.key ? { key: opts.key } : {}) };
     appendJsonl(t.statePath, POSTS_FILE, record);
+    resolve("posted", id);
     return { posted: true, id };
   }
 }

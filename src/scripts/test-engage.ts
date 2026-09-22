@@ -677,11 +677,13 @@ async function main(): Promise<void> {
     assert.equal(vet("Capital letters are not his voice.")?.rule, "lint");
   });
 
-  await test("vetReply: the copycat template passes as a template even when the mention names the mint; another address never does", () => {
+  await test("vetReply: the copycat template passes without the mint even when the mention names it; the mint itself never does; another address never does", async () => {
     const copy = "JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m";
-    const template = `that mint, ${copy}, is not mine. i didn't launch it and i hold none of it.`;
-    assert.equal(vet(template, { source: "template", mention: { text: `@MrBandsSol is ${copy} your coin?`, parentText: null } }), null);
-    assert.equal(vet(`that mint, ${copy}, is the one.`, { source: "template" })?.rule, "lint");
+    const T = (await import("../talk/replyBrain.js")).REPLY_TEMPLATES;
+    assert.equal(vet(T.copycat, { source: "template", mention: { text: `@MrBandsSol is ${copy} your coin?`, parentText: null } }), null);
+    assert.ok(!T.copycat.includes(copy.slice(0, 5)), "the copycat line carries no piece of the mint");
+    assert.ok(vet(`that mint, ${copy}, is not mine.`, { source: "template" }), "the mint is refused even in a denial");
+    assert.ok(vet(`that mint, ${copy}, is the one.`, { source: "template" }));
     assert.equal(vet("that mint, 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU, is not mine.", { source: "template" })?.rule, "address");
     assert.equal(vet("no, i'm an ai agent. my architect is a human who holds the keys.", { source: "template" }), null);
   });

@@ -467,7 +467,7 @@ async function main(): Promise<void> {
       for (const b of book.bands) (b.lastMarkAt = now - MIN), (b.lastMark.at = now - MIN);
       fs.writeFileSync(file, JSON.stringify(book));
     };
-    const run = (offsetMin: number) => (remark(T15 + offsetMin * MIN), tick.runTick({ env, paperDesk: true, now: T15 + offsetMin * MIN, fetch: fetchFake, shape: null }));
+    const run = (offsetMin: number) => (remark(T15 + offsetMin * MIN), tick.runTick({ voice: "ledger", env, paperDesk: true, now: T15 + offsetMin * MIN, fetch: fetchFake, shape: null }));
     const r1 = await run(0);
     assert.equal(r1.status, "not-posted");
     assert.match(r1.detail, /^x api 402: Payment Required; credits depleted, top up at developer\.x\.com \(will retry\)$/);
@@ -512,12 +512,12 @@ async function main(): Promise<void> {
     status = 402;
     for (let i = 0; i < 3; i++) await run(200 + i);
     assert.equal((await run(204)).status, "backoff");
-    assert.equal((await tick.runTick({ env, paperDesk: true, now: T15 + 204 * MIN, fetch: fetchFake, shape: null, force: "daily" })).status, "preview");
+    assert.equal((await tick.runTick({ voice: "ledger", env, paperDesk: true, now: T15 + 204 * MIN, fetch: fetchFake, shape: null, force: "daily" })).status, "preview");
     // TALK_RETRY_BACKOFF_MIN=0 turns the hold off
     const st2 = dir("state");
     const env2 = envOf(data, st2, { ...LIVE, TALK_RETRY_BACKOFF_MIN: "0" });
     remark(T15);
-    for (let i = 0; i < 4; i++) assert.equal((await tick.runTick({ env: env2, paperDesk: true, now: T15 + i * MIN, fetch: fetchFake, shape: null })).status, "not-posted");
+    for (let i = 0; i < 4; i++) assert.equal((await tick.runTick({ voice: "ledger", env: env2, paperDesk: true, now: T15 + i * MIN, fetch: fetchFake, shape: null })).status, "not-posted");
     assert.equal(tick.readTickState(st2).backoffUntil, null);
   });
   await test("x.ts keeps X's detail beside the title in a refusal reason, sliced, and never the request", async () => {
@@ -646,7 +646,7 @@ async function main(): Promise<void> {
     assert.ok(!p.notes.some((x) => /^craft/.test(x)), "the craft's own fit did it, not the fallback");
     // the runner on the same odd day, with the real craft: drafted, not refused-lint
     const data = makeData(now);
-    const r = await tick.runTick({ env: envOf(data, dir("state")), paperDesk: true, now });
+    const r = await tick.runTick({ voice: "ledger", env: envOf(data, dir("state")), paperDesk: true, now });
     assert.equal(r.status, "drafted", r.detail);
     assert.equal(r.pick?.kind, "daily");
     assert.ok(tick.loopLength(r.pick!.text) <= 280);
@@ -659,11 +659,11 @@ async function main(): Promise<void> {
     let calls = 0;
     const fetchFake = (async () => (calls++, new Response("{}", { status: 500 }))) as typeof fetch;
     const shape = () => "**daily** numbers. paper book.";
-    const r = await tick.runTick({ env: envOf(data, st, LIVE), paperDesk: true, now: T15, fetch: fetchFake, shape });
+    const r = await tick.runTick({ voice: "ledger", env: envOf(data, st, LIVE), paperDesk: true, now: T15, fetch: fetchFake, shape });
     assert.equal(r.status, "refused-lint");
     assert.ok(r.violations!.some((v) => v.rule === "loop-markers"));
     assert.equal(calls, 0);
-    const ok = await tick.runTick({ env: envOf(data, dir("state")), paperDesk: true, now: T15, shape: () => "day 9, paper book: fees 0.0087 sol today." });
+    const ok = await tick.runTick({ voice: "ledger", env: envOf(data, dir("state")), paperDesk: true, now: T15, shape: () => "day 9, paper book: fees 0.0087 sol today." });
     assert.equal(ok.status, "drafted");
     assert.equal(ok.pick?.text, "day 9, paper book: fees 0.0087 sol today.");
   });

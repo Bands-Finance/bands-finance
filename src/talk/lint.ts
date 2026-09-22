@@ -68,6 +68,12 @@ export interface LintContext {
   houseSymbols?: readonly string[];
   /** the house token's mints */
   houseMints?: readonly string[];
+  /**
+   * "lowercase" (the default): no uppercase outside links and addresses, the voice of the older kinds (replies, the
+   * one-offs intro, entry and token, the CLI drafts). "sentence": the builder voice (src/talk/postGuards.ts), whose
+   * own sentence-case check replaces this rule; every other rule here still applies.
+   */
+  caseRule?: "lowercase" | "sentence";
 }
 
 export const MAX_POST_CHARS = 280;
@@ -353,7 +359,7 @@ export function lintText(text: string, ctx: LintContext = {}): LintResult {
 
   // lowercase: links and base58 addresses keep their case; nothing else does (cashtags and handles included)
   const cased = raw.replace(URL_RE, " ").replace(BASE58_RE, " ");
-  const upper = cased.match(/\S*\p{Lu}\S*/gu);
+  const upper = ctx.caseRule === "sentence" ? null : cased.match(/\S*\p{Lu}\S*/gu);
   if (upper) v.push({ rule: "lowercase", detail: `uppercase in ${upper.slice(0, 3).map((w) => `"${w}"`).join(", ")}` });
 
   if (EM_DASH_RE.test(raw)) v.push({ rule: "em-dash", detail: "em dash, en dash or --" });
@@ -399,9 +405,11 @@ export function lintText(text: string, ctx: LintContext = {}): LintResult {
     scan(norm, HOUSE_PRICE_PATTERNS, "house-token-price", v);
   }
 
-  // the copycat: its mint or its handle only in a sentence that says it is not his
+  // another token's mint: never, whole or in part (Zach, 22 Sep: "never name any other token's mint anywhere")
+  if (COPYCAT_MINTS.some((m) => raw.includes(m) || raw.includes(m.slice(0, 6)) || raw.includes(m.slice(-6)))) v.push({ rule: "copycat", detail: "names another token's mint" });
+  // the copycat's handle only in a sentence that says it is not his
   for (const sentence of raw.split(/(?<=[.!?])\s+|\n+/)) {
-    const hit = COPYCAT_MINTS.find((m) => sentence.includes(m)) ?? COPYCAT_HANDLES.find((h) => new RegExp(`(^|[^\\w])@${h}\\b`, "i").test(sentence));
+    const hit = COPYCAT_HANDLES.find((h) => new RegExp(`(^|[^\\w])@${h}\\b`, "i").test(sentence));
     if (hit && !NOT_HIS_RE.test(normalizeForMatch(sentence))) v.push({ rule: "copycat", detail: `names the copycat (${hit}) without saying in the same sentence that it is not his` });
   }
 
