@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { EngineGuardContext, evaluate, GuardContext, NO_ENGINE } from "../risk/guards";
-import { MARKS_STALE_CYCLES } from "../engine/marks";
+import { blindExposure, MARKS_STALE_CYCLES } from "../engine/marks";
 import type { RiskLimits } from "../risk/limits";
 import type { RiskState } from "../risk/state";
 import type { Decision } from "../agent/schema";
@@ -481,6 +481,19 @@ test("USDC pool: the gas reserve is checked against real SOL minus rent only, wh
   assert.match(v.violations.join(), /wallet would hold 0\.0496 SOL after ~0\.200 rent \(the USDC deposit spends no SOL\), below gas reserve 0\.1/);
   // 0.31 SOL covers rent + reserve even though 40 USDC is worth more than the wallet's SOL
   assert.equal(evaluate(uopen(), uctx({ walletSol: 0.31, walletQuote: 10_000 }), limits).allowed, true);
+});
+
+test("a held pool this cycle could not read still counts: its band at its last mark keeps an open under the exposure cap and its seat under the pool cap (22 Sep review M7)", () => {
+  // the loop reads the limits' inputs from the pools it observed; a blind held pool used to drop out of both
+  const blind = blindExposure({ held: ["blind", "pool"], observed: ["pool"], marks: { b1: { pool: "blind", valueSol: 0.8, at: 1 } }, entryValueSol: { b1: 0.9 }, metaPool: {} });
+  const seen = { otherExposureSol: 0, poolsWithBands: 0 };
+  const withBlind = { otherExposureSol: seen.otherExposureSol + blind.exposureSol, poolsWithBands: seen.poolsWithBands + blind.seats };
+  assert.equal(evaluate(open(), ctx(seen), limits).allowed, true, "blind to it, the open went through");
+  const v = evaluate(open(), ctx(withBlind), limits);
+  assert.equal(v.allowed, false);
+  assert.match(v.violations.join(), /total exposure would be 1\.0500 SOL > max 1/);
+  const full = evaluate(open({ amountSol: 0.1 }), ctx({ otherExposureSol: 0, poolsWithBands: blind.seats + 2, maxActivePools: 3 }), limits);
+  assert.match(full.violations.join(), /already working 3 pools \(max 3\)/);
 });
 
 test("USDC pool: band size and total exposure count in SOL", () => {

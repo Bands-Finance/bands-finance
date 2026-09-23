@@ -47,7 +47,12 @@ export interface DecideOptions {
   grow?: PolicyExtras["grow"];
   /** the ask bands on the book and the ask exit's settings, for the policy (src/engine/askExit.ts) */
   askExit?: PolicyExtras["askExit"];
+  /** whether the snapshot's bins hold the book's own bands (false on paper), for the policy's depth caps */
+  ownInSnapshot?: PolicyExtras["ownInSnapshot"];
 }
+
+/** The policy's extras from the decide options: one spelling for every place the policy is asked. */
+export const policyExtrasOf = (opts: DecideOptions): PolicyExtras => ({ limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow, askExit: opts.askExit, ownInSnapshot: opts.ownInSnapshot });
 
 /** An engine directive stands in for the model this cycle: the LLM is not called. */
 export function engineDecideResult(decision: Decision, note: string): DecideResult {
@@ -109,7 +114,7 @@ export function policyMayTradeLive(env: NodeJS.ProcessEnv = process.env): boolea
 /** The desk policy's proposal, as the decision the model would otherwise have made. */
 export function policyDecideResult(observation: Observation, note: string, opts: DecideOptions = {}, dryRun: boolean = config.dryRun, env: NodeJS.ProcessEnv = process.env): DecideResult {
   try {
-    const r = policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow, askExit: opts.askExit });
+    const r = policyDecide(observation, policyExtrasOf(opts));
     const trades = r.decision.action === "OPEN_POSITION" || r.decision.action === "REBALANCE";
     if (trades && !dryRun && !policyMayTradeLive(env)) {
       const verb = r.decision.action === "OPEN_POSITION" ? "open" : "rebalance";
@@ -229,7 +234,7 @@ function acceptModelDecision(raw: Decision, observation: Observation, opts: Deci
   const parsed: Decision = raw.exitAsk ? { ...raw, exitAsk: undefined } : raw;
   const closesAsk = parsed.action === "CLOSE_POSITION" && !!parsed.positionAddress && !!opts.askExit?.bands[parsed.positionAddress];
   if (modelAdvises() && (parsed.action === "OPEN_POSITION" || parsed.action === "REBALANCE" || closesAsk)) {
-    const advised = adviseWithPolicy(parsed, policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow, askExit: opts.askExit }));
+    const advised = adviseWithPolicy(parsed, policyDecide(observation, policyExtrasOf(opts)));
     return { decision: advised.decision, source: "llm", model, usage, note: advised.note ?? undefined };
   }
   return { decision: parsed, source: "llm", model, usage };
@@ -272,7 +277,7 @@ const SCREENED_WHY: Partial<Record<PolicyBranch, string>> = {
 export function screenDecision(observation: Observation, opts: DecideOptions = {}): DecideResult | null {
   let r: PolicyResult;
   try {
-    r = policyDecide(observation, { limits: riskLimits, hot: opts.hot, openCostSol: opts.openCostSol, grow: opts.grow, askExit: opts.askExit });
+    r = policyDecide(observation, policyExtrasOf(opts));
   } catch {
     return null;
   }

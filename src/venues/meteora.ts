@@ -96,6 +96,18 @@ export const meteoraVenue: Venue = {
     return meteoraOpenCost(snapshot, plan);
   },
 
+  async closeRefundSol(connection: Connection, raw: unknown): Promise<number | null> {
+    // closing a DLMM position closes its account and hands every lamport in it to the owner: those lamports ARE the refund
+    const key = (raw as LbPosition | undefined)?.publicKey;
+    if (!key) return null;
+    try {
+      const lamports = await connection.getBalance(key, "confirmed");
+      return Number.isFinite(lamports) && lamports > 0 ? lamports / 1e9 : null;
+    } catch {
+      return null;
+    }
+  },
+
   async poolsWithPositions(connection: Connection, owner: PublicKey): Promise<string[]> {
     const held = await DLMM.getAllLbPairPositionsByUser(connection, owner);
     return [...held.entries()].filter(([, info]) => info.lbPairPositionsData.length > 0).map(([addr]) => addr);

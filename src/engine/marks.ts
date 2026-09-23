@@ -95,6 +95,63 @@ export function carriedBands(input: {
   return out;
 }
 
+/** What the held pools this cycle could not read still weigh against the limits (blindExposure). */
+export interface BlindExposure {
+  /** the held pools not observed this cycle */
+  pools: string[];
+  /** of them, the ones that hold a seat (any band that is not an ask band, or bands nothing on record attributes) */
+  seats: number;
+  /** their bands at their last mark, else their entry, SOL */
+  exposureSol: number;
+  bands: { address: string; pool: string; valueInSol: number; basis: "last mark" | "entry" }[];
+}
+
+export const NO_BLIND_EXPOSURE: BlindExposure = { pools: [], seats: 0, exposureSol: 0, bands: [] };
+
+/**
+ * PURE. The held pools a cycle could not observe, as the LIMITS must count them. The pool count and the total
+ * exposure are read from the pools observed this cycle, so a held pool whose read failed dropped out of both, for
+ * as long as it stayed blind: on 19 Sep a PLTRx/SOL pair band of 26.25 SOL that could not be priced over a weekend
+ * let the paper desk open to 184 SOL against its 175 SOL cap. Its bands are counted instead at their last mark
+ * WITHOUT the breakers' haircut (a limit counts a band at the most it is known to be worth), else at their entry;
+ * a band is attributed to its pool by its mark, else by its meta, exactly as carriedBands does.
+ *
+ * A blind pool is a seat unless every band on record in it is an ask band; one whose bands nothing on record
+ * attributes is a seat all the same (it is held: that much is known).
+ */
+export function blindExposure(input: {
+  /** the pools holding bands at the start of the cycle (the chain's list, or the paper book's) */
+  held: Iterable<string>;
+  /** the pools observed this cycle */
+  observed: Iterable<string>;
+  marks: Record<string, BandMark>;
+  entryValueSol: Record<string, number>;
+  /** position -> the pool its meta was opened in (RiskState.bandMeta) */
+  metaPool: Record<string, string>;
+  /** position -> ask band record (RiskState.askBands): an ask band is exposure, never a seat */
+  askBands?: Record<string, unknown>;
+}): BlindExposure {
+  const seen = new Set(input.observed);
+  const pools = [...new Set(input.held)].filter((a) => !seen.has(a));
+  if (pools.length === 0) return NO_BLIND_EXPOSURE;
+  const blind = new Set(pools);
+  const bands: BlindExposure["bands"] = [];
+  const bandsOf = new Map<string, string[]>();
+  for (const [address, entry] of Object.entries(input.entryValueSol)) {
+    const mark = input.marks[address];
+    const pool = mark?.pool ?? input.metaPool[address];
+    if (!pool || !blind.has(pool)) continue;
+    bandsOf.set(pool, [...(bandsOf.get(pool) ?? []), address]);
+    if (mark && Number.isFinite(mark.valueSol) && mark.valueSol >= 0) bands.push({ address, pool, valueInSol: mark.valueSol, basis: "last mark" });
+    else if (Number.isFinite(entry) && entry > 0) bands.push({ address, pool, valueInSol: entry, basis: "entry" });
+  }
+  const seats = pools.filter((pool) => {
+    const on = bandsOf.get(pool) ?? [];
+    return on.length === 0 || on.some((a) => !input.askBands?.[a]);
+  }).length;
+  return { pools, seats, exposureSol: bands.reduce((t, b) => t + b.valueInSol, 0), bands };
+}
+
 /**
  * The marks the next cycle may carry: every band of a pool decided this cycle at its value now, a
  * band opened this cycle at the value it was laid at, the other marks kept as they were (a blind

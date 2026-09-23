@@ -52,6 +52,16 @@ const Raw = z.object({
   // there for ten minutes earning nothing; the cost calculation raises this where fees are thin.
   ENGINE_OUT_OF_RANGE_SEC: z.coerce.number().default(120),
   ENGINE_KNIFE_PCT: z.coerce.number().default(20),
+  // The per-cycle knife: a drop since the pool's price one cycle ago past this refuses opens there (0 = off). A
+  // -40% flash crash read -19.9% at the cycle halfway down it, under the 30-minute knife, and got the biggest seat.
+  ENGINE_CYCLE_KNIFE_PCT: z.coerce.number().default(5),
+  // The slow knife: a drop past this over ENGINE_SLOW_KNIFE_MIN refuses opens (0 = off). A -5%/h bleed never
+  // trips a 30-minute knife; the desk re-laid a full seat into one every hour until the circuit breaker tripped.
+  ENGINE_SLOW_KNIFE_PCT: z.coerce.number().default(10),
+  ENGINE_SLOW_KNIFE_MIN: z.coerce.number().default(240),
+  // Whether the out-of-range wait of a band the price went through counts its sale and its re-lay (src/engine/exit.ts
+  // poolMoveCostSol). Off: those are paid whenever it leaves unless the price comes back, and waiting holds the token.
+  ENGINE_WAIT_COUNTS_SALE: z.string().default("false"),
   ENGINE_CIRCUIT_FLOOR_SOL: z.coerce.number().default(0.05),
   ENGINE_PORTFOLIO_FLOOR_SOL: z.coerce.number().default(0.15),
   ENGINE_COLLECT_MIN_SOL: z.coerce.number().default(0.005),
@@ -73,6 +83,13 @@ export interface EngineConfig {
   outOfRangeSec: number;
   /** a drop larger than this over the trailing 30 min blocks opens in that pool */
   knifePct: number;
+  /** a drop larger than this since the pool's price one cycle ago blocks opens there (0 = off; absent in a hand-built config = off) */
+  cycleKnifePct?: number;
+  /** a drop larger than slowKnifePct over slowKnifeMin blocks opens there (0 = off): a bleed */
+  slowKnifePct?: number;
+  slowKnifeMin?: number;
+  /** the out-of-range wait of a band the price went through counts its sale and its re-lay (only the literal "true"; absent = no) */
+  waitCountsSale?: boolean;
   /** circuit breaker: today's loss limit is max(this, 15% of working SOL) */
   circuitFloorSol: number;
   /** portfolio breaker: equity drawdown limit is max(this, 15% of the day's high-water equity) */
@@ -127,6 +144,10 @@ export const config = {
   engine: {
     outOfRangeSec: raw.ENGINE_OUT_OF_RANGE_SEC,
     knifePct: raw.ENGINE_KNIFE_PCT,
+    cycleKnifePct: Math.max(0, raw.ENGINE_CYCLE_KNIFE_PCT),
+    slowKnifePct: Math.max(0, raw.ENGINE_SLOW_KNIFE_PCT),
+    slowKnifeMin: Math.max(0, raw.ENGINE_SLOW_KNIFE_MIN),
+    waitCountsSale: raw.ENGINE_WAIT_COUNTS_SALE.trim().toLowerCase() === "true",
     circuitFloorSol: raw.ENGINE_CIRCUIT_FLOOR_SOL,
     portfolioFloorSol: raw.ENGINE_PORTFOLIO_FLOOR_SOL,
     collectMinSol: raw.ENGINE_COLLECT_MIN_SOL,

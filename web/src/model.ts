@@ -2,7 +2,7 @@
  * One place that turns journal entries into what the page says.
  * Every component reads from here so the words and the numbers cannot disagree.
  */
-import { bookCycle, completeCycles, cycleEquity, cyclesOf, equityOf, feesInSol, POSITION_RENT_SOL } from "./derive";
+import { bookCycle, completeCycles, cycleEquity, cyclesOf, equityOf, feesInSol, rentOf } from "./derive";
 import type { Action, Decision, EquityHistoryPoint, FlowContext, JournalEntry, Position, StockTag } from "./types";
 
 /* ---------- words ---------- */
@@ -507,7 +507,7 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
     tokens.set(base, { symbol: base, amount: e.wallet.token, inSol: e.wallet.token * e.pool.tokenPriceInSol });
     for (const p of e.positions) {
       atWork += p.valueInSol;
-      rent += POSITION_RENT_SOL;
+      rent += rentOf(p, e);
       feesUnclaimed += feesInSol(p, e);
     }
   }

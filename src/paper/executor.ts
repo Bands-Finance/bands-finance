@@ -116,10 +116,12 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
       rentSol: 0,
       txFeeSol: -PAPER_TX_FEE_SOL,
       basis: "marked",
-      note: `paper: ${leg} swap ${buy ? `${q.symbol} -> ${s.baseToken.symbol}` : `${s.baseToken.symbol} -> ${q.symbol}`} at the pool price less ${r.feePct}% fee and ${r.impactPct.toFixed(2)}% price impact from the pool's bins`,
+      note: `paper: ${leg} swap ${buy ? `${q.symbol} -> ${s.baseToken.symbol}` : `${s.baseToken.symbol} -> ${q.symbol}`} at the pool price less ${r.feePct}% fee and ${r.impactPct.toFixed(2)}% price impact from the pool's bins${r.transferFeeSol ? `; the mint's ${transferFee!.bps / 100}% transfer fee took ${fmt(r.transferFeeSol, 6)} SOL` : ""}`,
     };
   };
-  const swapInput = { quoteSymbol: q.symbol, tokenMint: s.baseToken.mint, tokenSymbol: s.baseToken.symbol, tokenPriceInQuote: q.tokenPriceInQuote, quotePriceInSol: q.priceInSol, feePct: swapFeePct };
+  // a Token-2022 fee mint (src/tools/transferFee.ts) keeps its cut of every move in and out of the wallet: paper pays it too
+  const transferFee = s.baseToken.transferFee ?? null;
+  const swapInput = { quoteSymbol: q.symbol, tokenMint: s.baseToken.mint, tokenSymbol: s.baseToken.symbol, tokenPriceInQuote: q.tokenPriceInQuote, quotePriceInSol: q.priceInSol, feePct: swapFeePct, transferFee };
   // Every paper leg walks this pool's bins for its price impact, as a real swap would move the price, and pays at
   // most the live path's hard cap (SWAP_IMPACT_HARD_PCT, 8%: past it the live desk refuses the sale). A pool the desk
   // made itself holds nothing but its own band, so its legs route elsewhere and walk nothing.
@@ -154,7 +156,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
       let feeSol = 0;
       let claimed = 0;
       for (const b of targets) {
-        const r = claimFees(book, b.address, { tokenPriceInQuote: q.tokenPriceInQuote, quotePriceInSol: q.priceInSol }, now);
+        const r = claimFees(book, b.address, { tokenPriceInQuote: q.tokenPriceInQuote, quotePriceInSol: q.priceInSol }, now, transferFee);
         if (!r) continue;
         claimed += 1;
         feeQuote += r.feeQuote;
@@ -175,7 +177,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         txFeeSol: -PAPER_TX_FEE_SOL,
         basis: "marked",
         feeSol,
-        note: `paper: claim fees on ${claimed} band(s); ${q.symbol} side from the paper mark`,
+        note: `paper: claim fees on ${claimed} band(s); ${q.symbol} side from the paper mark${transferFee ? `; token fees less the mint's ${transferFee.bps / 100}% transfer fee` : ""}`,
       });
       chargeTxFee(book);
       result.claimed = targets.map((b) => b.address);
@@ -194,8 +196,9 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
       // exit, src/engine/askExit.ts: a deposit, no sale) pays the swap fee (or nothing) instead of the close slippage
       const feedsSwap = (d.action === "CLOSE_POSITION" && d.liquidate === true) || (d.action === "REBALANCE" && (d.open?.side === "BOTH" || d.open?.side === "TOKEN_ONLY"));
       const closeSlip = feedsSwap ? 0 : slippagePct;
-      const closed = closeBand(book, { address: band.address, value, slippagePct: closeSlip, now, reason: why.reason, emergency: why.emergency });
-      tokensBack = (closed.tokenBack + closed.feeToken) * (1 - closeSlip / 100);
+      const closed = closeBand(book, { address: band.address, value, slippagePct: closeSlip, now, reason: why.reason, emergency: why.emergency, transferFee });
+      // what reached the wallet: the token leg less the close slippage and the mint's transfer fee
+      tokensBack = (closed.tokenBack + closed.feeToken) * (1 - closeSlip / 100) - (closed.transferFeeToken ?? 0);
       chargeTxFee(book);
       push({
         label: `close band ${band.address.slice(0, 13)}`,
@@ -208,13 +211,13 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         ...baseRow(s, "close", band.address, now),
         quoteDelta: closed.quoteBack + closed.feeQuote,
         solDelta: (closed.quoteBack + closed.feeQuote) * q.priceInSol,
-        tokenDelta: tokenDelta * (1 - closeSlip / 100),
+        tokenDelta: tokenDelta * (1 - closeSlip / 100) - (closed.transferFeeToken ?? 0),
         rentSol: rentRefund,
         txFeeSol: -PAPER_TX_FEE_SOL,
         basis: "marked",
         feeSol: closed.feeSol,
         entryValueSol: closed.entryValueSol,
-        note: `paper: close band; ${q.symbol} side from the paper mark; ${feedsSwap ? (d.open?.side === "TOKEN_ONLY" ? "token leg goes into an ask band: no close slippage" : "token leg goes to a swap: no close slippage") : `${slippagePct}% slippage on the token leg`}`,
+        note: `paper: close band; ${q.symbol} side from the paper mark; ${feedsSwap ? (d.open?.side === "TOKEN_ONLY" ? "token leg goes into an ask band: no close slippage" : "token leg goes to a swap: no close slippage") : `${slippagePct}% slippage on the token leg`}${closed.transferFeeToken ? `; the mint's ${transferFee!.bps / 100}% transfer fee kept ${fmt(closed.transferFeeToken, tokenDec)} ${s.baseToken.symbol}` : ""}`,
       });
       if (d.action === "CLOSE_POSITION") {
         // liquidate: the token that came back is sold into the quote, the book returns to USDC
@@ -228,7 +231,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
 
     if (d.action === "OPEN_POSITION" || d.action === "REBALANCE") {
       if (!d.open) throw new Error("open parameters missing");
-      const o: OpenParams = d.open;
+      let o: OpenParams = d.open;
       const cost = ctx.openCost ?? { total: OPEN_COST_ESTIMATE_SOL, refundable: POSITION_RENT_SOL };
       // A made pair that does not exist yet is created first: its rent is the pool's, not the band's.
       let creationRent = 0;
@@ -273,6 +276,14 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         if (shortfall > SWAP_DUST_TOKEN && (declared > 0 || d.action === "REBALANCE")) buy(Number(shortfall.toFixed(tokenDec)), d.action === "REBALANCE" ? "shortfall" : "acquire");
         else if (d.action === "REBALANCE" && -shortfall > SWAP_DUST_TOKEN && tokensBack > SWAP_DUST_TOKEN) sell(Number(Math.min(-shortfall, tokensBack).toFixed(tokenDec)), "surplus");
       }
+      // a fee mint's purchase lands short by its transfer fee: the deposit takes what the wallet holds, as the live deposit does
+      if (transferFee && o.amountToken > 0) {
+        const have = paperTokenBalance(book, s.baseToken.mint);
+        if (have + 1e-9 < o.amountToken) {
+          result.notes.push(`token leg clamped to the wallet's ${fmt(have, tokenDec)} ${s.baseToken.symbol} (planned ${o.amountToken}): the mint's ${transferFee.bps / 100}% transfer fee took its cut on the way in`);
+          o = { ...o, amountToken: Math.max(0, have) };
+        }
+      }
       const { lowerBinId, upperBinId, note: geometryNote } = paperBandBins(s, o);
       const xDec = s.tokenX.decimals;
       const yDec = s.tokenY.decimals;
@@ -303,6 +314,7 @@ export function executePaper(verdict: Verdict, ctx: PaperExecutionContext): Exec
         now,
         ...(priceModelOf(s) === "clmm" ? { priceModel: "clmm" as const } : {}),
         ...(ctx.openCost || creationRent > 0 ? { rentChargedSol: cost.total - creationRent, rentRefundableSol: cost.refundable } : {}),
+        transferFee,
       });
       chargeTxFee(book);
       const b = opened.band;

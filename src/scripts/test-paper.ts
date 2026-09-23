@@ -657,9 +657,15 @@ async function main(): Promise<void> {
     const noFloor = { ...poorPool };
     process.env.POLICY_MIN_SEAT_YIELD_PCT = "0";
     const payback = policy.policyDecide(noFloor, yieldOn);
+    // a Token-2022 fee mint: the shared entry rules (entrySeatRefusal) still name the part of the cost its transfer fee takes
+    const feeMint = { ...noFloor, snapshot: { ...noFloor.snapshot, baseToken: { ...noFloor.snapshot.baseToken, transferFee: { bps: 300, maxUi: null } } } } as typeof rich;
+    const paybackFee = policy.policyDecide(feeMint, yieldOn);
     process.env.POLICY_MIN_SEAT_YIELD_PCT = "";
     assert.equal(payback.branch, "not-worth");
     assert.match(payback.reason, /payback .*h over the .*h limit/);
+    assert.doesNotMatch(payback.decision.reasoning, /transfer fee/);
+    assert.equal(paybackFee.branch, "not-worth");
+    assert.match(paybackFee.decision.reasoning, /^No band in .*\. Opening costs about \$[\d.]+ in rent that does not come back and swap fees, \$[\d.]+ of it the 3% transfer fee ANSEM charges on every move of the token, and the seat earns/);
   });
 
   await test("no band, score above the floor: OPEN a 24-bin SOL-only Spot band sized at the max band", () => {
@@ -824,7 +830,28 @@ async function main(): Promise<void> {
     assert.equal(close.decision.headline, "6 bins through the band and 700s out. Off the table.");
     voice(close.decision);
   });
-  await test("price through the band on a hot pool: HOLD one more cycle, then CLOSE on the next", () => {
+  await test("a band already down half its stop leaves without the out-of-range wait and without a hot pool's extra cycle, as the guards already allow", () => {
+    const e = obs().engine!;
+    const shallow = paperPos(230); // about 3.5% down: the wait stands
+    assert.equal(policy.policyDecide(obs({ positions: [shallow.pos], engine: { ...e, outOfRangeSec: { [shallow.pos.address]: 100 } } }, shallow.snap), x).branch, "churn-wait");
+    const deepPos = paperPos(200); // 48 bins under the band's middle at 0.2% a bin: about 9% down against a 15% stop
+    const dd = (1 - deepPos.pos.valueInSol / deepPos.pos.entryValueSol!) * 100;
+    assert.ok(dd >= 7.5 && dd < 15, `drawdown ${dd}`);
+    const early = policy.policyDecide(obs({ positions: [deepPos.pos], engine: { ...e, outOfRangeSec: { [deepPos.pos.address]: 100 } } }, deepPos.snap), x);
+    assert.equal(early.branch, "close", early.reason);
+    assert.equal(early.decision.action, "CLOSE_POSITION");
+    assert.match(early.decision.reasoning, /under the 600s minimum but \d+(\.\d)?% down, past half its 15% stop: not churn/);
+    assert.match(early.reason, /% down \(half the stop\), not hot$/);
+    voice(early.decision);
+    // a rolled stop is the one halved
+    assert.equal(policy.policyDecide(obs({ positions: [deepPos.pos], engine: { ...e, stops: { [deepPos.pos.address]: 25 }, outOfRangeSec: { [deepPos.pos.address]: 100 } } }, deepPos.snap), { ...x, limits: { ...limits, stopLossPct: 30 } }).branch, "churn-wait", "9% is not half of a 25% stop");
+    // on a hot pool it gets no extra cycle that deep
+    const hotDeep = policy.policyDecide(obs({ positions: [deepPos.pos], engine: { ...e, outOfRangeSec: { [deepPos.pos.address]: 700 } }, screen: { ...obs().screen!, hot: [hotRow()] } }, deepPos.snap), x);
+    assert.equal(hotDeep.branch, "close");
+    assert.match(hotDeep.decision.reasoning, /a band this far down gets no extra cycle/);
+  });
+
+  await test("price through the band on a hot pool: HOLD one more cycle, then CLOSE on the next (the cycle is spent by the state's stamp, never by a journal headline)", async () => {
     const { pos, snap } = paperPos(230);
     const e = obs().engine!;
     const hotObs = obs({ positions: [pos], engine: { ...e, outOfRangeSec: { [pos.address]: 700 } }, screen: { ...obs().screen!, hot: [hotRow()] } }, snap);
@@ -832,9 +859,98 @@ async function main(): Promise<void> {
     assert.equal(first.branch, "hot-hold");
     assert.equal(first.decision.headline, policy.HOT_HOLD_HEADLINE);
     assert.match(first.decision.reasoning, /heat 40, 1h \+1.5%/);
-    const second = policy.policyDecide({ ...hotObs, recent: [{ ts: "", action: "HOLD", allowed: true, headline: policy.HOT_HOLD_HEADLINE, violations: [] }] }, x);
+    // the journal as runPool writes it: the headline in his voice. The policy used to compare that to the constant,
+    // which never matched after 15 Sep, and a hot pool got its "one more cycle" every cycle (ALLINU/SOL, twice running)
+    const { voiceLine } = await import("../agent/voice.js");
+    const journalled = { ts: "", action: "HOLD", allowed: true, headline: voiceLine(first.decision.headline), violations: [] };
+    assert.notEqual(journalled.headline, policy.HOT_HOLD_HEADLINE, "the journal rewrites the headline");
+    // the next cycle, 300 s on: the loop stamped RiskState.hotHeldAt when the policy answered hot-hold
+    const next = { ...hotObs, ts: new Date(T0 + 300e3).toISOString(), recent: [journalled], state: { ...hotObs.state, hotHeldAt: { [pos.address]: T0 } }, engine: { ...e, outOfRangeSec: { [pos.address]: 1000 } } };
+    const second = policy.policyDecide(next, x);
     assert.equal(second.branch, "close");
+    assert.equal(second.decision.action, "CLOSE_POSITION");
     assert.match(second.decision.reasoning, /still hot but already had its extra cycle/);
+    // the journal alone (no stamp) is what the desk read before: it held again, and again
+    assert.equal(policy.policyDecide({ ...next, state: hotObs.state }, x).branch, "hot-hold", "the old reading: another extra cycle");
+    // a stamp from an earlier spell out of range (the band came back in range since) does not spend this spell's cycle
+    assert.equal(policy.policyDecide({ ...next, state: { ...hotObs.state, hotHeldAt: { [pos.address]: T0 - 3600e3 } } }, x).branch, "hot-hold");
+    // the state carries it: loadState keeps it, forgetBand drops it with the band
+    const { forgetBand } = await import("../engine/exit.js");
+    const st: RiskState = { ...emptyState(), entryValueSol: { [pos.address]: 20 }, hotHeldAt: { [pos.address]: T0 } };
+    forgetBand(st, pos.address);
+    assert.deepEqual(st.hotHeldAt, {});
+  });
+
+  await test("the pool's own hot row reaches the policy whatever its flags: dumping or wild holds, the 1h move holds, and a flagged row is no hot pick and buys no extra cycle", async () => {
+    const { hotContextFor, hotPicks, hotPicksWithOwn } = await import("../hot/index.js");
+    const OTHER = "OtherPooL11111111111111111111111111111111111";
+    const row = (over: Record<string, unknown> = {}) => ({ address: POOL, name: "ANSEM / SOL", venue: "meteora-dlmm", quoteSymbol: "SOL", baseMint: ANSEM, baseSymbol: "ANSEM", liquidityUsd: 1_400_000, vol1hUsd: 400_000, vol24hUsd: 2_000_000, feeToTvlDailyPct: 80, acceleration: 3, priceChange1hPct: -20, sellShare1h: 0.8, ageHours: 2000, heat: 30, flags: ["dumping", "wild"], surge: true, ...over });
+    const other = row({ address: OTHER, name: "OTHER / SOL", priceChange1hPct: 2, flags: [], heat: 50 });
+    const file = (rows: unknown[]) => ({ generatedAt: new Date(T0).toISOString(), tickMs: 0, sources: { trending: 0, dexscreener: 0, onchainReads: 0, errors: [] }, rows }) as never;
+    const hot = file([row(), other]);
+    // the pick rule is unchanged: a pool flagged dumping and wild is not picked
+    assert.deepEqual(hotPicks(hot, { tradable: () => true, max: 8 }).map((r) => r.address), [OTHER]);
+    const ctx = hotContextFor(hot, POOL, () => true, { tradable: () => true, max: 8 });
+    const own = ctx.find((h) => h.thisPool)!;
+    assert.equal(own.pick, false);
+    assert.deepEqual(own.flags, ["dumping", "wild"]);
+    assert.equal(ctx.find((h) => !h.thisPool)!.pick, true);
+    // a board pool scoring 30 with that row holds as flagged; the loop's old list never carried the row, and it opened
+    const r = policy.policyDecide(obs({ screen: { ...obs().screen!, hot: ctx } }), x);
+    assert.equal(r.branch, "flagged");
+    assert.match(r.reason, /flagged dumping, wild/);
+    assert.match(r.decision.reasoning, /the hot watch reads heat 30, 1h move -20\.0% \[dumping, wild\], off the tradable list/);
+    voice(r.decision);
+    assert.equal(policy.policyDecide(obs({ screen: { ...obs().screen!, hot: ctx.filter((h) => h.pick) } }), x).branch, "open", "without its own row the same pool opened");
+    // off the board the policy's extras carry it the same way
+    assert.equal(policy.policyDecide(obs({ screen: null }), { ...x, hot: hotPicksWithOwn(hot, POOL, { tradable: () => true, max: 8 }) }).branch, "flagged");
+    // a tokenized stock is exempt from "dumping" alone (Zach, 22 Sep: it fired on a sell share at a -0.05% move); "wild" still holds it
+    const stockScreen = (flags: string[]) => ({ ...obs().screen!, stock: { ticker: "DFDV", issuer: "xstocks" }, hot: hotContextFor(file([row({ flags, priceChange1hPct: -0.05 }), other]), POOL, () => true, { tradable: () => true, max: 8 }) });
+    assert.notEqual(policy.policyDecide(obs({ screen: stockScreen(["dumping"]) as never }), x).branch, "flagged", "a stock flagged dumping alone is not refused as flagged");
+    assert.equal(policy.policyDecide(obs({ screen: stockScreen(["dumping", "wild"]) as never }), x).branch, "flagged", "wild still refuses a stock");
+    assert.equal(policy.policyDecide(obs({ screen: { ...obs().screen!, hot: hotContextFor(file([row({ flags: ["dumping"], priceChange1hPct: -0.05 }), other]), POOL, () => true, { tradable: () => true, max: 8 }) } }), x).branch, "flagged", "a memecoin flagged dumping is still refused");
+    // the last hour's move: an unflagged row under the hot list's liquidity floor (so not a pick) that moved 22%
+    const moved = policy.policyDecide(obs({ screen: { ...obs().screen!, hot: hotContextFor(file([row({ flags: [], priceChange1hPct: -22, liquidityUsd: 1_000 }), other]), POOL, () => true, { tradable: () => true, max: 8 }) } }), x);
+    assert.equal(moved.branch, "moved");
+    assert.match(moved.reason, /1h move -22\.0% outside \+\/-15%/);
+    // a row that is not a pick is no hot pick: a score under the floor is not rescued by it
+    const unpicked = hotContextFor(file([row({ flags: ["fading"], priceChange1hPct: 1, liquidityUsd: 1_000 })]), POOL, () => true, { tradable: () => true, max: 8 });
+    assert.equal(policy.policyDecide(obs({ screen: { ...obs().screen!, score: 5, hot: unpicked } }), x).branch, "not-worth");
+    // and a band the price went through, in a pool the hot watch flags dumping, gets no extra cycle: it is not on the list
+    const { pos, snap } = paperPos(230);
+    const through = policy.policyDecide(obs({ positions: [pos], engine: { ...obs().engine!, outOfRangeSec: { [pos.address]: 700 } }, screen: { ...obs().screen!, hot: ctx } }, snap), x);
+    assert.equal(through.branch, "close");
+    assert.match(through.decision.reasoning, /The pool is not on the hot list; closing/);
+  });
+  await test("a tradable pick behind eight Raydium and Orca rows is still a hot pick: the own row's pick is the tradable list's, and the policy reads either list", async () => {
+    const { hotContextFor, hotPicks, hotPicksWithOwn } = await import("../hot/index.js");
+    const { formatObservation } = await import("../agent/observation.js");
+    const row = (address: string, venue: string, heat: number) => ({ address, name: `${venue} pool`, venue, quoteSymbol: "SOL", baseMint: address, baseSymbol: "X", liquidityUsd: 500_000, vol1hUsd: 200_000, vol24hUsd: 2_000_000, feeToTvlDailyPct: 10, acceleration: 2, priceChange1hPct: 2, sellShare1h: 0.5, ageHours: 500, heat, flags: [], surge: true });
+    const others = Array.from({ length: 8 }, (_, i) => row(`Ray${i}PooL1111111111111111111111111111111111`, i % 2 ? "raydium-clmm" : "orca-whirlpool", 60 - i));
+    const hot = { generatedAt: new Date(T0).toISOString(), tickMs: 0, sources: { trending: 0, dexscreener: 0, onchainReads: 0, errors: [] }, rows: [...others, row(POOL, "meteora-dlmm", 40)] } as never;
+    // the desk trades meteora-dlmm only: its tradable list picks this pool, the every-venue top 8 does not hold it
+    const tradable = { tradable: (r: { venue: string }) => r.venue === "meteora-dlmm", max: 8 };
+    assert.deepEqual(hotPicks(hot, tradable).map((r) => r.address), [POOL]);
+    assert.ok(!hotPicks(hot, { tradable: () => true, max: 8 }).some((r) => r.address === POOL));
+    const ctx = hotContextFor(hot, POOL, (v) => v === "meteora-dlmm", tradable);
+    assert.equal(ctx.length, 9, "the every-venue top 8 and this pool's own row");
+    assert.equal(ctx.find((h) => h.thisPool)!.pick, true, "a pick of the tradable list");
+    const xs = { ...x, hot: hotPicksWithOwn(hot, POOL, tradable) };
+    assert.doesNotMatch(formatObservation(obs({ screen: { ...obs().screen!, hot: ctx } })), /THIS POOL: .*not on the tradable list/);
+    // a band the price went through, 700 s out: the hot pick's one more cycle
+    const { pos, snap } = paperPos(230);
+    const through = policy.policyDecide(obs({ positions: [pos], engine: { ...obs().engine!, outOfRangeSec: { [pos.address]: 700 } }, screen: { ...obs().screen!, hot: ctx } }, snap), xs);
+    assert.equal(through.branch, "hot-hold", through.reason);
+    // no band and a score of 15, under the floor of 20: it opens as a hot pick
+    const fresh = policy.policyDecide(obs({ screen: { ...obs().screen!, score: 15, hot: ctx } }), xs);
+    assert.equal(fresh.branch, "open", fresh.reason);
+    assert.equal(fresh.decision.action, "OPEN_POSITION");
+    // the list as a300bf9 built it (the own row off the every-venue top 8, pick false): the extras still carry the
+    // pick, and on the list is what either says; without them the pool is refused, as a flagged row is
+    const stale = ctx.map((h) => (h.thisPool ? { ...h, pick: false } : h));
+    assert.equal(policy.policyDecide(obs({ screen: { ...obs().screen!, score: 15, hot: stale } }), xs).branch, "open");
+    assert.equal(policy.policyDecide(obs({ screen: { ...obs().screen!, score: 15, hot: stale } }), x).branch, "not-worth");
+    assert.equal(policy.policyDecide(obs({ positions: [pos], engine: { ...obs().engine!, outOfRangeSec: { [pos.address]: 700 } }, screen: { ...obs().screen!, hot: stale } }, snap), xs).branch, "hot-hold");
   });
   await test("policy: an ask band holds while working, closes at once when sold out, waits under the price then follows it down, and is pulled under the kill switch", async () => {
     const { askExitEnv, askBandRecord } = await import("../engine/askExit.js");
@@ -974,6 +1090,122 @@ async function main(): Promise<void> {
     assert.equal(gated.decision.action, "CLOSE_POSITION");
     assert.match(gated.decision.reasoning, /A fresh band is off \(knife: -30.0% in 30 min\)/);
   });
+  await test("an idle re-lay is a fresh open: it passes the entry rules a pool with no band would, or the band comes off; the scout's wait holds it", async () => {
+    const { pos, snap } = paperPos(263);
+    const e = obs().engine!;
+    const idle = (over: Partial<Observation> = {}): Observation => obs({ positions: [pos], wallet: { address: "w", sol: 50, token: 0, tokenSymbol: "ANSEM", quote: 50, quoteSymbol: "SOL" }, engine: { ...e, outOfRangeSec: { [pos.address]: 2000 } }, ...over }, snap);
+    assert.equal(policy.policyDecide(idle(), x).branch, "rebalance", "a pool the rules would open is re-laid");
+    // CARDS/SOL in the pump (the scenario harness, 22 Sep): every one of these re-laid a full seat
+    const cases: [Partial<Observation>, string, RegExp][] = [
+      [{ screen: { ...obs().screen!, score: 8.7 } }, "not-worth", /score 8\.7 is not above 20/],
+      [{ screen: { ...obs().screen!, hot: [hotRow({ flags: ["wild", "dumping"], pick: false })] } }, "flagged", /flagged wild, dumping/],
+      [{ screen: { ...obs().screen!, volume24hUsd: 50_000 } }, "not-worth", /24h volume \$50000 under the \$250000 floor/],
+      [{ screen: { ...obs().screen!, hot: [hotRow({ priceChange1hPct: 40 })] } }, "moved", /1h move \+40\.0% outside \+\/-15%/],
+      [{ screen: { ...obs().screen!, tvlUsd: 1_000_000, feeToTvl24hPct: 0.01 } }, "not-worth", /seat yield .* under the 0\.4% floor/],
+    ];
+    for (const [over, branch, re] of cases) {
+      const r = policy.policyDecide(idle(over), x);
+      assert.equal(r.decision.action, "CLOSE_POSITION", `${branch}: ${r.branch} ${r.reason}`);
+      assert.equal(r.branch, "close");
+      assert.equal(r.decision.positionAddress, pos.address);
+      assert.equal(r.decision.liquidate, true);
+      assert.match(r.reason, new RegExp(`re-lay refused by the entry rules \\(${branch}\\)`));
+      assert.match(r.reason, re);
+      assert.match(r.decision.reasoning, /A re-lay is a fresh open, and the entry rules refuse one here/);
+      voice(r.decision);
+      // the same pool with no band is refused by the very same rule
+      const fresh = policy.policyDecide(obs({ ...over }), x);
+      assert.equal(fresh.branch, branch, `no band: ${fresh.reason}`);
+    }
+    // a wait is not a verdict: the band stays as it is until the scout has read the pool long enough
+    const flow = { asOf: Date.now(), quoteSymbol: "SOL", swaps15m: 5, volume15mQuote: 1, fees15mQuote: 0.01, ours15mQuote: 0, swaps60m: 10, volume60mQuote: 4, fees60mQuote: 0.04, ours60mQuote: 0, swaps240m: 40, fees240mQuote: 0.2, coveredMin: 18, feesPerDayQuote240m: 1.2, range60mBins: 6, range240mBins: 13, feesPerDayQuote60m: 0.96, feesPerDayQuote15m: 0.96, lastPrice: null, lastSwapAt: null, largest15m: null };
+    const waiting = policy.policyDecide(idle({ screen: { ...obs().screen!, flow } }), { ...x, env: { requireFlow: true } });
+    assert.equal(waiting.decision.action, "HOLD");
+    assert.equal(waiting.branch, "flow-wait");
+    assert.match(waiting.reason, /re-lay waits: the scout's reading covers 18 min < 60/);
+    // the model's re-lay meets the same refusal: the desk policy's entry rules bind it (adviseWithPolicy)
+    const { adviseWithPolicy } = await import("../agent/decide.js");
+    const modelRelay: Decision = { action: "REBALANCE", open: { side: "SOL_ONLY", amountSol: 22.5, amountToken: 0, binsBelowActive: 24, binsAboveActive: 0, strategy: "Spot" }, positionAddress: pos.address, reasoning: "Follow it up.", confidence: 0.6, headline: "Re-lay." };
+    const advised = adviseWithPolicy(modelRelay, policy.policyDecide(idle(cases[0][0]), x));
+    assert.equal(advised.decision.action, "HOLD");
+    assert.match(advised.note!, /refused by the desk policy's entry rules/);
+  });
+
+  await test("a re-lay takes our own liquidity off the depth only where the snapshot holds it: none on paper, the observed bins' share on a chain read", async () => {
+    // an idle band over [236, 260] worth 20 SOL, the price at 263: the snapshot reads the ten bins under it (253..262), 8 of them the band's
+    const { pos, snap } = paperPos(263);
+    const shallow = { ...snap, liquidityBelowY: 10 }; // 1 SOL a bin under the price as observed
+    const e = obs().engine!;
+    const relay = (ownInSnapshot?: boolean) =>
+      policy.policyDecide(obs({ positions: [pos], wallet: { address: "w", sol: 50, token: 0, tokenSymbol: "ANSEM", quote: 50, quoteSymbol: "SOL" }, engine: { ...e, outOfRangeSec: { [pos.address]: 2000 } } }, shallow), { ...x, ...(ownInSnapshot === undefined ? {} : { ownInSnapshot }) });
+    // paper: the snapshot never held the band, so the depth is the observed 1 SOL a bin x 25 bins and the max band binds
+    const onPaper = relay(false);
+    assert.equal(onPaper.branch, "rebalance", onPaper.reason);
+    assert.equal(onPaper.decision.open!.amountSol, 22.5);
+    // a chain read holds it: 0.8 SOL a bin in 8 of the 10 observed bins comes out, 0.36 SOL a bin of others' x 25 = 9 SOL
+    // (the whole 20 SOL band used to come off a 25 SOL estimate: a 5 SOL re-lay, and on paper the same)
+    const onChain = relay();
+    assert.equal(onChain.branch, "rebalance", onChain.reason);
+    near(onChain.decision.open!.amountSol, 9, 1e-4, "chain read");
+    assert.match(onChain.decision.reasoning, /bound by half the band's depth \((9|8\.99\d*) SOL\)/);
+    // the pure part: only the observed bins count, split by the side of the price they sit on
+    const q = dlmm.quoteOf(snap);
+    assert.deepEqual(policy.ownObservedLiquidity(snap, { lowerBinId: 300, upperBinId: 320, valueInSol: 20 }, q), { quote: 0, token: 0 }, "a band off the observed bins holds none of them");
+    const straddle = policy.ownObservedLiquidity(snapAt(260), { lowerBinId: 255, upperBinId: 265, valueInSol: 11 }, dlmm.quoteOf(snapAt(260)));
+    near(straddle.quote, 5, 1e-9, "five quote-side bins at 1 SOL");
+    near(straddle.token, 5 / p(260), 1e-6, "five token-side bins at 1 SOL, in token");
+    // the loop says so on every ask of the policy, the model's advice and the screen included (src/agent/decide.ts)
+    const { policyExtrasOf } = await import("../agent/decide.js");
+    assert.equal(policyExtrasOf({ ownInSnapshot: false }).ownInSnapshot, false);
+    assert.equal(policyExtrasOf({}).ownInSnapshot, undefined, "unsaid: a chain read");
+  });
+
+  await test("the crash's own travel widens the band, not the seat: the depth cap reads the width of the travel before the last cycle's move", () => {
+    const withTravel = (recentMovePct: number, priorMovePct: number | null, liquidityBelowY: number) =>
+      policy.policyDecide(obs({ screen: { ...obs().screen!, recentMovePct, priorMovePct } }, snapAt(260, { liquidityBelowY })), x);
+    // a calm pool (0.2% an hour at 0.2% a bin) lays one bin under the price: 2 SOL of depth, no seat
+    assert.equal(withTravel(0.2, 0.2, 10).branch, "no-size");
+    // the cycle a 4% drop widens its band to 21 bins, the depth across them made it a 21 SOL seat; it is sized on the calm travel
+    const crash = withTravel(4, 0.2, 10);
+    assert.equal(crash.branch, "no-size", crash.reason);
+    assert.match(crash.reason, /bound by half the depth of the 2 bins the pool's travel before its last 3\.8% move would lay \(2 SOL of others' there; the move widens the band, not the seat\)/);
+    // a pool that has travelled 4% an hour all along keeps its seat: nothing of it is the last move's
+    const steady = withTravel(4, 4, 10);
+    assert.equal(steady.branch, "open");
+    assert.equal(steady.decision.open!.amountSol, 21);
+    assert.equal(steady.decision.open!.binsBelowActive, 20);
+    // deep enough for a seat on the calm width: the band keeps the full 21 bins, the seat is the calm width's depth
+    const deep = withTravel(4, 0.2, 90);
+    assert.equal(deep.branch, "open");
+    assert.equal(deep.decision.open!.binsBelowActive, 20, "the band is as wide as the travel");
+    assert.equal(deep.decision.open!.amountSol, 18, "9 SOL a bin x 2 bins, not the max band");
+    // unknown prior travel (too few samples): nothing to take out
+    assert.equal(withTravel(4, null, 10).decision.open!.amountSol, 21);
+  });
+  await test("a crash in two steps under the per-cycle knife is one move: the loop takes the run through the bid band out whole, and the seat stays the calm hour's", async () => {
+    const exit = await import("../engine/exit.js");
+    const withTravel = (recentMovePct: number, priorMovePct: number | null) => policy.policyDecide(obs({ screen: { ...obs().screen!, recentMovePct, priorMovePct } }, snapAt(260, { liquidityBelowY: 10 })), x);
+    // the reviewer's staircase (x0.955 every five minutes after a calm hour), sampled once a cycle as the loop does: at
+    // x0.912 neither step passed the 5% per-cycle knife, the 20% in 30 minutes or the 10% in four hours
+    const at = (prices: number[]) => prices.map((price, i) => ({ ts: T0 - (prices.length - 1 - i) * 300e3, price }));
+    const stair = at([1, 1.002, 1, 1.002, 1, 1.002, 1, 1.002, 1, 0.955, 0.912]);
+    assert.equal(exit.knivesReason(stair, T0, { knifePct: 20, cycleKnifePct: 5, cycleMs: 300e3, slowKnifePct: 10, slowKnifeMs: 240 * 60e3 }), null);
+    const recent = exit.rangeOverWindowPct(stair, T0)!;
+    // only the last cycle's sample out: the first step's 4.5% reaches the 4% cover cap and the max seat opens halfway down
+    const oneStep = withTravel(recent, exit.priorRangeOverWindowPct(stair, T0));
+    assert.equal(oneStep.branch, "open");
+    assert.equal(oneStep.decision.open!.amountSol, 21);
+    // the run out whole (src/index.ts priorMoveOf, the pool quoted in Y: a fall runs through its band): the band keeps its width, the seat is the calm hour's, under the minimum
+    const way = exit.bidRunWay(dlmm.quoteOf(snapAt(260)).side);
+    assert.equal(way, "down");
+    const run = withTravel(recent, exit.priorRangeOverWindowPct(stair, T0, undefined, way));
+    assert.equal(run.branch, "no-size", run.reason);
+    assert.match(run.reason, /before its last 9\.\d% move would lay/);
+    // a pool that chopped 4% an hour before the same fall keeps its seat: that travel is the pool's, not the fall's
+    const chop = at([1, 1.04, 1, 1.04, 1, 1.04, 1, 1.04, 1, 0.955, 0.912]);
+    assert.equal(withTravel(exit.rangeOverWindowPct(chop, T0)!, exit.priorRangeOverWindowPct(chop, T0, undefined, way)).decision.open!.amountSol, 21);
+  });
+
   await test("decide() without a key uses the policy: source policy, model desk-policy, a note", async () => {
     // pin the decider: this test is about the no-key path, and a developer's .env (DECIDER=openhermit on the
     // paper desk since 22 Sep) must not change what it tests

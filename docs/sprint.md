@@ -410,6 +410,32 @@ money onchain he will progress to building his own platform bands.finance."
    the rent refund). This moves the earlier "no live money through 8 Oct" decision; the date is Zach's call.
 3. **Then bands.finance.** Once he earns on chain, he builds his platform.
 
+### What the tuning shows so far (22 Sep, late)
+
+The strategy fixes of 22 Sep (S1-S9 in a300bf9, and the follow-ups after its review) lose less in bleeds and
+crashes and cost fees in chop. They are not shown to make money. The gate in step 2 (a day that earns in dollars
+after every cost) is judged on the paper book as it trades, never on a harness or a replay.
+
+- **Real price paths.** 30 days of every cached pool replayed through the desk at five cycle phases, before
+  (a5e0556) against after, in SOL with the 95% interval over days: 5-minute walk +45 [-29, +119], 5-minute
+  close-to-close +61 [-11, +133], 1-hour walk +104 [+17, +205], 1-hour close-to-close (the calm path) -83
+  [-199, +29]. Only the coarsest model excludes zero, and the calm one reverses. The cycle's phase alone swings
+  the 5-minute walk from +27 to +71.
+- **Wide chop got worse** on three models of four (-6.8, -3.9, and -50 on the calm path; +17 on the 1-hour
+  walk): after a leg down he sits out, and the fees he misses outweigh the losses he avoids. Every strategy change
+  is checked on the wide-chop cell as well as on the total.
+- **The synthetic scenarios** showed +364.5 SOL. The fixes were tuned on them, so the figure overstates the gain
+  several times over, and their wide chop (a sine wave) does not behave like real chop.
+- **Fixed after the review:** a Meteora pool the tradable hot list picked lost its hot-pick standing when eight
+  Raydium and Orca rows outranked it, and a crash in two steps under the per-cycle knife still opened the max seat
+  halfway down. The replay has no hot list; on it the second moves the total -1.3 to +7.1 SOL against a300bf9,
+  within noise.
+- **Tried and not shipped**, replayed the same way: narrowing the slow knife (off for stocks: -10 and -17 SOL on
+  the two 5-minute models; only while the last cycle falls: -12 and -19), and lifting a down exit's sit-out once
+  the price is back in the band's range (with its bench entry: -24 on both 5-minute models and wide chop no better;
+  the sit-out alone: +1 to +2.5 in wide chop, lost again in bleeds).
+- More evidence before going on chain means more cached 5-minute history, replayed again.
+
 ## Decisions (Zach, Tue 22 Sep)
 
 1. **The copycat token: not his, and left as is.** No report to ClawPump or pump.fun, and no email to ClawPump at

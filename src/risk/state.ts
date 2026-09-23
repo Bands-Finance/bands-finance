@@ -54,8 +54,18 @@ export interface RiskState {
   priceHistory?: Record<string, PriceSample[]>;
   /** pool address -> epoch ms of the last band move (open, close, rebalance) there; the cooldown is per pool */
   lastMoveByPool?: Record<string, number>;
-  /** epoch ms a pool's seat was given up by the yield ranking (ROTATE): it sits out METEORA_STOCK_REENTRY_MIN before it may be seated again */
+  /**
+   * epoch ms a pool's seat was given up: by the yield ranking (ROTATE), at the end of an ask chain, or on the
+   * down side (a stop, a close through the band at a loss: src/engine/exit.ts downExitOf). It sits out
+   * METEORA_STOCK_REENTRY_MIN, or the longer wait the learner set for it, before it may be seated again.
+   */
   rotatedOutAt?: Record<string, number>;
+  /**
+   * position -> epoch ms of the cycle the desk policy gave a band the price went through its "one more cycle"
+   * on a hot pool (src/agent/policy.ts, the hot-hold). Stamped whoever decided that cycle; the next cycle's
+   * policy reads it and closes. Kept here, not in a journal headline: the headline is rewritten for his voice.
+   */
+  hotHeldAt?: Record<string, number>;
   /** position address -> what the desk knew when it laid the band (src/learn/lessons.ts BandMeta); the lesson is written from it at the close */
   bandMeta?: Record<string, import("../learn/lessons").BandMeta>;
   /** position address -> cycles observed and cycles in range, for the lesson's time in range */
@@ -111,6 +121,7 @@ export function emptyState(day = todayUtc()): RiskState {
     priceHistory: {},
     lastMoveByPool: {},
     rotatedOutAt: {},
+    hotHeldAt: {},
     bandMeta: {},
     rangeStats: {},
     launchBands: {},
@@ -134,6 +145,7 @@ export function loadState(): RiskState {
       priceHistory: parsed.priceHistory ?? {},
       lastMoveByPool: parsed.lastMoveByPool ?? {},
       rotatedOutAt: parsed.rotatedOutAt ?? {},
+      hotHeldAt: parsed.hotHeldAt ?? {},
       bandMeta: parsed.bandMeta ?? {},
       rangeStats: parsed.rangeStats ?? {},
       launchBands: parsed.launchBands ?? {},

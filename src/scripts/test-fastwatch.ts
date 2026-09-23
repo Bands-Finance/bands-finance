@@ -3,7 +3,7 @@
  *   npx tsx src/scripts/test-fastwatch.ts
  */
 import assert from "node:assert/strict";
-import { earlyCycleAllowed, fastEnv, fastTrigger, type WatchedBand } from "../engine/fastwatch";
+import { earlyCycleAllowed, fastEnv, fastTrigger, laidBandWatch, type WatchedBand } from "../engine/fastwatch";
 import { residueCapPct, sizeUnderCap, swapImpactEnv, sweepAmount } from "../executor";
 import { adviseWithPolicy, modelAdvises } from "../agent/decide";
 import type { Decision } from "../agent/schema";
@@ -102,6 +102,28 @@ async function main() {
     assert.equal(fastTrigger({ ...out, idleWaitSec: 0 }, above, NOW, env), null, "no idle wait configured: the scheduled cycle decides");
     assert.equal(fastTrigger(out, { bin: -340, asOf: NOW - 5_000 }, NOW, env)?.kind, undefined, "below the band is the token side: the stop-near rule, not this one");
     assert.equal(fastTrigger(out, { bin: -335, asOf: NOW - 5_000 }, NOW, env), null, "back inside the band: nothing to wake for");
+  });
+
+  await test("laidBandWatch: a band opened or re-laid this cycle is watched from the open's own geometry at once, not from the next scheduled cycle", () => {
+    // TACZ on 18 Sep: re-laid over [-380, -362] at 1% a bin with a 12.46% stop, unwatched 356 s while the price went four bins through its bottom
+    const tacz = laidBandWatch({ pool: "TACZ", label: "TACZ/SOL", position: "NEW", activeBinId: -362, binsBelowActive: 18, binsAboveActive: 0, quoteSide: "Y", binStep: 100, stopPct: 12.46, entrySol: 44, idleWaitSec: 0, now: NOW });
+    assert.deepEqual([tacz.lowerBinId, tacz.upperBinId, tacz.inRange, tacz.drawdownPct, tacz.outSince, tacz.observedAt, tacz.ask], [-380, -362, true, 0, null, NOW, undefined]);
+    // the first swap under its bottom starts the cycle (left-band), and deeper in, near the stop, it is stop-near
+    assert.equal(fastTrigger(tacz, { bin: -381, asOf: NOW + 20_000 }, NOW + 25_000, env)!.kind, "left-band");
+    const deep = fastTrigger(tacz, { bin: -383, asOf: NOW + 20_000 }, NOW + 25_000, env)!;
+    assert.equal(deep.kind, "stop-near");
+    assert.match(deep.detail, /12 bins past the middle of band \[-380, -362\]: about 11\.3% down against a 12\.5% stop/);
+    assert.equal(fastTrigger(tacz, { bin: -370, asOf: NOW + 20_000 }, NOW + 25_000, env), null, "inside the band: nothing");
+    // a quote-X band sits from the price up; a straddle spans both sides
+    const xq = laidBandWatch({ pool: "P", label: "P", position: "N", activeBinId: 100, binsBelowActive: 0, binsAboveActive: 10, quoteSide: "X", binStep: 20, stopPct: 15, entrySol: 1, idleWaitSec: 0, now: NOW });
+    assert.deepEqual([xq.lowerBinId, xq.upperBinId], [100, 110]);
+    const straddle = laidBandWatch({ pool: "P", label: "P", position: "N", activeBinId: 100, binsBelowActive: 7, binsAboveActive: 7, quoteSide: "Y", binStep: 10, stopPct: 15, entrySol: 1, idleWaitSec: 0, now: NOW });
+    assert.deepEqual([straddle.lowerBinId, straddle.upperBinId], [93, 107]);
+    // an ask band carries the chain's basis: its drawdown is the chain's, and its loss is read from the bin it was laid at
+    const ask = laidBandWatch({ pool: "A", label: "A", position: "ASK", activeBinId: -300, binsBelowActive: 0, binsAboveActive: 3, quoteSide: "Y", binStep: 100, stopPct: 10, entrySol: 9.5, askBasisSol: 10, idleWaitSec: 0, now: NOW });
+    assert.equal(ask.ask, true);
+    assert.equal(ask.markBinId, -300);
+    assert.ok(Math.abs(ask.drawdownPct - 5) < 1e-9);
   });
 
   await test("sizeUnderCap: the sale is sized to what the market takes under the cap by quoting, never cut into pieces; the caps from the env; a residue's cap rises as it waits", async () => {

@@ -13,14 +13,22 @@ export function feesInSol(p: Position, e: JournalEntry): number {
   return inQuote * q.priceInSol;
 }
 
-/** Refundable rent per position account (SDK POSITION_FEE). Leaves the wallet on open, returns on close. */
+/** Refundable rent per position account (SDK POSITION_FEE): what a paper band is charged and handed back. Leaves the wallet on open, returns on close. */
 export const POSITION_RENT_SOL = 0.0574;
+/** What a real position account holds since the rent change: (8120 + 128) bytes x 5080 lamports, what the chain refunds on close. */
+export const LIVE_POSITION_RENT_SOL = 0.04189984;
+
+/** The rent a band gets back on close: the band's own figure when the journal carries it, else what its book charged (the chain's for a live band). */
+export function rentOf(p: Position, e: Pick<JournalEntry, "mode">): number {
+  if (typeof p.rentSol === "number" && Number.isFinite(p.rentSol) && p.rentSol >= 0) return p.rentSol;
+  return e.mode === "live" ? LIVE_POSITION_RENT_SOL : POSITION_RENT_SOL;
+}
 
 export function equityOf(e: JournalEntry): number {
   const w = e.wallet as JournalEntry["wallet"] & { quote?: number; quoteSymbol?: string };
   const q = quoteMath(e);
   const quoteSol = typeof w.quote === "number" && w.quoteSymbol && w.quoteSymbol !== "SOL" ? w.quote * q.priceInSol : 0;
-  return e.wallet.sol + quoteSol + e.wallet.token * e.pool.tokenPriceInSol + e.positions.reduce((s, p) => s + p.valueInSol + POSITION_RENT_SOL, 0);
+  return e.wallet.sol + quoteSol + e.wallet.token * e.pool.tokenPriceInSol + e.positions.reduce((s, p) => s + p.valueInSol + rentOf(p, e), 0);
 }
 
 export type MarkerKind = "executed" | "blocked" | "override";
@@ -197,7 +205,7 @@ export function cycleEquity(c: Cycle): number {
   for (const e of c.entries) {
     const base = e.pool.solSide === "X" ? e.pool.tokenY.symbol : e.pool.tokenX.symbol;
     tokens.set(base, e.wallet.token * e.pool.tokenPriceInSol);
-    bands += e.positions.reduce((s, p) => s + p.valueInSol + POSITION_RENT_SOL, 0);
+    bands += e.positions.reduce((s, p) => s + p.valueInSol + rentOf(p, e), 0);
     if (quoteSol === null) quoteSol = quoteLegSol(e);
   }
   return first.wallet.sol + (quoteSol ?? 0) + [...tokens.values()].reduce((s, v) => s + v, 0) + bands;
