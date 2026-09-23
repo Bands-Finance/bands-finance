@@ -26,6 +26,9 @@
  * time in its facts; a desk event older than 3 hours is dropped (a big loss is kept its UTC day).
  * Coverage: a close is told as a story only when the journal holds decision rows across the band's life (no gap
  * over 60 minutes); otherwise it is left to the daily card, which names the worst close by pool.
+ * Fallbacks (Zach, 23 Sep: "the account must keep posting"): a close and a halt carry a plain post built from their
+ * own facts, which goes out only when his model cannot be asked (the gateway down, the day's cap spent); the daily
+ * card's template goes out on any failure, as before.
  */
 import type { JournalEntry } from "../journal";
 import type { Lesson } from "../learn/lessons";
@@ -73,6 +76,8 @@ export interface Moment {
   urgent: boolean;
   /** the daily card's template, used when his model is down, over its cap, or its draft fails */
   template?: string;
+  /** a plain post from the moment's own facts, used only when his model cannot be asked (never over his skip) */
+  fallback?: string;
 }
 
 export interface PostMemory {
@@ -273,6 +278,15 @@ function closeMoments(i: MomentInputs, notes: string[]): Moment[] {
     const facts: Fact[] = [fact("close", parts.join(" "), "paper", `data-live/lessons.jsonl ${l.position}`, figures), ...i.headline];
     if (earlier) facts.push(fact("earlier", `My earlier post about ${label} went out ${dateOf(earlier.at)}${fresh ? ` at ${timeOf(earlier.at)}` : ""}; it is in the memory block.`, "none", "data-talk/x-posts.jsonl", []));
     const q = quotable(l.headline);
+    // the fallback says what the facts say, in their words: the net for the band's life, the hours, the range, the end
+    const fallback = [
+      earlier
+        ? `Follow-up on ${label}: on paper that band closed after ${hoursOf(l.closedAt - l.openedAt)} hours${fresh ? `, at ${timeOf(l.closedAt)}` : ""}, ${net < 0 ? `a loss of ${amt(net)} SOL` : `net ${amt(net)} SOL`} for its whole life, rent and swaps included.`
+        : `${fresh ? `At ${timeOf(l.closedAt)}` : "Earlier"} I closed my band on ${label} after ${hoursOf(l.closedAt - l.openedAt)} hours: ${net < 0 ? `a loss of ${amt(net)} SOL` : `net ${amt(net)} SOL`} on paper, rent and swaps included.`,
+      ...(typeof l.inRangePct === "number" ? [`It was in range for ${pct(l.inRangePct)} of my checks.`] : []),
+      // the plain "I closed it." would say the first sentence twice
+      ...(ENDINGS[l.endReason] && l.endReason !== "close" ? [ENDINGS[l.endReason]] : []),
+    ].join(" ");
     let score = 30 + (big ? 60 : 0) + (Math.abs(net) >= 0.5 ? 15 : 0) + (earlier ? 20 : 0) + (net < 0 ? 5 : 0);
     if (!big) score -= (age / HOUR) * 5;
     out.push({
@@ -294,6 +308,7 @@ function closeMoments(i: MomentInputs, notes: string[]): Moment[] {
       followUpOf: earlier?.key ?? null,
       arc: false,
       urgent: big,
+      fallback,
     });
   }
   return out;
@@ -379,7 +394,8 @@ function haltMoment(i: MomentInputs): Moment | null {
     if (to >= since - HALT_BREAK_MS && from <= i.now) return null;
     if (atLeast && to < since) return null;
   }
-  const facts = [fact("halt", `A halt has held my paper desk since ${atLeast ? "at least " : ""}${timeOf(since)} on ${dateOf(since)}: it opens no new band while the halt is in force. Exits keep running.`, "none", "data-live/decisions.jsonl (kill-switch holds)", [])];
+  const haltLine = `A halt has held my paper desk since ${atLeast ? "at least " : ""}${timeOf(since)} on ${dateOf(since)}: it opens no new band while the halt is in force. Exits keep running.`;
+  const facts = [fact("halt", haltLine, "none", "data-live/decisions.jsonl (kill-switch holds)", [])];
   return {
     key,
     type: "halt",
@@ -392,6 +408,7 @@ function haltMoment(i: MomentInputs): Moment | null {
     followUpOf: null,
     arc: false,
     urgent: true,
+    fallback: haltLine,
   };
 }
 

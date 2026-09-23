@@ -137,8 +137,8 @@ Empty values read as unset. Only the literal `true` turns `X_LIVE` on.
 | `TALK_POST_TIMEOUT_MS` | | `90000` | the deadline of one ask of his post writer |
 | `X_REPLIES` | | off | only `true` (with `X_LIVE` and his brain) lets the engage loop read mentions and reply |
 | `ENGAGE_READS_PER_DAY` | | `300` | mention posts read per UTC day, from X's `result_count` |
-| `ENGAGE_MODEL_CALLS_PER_DAY` | | `60` | asks of his brain per UTC day; templates and screened mentions make none |
-| `ENGAGE_HOLLOW_PER_DAY` | | `10` | hollow mentions ("nice innovation") that may reach the brain per UTC day |
+| `ENGAGE_MODEL_CALLS_PER_DAY` | | `60` | model runs of his brain per UTC day (2 an ask), paced across the day like the post cap; templates and screened mentions (pitches included) make none. 120 live since 23 Sep |
+| `ENGAGE_HOLLOW_PER_DAY` | | `10` | hollow mentions ("nice innovation") that may reach the brain per UTC day; 3 live since 23 Sep (his model skipped all 10 that day) |
 | `ENGAGE_MAX_AGE_HOURS` | | `6` | a mention older than this gets no reply |
 | `ENGAGE_REPLIES_PER_PASS` | | `3` | replies one pass may post, 5 seconds apart |
 | `ENGAGE_DENY_HANDLES` | | none | handles never answered, besides `clawpumptech` |
@@ -344,8 +344,12 @@ loop's lock, stop file, identity check, rate limiter and X backoff are unchanged
    session per post (`x-post-<key>`), with the voice sheet, the facts block, the shape and length, and a memory
    block (his last 14 posts, the build ledger's public lines of 7 days, open promises; context, not facts). The
    answer is exactly `{"key","post"}` or `{"key","skip"}`; anything else, or any tool call but a memory read, voids
-   the turn. `TALK_MODEL_CALLS_PER_DAY` (8) asks a UTC day at most, counted on disk before each ask; an unreadable
-   count is the cap. Each ask is about two gateway runs (the turn and the gateway's idle introspection).
+   the turn. `TALK_MODEL_CALLS_PER_DAY` (8; 48 live since 23 Sep) asks a UTC day at most, counted on disk before
+   each ask; an unreadable count is the cap. Each ask is about two gateway runs (the turn and the gateway's idle
+   introspection). The cap is paced across the day (`src/talk/pace.ts`): by any hour at most that hour's even share
+   plus an eighth, so a busy morning waits for the next hour and never takes the evening's calls (on 23 Sep 16 calls
+   were gone by 18:47 UTC and he went quiet). The prompt tells him to word each post fresh, never copying a sentence
+   or an opening from his recent posts.
 5. **Decides** (`src/talk/postGuards.ts vetBuilderPost`), on every draft: the length its moment was given (short
    100, medium 220, long 280); plain text only (no emoji, look-alikes, invisible characters); no @, no #, `$` only
    before a digit, no `!`, no `?`; sentence case (no all-lowercase post, no lowercase "i", no sentence opening in
@@ -357,12 +361,19 @@ loop's lock, stop file, identity check, rate limiter and X backoff are unchanged
    price direction, profit talk, hype, epigram (his journal's cliches and Merd's included), jargon (strap, seat,
    prints, stacked, re-centre) or team ("we", an architect, an operator); no model, vendor or gateway name
    (`META_RE`); no Zach and no operator handle; no address or mint of any kind, no copycat, no token, no launch, no
-   ClawPump; links only from the loop's allowlist, one a post, never beside a paper figure, one a day; 0.5
-   meaningful-word overlap with any of his last 14 posts (a follow-up is exempt against its post; the daily card is
-   not compared); and the lint, with the sentence-case rule in place of the lowercase one. A refused draft gets one
-   retry with the reason in the same session; then **silence**, except the daily card, whose template (built from
-   the same facts, sentence case, the worst close by pool and the book's result) passes the same guards and goes.
-   A down gateway, a missing token or the cap also mean silence, and the daily's template.
+   ClawPump; links only from the loop's allowlist, one a post, never beside a paper figure, one a day; a repeat of
+   any of his last 14 posts: 0.5 overlap counted without the words every paper close must use (`SHARED_CLOSE_WORDS`:
+   paper, band, loss, rent, swaps ...; on 23 Sep they made three different closes "repeats" of one ORE/SOL post and
+   burned the day's calls), or 0.85 counted with them (a near-copy with another pool); the refusal quotes the post
+   it repeats so the retry can say it differently (a follow-up is exempt against its post; the daily card and a
+   fallback are not compared); and the lint, with the sentence-case rule in place of the lowercase one. A refused
+   draft gets one retry with the reason in the same session; then **silence**, except the daily card, whose template
+   (built from the same facts, sentence case, the worst close by pool and the book's result) passes the same guards
+   and goes. When his model cannot be asked at all (a down gateway, a missing token, the day's cap spent), the daily
+   posts its template and a close or a halt posts its **fallback**: a plain post from its own facts ("Earlier I
+   closed my band on MET/SOL after 2.0 hours: a loss of 1.21 SOL on paper, rent and swaps included."), through the
+   same guards, so the account keeps posting (Zach, 23 Sep). A fallback never overrides his own skip or a refused
+   draft; past the hour's paced share the moment simply waits for a later tick.
 6. **Posts** through `postTweet` with the sentence-case lint. **Only with `TALK_BUILDER_LIVE=true`** (and `X_LIVE`)
    does a builder post reach X; until then `X_LIVE` is withheld from the call and every pick is a dry record in
    `x-posts.jsonl` plus a draft row, so the voice runs dry (the plan's 48 hours) before Zach turns it on.
@@ -371,9 +382,9 @@ Records: the post types are `daily`, `desk`, `followup`, `build`, `miss`, `learn
 and `halt`. A preview (`tick --force daily`, or any `--force`) shows the pick, its score, its facts' ids and whether
 the daily's template passes; it calls no model and writes nothing.
 
-Cost: at most `TALK_MODEL_CALLS_PER_DAY` (8) asks a day. Measured on Opus 5 a gateway run cost about $0.29 and an ask
-is about two runs, so 4 or 5 posts a day come to about $2.30 to $2.90 and the cap bounds it near $4.60; Opus 5.5
-($4/$20 per 1M) is cheaper. X adds $0.015 a post ($0.20 with a link).
+Cost: at most `TALK_MODEL_CALLS_PER_DAY` asks a day. Measured on Opus 5.5 with the gateway's cache fix (23 Sep), an
+ask cost about $0.05 to $0.12, so the live cap of 48 bounds posts near $5 a day and 8 posts with retries come to
+about $1.50. X adds $0.015 a post ($0.20 with a link).
 
 ### The build ledger
 
@@ -733,6 +744,14 @@ session on the agent, his architect's chats included), and the deny stops a web 
 
 **The guards** (`src/talk/replyGuards.ts` `vetReply`, then `postTweet`'s lint). Every check refuses; none rewrites.
 A refused draft is final, logged in `x-drafts.jsonl` and `x-mentions.jsonl`, and never falls back to posting.
+
+Since 23 Sep (Zach: "the account must keep posting"): a follow-back, DM, collab or promotion pitch ("Can I get a
+follow back", "Let's collab. Message me", "My DMs are always open") is skipped in code by `pitchIn`
+(`src/talk/replyGuards.ts`) before any model call; that day 17 of the 30 mentions his model was asked about were
+pitches, and it skipped every one. Each fixed answer has two or three wordings (`REPLY_VARIANTS` in
+`src/talk/replyBrain.ts`, the canonical line first): the loop sends the one sent least today and never one X refused
+as duplicate content, and all wordings of one answer count toward `TEMPLATE_REPLIES_PER_DAY` together (the same token
+line went to 4 accounts word for word on 22 and 23 Sep).
 
 | rule | refuses | from |
 |---|---|---|

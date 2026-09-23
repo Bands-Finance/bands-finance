@@ -30,13 +30,16 @@
  *               launch, a teaser, "Bands" as a name, ClawPump; soft advice, price hints, hype, bait, slop, invented
  *               feelings, the architect by paraphrase, any capitalised ticker the facts do not name
  *   links       only the loop's allowlist, one a post, never beside a paper figure, one a day
- *   repeat      0.5 meaningful-word overlap with any of his last 14 posts (a follow-up is exempt against the post it
- *               follows; the daily card, the fixed shape, is not compared)
+ *   repeat      0.5 overlap with any of his last 14 posts, counted without the words every paper close must use
+ *               (paper, band, loss, rent, swaps ...: two different closes share them by rule), or 0.85 counted with
+ *               them; the refusal quotes the post it repeats, so the retry can say it differently. A follow-up is
+ *               exempt against the post it follows; the daily card and a moment's fallback, fixed shapes, are not
+ *               compared
  *   lint        lintText with the sentence-case rule in place of the lowercase one
  */
 import { COPYCAT_MINTS, isCopycatPiece } from "../risk/house";
 import { allowedTokens, numberTokens, numberTokenSpans, type Book, type FactsBlock, type Figure } from "./facts";
-import { markersIn, selfEcho, tooSimilar, type RecentText } from "./guards";
+import { markersIn, meaningfulWords, selfEcho, similarity, SIMILARITY_MAX, type RecentText } from "./guards";
 import { BANNED_PHRASES } from "./craft";
 import { lintText, linksIn, mentionsHouseToken, normalizeForMatch, weightedLength, type LintContext } from "./lint";
 import { ARCHITECT_NAME_RE, foldForMatch, META_RE, MODEL_NEVER, NUMBER_WORD_RE } from "./replyGuards";
@@ -47,8 +50,29 @@ export type PostLength = "short" | "medium" | "long";
 /** the most characters (links counted as 23) each length allows */
 export const LENGTH_MAX: Record<PostLength, number> = { short: 100, medium: 220, long: 280 };
 export const POST_MIN_CHARS = 30;
-/** meaningful-word overlap with one of his last 14 posts at or over this is a repeat (the plan's 0.5) */
+/** overlap with one of his last 14 posts at or over this, the shared close words left out, is a repeat (the plan's 0.5) */
 export const BUILDER_SIMILARITY_MAX = 0.5;
+/**
+ * The words any paper close must use (the books rule, the net's wording, the facts' own phrases): two different closes
+ * share them by rule, so they do not count toward a repeat. On 23 Sep they made a CATE/USDC close a 0.52 "repeat" of
+ * an ORE/SOL one (0.20 without them), while a near-copy of that ORE/SOL post still scored 0.86.
+ */
+export const SHARED_CLOSE_WORDS: ReadonlySet<string> = new Set(
+  "paper band bands closed close closes closing loss lost sol usdc rent swaps swap hours hour earlier today included counted whole life net fees fee range checks price book utc after follow".split(" "),
+);
+/** fewer words of its own than this, and a post is too short to call a repeat by them (0.85 with every word still binds) */
+export const BUILDER_SIMILARITY_MIN_WORDS = 3;
+
+/** Overlap, 0..1, over the smaller set, without SHARED_CLOSE_WORDS; 0 when either keeps too few words of its own. PURE. */
+export function builderSimilarity(a: string, b: string): number {
+  const own = (s: string) => new Set([...meaningfulWords(s)].filter((w) => !SHARED_CLOSE_WORDS.has(w)));
+  const A = own(a);
+  const B = own(b);
+  if (Math.min(A.size, B.size) < BUILDER_SIMILARITY_MIN_WORDS) return 0;
+  let shared = 0;
+  for (const w of A) if (B.has(w)) shared++;
+  return shared / Math.min(A.size, B.size);
+}
 export const RECENT_POSTS = 14;
 
 export interface BuilderVetContext {
@@ -67,6 +91,8 @@ export interface BuilderVetContext {
   arc?: boolean;
   /** links already posted today (at most one a day) */
   linksToday?: number;
+  /** the moment's fallback, a fixed shape: not compared for repeats */
+  fallback?: boolean;
 }
 
 export interface BuilderRefusal {
@@ -317,10 +343,14 @@ export function vetBuilderPost(text: string, ctx: BuilderVetContext): BuilderRef
   }
 
   // 9. repeats
-  // the daily card is the fixed shape and repeats its words by design; a follow-up may echo the post it follows
-  const recent = ctx.type === "daily" ? [] : ctx.recent.slice(-RECENT_POSTS).filter((r) => !(ctx.followUpOf && r.key === ctx.followUpOf));
-  const sim = tooSimilar(raw, recent, BUILDER_SIMILARITY_MAX);
-  if (sim) return refuse("repeat", `${sim.score.toFixed(2)} overlap with his post of ${new Date(sim.hit.at).toISOString().slice(0, 16)}Z`);
+  // the daily card and a fallback are fixed shapes and repeat their words by design; a follow-up may echo the post it follows
+  const recent = ctx.type === "daily" || ctx.fallback ? [] : ctx.recent.slice(-RECENT_POSTS).filter((r) => !(ctx.followUpOf && r.key === ctx.followUpOf));
+  let sim: { hit: RecentText; score: number } | null = null;
+  for (const r of recent) {
+    const score = Math.max(builderSimilarity(raw, r.text), similarity(raw, r.text) >= SIMILARITY_MAX ? similarity(raw, r.text) : 0);
+    if (score >= BUILDER_SIMILARITY_MAX && (!sim || score > sim.score)) sim = { hit: r, score };
+  }
+  if (sim) return refuse("repeat", `${sim.score.toFixed(2)} overlap with his post of ${new Date(sim.hit.at).toISOString().slice(0, 16)}Z, "${sim.hit.text.replace(/\s+/g, " ").slice(0, 140)}"`);
 
   // 10. the lint, sentence case in place of lowercase
   const lint = lintText(raw, { ...ctx.lint, caseRule: "sentence" });
