@@ -4,7 +4,8 @@
  * DRY_RUN=false with a throwaway key and a FAKE chain: every RPC the wallet and the executor make is answered here,
  * a "send" is recorded and never leaves the process, a position account's lamports are scripted, and Jupiter's fetch
  * is replaced by one that refuses (a test that reached Jupiter would fail loudly). No network, no funds.
- * Covers: Token-2022 transfer fees read off the mint, booked from the transaction and charged in paper (M1); the
+ * Covers: Token-2022 transfer fees read off the mint, booked from the transaction and charged in paper, and a scaled-UI
+ * mint (the xStocks) booked and sold in its raw units, not the RPC's multiplied uiAmount (M1); the
  * compute-unit price on Meteora transactions, urgent on an emergency close, capped (M2); a landed transaction whose
  * confirmation was lost is found by its signature (M3); the close books the rent the account held, not 0.0574 (M4;
  * the site's side is in test-web-model); a straddle re-lay does not buy on one stale read (M5);
@@ -45,11 +46,14 @@ process.env.PAPER_SOL = "";
 process.env.ANTHROPIC_API_KEY = "";
 for (const k of ["TRADABLE_VENUES", "LIVE_VENUES", "PRIORITY_FEE_MICROLAMPORTS", "PRIORITY_FEE_MIN_MICROLAMPORTS", "PRIORITY_FEE_URGENT_MULTIPLE", "PRIORITY_FEE_MAX_LAMPORTS", "SWAP_IMPACT_SWEEP_PCT", "SWAP_IMPACT_EXIT_PCT"]) delete process.env[k];
 
-// Jupiter is never reached on these paths; if it is, the test says so
+// Jupiter is never reached on these paths; if it is, the test says so. A test that means to sell sets `jupiter` and answers it.
 const jupCalls: string[] = [];
-globalThis.fetch = (async (input: unknown) => {
+let jupiterStub: ((url: URL, body: Record<string, unknown> | null) => unknown) | null = null;
+globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
   jupCalls.push(String(input));
-  throw new Error("offline: no network in the money-path tests");
+  if (!jupiterStub) throw new Error("offline: no network in the money-path tests");
+  const body = typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+  return new Response(JSON.stringify(jupiterStub(new URL(String(input)), body)), { status: 200 });
 }) as typeof fetch;
 
 let passed = 0;
@@ -81,7 +85,7 @@ interface Effect {
 }
 interface Sent {
   signature: string;
-  tx: Transaction;
+  tx: Transaction | VersionedTransaction;
   outcome: Outcome;
   landed: boolean;
   pre: { lamports: number; tokens: Map<string, number> };
@@ -99,6 +103,8 @@ class FakeChain {
   effects: (Effect | null)[] = [];
   sends: Sent[] = [];
   noTokenMeta = false;
+  /** a ScaledUiAmount mint (the xStocks): the RPC reports the transaction's token balances with uiAmount = raw x this, amount raw */
+  uiMultiplier = new Map<string, number>();
   /** after each landed send, this many token-balance reads still return the balance from before it */
   staleReadsAfterSend = 0;
   private staleLeft = 0;
@@ -139,10 +145,18 @@ class FakeChain {
   }
   async sendRawTransaction(raw: Uint8Array) {
     const { base58Encode } = await import("../tools/wallet.js");
-    const tx = Transaction.from(Buffer.from(raw));
-    const signature = base58Encode(tx.signature!);
-    const outcome = this.outcomes.shift() ?? "ok";
+    // Jupiter's swaps are versioned, the venue's legacy
+    let tx: Transaction | VersionedTransaction;
+    try {
+      tx = Transaction.from(Buffer.from(raw));
+    } catch {
+      tx = VersionedTransaction.deserialize(raw);
+    }
+    const signature = base58Encode(tx instanceof Transaction ? tx.signature! : tx.signatures[0]);
+    let outcome = this.outcomes.shift() ?? "ok";
     const effect = this.effects.shift() ?? null;
+    // as on chain: a transfer of more than the wallet holds fails its simulation
+    if (effect && Object.entries(effect.tokens ?? {}).some(([mint, d]) => (this.tokens.get(mint) ?? 0) + d < -1e-9)) outcome = "preflight";
     if (outcome === "preflight") throw new SendTransactionError({ action: "send", signature, transactionMessage: "Transaction simulation failed: Error processing Instruction 0", logs: [] });
     const landed = outcome === "ok" || outcome === "lost-landed" || outcome === "onchain-err";
     const pre = { lamports: this.lamports, tokens: new Map(this.tokens) };
@@ -175,8 +189,12 @@ class FakeChain {
     const s = this.sends.find((x) => x.signature === signature);
     if (!s || !s.landed) return null;
     const owner = this.owner.toBase58();
-    const rows = (m: Map<string, number>) =>
-      this.noTokenMeta ? [] : [...m.entries()].map(([mint, ui], i) => ({ accountIndex: 1 + i, mint, owner, uiTokenAmount: { amount: String(Math.round(ui * 1e6)), decimals: 6, uiAmount: ui, uiAmountString: String(ui) } }));
+    const row = (mint: string, ui: number, i: number) => {
+      const dec = this.decimals.get(mint) ?? 6;
+      const shown = ui * (this.uiMultiplier.get(mint) ?? 1);
+      return { accountIndex: 1 + i, mint, owner, uiTokenAmount: { amount: String(Math.round(ui * 10 ** dec)), decimals: dec, uiAmount: shown, uiAmountString: String(shown) } };
+    };
+    const rows = (m: Map<string, number>) => (this.noTokenMeta ? [] : [...m.entries()].map(([mint, ui], i) => row(mint, ui, i)));
     return { slot: 1, meta: { fee: FEE_LAMPORTS * s.tx.signatures.length, err: null, preBalances: [s.pre.lamports], postBalances: [s.post.lamports], preTokenBalances: rows(s.pre.tokens), postTokenBalances: rows(s.post.tokens) } };
   }
 }
@@ -191,7 +209,8 @@ const lbTx = (owner: PublicKey, signers: PublicKey[] = []) => {
 };
 
 /** The compute-unit price a sent legacy transaction carries, or null. */
-const priceOf = (tx: Transaction): number | null => {
+const priceOf = (tx: Transaction | VersionedTransaction): number | null => {
+  if (tx instanceof VersionedTransaction) return null;
   const ix = tx.instructions.find((i) => i.programId.equals(ComputeBudgetProgram.programId) && i.data[0] === 3);
   return ix ? Number(ix.data.readBigUInt64LE(1)) : null;
 };
@@ -256,6 +275,7 @@ async function main(): Promise<void> {
   const { blindExposure } = await import("../engine/marks.js");
   const { meteoraBoardFees } = await import("../screener/scan.js");
   const { boardFee } = await import("../hot/index.js");
+  const { config } = await import("../config.js");
 
   const keypair = Keypair.generate();
   const owner = keypair.publicKey;
@@ -396,6 +416,73 @@ async function main(): Promise<void> {
     const d = closeOf(p, { liquidate: true });
     assert.ok(askExitOf(d, { snapshot: snap(null), positions: [p], walletToken: 0, askBands: {}, env: on, maxBinWidth: 69 }), "a plain mint is laid as an ask");
     assert.equal(askExitOf(d, { snapshot: snap(THREE_PCT), positions: [p], walletToken: 0, askBands: {}, env: on, maxBinWidth: 69 }), null, "a fee mint is sold: every ask pays the fee in and out");
+  });
+
+  await test("a scaled-UI mint (NVDAx, x1.0017): claim, close and swap rows book the raw units that moved, not the RPC's multiplied uiAmount, and a liquidating close sells exactly the 20 that arrived, in a SOL pool and a USDC pool", async () => {
+    const MULT = 1.001701196801074;
+    const NVDAX = Keypair.generate().publicKey.toBase58();
+    const USDC = config.usdcMint;
+    const stock = { mint: NVDAX, symbol: "NVDAx", decimals: 8, reserve: 1e4 };
+    const usdc = { mint: USDC, symbol: "USDC", decimals: 6, reserve: 1e6 };
+    const pools = {
+      SOL: snap(null, { label: "NVDAx/SOL", tokenX: stock, baseToken: stock, activePrice: 1.2, priceLabel: "SOL per NVDAx", tokenPriceInSol: 1.2, tokenPriceInQuote: 1.2 }),
+      USDC: snap(null, { label: "NVDAx/USDC", tokenX: stock, tokenY: usdc, baseToken: stock, solSide: null, quoteSide: "Y", quoteToken: usdc, quoteSymbol: "USDC", quotePriceInSol: 1 / 150, activePrice: 180, priceLabel: "USDC per NVDAx", tokenPriceInSol: 1.2, tokenPriceInQuote: 180 }),
+    };
+    const stockWorld = () => {
+      const w = world();
+      w.chain.decimals.set(NVDAX, 8);
+      w.chain.uiMultiplier.set(NVDAX, MULT);
+      return w;
+    };
+    const uiShown = async (chain: FakeChain, sig: string) => (await chain.getTransaction(sig))!.meta.postTokenBalances.find((b) => b.mint === NVDAX)!.uiTokenAmount.uiAmount;
+
+    // a claim of 1 NVDAx books 1
+    const c = stockWorld();
+    const pc = pos({ sol: 1, feeToken: 1, entry: 1 });
+    c.chain.effects.push({ sol: 0, tokens: { [NVDAX]: 1 } });
+    const claim = await execute(verdictOf({ action: "CLAIM_FEES", open: null, positionAddress: pc.address, reasoning: "r", confidence: 1, headline: "h" }), ctxOf(c.wallet, pools.SOL, [pc]));
+    near(await uiShown(c.chain, c.chain.sends[0].signature), MULT, 1e-12, "the RPC shows the multiplied figure");
+    near(claim.ledger!.find((x) => x.mech === "collect")!.tokenDelta, 1, 1e-12, "the claim books what arrived");
+
+    for (const [quote, s] of Object.entries(pools)) {
+      const { chain, wallet } = stockWorld();
+      const quoteDec = quote === "SOL" ? 9 : 6;
+      const quoteMint = quote === "SOL" ? SOL_MINT : USDC;
+      const sold: bigint[] = [];
+      // Jupiter: the quote at the pool's price, and a swap the chain applies (or refuses at preflight when it sells more than is held)
+      jupiterStub = (url, body) => {
+        if (url.pathname.endsWith("/quote")) {
+          const inAmount = url.searchParams.get("amount")!;
+          const out = Math.round((Number(inAmount) / 1e8) * s.tokenPriceInQuote! * 10 ** quoteDec);
+          return { inputMint: NVDAX, outputMint: quoteMint, inAmount, outAmount: String(out), otherAmountThreshold: String(out), swapMode: "ExactIn", slippageBps: 50, priceImpactPct: "0.0001", routePlan: [{ swapInfo: { label: "Meteora DLMM" } }] };
+        }
+        const q = body!.quoteResponse as { inAmount: string; outAmount: string };
+        sold.push(BigInt(q.inAmount));
+        const inUi = Number(q.inAmount) / 1e8;
+        const outUi = Number(q.outAmount) / 10 ** quoteDec;
+        chain.effects.push(quote === "SOL" ? { sol: outUi, tokens: { [NVDAX]: -inUi } } : { tokens: { [NVDAX]: -inUi, [USDC]: outUi } });
+        const msg = new TransactionMessage({ payerKey: owner, recentBlockhash: BLOCKHASH, instructions: [lbIx(owner)] }).compileToV0Message();
+        return { swapTransaction: Buffer.from(new VersionedTransaction(msg).serialize()).toString("base64"), lastValidBlockHeight: 1000 };
+      };
+      try {
+        // a stop's close of a band holding 20 NVDAx, liquidated
+        const p = pos({ tokens: 20, entry: 24 });
+        chain.accountLamports.set(p.address, 41_899_840);
+        chain.effects.push({ sol: 0.04189984, tokens: { [NVDAX]: 20 } });
+        const r = await execute(verdictOf(closeOf(p, { liquidate: true }), true), ctxOf(wallet, s, [p]));
+        assert.equal(r.ok, true, `${quote}: ${r.notes.join("; ")}`);
+        assert.equal(r.closed, p.address);
+        near(await uiShown(chain, chain.sends[0].signature), 20 * MULT, 1e-9, `${quote}: the RPC shows 20.034`);
+        near(r.ledger!.find((x) => x.mech === "close")!.tokenDelta, 20, 1e-12, `${quote}: the close books the 20 that arrived`);
+        assert.deepEqual(sold, [2_000_000_000n], `${quote}: one sale of exactly 20 NVDAx, not 20.034 (which fails its preflight)`);
+        near(r.ledger!.find((x) => x.mech === "swap")!.tokenDelta, -20, 1e-12, `${quote}: the swap books the 20 it sold`);
+        near(chain.tokens.get(NVDAX)!, 0, 1e-12, `${quote}: nothing of the stop's token stays in the wallet`);
+        assert.equal(r.residue, undefined);
+        assert.ok(!r.notes.some((n) => /stays in the wallet/.test(n)), r.notes.join("; "));
+      } finally {
+        jupiterStub = null;
+      }
+    }
   });
 
   /* ---------- M2: the priority fee ---------- */

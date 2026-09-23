@@ -185,9 +185,13 @@ export class Wallet {
   /**
    * What a confirmed transaction did to this wallet's balance of one SPL token (UI units,
    * positive into the wallet), from the transaction's own pre/post token balances: the exact
-   * quote leg of a ledger row in a USDC-quoted pool. Null when the RPC has not indexed it, or
-   * when the transaction carries no token-balance meta; the caller falls back to a balance
-   * read before and after, and past that marks the row.
+   * quote leg of a ledger row in a USDC-quoted pool, and the base token leg of any row. Null when
+   * the RPC has not indexed it, or when the transaction carries no token-balance meta; the
+   * caller falls back to a balance read before and after, and past that marks the row.
+   * Summed from the raw `amount` over 10^decimals, the units tokenBalance and the DLMM snapshot
+   * use: the RPC's `uiAmount` is scaled by a ScaledUiAmount mint's multiplier (the xStocks:
+   * NVDAx 1.0017, MCDx 1.0212), so a close would book, and a liquidation try to sell, more
+   * than arrived.
    */
   async txTokenDelta(signature: string, mint: string): Promise<number | null> {
     const owner = this.publicKey.toBase58();
@@ -195,14 +199,13 @@ export class Wallet {
       const tx = await this.connection.getTransaction(signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
       const meta = tx?.meta;
       if (meta) {
-        const sum = (rows: typeof meta.preTokenBalances) =>
-          (rows ?? [])
-            .filter((b) => b.mint === mint && b.owner === owner)
-            .reduce((acc, b) => acc + (b.uiTokenAmount.uiAmount ?? Number(b.uiTokenAmount.uiAmountString ?? 0)), 0);
         const pre = meta.preTokenBalances ?? [];
         const post = meta.postTokenBalances ?? [];
         if (pre.length === 0 && post.length === 0) return null;
-        return sum(post) - sum(pre);
+        const mine = (rows: typeof pre) => rows.filter((b) => b.mint === mint && b.owner === owner);
+        const raw = (rows: typeof pre) => mine(rows).reduce((acc, b) => acc + BigInt(b.uiTokenAmount.amount), 0n);
+        const decimals = [...mine(post), ...mine(pre)][0]?.uiTokenAmount.decimals ?? 0;
+        return Number(raw(post) - raw(pre)) / 10 ** decimals;
       }
       await new Promise((r) => setTimeout(r, 1500));
     }
