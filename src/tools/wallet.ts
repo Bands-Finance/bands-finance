@@ -3,9 +3,9 @@ import {
   Keypair,
   LAMPORTS_PER_SOL,
   PublicKey,
+  SendTransactionError,
   Transaction,
   VersionedTransaction,
-  sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import { config } from "../config";
 
@@ -37,6 +37,41 @@ export function base58Decode(s: string): Uint8Array {
   return Uint8Array.from(bytes.reverse());
 }
 
+/** Minimal base58 encoder: a transaction's signature is known before it is sent. */
+export function base58Encode(bytes: Uint8Array): string {
+  const digits: number[] = [];
+  for (const byte of bytes) {
+    let carry = byte;
+    for (let i = 0; i < digits.length; i++) {
+      carry += digits[i] << 8;
+      digits[i] = carry % 58;
+      carry = (carry / 58) | 0;
+    }
+    while (carry > 0) {
+      digits.push(carry % 58);
+      carry = (carry / 58) | 0;
+    }
+  }
+  let out = "";
+  for (const byte of bytes) {
+    if (byte !== 0) break;
+    out += "1";
+  }
+  for (let i = digits.length - 1; i >= 0; i--) out += B58[digits[i]];
+  return out;
+}
+
+/** What the chain says of a signature a confirmation lost: landed clean, landed and failed, or not found. */
+export type SignatureOutcome = { landed: true } | { landed: false; err: unknown } | null;
+
+/** A transaction that landed and failed on chain: its fee is spent and nothing else happened, so it is never checked again. */
+export class TransactionFailedError extends Error {
+  constructor(readonly signature: string, readonly err: unknown) {
+    super(`transaction ${signature} failed: ${JSON.stringify(err)}`);
+    this.name = "TransactionFailedError";
+  }
+}
+
 export function loadKeypair(secret: string): Keypair {
   const s = secret.trim();
   if (s.startsWith("[")) {
@@ -65,6 +100,9 @@ export interface SimulationReport {
  * upstream code decided. Defense in depth on top of the risk guards.
  */
 export class Wallet {
+  /** how a lost confirmation is looked up (signatureOutcome): attempts, and the wait between them */
+  lostConfirmationCheck: { attempts: number; waitMs: number } = { attempts: 3, waitMs: 2000 };
+
   constructor(
     readonly connection: Connection,
     readonly keypair: Keypair,
@@ -201,29 +239,76 @@ export class Wallet {
   }
 
   /**
-   * Broadcast. Throws while DRY_RUN is on or when no real key is configured. A versioned transaction
-   * gets a fresh blockhash, is signed by the wallet and every extra signer (a builder's own signature
-   * would not survive the new blockhash), sent raw and confirmed against that blockhash's height.
+   * What the chain says of a signature, asked with searchTransactionHistory: confirmed or finalized is an answer
+   * (landed, or landed and failed); nothing, or only "processed", is asked again `attempts` times `waitMs` apart,
+   * then null. The status may trail the transaction by a slot or two, so one miss is not an answer.
    */
-  async signAndSend(tx: AnyTransaction, extraSigners: Keypair[] = []): Promise<string> {
+  async signatureOutcome(signature: string, o: { attempts?: number; waitMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<SignatureOutcome> {
+    const attempts = Math.max(1, o.attempts ?? this.lostConfirmationCheck.attempts);
+    const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const res = await this.connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
+        const st = res?.value?.[0];
+        if (st && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) return st.err ? { landed: false, err: st.err } : { landed: true };
+      } catch {
+        /* the status read failed: asked again */
+      }
+      if (i < attempts - 1) await sleep(o.waitMs ?? this.lostConfirmationCheck.waitMs);
+    }
+    return null;
+  }
+
+  /**
+   * Broadcast. Throws while DRY_RUN is on or when no real key is configured. Every transaction gets a fresh
+   * blockhash and is signed here by the wallet and every extra signer (a builder's own signature would not
+   * survive the new blockhash), sent raw and confirmed against that blockhash's height.
+   *
+   * THE SIGNATURE IS KNOWN BEFORE THE SEND. A confirmation can fail for a transaction that landed: web3.js
+   * reads the status once, then waits on a websocket notification, and a lost notification or a dropped socket
+   * ends in "block height exceeded" for a transaction the chain already holds. Treated as never sent, a stop's
+   * close left its tokens unmanaged and its ledger row unwritten. So on any failure but an RPC refusal (the
+   * preflight: never sent) or an on-chain error, the signature is looked up with searchTransactionHistory; a
+   * transaction that landed clean is returned as sent and ledgered like any other. `notes` hears about it.
+   */
+  async signAndSend(tx: AnyTransaction, extraSigners: Keypair[] = [], notes?: string[]): Promise<string> {
     if (config.dryRun) {
       throw new Error("DRY_RUN=true: wallet refuses to broadcast transactions");
     }
     if (this.ephemeral) {
       throw new Error("No WALLET_SECRET_KEY configured: cannot broadcast");
     }
+    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash("confirmed");
+    let signature: string;
+    let raw: Uint8Array;
     if (tx instanceof VersionedTransaction) {
-      const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash("confirmed");
       tx.message.recentBlockhash = blockhash;
       tx.sign([this.keypair, ...extraSigners]);
-      const signature = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: "confirmed" });
-      const conf = await this.connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
-      if (conf.value.err) throw new Error(`transaction ${signature} failed: ${JSON.stringify(conf.value.err)}`);
-      return signature;
+      signature = base58Encode(tx.signatures[0]);
+      raw = tx.serialize();
+    } else {
+      // what sendAndConfirmTransaction did, in the open: a fresh blockhash, the wallet pays, every signer signs
+      tx.recentBlockhash = blockhash;
+      tx.lastValidBlockHeight = lastValidBlockHeight;
+      if (!tx.feePayer) tx.feePayer = this.publicKey;
+      tx.sign(this.keypair, ...extraSigners);
+      signature = base58Encode(tx.signature!);
+      raw = tx.serialize();
     }
-    return sendAndConfirmTransaction(this.connection, tx, [this.keypair, ...extraSigners], {
-      commitment: "confirmed",
-      skipPreflight: false,
-    });
+    try {
+      await this.connection.sendRawTransaction(raw, { skipPreflight: false, preflightCommitment: "confirmed" });
+      const conf = await this.connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
+      if (conf.value.err) throw new TransactionFailedError(signature, conf.value.err);
+      return signature;
+    } catch (err) {
+      if (err instanceof TransactionFailedError || err instanceof SendTransactionError) throw err;
+      const outcome = await this.signatureOutcome(signature);
+      if (outcome?.landed) {
+        notes?.push(`${signature.slice(0, 12)}: the confirmation failed (${(err as Error).message.slice(0, 120)}) but the signature shows it landed; booked as sent`);
+        return signature;
+      }
+      if (outcome && !outcome.landed) throw new TransactionFailedError(signature, outcome.err);
+      throw err;
+    }
   }
 }

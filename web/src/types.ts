@@ -49,6 +49,8 @@ export interface Position {
   solInPosition: number;
   lastUpdatedAt: number;
   entryValueSol?: number;
+  /** the rent the band gets back on close, SOL, when the journal carries it (older journals: by the entry's mode) */
+  rentSol?: number;
 }
 
 export interface TxReport {

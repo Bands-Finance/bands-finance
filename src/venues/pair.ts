@@ -90,7 +90,7 @@ import {
   type TokenInfo,
 } from "../tools/dlmm";
 import { isLiveVenue } from "./env";
-import { meteoraOpenCost } from "./meteora";
+import { meteoraOpenCost, meteoraVenue } from "./meteora";
 import type { BuiltTx, OpenCost, Venue, VenuePool } from "./types";
 
 /* ---------- rent ---------- */
@@ -829,6 +829,11 @@ export function createPairVenue(deps: PairVenueDeps): PairVenue {
       const txs = await buildClosePositionTxs(p.dlmm, owner, position);
       const addr = position.publicKey.toBase58();
       return txs.map((tx, i) => ({ tx, signers: [], label: `close band ${addr.slice(0, 6)} ${i + 1}/${txs.length}` }));
+    },
+
+    /** a band in our own pool is a DLMM position like any other: its account's lamports are the refund */
+    async closeRefundSol(connection: Connection, raw: unknown): Promise<number | null> {
+      return meteoraVenue.closeRefundSol!(connection, raw);
     },
 
     async buildClaim(pool: VenuePool, owner: PublicKey, raws: unknown[]): Promise<BuiltTx[]> {

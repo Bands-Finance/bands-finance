@@ -14,7 +14,10 @@
  * Basis: a live row is "exact" when its SOL columns come from chain (the transaction's
  * pre/post balances, or a wallet balance read before and after the broadcast); it is "marked"
  * when they were taken from the position snapshot. Dry-run rows are always marked. The exactness
- * claim covers the SOL columns only: tokenDelta always comes from the position snapshot.
+ * claim covers the SOL columns only. tokenDelta is what crossed the boundary too: live, the
+ * transaction's own token balances of the base mint; failing that, the position snapshot's figure
+ * less the mint's Token-2022 transfer fee (src/tools/transferFee.ts), since a fee mint keeps a cut of
+ * every close and claim and the snapshot figure booked tokens that never arrived (22 Sep review).
  *
  * Quotes: a row also carries the quote leg in the quote token's own units (quoteMint, quoteDelta,
  * markQuoteInSol). For a SOL pool quoteDelta = solDelta and markQuoteInSol = 1. For a USDC pool

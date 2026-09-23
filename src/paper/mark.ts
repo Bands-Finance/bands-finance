@@ -26,7 +26,7 @@
 import { binPrice } from "../tools/bins";
 import type { FlowContext } from "../scouts/flow";
 import { quoteMath, type BinRow, type PoolSnapshot, type PositionSnapshot } from "../tools/dlmm";
-import type { BandValue, PaperBand, PaperBook, PaperMark } from "./book";
+import { bandRentRefund, type BandValue, type PaperBand, type PaperBook, type PaperMark } from "./book";
 import { paperHedgeEquityUsd } from "./hedge";
 
 export const MAX_MARK_GAP_SEC = 3600;
@@ -280,6 +280,7 @@ export function toPaperPosition(band: PaperBand, v: BandValue, s: MarkSnapshot):
     quoteInPosition,
     lastUpdatedAt: Math.floor(band.lastMarkAt / 1000),
     entryValueSol: band.entryValueSol,
+    rentSol: bandRentRefund(band),
   };
 }
 

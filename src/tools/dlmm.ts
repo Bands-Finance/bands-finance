@@ -5,6 +5,7 @@ import { config } from "../config";
 import type { StockTag } from "../screener/types";
 import { binPrice, type BandSide, type PriceModel } from "./bins";
 import type { VenueId } from "../venues/types";
+import { transferFeeFor, type TransferFee } from "./transferFee";
 
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
 /** The USDC mint (config USDC_MINT). USDC is the second quote the desk trades; every xStock pool is USDC-quoted. */
@@ -20,8 +21,21 @@ export const KNOWN_TOKENS: Record<string, string> = {
   "9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump": "ANSEM",
 };
 
-/** Refundable rent for a position account (SDK POSITION_FEE). */
+/**
+ * Refundable rent for a position account (SDK POSITION_FEE, 8248 bytes at the old 6960 lamports a byte). Kept as
+ * the conservative up-front ESTIMATE the policy and the guards size with; it is not what the chain refunds today.
+ */
 export const POSITION_RENT_SOL = 0.0574;
+/** Rent-exempt lamports per account byte (incl. its 128 bytes of overhead), measured on mainnet 2026-09-14. */
+export const RENT_LAMPORTS_PER_BYTE = 5080;
+/** A DLMM position account, the SDK's POSITION_MIN_SIZE: 8120 bytes of data. */
+export const POSITION_ACCOUNT_BYTES = 8120;
+/**
+ * What a position account opened today holds, and so what closing it refunds: (8120 + 128) x 5080 lamports =
+ * 0.04189984 SOL, exactly what 57 of the 68 real opens of 17-19 Sep measured. A live close books the account's
+ * own lamports read before the close (src/executor.ts); this is the figure when that read fails.
+ */
+export const POSITION_RENT_NOW_SOL = ((POSITION_ACCOUNT_BYTES + 128) * RENT_LAMPORTS_PER_BYTE) / 1e9;
 /** Rent for a bin array account. Paid once per array by whoever initializes it; not refunded to the LP. */
 export const BIN_ARRAY_RENT_SOL = 0.0715;
 /** Conservative up-front cost estimate for opening a band that may need two fresh bin arrays. */
@@ -37,6 +51,8 @@ export interface TokenInfo {
   decimals: number;
   /** pool reserve in UI units */
   reserve: number;
+  /** a Token-2022 mint's transfer fee (src/tools/transferFee.ts): every move in or out of the wallet pays it; absent or null = none */
+  transferFee?: TransferFee | null;
 }
 
 export interface BinRow {
@@ -267,6 +283,8 @@ export interface PositionSnapshot {
   lastUpdatedAt: number;
   /** value in SOL when the band was opened (or first seen); set by the loop from risk state */
   entryValueSol?: number;
+  /** the rent closing the band refunds, SOL, when the book knows it (a paper band's recorded refund); the site adds it to equity */
+  rentSol?: number;
 }
 
 /** DLMM bin price: (1 + binStep/10000)^binId per lamport, scaled to UI decimals. */
@@ -359,8 +377,11 @@ export async function getPoolSnapshot(dlmm: DLMM, binsEachSide = 10, opts: Snaps
   const xDec = dlmm.tokenX.mint.decimals;
   const yDec = dlmm.tokenY.mint.decimals;
 
-  const tokenX: TokenInfo = { mint: xMint, symbol: symbolFor(xMint), decimals: xDec, reserve: ui(dlmm.tokenX.amount, xDec) };
-  const tokenY: TokenInfo = { mint: yMint, symbol: symbolFor(yMint), decimals: yDec, reserve: ui(dlmm.tokenY.amount, yDec) };
+  // a Token-2022 transfer fee is read off the mints DLMM.create already loaded, once per mint (src/tools/transferFee.ts)
+  const feeX = transferFeeFor(xMint, dlmm.tokenX.mint);
+  const feeY = transferFeeFor(yMint, dlmm.tokenY.mint);
+  const tokenX: TokenInfo = { mint: xMint, symbol: symbolFor(xMint), decimals: xDec, reserve: ui(dlmm.tokenX.amount, xDec), ...(feeX ? { transferFee: feeX } : {}) };
+  const tokenY: TokenInfo = { mint: yMint, symbol: symbolFor(yMint), decimals: yDec, reserve: ui(dlmm.tokenY.amount, yDec), ...(feeY ? { transferFee: feeY } : {}) };
   const address = dlmm.pubkey.toBase58();
   const label = `${tokenX.symbol}/${tokenY.symbol}`;
   const activePrice = Number(active.pricePerToken);

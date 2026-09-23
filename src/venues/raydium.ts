@@ -44,7 +44,7 @@ import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import BN from "bn.js";
 import { config, riskLimits } from "../config";
 import { binPrice, clmmBandTicks, tickArrayStart, tickToBin, ticksToBins, TICK_ARRAY_SIZE } from "../tools/bins";
-import { quoteMath, resolveQuote, symbolFor, type BinRow, type OpenPlan, type PoolSnapshot, type PositionSnapshot, type TokenInfo } from "../tools/dlmm";
+import { quoteMath, RENT_LAMPORTS_PER_BYTE, resolveQuote, symbolFor, type BinRow, type OpenPlan, type PoolSnapshot, type PositionSnapshot, type TokenInfo } from "../tools/dlmm";
 import { priorityFeeMicroLamports } from "./env";
 import type { BuiltTx, OpenCost, SnapshotOpts, Venue, VenuePool } from "./types";
 
@@ -65,11 +65,12 @@ export interface RaydiumPool extends VenuePool {
 
 // ---- rent -------------------------------------------------------------------------------------
 /**
- * Rent-exempt minimum = (bytes + 128) x this many lamports. Measured on mainnet 2026-09-14:
- * getMinimumBalanceForRentExemption(10240) = 52,669,440 and a fresh 281-byte position account holds
- * 2,077,720 lamports. (Meteora's constants predate the rent change and stay as they are.)
+ * Rent-exempt minimum = (bytes + 128) x this many lamports (src/tools/dlmm.ts RENT_LAMPORTS_PER_BYTE). Measured on
+ * mainnet 2026-09-14: getMinimumBalanceForRentExemption(10240) = 52,669,440 and a fresh 281-byte position account
+ * holds 2,077,720 lamports. (Meteora's cost ESTIMATES predate the rent change and stay as they are; what a Meteora
+ * close refunds is booked from the chain, src/executor.ts.)
  */
-export const RENT_LAMPORTS_PER_BYTE = 5080;
+export { RENT_LAMPORTS_PER_BYTE };
 export const rentSol = (bytes: number): number => ((bytes + 128) * RENT_LAMPORTS_PER_BYTE) / 1e9;
 /** account sizes: the SDK's layout spans (checked against the SDK in test-venues) and measured NFT accounts */
 export const CLMM_PERSONAL_POSITION_BYTES = 281;

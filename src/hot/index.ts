@@ -162,8 +162,12 @@ export function inputsOf(dex: PoolSample | undefined, trend: PoolSample | undefi
   };
 }
 
-/** The board's fee for a pool: the dynamic fee when the venue reported one, else the base. */
-export const boardFee = (p: Pick<ScreenedPool, "baseFeePct" | "dynamicFeePct">): number => (p.dynamicFeePct > 0 ? p.dynamicFeePct : p.baseFeePct);
+/**
+ * The board's fee for a pool: the fee a trader pays now, which every venue's row carries in dynamicFeePct (Meteora's is
+ * base + variable since src/screener/scan.ts meteoraBoardFees), and never under the base: a board written before that
+ * fix holds the variable part alone, and a pool that moved at all read at a sliver of its fee (a 1% pool at 0.003%).
+ */
+export const boardFee = (p: Pick<ScreenedPool, "baseFeePct" | "dynamicFeePct">): number => Math.max(p.dynamicFeePct > 0 ? p.dynamicFeePct : 0, p.baseFeePct);
 
 /** SOL in USD from a trending row: a SOL-quoted pair's quote price, or a SOL-based pair's own price. */
 export function solPriceFromSamples(samples: PoolSample[]): number | null {

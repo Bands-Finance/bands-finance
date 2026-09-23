@@ -16,6 +16,20 @@
  * (the transaction's pre/post token balances, else a balance read before and after); when that
  * cannot be measured the row is "marked" from the position snapshot.
  *
+ * Token leg: a row's tokenDelta is what crossed the wallet boundary. Live, it is read from the transaction's own
+ * pre/post token balances of the pool's base mint; failing that, the position snapshot's figure LESS the mint's
+ * Token-2022 transfer fee (src/tools/transferFee.ts). Seven memecoins of 17-18 Sep kept 3% of every close and claim,
+ * and the snapshot figure booked tokens the wallet never received (the breaker could not see 1.3 SOL of one day's loss).
+ *
+ * The close's rent: live, a close refunds exactly the lamports its position account holds, which is the rent paid at
+ * open; they are read from the chain before the close (Venue.closeRefundSol). The 0.0574 estimate is the SDK's fee at
+ * the old rent rate: the chain refunds 0.0419 today, and booking the estimate moved 0.0155 SOL of every close's quote
+ * leg into the rent column (a phantom loss the circuit breaker counted).
+ *
+ * Every legacy transaction gets a compute-unit price before it is signed (src/tools/priorityFee.ts), at the urgent
+ * level for an emergency close (a STOP or a FLATTEN). A transaction whose confirmation failed is looked up by its
+ * signature before it is taken as unsent (Wallet.signAndSend).
+ *
  * The treasury skim runs in its own failure domain (executeSkim): a failed skim never blocks trading.
  *
  * Paper mode: when the loop passes `ctx.paper` (PAPER_SOL > 0 under DRY_RUN), execute() hands the
@@ -48,8 +62,10 @@ import type { OpenParams } from "./agent/schema";
 import type { SkimPlan } from "./engine/collect";
 import { LedgerRow, recordLedger } from "./engine/ledger";
 import type { Verdict } from "./risk/guards";
-import { OpenPlan, PoolSnapshot, POSITION_RENT_SOL, PositionSnapshot, quoteOf, QuoteView, SOL_MINT, STRATEGY_BY_NAME, toRawBN } from "./tools/dlmm";
+import { OpenPlan, PoolSnapshot, POSITION_RENT_NOW_SOL, POSITION_RENT_SOL, PositionSnapshot, quoteOf, QuoteView, SOL_MINT, STRATEGY_BY_NAME, toRawBN } from "./tools/dlmm";
 import { fromRawUnits, jupiter, toRawUnits, type JupiterQuote } from "./tools/jupiter";
+import { applyPriorityFee } from "./tools/priorityFee";
+import { afterTransferFee, transferFeeCharged } from "./tools/transferFee";
 import type { AnyTransaction, Wallet } from "./tools/wallet";
 import { executePaper, type PaperExecutionContext } from "./paper/executor";
 import { isLiveVenue, liveVenues } from "./venues/env";
@@ -64,6 +80,8 @@ export interface TxReport {
   unitsConsumed?: number;
   logsTail?: string[];
   skipped?: string;
+  /** the compute-unit price the transaction was sent at (src/tools/priorityFee.ts), micro-lamports; absent when none was added */
+  priorityMicroLamports?: number;
 }
 
 export interface ExecutionResult {
@@ -166,6 +184,8 @@ interface Cash {
   txFeeSol: number;
   /** the wallet's delta of the quote token in UI units; null for a SOL pool (the SOL delta is the quote delta) or when it could not be measured */
   quoteDelta: number | null;
+  /** the wallet's delta of the pool's base token in UI units, from the transaction's token balances; null when it could not be measured */
+  tokenDelta: number | null;
 }
 
 interface TxOutcome {
@@ -178,16 +198,33 @@ interface TxOutcome {
 /** marked network fee for a dry-run row: one signature */
 const MARKED_TX_FEE_SOL = 0.000005;
 
+interface RunTxOptions {
+  /** the pool's base mint: the wallet's delta of it is read from the transaction's token balances */
+  baseMint?: string | null;
+  /** an exit at its stop or a flatten: the priority fee's urgent level */
+  urgent?: boolean;
+  /** what the broadcast has to say beyond the report (a confirmation lost for a transaction that landed) */
+  notes?: string[];
+}
+
 /**
  * Build/simulate/broadcast one transaction. `quoteMint` is the pool's quote mint: for a non-SOL
  * quote the wallet's balance of it is measured around the broadcast so the row's quote leg is exact.
+ * A legacy transaction is given its compute-unit price first (src/tools/priorityFee.ts).
  */
-async function runTx(wallet: Wallet, label: string, tx: AnyTransaction, signers: Keypair[], txs: TxReport[], quoteMint: string = SOL_MINT): Promise<TxOutcome> {
+async function runTx(wallet: Wallet, label: string, tx: AnyTransaction, signers: Keypair[], txs: TxReport[], quoteMint: string = SOL_MINT, opt: RunTxOptions = {}): Promise<TxOutcome> {
+  if (config.dryRun && wallet.ephemeral) {
+    txs.push({ label, ok: true, skipped: "dry-run with ephemeral wallet: built, not simulated" });
+    return { ok: true, signature: null, cash: null };
+  }
+  let priority: { priorityMicroLamports: number } | Record<string, never> = {};
+  try {
+    const applied = await applyPriorityFee(tx, (wallet as Partial<Wallet>).connection ?? null, opt.urgent === true);
+    if (applied) priority = { priorityMicroLamports: applied.microLamports };
+  } catch {
+    /* the price is an improvement, never a reason not to send */
+  }
   if (config.dryRun) {
-    if (wallet.ephemeral) {
-      txs.push({ label, ok: true, skipped: "dry-run with ephemeral wallet: built, not simulated" });
-      return { ok: true, signature: null, cash: null };
-    }
     try {
       const sim = await wallet.simulate(tx, signers);
       txs.push({
@@ -196,6 +233,7 @@ async function runTx(wallet: Wallet, label: string, tx: AnyTransaction, signers:
         error: sim.ok ? undefined : JSON.stringify(sim.err),
         unitsConsumed: sim.unitsConsumed,
         logsTail: sim.logsTail,
+        ...priority,
       });
       return { ok: sim.ok, signature: null, cash: null };
     } catch (err) {
@@ -214,12 +252,12 @@ async function runTx(wallet: Wallet, label: string, tx: AnyTransaction, signers:
     quoteBefore = null;
   }
   try {
-    const signature = await wallet.signAndSend(tx, signers);
-    txs.push({ label, ok: true, signature });
+    const signature = await wallet.signAndSend(tx, signers, opt.notes);
+    txs.push({ label, ok: true, signature, ...priority });
     let cash: Cash | null = null;
     try {
       const sol = await wallet.txCashDelta(signature);
-      let solLeg: Omit<Cash, "quoteDelta"> | null = sol;
+      let solLeg: Omit<Cash, "quoteDelta" | "tokenDelta"> | null = sol;
       if (!solLeg && before !== null) {
         const after = await wallet.solBalance();
         // a balance pair cannot separate the fee; count one signature's worth and keep the total exact
@@ -234,14 +272,23 @@ async function runTx(wallet: Wallet, label: string, tx: AnyTransaction, signers:
             quoteDelta = quoteAfter - quoteBefore;
           }
         }
-        cash = { ...solLeg, quoteDelta };
+        // the base token that crossed the boundary, as the transaction recorded it: a Token-2022 fee mint lands short of the snapshot
+        let tokenDelta: number | null = null;
+        if (opt.baseMint && opt.baseMint !== SOL_MINT && typeof wallet.txTokenDelta === "function") {
+          try {
+            tokenDelta = await wallet.txTokenDelta(signature, opt.baseMint);
+          } catch {
+            tokenDelta = null;
+          }
+        }
+        cash = { ...solLeg, quoteDelta, tokenDelta };
       }
     } catch {
       cash = null;
     }
     return { ok: true, signature, cash };
   } catch (err) {
-    txs.push({ label, ok: false, error: (err as Error).message });
+    txs.push({ label, ok: false, error: (err as Error).message, ...priority });
     return { ok: false, signature: null, cash: null };
   }
 }
@@ -255,13 +302,16 @@ function sumCash(outcomes: TxOutcome[], q: QuoteView): Cash | null {
   if (outcomes.length === 0 || outcomes.some((o) => !o.cash)) return null;
   const measureQuote = q.symbol !== "SOL";
   if (measureQuote && outcomes.some((o) => o.cash!.quoteDelta === null)) return null;
+  // the token leg is exact only when every broadcast recorded it; otherwise the row falls back to the snapshot
+  const tokenMeasured = outcomes.every((o) => typeof o.cash!.tokenDelta === "number");
   return outcomes.reduce<Cash>(
     (acc, o) => ({
       walletDeltaSol: acc.walletDeltaSol + o.cash!.walletDeltaSol,
       txFeeSol: acc.txFeeSol + o.cash!.txFeeSol,
       quoteDelta: measureQuote ? (acc.quoteDelta ?? 0) + o.cash!.quoteDelta! : null,
+      tokenDelta: tokenMeasured ? (acc.tokenDelta ?? 0) + o.cash!.tokenDelta! : null,
     }),
-    { walletDeltaSol: 0, txFeeSol: 0, quoteDelta: measureQuote ? 0 : null },
+    { walletDeltaSol: 0, txFeeSol: 0, quoteDelta: measureQuote ? 0 : null, tokenDelta: tokenMeasured ? 0 : null },
   );
 }
 
@@ -303,6 +353,15 @@ const quoteLeg = (quoteDelta: number, q: QuoteView): Pick<LedgerRow, "quoteDelta
 /** The refundable rent of a position on this venue (the Meteora position rent by default). */
 const refundableRent = (ctx: ExecutionContext): number => openCostOf(ctx, null)?.refundable ?? POSITION_RENT_SOL;
 
+/**
+ * The rent a live close's measured row books as refunded when the position account could not be read: on Meteora what an
+ * account opened at today's rent rate holds (POSITION_RENT_NOW_SOL), never the old-rate estimate; elsewhere the venue's own.
+ */
+const measuredRefundFallback = (ctx: ExecutionContext): number => ((ctx.snapshot.priceModel ?? "meteora-dlmm") === "meteora-dlmm" ? POSITION_RENT_NOW_SOL : refundableRent(ctx));
+
+/** The pool's base token's Token-2022 transfer fee, when it has one. */
+const baseTransferFee = (s: PoolSnapshot) => s.baseToken.transferFee ?? null;
+
 function openRow(ctx: ExecutionContext, o: OpenParams, position: string, outcomes: TxOutcome[]): LedgerRow {
   const q = quoteOf(ctx.snapshot);
   const cash = sumCash(outcomes, q);
@@ -314,7 +373,7 @@ function openRow(ctx: ExecutionContext, o: OpenParams, position: string, outcome
     return {
       ...base,
       ...quoteLeg(quoteDelta, q),
-      tokenDelta: -o.amountToken,
+      tokenDelta: cash.tokenDelta ?? -o.amountToken,
       rentSol: cash.walletDeltaSol - cash.txFeeSol - solDeposit,
       txFeeSol: cash.txFeeSol,
       basis: "exact",
@@ -332,28 +391,40 @@ function openRow(ctx: ExecutionContext, o: OpenParams, position: string, outcome
   };
 }
 
-function closeRow(ctx: ExecutionContext, p: PositionSnapshot, outcomes: TxOutcome[]): LedgerRow {
+/**
+ * The close row. `refundSol` is the rent the position account held, read from the chain before the close: exactly what
+ * the close hands back. Without it a measured SOL-pool row books today's rent for a Meteora position (measuredRefundFallback)
+ * and a marked row the estimate its marked open was charged, so each row's rent comes back as it went out.
+ */
+function closeRow(ctx: ExecutionContext, p: PositionSnapshot, outcomes: TxOutcome[], refundSol: number | null = null): LedgerRow {
   const s = ctx.snapshot;
   const q = quoteOf(s);
   const cash = sumCash(outcomes, q);
-  const { feeToken, feeSol } = feeLegs(p, s);
-  const tokenDelta = (q.side === "X" ? p.amountY : p.amountX) + feeToken;
-  const rentSol = refundableRent(ctx);
+  const fee = baseTransferFee(s);
+  const legs = feeLegs(p, s);
+  // the token fee leg arrives less the mint's transfer fee, like the rest of the token
+  const feeSol = legs.feeSol - transferFeeCharged(legs.feeToken, fee) * s.tokenPriceInSol;
+  const snapToken = (q.side === "X" ? p.amountY : p.amountX) + legs.feeToken;
+  const measuredToken = typeof cash?.tokenDelta === "number";
+  const tokenDelta = measuredToken ? cash!.tokenDelta! : afterTransferFee(snapToken, fee);
+  const tokenNote = measuredToken ? "; token leg from the transaction" : fee ? `; token leg from the snapshot less the ${fee.bps / 100}% transfer fee` : "";
   const common = { ...baseRow(ctx, "close", lastSig(outcomes), p.address), tokenDelta, feeSol, entryValueSol: p.entryValueSol };
   if (cash) {
     // SOL pool: the SOL that came back beyond the rent refund is the quote leg. USDC pool: the SOL
     // that came back IS the rent refund (measured) and the quote leg is the USDC delta.
+    const rentSol = refundSol ?? measuredRefundFallback(ctx);
     const quoteDelta = q.symbol === "SOL" ? cash.walletDeltaSol - cash.txFeeSol - rentSol : cash.quoteDelta!;
     const rent = q.symbol === "SOL" ? rentSol : cash.walletDeltaSol - cash.txFeeSol;
-    return { ...common, ...quoteLeg(quoteDelta, q), rentSol: rent, txFeeSol: cash.txFeeSol, basis: "exact", note: `close band, ${outcomes.length} tx` };
+    const rentNote = q.symbol !== "SOL" ? "" : refundSol !== null ? "; rent refund read off the position account" : `; rent refund at today's rate (the position account could not be read)`;
+    return { ...common, ...quoteLeg(quoteDelta, q), rentSol: rent, txFeeSol: cash.txFeeSol, basis: "exact", note: `close band, ${outcomes.length} tx${rentNote}${tokenNote}` };
   }
   return {
     ...common,
     ...quoteLeg(quoteInPosition(p, q), q),
-    rentSol,
+    rentSol: refundSol ?? refundableRent(ctx),
     txFeeSol: -MARKED_TX_FEE_SOL * Math.max(1, outcomes.length),
     basis: "marked",
-    note: `close band; ${q.symbol} side taken from the position snapshot`,
+    note: `close band; ${q.symbol} side taken from the position snapshot${tokenNote}`,
   };
 }
 
@@ -361,20 +432,26 @@ function collectRow(ctx: ExecutionContext, targets: PositionSnapshot[], outcomes
   const s = ctx.snapshot;
   const q = quoteOf(s);
   const cash = sumCash(outcomes, q);
-  let tokenDelta = 0;
+  const fee = baseTransferFee(s);
+  let snapToken = 0;
   let quoteSide = 0;
   let feeSol = 0;
   for (const p of targets) {
     const f = feeLegs(p, s);
-    tokenDelta += f.feeToken;
+    // each band's claim is its own transfer out of the pool: the mint keeps its cut of each
+    snapToken += afterTransferFee(f.feeToken, fee);
     quoteSide += f.feeQuoteSide;
-    feeSol += f.feeSol;
+    feeSol += f.feeSol - transferFeeCharged(f.feeToken, fee) * s.tokenPriceInSol;
   }
+  const measuredToken = typeof cash?.tokenDelta === "number";
+  const tokenDelta = measuredToken ? cash!.tokenDelta! : snapToken;
   const position = targets.length === 1 ? targets[0].address : null;
   const common = { ...baseRow(ctx, "collect", lastSig(outcomes), position), tokenDelta, rentSol: 0, feeSol };
   if (cash) {
     const quoteDelta = q.symbol === "SOL" ? cash.walletDeltaSol - cash.txFeeSol : cash.quoteDelta!;
-    return { ...common, ...quoteLeg(quoteDelta, q), txFeeSol: cash.txFeeSol, basis: "exact", note: `claim fees on ${targets.length} band(s), ${outcomes.length} tx` };
+    // a measured claim's fee leg is the whole row as it arrived
+    const arrived = measuredToken ? { feeSol: quoteDelta * q.priceInSol + tokenDelta * s.tokenPriceInSol } : {};
+    return { ...common, ...arrived, ...quoteLeg(quoteDelta, q), txFeeSol: cash.txFeeSol, basis: "exact", note: `claim fees on ${targets.length} band(s), ${outcomes.length} tx${measuredToken ? "; token leg from the transaction" : fee ? `; token leg less the ${fee.bps / 100}% transfer fee` : ""}` };
   }
   return {
     ...common,
@@ -529,10 +606,12 @@ async function runSwapLeg(ctx: ExecutionContext, leg: SwapLeg, tokenUi: number, 
     }
     const built = await client.buildSwap(jq, ctx.wallet.publicKey);
     const label = `swap ${fmtUnits(inUi, buy ? quoteDec : tokenDec)} ${buy ? q.symbol : base} -> ~${fmtUnits(outUi, buy ? tokenDec : quoteDec)} ${buy ? base : q.symbol} (${leg} leg, Jupiter via ${route}, impact ${jq.priceImpactPct}%)`;
-    const out = await runTx(ctx.wallet, label, built.tx, [], result.txs, q.token.mint);
+    const out = await runTx(ctx.wallet, label, built.tx, [], result.txs, q.token.mint, { baseMint: s.baseToken.mint, notes: result.notes });
     if (!out.ok) return { ok: false, tokenDelta: 0, quote: jq };
-    const tokenDelta = buy ? outUi : -inUi;
     const cash = out.cash;
+    // the token that crossed, as the transaction recorded it; else the quote's figure (a buy of a fee mint lands its transfer fee short)
+    const tokenMeasured = typeof cash?.tokenDelta === "number";
+    const tokenDelta = tokenMeasured ? cash!.tokenDelta! : buy ? afterTransferFee(outUi, baseTransferFee(s)) : -inUi;
     const measured = !!cash && (q.symbol === "SOL" || cash.quoteDelta !== null);
     const quoteDelta = measured ? (q.symbol === "SOL" ? cash!.walletDeltaSol - cash!.txFeeSol : cash!.quoteDelta!) : buy ? -inUi : outUi;
     ledger({
@@ -542,7 +621,7 @@ async function runSwapLeg(ctx: ExecutionContext, leg: SwapLeg, tokenUi: number, 
       rentSol: 0,
       txFeeSol: measured ? cash!.txFeeSol : -MARKED_TX_FEE_SOL,
       basis: measured ? "exact" : "marked",
-      note: `${leg} leg: Jupiter ${buy ? `${q.symbol} -> ${base}` : `${base} -> ${q.symbol}`} via ${route}, impact ${jq.priceImpactPct}%, slippage ${jq.slippageBps} bps; token leg from the quote`,
+      note: `${leg} leg: Jupiter ${buy ? `${q.symbol} -> ${base}` : `${base} -> ${q.symbol}`} via ${route}, impact ${jq.priceImpactPct}%, slippage ${jq.slippageBps} bps; token leg from ${tokenMeasured ? "the transaction" : "the quote"}`,
     });
     return { ok: true, tokenDelta, quote: jq };
   } catch (err) {
@@ -667,7 +746,7 @@ export async function sellResidue(wallet: Wallet, r: Residue, caps: SwapImpact |
     const route = jq.routeLabels.join(" > ") || "?";
     const built = await client.buildSwap(jq, wallet.publicKey);
     const txs: TxReport[] = [];
-    const out = await runTx(wallet, `swap ${fmtUnits(inUi, r.decimals)} ${r.symbol} -> ~${fmtUnits(outUi, 9)} SOL (residue leg, Jupiter via ${route}, impact ${jq.priceImpactPct}%, cap ${capPct || "none"}%)`, built.tx, [], txs, SOL_MINT);
+    const out = await runTx(wallet, `swap ${fmtUnits(inUi, r.decimals)} ${r.symbol} -> ~${fmtUnits(outUi, 9)} SOL (residue leg, Jupiter via ${route}, impact ${jq.priceImpactPct}%, cap ${capPct || "none"}%)`, built.tx, [], txs, SOL_MINT, { baseMint: r.mint, notes });
     if (!out.ok) {
       notes.push(`residue ${r.symbol}: the swap failed (${txs[0]?.error ?? "?"}); ${fmtUnits(want, r.decimals)} stays`);
       return { left: want, sold: 0, failed: true, attempted: true };
@@ -688,7 +767,7 @@ export async function sellResidue(wallet: Wallet, r: Residue, caps: SwapImpact |
       markQuoteInSol: 1,
       quoteDelta: solDelta,
       solDelta,
-      tokenDelta: -inUi,
+      tokenDelta: typeof out.cash?.tokenDelta === "number" ? out.cash.tokenDelta : -inUi,
       rentSol: 0,
       txFeeSol: measured ? out.cash!.txFeeSol : -MARKED_TX_FEE_SOL,
       basis: measured ? "exact" : "marked",
@@ -730,7 +809,7 @@ async function createPairFirst(ctx: ExecutionContext, o: OpenParams, result: Exe
   if (built.notes?.length) result.notes.push(...built.notes);
   if (config.dryRun) {
     // built, simulated with a real key, never sent; the seed cannot be built until the pool is on chain
-    await runTx(ctx.wallet, built.label, built.tx, built.signers, result.txs, quoteMint);
+    await runTx(ctx.wallet, built.label, built.tx, built.signers, result.txs, quoteMint, { notes: result.notes });
     result.notes.push(would, "dry-run: the seed position follows once the pool exists on chain");
     return false;
   }
@@ -745,7 +824,7 @@ async function createPairFirst(ctx: ExecutionContext, o: OpenParams, result: Exe
     result.notes.push(would, refusal);
     return false;
   }
-  const out = await runTx(ctx.wallet, built.label, built.tx, built.signers, result.txs, quoteMint);
+  const out = await runTx(ctx.wallet, built.label, built.tx, built.signers, result.txs, quoteMint, { notes: result.notes });
   if (!out.ok) {
     result.ok = false;
     result.notes.push("create pool failed: no seed position this cycle");
@@ -793,6 +872,10 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
   const result: ExecutionResult = { mode: config.dryRun ? "dry-run" : "live", ok: true, txs: [], notes: [], ledger: [] };
   const owner = ctx.wallet.publicKey;
   const quoteMint = quoteOf(ctx.snapshot).token.mint;
+  const baseMint = ctx.snapshot.baseToken.mint;
+  const transferFee = baseTransferFee(ctx.snapshot);
+  // an exit at its stop, a flatten, any engine close: it pays the urgent priority fee, since an exit that expires in a crash costs more
+  const urgent = verdict.emergency && (d.action === "CLOSE_POSITION" || d.action === "REBALANCE");
   const indexOf = (addr: string | null) => ctx.positions.findIndex((p) => p.address === addr);
   const findRaw = (addr: string | null): unknown => {
     const i = indexOf(addr);
@@ -813,7 +896,7 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       if (built.length === 0) result.notes.push("nothing to claim");
       const outcomes: TxOutcome[] = [];
       for (const b of built) {
-        const out = await runTx(ctx.wallet, b.label, b.tx, b.signers, result.txs, quoteMint);
+        const out = await runTx(ctx.wallet, b.label, b.tx, b.signers, result.txs, quoteMint, { baseMint, notes: result.notes });
         outcomes.push(out);
         if (!out.ok) {
           result.ok = false;
@@ -828,7 +911,7 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       // manages, so it is sold once it is worth a transaction (with whatever earlier claims left)
       if (result.ok && built.length > 0 && ctx.sweepWalletToken) {
         const dec = ctx.snapshot.baseToken.decimals;
-        const claimed = snaps.reduce((t, p) => t + (quoteOf(ctx.snapshot).side === "Y" ? p.feeX : p.feeY), 0);
+        const claimed = snaps.reduce((t, p) => t + afterTransferFee(quoteOf(ctx.snapshot).side === "Y" ? p.feeX : p.feeY, transferFee), 0);
         const held = (await readWalletToken(ctx)) ?? (ctx.walletToken ?? 0) + claimed;
         const sell = sweepAmount(held, quoteOf(ctx.snapshot).tokenPriceInQuote, ctx.sweepWalletToken.minQuote);
         if (sell > 0) {
@@ -877,9 +960,18 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       const raw = findRaw(d.positionAddress);
       if (raw === undefined) throw new Error(`position ${d.positionAddress} not found`);
       const built = await ctx.venue.buildClose(ctx.pool, owner, raw, ctx.snapshot);
+      // live: the lamports the position account holds, read before it is closed, are the rent the close refunds
+      let refundSol: number | null = null;
+      if (!config.dryRun && !ctx.wallet.ephemeral && typeof ctx.venue.closeRefundSol === "function") {
+        try {
+          refundSol = await ctx.venue.closeRefundSol(ctx.wallet.connection, raw);
+        } catch {
+          refundSol = null;
+        }
+      }
       const outcomes: TxOutcome[] = [];
       for (const b of built) {
-        const out = await runTx(ctx.wallet, b.label, b.tx, b.signers, result.txs, quoteMint);
+        const out = await runTx(ctx.wallet, b.label, b.tx, b.signers, result.txs, quoteMint, { baseMint, urgent, notes: result.notes });
         outcomes.push(out);
         if (!out.ok) {
           result.ok = false;
@@ -890,10 +982,13 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       result.closed = d.positionAddress!;
       const snap = findSnap(d.positionAddress);
       if (snap) {
-        ledger(closeRow(ctx, snap, outcomes));
-        // live: what actually arrived; dry-run: the snapshot's token leg
-        const held = await readWalletToken(ctx);
-        tokensBack = held !== null && held - (ctx.walletToken ?? 0) > 0 ? held - (ctx.walletToken ?? 0) : tokenInPosition(snap, ctx.snapshot);
+        ledger(closeRow(ctx, snap, outcomes, refundSol));
+        // what actually arrived: the transaction's own token balances first (no read can lag behind them), then a wallet read
+        // that shows the arrival, then the snapshot's token leg less the mint's transfer fee (dry-run)
+        const recorded = sumCash(outcomes, quoteOf(ctx.snapshot))?.tokenDelta ?? null;
+        const held = recorded === null ? await readWalletToken(ctx) : null;
+        tokensBack =
+          recorded !== null ? Math.max(0, recorded) : held !== null && held - (ctx.walletToken ?? 0) > 0 ? held - (ctx.walletToken ?? 0) : afterTransferFee(tokenInPosition(snap, ctx.snapshot), transferFee);
       }
       if (d.action === "CLOSE_POSITION") {
         if (d.liquidate === true) {
@@ -913,7 +1008,15 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       // so without this the tokens only ever left at a CLAIM, and a band that is re-laid often never claims
       // (2026-09-17: 1.2 SOL of ALLINU and GP sat in the wallet, outside every stop). Sold first, once worth the minimum.
       if (ctx.sweepWalletToken && o.side === "SOL_ONLY" && !(o.acquireToken && o.acquireToken > 0)) {
-        const held = (await readWalletToken(ctx)) ?? (ctx.walletToken ?? 0) + tokensBack;
+        const expected = (ctx.walletToken ?? 0) + tokensBack;
+        let read = await readWalletToken(ctx);
+        // a read right after the close can still show the balance from before it: given time to catch up with what the close
+        // handed back, since a stale read skipped the sweep without a word and left the tokens outside every stop
+        if (read !== null && tokensBack > SWAP_DUST_TOKEN && read + 1e-9 < expected * 0.97) {
+          read = await settleWalletToken(() => readWalletToken(ctx), expected * 0.97);
+          if (read !== null && read + 1e-9 < expected * 0.97) result.notes.push(`sweep: the wallet read ${fmtUnits(read, tokenDec)} ${ctx.snapshot.baseToken.symbol} after the close, under the ${fmtUnits(expected, tokenDec)} expected; selling what it shows, the rest waits for the next move`);
+        }
+        const held = read ?? expected;
         const sell = sweepAmount(held, quoteOf(ctx.snapshot).tokenPriceInQuote, ctx.sweepWalletToken.minQuote);
         if (sell > 0) {
           const out = await sellUnderCap(ctx, "sweep", floorTo(sell, tokenDec), ctx.swapImpact?.sweepPct ?? 0, result, ledger);
@@ -929,8 +1032,19 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       // the straddle's legs: buy the shortfall (declared as acquireToken, or whatever a re-centre needs), sell a re-centre's surplus
       if (o.side === "BOTH" && o.amountToken > 0) {
         const before = ctx.walletToken ?? 0;
-        const read = await readWalletToken(ctx);
-        const held = read !== null ? read : before + tokensBack;
+        // what the wallet holds now by the books: its balance before this execution plus what the close just handed back
+        const expected = before + tokensBack;
+        let read = await readWalletToken(ctx);
+        // A read taken right after a close can still show the balance from before it. Sized on that, the shortfall leg bought
+        // the token the close had just handed back: an unbudgeted purchase of the whole token half, under the gas reserve on
+        // a small wallet. A read short of what the close returned is given time to catch up, and one that never does is not
+        // trusted to buy with: the purchase is sized on what the close handed back, and the deposit below still takes only
+        // what the wallet holds.
+        if (read !== null && tokensBack > SWAP_DUST_TOKEN && read + 1e-9 < expected * 0.97) {
+          read = await settleWalletToken(() => readWalletToken(ctx), expected * 0.97);
+          if (read !== null && read + 1e-9 < expected * 0.97) result.notes.push(`the wallet read ${fmtUnits(read, tokenDec)} ${ctx.snapshot.baseToken.symbol} after the close, under the ${fmtUnits(expected, tokenDec)} it handed back: the purchase is sized on the close, not on the read`);
+        }
+        const held = read === null ? expected : tokensBack > SWAP_DUST_TOKEN ? Math.max(read, expected) : read;
         const shortfall = o.amountToken - held;
         const declared = Number.isFinite(o.acquireToken ?? 0) ? Math.max(0, o.acquireToken ?? 0) : 0;
         let bought = 0;
@@ -992,7 +1106,7 @@ export async function execute(verdict: Verdict, ctx: ExecutionContext): Promise<
       try {
         built = await ctx.venue.buildOpen(ctx.pool, owner, plan, ctx.snapshot);
         if (built.notes?.length) result.notes.push(...built.notes);
-        out = await runTx(ctx.wallet, built.label, built.tx, built.signers, result.txs, quoteMint);
+        out = await runTx(ctx.wallet, built.label, built.tx, built.signers, result.txs, quoteMint, { baseMint, notes: result.notes });
       } catch (err) {
         // the ask exit must not leave the token in the wallet outside every stop: a build error falls back to the sale below
         if (!askExit) throw err;

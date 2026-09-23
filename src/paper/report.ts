@@ -185,6 +185,8 @@ export interface PaperSummary {
   rentSpentSol: number;
   slippagePaidSol: number;
   swapCostSol: number;
+  /** Token-2022 transfer fees the mints kept (src/tools/transferFee.ts): informational, each already inside the realized, marked or swap figures */
+  transferFeeSol: number;
   /** marked network fees on paper transactions */
   txFeesSol: number;
   realizedSol: number;
@@ -386,6 +388,7 @@ export function paperSummary(book: PaperBook, entries: readonly JournalEntry[], 
     rentSpentSol: book.rentSpentSol,
     slippagePaidSol: book.slippagePaidSol,
     swapCostSol,
+    transferFeeSol: book.transferFeeSol ?? 0,
     txFeesSol: book.txFeesSol ?? 0,
     realizedSol,
     markedSol,
@@ -444,7 +447,7 @@ export function renderPaperReport(s: PaperSummary): string {
   out.push(`equity now   ${money(s.equity.sol)} = wallet ${money(s.wallet.sol)} + USDC ${money(s.equity.usdcSol)} + tokens ${money(s.equity.tokensSol)} + bands ${money(s.equity.bandsSol)} (incl. ${money(s.feesUnclaimedSol, 6)} unclaimed fees) + hedge ${moneySigned(s.equity.hedgeSol)}`);
   out.push(`vs start     ${moneySigned(s.equity.vsStartSol)} (${signed(s.equity.vsStartPct, 2)}%)  = realized ${moneySigned(s.realizedSol)} + marked ${moneySigned(s.markedSol)} (bands ${moneySigned(s.markedBandsSol)}, wallet tokens ${moneySigned(s.markedTokensSol)}) + hedge ${moneySigned(s.equity.hedgeSol)} - rent locked ${money(s.rentLockedSol)} - rent spent ${money(s.rentSpentSol)} - swap cost ${money(s.swapCostSol, 6)} - tx fees ${money(s.txFeesSol, 6)}${s.equity.valuationSol !== null ? ` + SOL/USD valuation ${moneySigned(s.equity.valuationSol)}` : ""} + other ${moneySigned(s.equity.otherSol)}`);
   out.push(`identity     ${signed(s.equity.vsStartSol, 6)} SOL = ${signed(s.realizedSol, 6)} + ${signed(s.markedSol, 6)} + ${signed(s.equity.hedgeSol, 6)} - ${s.rentLockedSol.toFixed(6)} - ${s.rentSpentSol.toFixed(6)} - ${s.swapCostSol.toFixed(6)} - ${s.txFeesSol.toFixed(6)} + ${signed(s.equity.valuationSol ?? 0, 6)} + ${signed(s.equity.otherSol, 6)} (SOL: realized + marked + hedge - rent locked - rent spent - swap cost - tx fees + SOL/USD valuation${s.equity.valuationSol === null ? " (no ledger: 0)" : ""} + other)`);
-  out.push(`fees         claimed ${money(s.feesClaimedSol, 6)} | realized incl. closes ${money(s.feesRealizedSol, 6)} | unclaimed ${money(s.feesUnclaimedSol, 6)} | close slippage ${money(s.slippagePaidSol, 6)} | swap fees ${money(s.swapCostSol, 6)}`);
+  out.push(`fees         claimed ${money(s.feesClaimedSol, 6)} | realized incl. closes ${money(s.feesRealizedSol, 6)} | unclaimed ${money(s.feesUnclaimedSol, 6)} | close slippage ${money(s.slippagePaidSol, 6)} | swap fees ${money(s.swapCostSol, 6)}${s.transferFeeSol > 0 ? ` | transfer fees kept by the mints ${money(s.transferFeeSol, 6)} (inside the figures above)` : ""}`);
   out.push(`rent         ${money(s.rentLockedSol)} locked in ${s.bands.length} band(s), refunded on close | ${money(s.rentSpentSol)} spent on bin arrays (CLMM: tick arrays and protocol positions), not refunded`);
   out.push("");
   out.push(`OPEN BANDS (${s.bands.length})`);
