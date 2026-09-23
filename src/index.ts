@@ -101,7 +101,7 @@ import { noteDeploy, noteIteration, noteScreen, readLearnedView } from "./status
 import { createDeployer } from "./publish/deploy";
 import { rpcConnection } from "./lib/timedFetch";
 import { basisForPool, basisForTicker, basisVerdict, refreshBasis, sessionClock, sessionWidthMultiplier, type BasisRow } from "./basis";
-import { hotContextFor, hotPicks, hotPicksWithOwn, HotRow, launchRowOf, loadHot, runHotTick, startHotWatch } from "./hot";
+import { hotContextFor, hotPicks, hotPicksWithOwn, HotRow, launchRowOf, loadHot, runHotTick, startHotWatch, type HotPickOptions } from "./hot";
 import {
   circuitLossSol,
   circuitVerdict,
@@ -121,7 +121,7 @@ import { marketDrawdownPct, stopEntryOf } from "./engine/exit";
 import { askBandRecord, askExitEnv, askExitOf, askOnlyPools, askPoolsOf, isAskExit, type AskBand } from "./engine/askExit";
 import { sellResidue, swapImpactEnv } from "./executor";
 import { engineDirective } from "./engine/directives";
-import { downExitOf, forgetBand, knifeReason, knivesReason, moveAfterSec, outOfRangeSec, poolMoveCostSol, priorRangeOverWindowPct, rangeOverWindowPct, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
+import { bidRunWay, downExitOf, forgetBand, knifeReason, knivesReason, moveAfterSec, outOfRangeSec, poolMoveCostSol, priorRangeOverWindowPct, rangeOverWindowPct, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
 import { collectsOnDay, dayOf, readLedgerRows, realizedOnDaySol, rowsOf, workingSol } from "./engine/ledger";
 import { acquireLock, heartbeat, releaseLock, startWatchdog } from "./engine/watchdog";
 import { assertPaperEnv, bandsInPool, emptyBook, loadPaperBook, markPool, paperBinRows, paperEnabled, paperEnv, paperHedgeEquityUsd, paperPoolTokenInventory, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
@@ -400,17 +400,27 @@ function hotRows(app: App, max = config.maxActivePools, withLaunch = false): Hot
 }
 
 /**
- * The hot rows the desk DECIDES a pool with (the policy's extras): the list hotRows reads with the launch lane,
- * plus this pool's own row whatever its flags (src/hot hotPicksWithOwn). The picker keeps hotRows: a pool
- * flagged dumping or wild is still not picked; it is only no longer hidden from the rules that refuse it.
+ * THE DESK'S TRADABLE HOT LIST: hotRows' rule with the launch lane, the top 8. One spelling for the list the policy's
+ * extras carry (hotRowsFor) and for what the observation's own row calls a pick (hotContext): the observation read
+ * its pick off the every-venue top 8 for a day, and a Meteora pool behind eight Raydium and Orca rows lost its
+ * standing as a hot pick in the policy while the extras still carried it as one.
  */
-function hotRowsFor(app: App, address: string): (HotRow & { pick: boolean })[] {
+function tradableHotList(app: App): HotPickOptions {
   const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0;
-  return hotPicksWithOwn(loadHot(), address, {
+  return {
     tradable: (r) => isTradableVenue(r.venue) && (r.quoteSymbol === "SOL" || (r.quoteSymbol === "USDC" && usdcOk)),
     max: 8,
     launch: launchEnv(),
-  });
+  };
+}
+
+/**
+ * The hot rows the desk DECIDES a pool with (the policy's extras): the tradable list, plus this pool's own row
+ * whatever its flags (src/hot hotPicksWithOwn). The picker keeps hotRows: a pool flagged dumping or wild is
+ * still not picked; it is only no longer hidden from the rules that refuse it.
+ */
+function hotRowsFor(app: App, address: string): (HotRow & { pick: boolean })[] {
+  return hotPicksWithOwn(loadHot(), address, tradableHotList(app));
 }
 
 /** The fast watch's row for one pool, when it has one. */
@@ -1128,8 +1138,16 @@ async function getVenuePool(app: App, address: string): Promise<{ venue: Venue; 
   return vp;
 }
 
-/** The fast watch's hot list as the observation shows it: every venue, launch rows included, and this pool's own row whatever its flags. */
-const hotContext = (address: string): NonNullable<ScreenContext["hot"]> => hotContextFor(loadHot(), address, launchEnv(), isTradableVenue);
+/**
+ * The hour's travel before the move that brought the price here, for the sizing's depth cap (src/engine/exit.ts
+ * priorRangeOverWindowPct): a run the way that goes through this pool's bid band is taken out whole, not only its last
+ * cycle. Without a snapshot there is no quote side to read, and this cycle's sample alone comes out.
+ */
+const priorMoveOf = (state: RiskState | undefined, address: string, snapshot: PoolSnapshot | undefined): number | null =>
+  priorRangeOverWindowPct(state?.priceHistory?.[address], Date.now(), undefined, snapshot ? bidRunWay(quoteOf(snapshot).side) : null);
+
+/** The fast watch's hot list as the observation shows it: every venue, launch rows included, and this pool's own row whatever its flags, a pick when the tradable list picks it. */
+const hotContext = (app: App, address: string): NonNullable<ScreenContext["hot"]> => hotContextFor(loadHot(), address, isTradableVenue, tradableHotList(app));
 
 /**
  * The context for a LAUNCH pool the screener's board does not carry: a pool a couple of hours old is
@@ -1138,7 +1156,7 @@ const hotContext = (address: string): NonNullable<ScreenContext["hot"]> => hotCo
  * admits it. feeToTvl24hPct is null, so the policy's yield and payback tests abstain rather than
  * refuse -- an unknown is not a refusal, as everywhere else on the desk.
  */
-function launchContext(app: App, address: string, row: HotRow, launch: { ok: true; ageHours: number; turnover: number }, s: ScreenResult, state?: RiskState): ScreenContext {
+function launchContext(app: App, address: string, row: HotRow, launch: { ok: true; ageHours: number; turnover: number }, s: ScreenResult, state?: RiskState, snapshot?: PoolSnapshot): ScreenContext {
   return {
     rank: 0,
     rankedPools: s.rankedPools,
@@ -1152,11 +1170,11 @@ function launchContext(app: App, address: string, row: HotRow, launch: { ok: tru
     watchlisted: false,
     launch,
     recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
-    priorMovePct: priorRangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
+    priorMovePct: priorMoveOf(state, address, snapshot),
     generatedAt: s.generatedAt,
     stock: null,
     alternatives: [],
-    hot: hotContext(address),
+    hot: hotContext(app, address),
   };
 }
 
@@ -1187,13 +1205,13 @@ function pairContext(app: App, address: string, snapshot: PoolSnapshot, s: Scree
       launch: null,
       pair: { ok: true, ageHours: ref?.ageHours ?? info.refAgeHours ?? 0, turnover },
       recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
-      priorMovePct: priorRangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
+      priorMovePct: priorMoveOf(state, address, snapshot),
       generatedAt: s.generatedAt,
       stock: { ticker: info.stock.ticker, issuer: info.stock.issuer },
       // our own pool for a stock the agent is paired with: the pin waives the floors
       pinned: pinnedTickers().includes(info.stock.ticker) ? { ok: true, ticker: info.stock.ticker } : null,
       alternatives: [],
-      hot: hotContext(address),
+      hot: hotContext(app, address),
     };
   }
   const row = hotRowForPool(loadHotFileCached(), address);
@@ -1214,11 +1232,11 @@ function pairContext(app: App, address: string, snapshot: PoolSnapshot, s: Scree
     launch: null,
     pair: { ok: true, ageHours, turnover },
     recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
-    priorMovePct: priorRangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
+    priorMovePct: priorMoveOf(state, address, snapshot),
     generatedAt: s.generatedAt,
     stock: null,
     alternatives: [],
-    hot: hotContext(address),
+    hot: hotContext(app, address),
   };
 }
 
@@ -1245,12 +1263,12 @@ function screenContext(app: App, address: string, state?: RiskState, snapshot?: 
       watchlisted: false,
       launch: null,
       recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
-      priorMovePct: priorRangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
+      priorMovePct: priorMoveOf(state, address, snapshot),
       generatedAt: new Date(app.meteoraStocks!.at).toISOString(),
       stock: { ticker: met.ticker, issuer: met.issuer },
       pinned: null,
       alternatives: [],
-      hot: hotContext(address),
+      hot: hotContext(app, address),
     };
   }
   if (!p && pin) {
@@ -1268,15 +1286,15 @@ function screenContext(app: App, address: string, state?: RiskState, snapshot?: 
       watchlisted: false,
       launch: null,
       recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
-      priorMovePct: priorRangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
+      priorMovePct: priorMoveOf(state, address, snapshot),
       generatedAt: app.pinned!.generatedAt,
       stock: { ticker: pin.ticker, issuer: "xstocks" },
       pinned: { ok: true, ticker: pin.ticker },
       alternatives: [],
-      hot: hotContext(address),
+      hot: hotContext(app, address),
     };
   }
-  if (!p) return launch ? launchContext(app, address, hotRowOf(address)!, launch, s, state) : null;
+  if (!p) return launch ? launchContext(app, address, hotRowOf(address)!, launch, s, state, snapshot) : null;
   return {
     rank: p.rank,
     rankedPools: s.rankedPools,
@@ -1292,8 +1310,8 @@ function screenContext(app: App, address: string, state?: RiskState, snapshot?: 
     // Measured from our own samples first (the loop records the active price every cycle), then the
     // screener's walk over its sample window. Either is the pool's real movement; the 24h figure is not.
     recentMovePct: rangeOverWindowPct(state?.priceHistory?.[address], Date.now()) ?? p.binRangePct ?? null,
-    // and the same from before this cycle's sample: the difference is the last move's own travel (src/agent/policy.ts sizeBand)
-    priorMovePct: priorRangeOverWindowPct(state?.priceHistory?.[address], Date.now()),
+    // and the same from before the move that brought the price here: the difference is that move's own travel (src/agent/policy.ts sizeBand)
+    priorMovePct: priorMoveOf(state, address, snapshot),
     generatedAt: s.generatedAt,
     stock: p.stock ? { ticker: p.stock.ticker, issuer: p.stock.issuer } : null,
     pinned: pin ? { ok: true, ticker: pin.ticker } : null,
@@ -1301,7 +1319,7 @@ function screenContext(app: App, address: string, state?: RiskState, snapshot?: 
       .filter((x) => x.address !== address && tradableVenue(x) && (x.quoteSymbol === "SOL" || (x.quoteSymbol === "USDC" && solPriceOf(app) !== null)))
       .slice(0, 5)
       .map((x) => ({ name: x.name, score: x.score, feeToTvl24hPct: x.feeToTvl24hPct, tvlUsd: x.tvlUsd })),
-    hot: hotContext(address),
+    hot: hotContext(app, address),
   };
 }
 
@@ -1951,7 +1969,11 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // at a loss. The pool sits out a while (rotatedOutAt: METEORA_STOCK_REENTRY_MIN, or the longer wait the learner set for
   // a pool that keeps ending this way), and the bench ladder counts it below. Until 22 Sep only a rotation or the end
   // of an ask chain started a sit-out: a pool the stop had just taken out was seated again ten minutes later, and seven
-  // such re-entries inside the hour cost the paper book 8.15 SOL.
+  // such re-entries inside the hour cost the paper book 8.15 SOL. The sit-out costs fees in a wide chop (about 5 SOL
+  // over 30 days of real 5-minute paths), and lifting it once the price is back in the closed band's range was
+  // replayed on 22 Sep: with the bench entry lifted too it lost 24 SOL on both 5-minute models and wide chop was no
+  // better; the sit-out alone gained 1 to 2.5 in wide chop and lost it back in bleeds; waiting for the band's entry
+  // edge changed nothing. It stands until an acceptance check that keeps the wide-chop cell says otherwise.
   const downExit = downExitOf({
     closed: execution.ok && !!execution.closed && !execution.opened,
     stopped: directive?.kind === "STOP" || verdict.overrides.some((v) => v.startsWith("stop-loss")),

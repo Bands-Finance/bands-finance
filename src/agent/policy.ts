@@ -440,12 +440,15 @@ export function livelyReason(o: Observation, x: PolicyExtras, env: PolicyEnv): s
  * THIS POOL ON THE HOT LIST: the observation's own list first, then the extras. The pool's own row arrives
  * whatever its flags (src/hot hotPicksWithOwn): a row flagged dumping or wild is not a pick (`pick: false`), but
  * its flags and its 1h move are exactly what the entry rules refuse on, and until 22 Sep they never reached here.
+ * On the list is what EITHER list says: the extras are the desk's tradable list (src/index.ts hotRowsFor), and
+ * an observation's own row once read its pick off the every-venue top 8, where a tradable pick can be ninth.
  */
 function hotView(o: Observation, x: PolicyExtras): HotView {
   const mine = o.screen?.hot?.find((h) => h.thisPool);
-  if (mine) return { onList: mine.pick !== false, seen: true, priceChange1hPct: mine.priceChange1hPct, flags: mine.flags, heat: mine.heat, surge: mine.surge };
   const row = x.hot?.find((h) => h.address === o.snapshot.address);
-  if (row) return { onList: row.pick !== false, seen: true, priceChange1hPct: row.priceChange1hPct, flags: row.flags, heat: row.heat, surge: row.surge };
+  const picked = !!row && row.pick !== false;
+  if (mine) return { onList: mine.pick !== false || picked, seen: true, priceChange1hPct: mine.priceChange1hPct, flags: mine.flags, heat: mine.heat, surge: mine.surge };
+  if (row) return { onList: picked, seen: true, priceChange1hPct: row.priceChange1hPct, flags: row.flags, heat: row.heat, surge: row.surge };
   return { onList: false, seen: false, priceChange1hPct: null, flags: [], heat: null, surge: false };
 }
 
@@ -528,9 +531,10 @@ export function ownObservedLiquidity(
 }
 
 /**
- * PURE. The part of the hour's travel the last cycle's move made on its own: the loop's own range now against
- * its range before this cycle's sample (screen.recentMovePct against screen.priorMovePct). 0 when either is
- * unknown: without the samples there is nothing to take out.
+ * PURE. The part of the hour's travel the move that brought the price here made on its own: the loop's own range
+ * now against its range before that move (screen.recentMovePct against screen.priorMovePct; the loop takes a run
+ * through the bid band out whole, src/engine/exit.ts priorRangeOverWindowPct). 0 when either is unknown: without
+ * the samples there is nothing to take out.
  */
 export const lastMoveTravelPct = (o: Pick<Observation, "screen">): number => {
   const nowPct = o.screen?.recentMovePct;
@@ -562,7 +566,7 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
   // THE CRASH'S OWN TRAVEL. The band is as wide as the pool's travel and the depth cap is the depth across that
   // width, so the seat grew with the move itself: a pool too calm for a minimum seat took the biggest one the
   // cycle a crash widened its band (a 3.9% drop turned 6.5 SOL into 44). The depth cap reads the width the
-  // travel BEFORE this cycle's move would lay; the band keeps its full width, and its share is read on it.
+  // travel BEFORE that move would lay (a crash in steps is one move); the band keeps its full width, and its share is read on it.
   const lastMove = lastMoveTravelPct(o);
   const multiple = isStockPool(o) ? env.volMultiple : (env.tunedVolMultiple ?? env.volMultiple);
   const sizingBins =
@@ -580,7 +584,7 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
     { name: `max band ${r(effectiveMaxSol)} SOL`, quote: effectiveMaxSol / q.priceInSol },
     { name: `95% of the wallet's ${r(walletQuote, quoteIsSol ? 4 : 2)} ${q.symbol}`, quote: walletQuote * WALLET_SHARE },
     sizingBins < bins
-      ? { name: `${shareWords} of the ${sizingBins + 1} bins the pool's travel before the last cycle's ${r(lastMove, 1)}% move would lay (${r(capDepthQuote, 2)} ${q.symbol} of others' there; the move widens the band, not the seat)`, quote: depthCapQuote(capDepthQuote, env.maxSideSharePct) }
+      ? { name: `${shareWords} of the ${sizingBins + 1} bins the pool's travel before its last ${r(lastMove, 1)}% move would lay (${r(capDepthQuote, 2)} ${q.symbol} of others' there; the move widens the band, not the seat)`, quote: depthCapQuote(capDepthQuote, env.maxSideSharePct) }
       : { name: env.maxSideSharePct === 50 ? `half the band's depth (${r(depthQuote, 2)} ${q.symbol})` : `${env.maxSideSharePct}% of the band's depth with ours in it (${r(depthQuote, 2)} ${q.symbol} of others' there)`, quote: depthCapQuote(depthQuote, env.maxSideSharePct) },
     { name: `exposure room ${r(roomSol)} SOL`, quote: roomSol / q.priceInSol },
     ...(travelMultiple < 1 ? [{ name: `${r(cover.movePct ?? 0, 1)}% of hourly travel against the ${env.sizeRefTravelPct}% reference: ${r(travelMultiple, 2)} of the max band`, quote: (effectiveMaxSol * travelMultiple) / q.priceInSol }] : []),

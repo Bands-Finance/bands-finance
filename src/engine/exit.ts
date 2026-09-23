@@ -240,6 +240,10 @@ export interface KnifeEnv {
  *     desk opened its biggest seat there;
  *   - the SLOW knife (ENGINE_SLOW_KNIFE_PCT over ENGINE_SLOW_KNIFE_MIN): a bleed. -5% an hour never trips a
  *     30-minute knife, and the desk re-laid a full seat into it every hour until the circuit breaker stopped it.
+ *     It reads every pool, stocks included, and whatever the last cycle did. Both ways of narrowing it were
+ *     replayed on 30 days of real 5-minute paths (22 Sep, every cached pool, five cycle phases): off for stock
+ *     pools lost 10.0 and 16.6 SOL on the two path models (SILV and OPENAI gave back more than MCDx gained), and
+ *     refusing only while the last cycle fell lost 12.4 and 19.1. Only the smooth 1-hour model liked either.
  * Every one of them only refuses opens and re-lays; exits never read a knife as a reason to stay.
  */
 export function knivesReason(history: readonly PriceSample[] | undefined, now: number, env: KnifeEnv): string | null {
@@ -254,15 +258,52 @@ export function knivesReason(history: readonly PriceSample[] | undefined, now: n
 }
 
 /**
- * How far the price travelled in the window BEFORE this cycle's sample: the same range as rangeOverWindowPct
- * over every sample but the latest. The difference between the two is the part of the hour's travel the last
- * move made on its own, which widens a band and must not also grow its seat (src/agent/policy.ts sizeBand).
+ * PURE. The first sample of the RUN that brought the price to its latest sample (`sorted` oldest first): the last
+ * cycle's move and every cycle before it that went the same way (`down`: the recorded price fell; `up`: it rose).
+ * A flat cycle does not end a run, and nor does a bounce the other way that gave back less than half the run
+ * after it: a dead-cat bounce between two legs of a crash is one crash. The run starts at its extreme (the high
+ * of a fall). The latest sample's own index when the last cycle did not move that way: there is no run.
  */
-export function priorRangeOverWindowPct(history: readonly PriceSample[] | undefined, now: number, windowMs = 60 * 60 * 1000): number | null {
-  if (!history || history.length < 3) return null;
-  const sorted = [...history].sort((a, b) => a.ts - b.ts);
-  return rangeOverWindowPct(sorted.slice(0, -1), now, windowMs);
+export function runStartIndex(sorted: readonly PriceSample[], way: "down" | "up"): number {
+  const last = sorted.length - 1;
+  // measured so that the run's way is always a fall of `v`
+  const v = (i: number) => (way === "down" ? sorted[i].price : -sorted[i].price);
+  if (last < 1 || !(v(last - 1) > v(last))) return last;
+  let start = last - 1;
+  for (let i = last - 2; i >= 0; i--) {
+    if (v(i) >= v(i + 1)) {
+      if (v(i) >= v(start)) start = i;
+      continue;
+    }
+    // a bounce the other way between i and i + 1: part of the run only while it gave back under half of it
+    if (v(i + 1) - v(i) >= (v(start) - v(last)) / 2) break;
+  }
+  return start;
 }
+
+/**
+ * How far the price travelled in the window BEFORE the move that brought it here: the same range as
+ * rangeOverWindowPct over the samples before it. The difference between the two is the part of the hour's travel
+ * that move made on its own, which widens a band and must not also grow its seat (src/agent/policy.ts sizeBand).
+ *
+ * Without `way` the move is this cycle's sample alone. With it (the way that runs through the pool's bid band:
+ * `down` for a band quoted in Y, `up` for one quoted in X, since the history records Y per X), a RUN that way is
+ * taken out whole (runStartIndex): a crash in two steps of 4.5%, each under the per-cycle knife, left the first
+ * step's travel in the "before", which reached the 4% cover cap and opened the max seat halfway down it (a
+ * staircase of x0.955 every 5 minutes: 44 SOL at x0.910). A run that is every sample in the window left no
+ * travel before it: 0. A last move the other way keeps the one-sample answer.
+ */
+export function priorRangeOverWindowPct(history: readonly PriceSample[] | undefined, now: number, windowMs = 60 * 60 * 1000, way?: "down" | "up" | null): number | null {
+  if (!history || history.length < 2) return null;
+  const sorted = [...history].sort((a, b) => a.ts - b.ts);
+  const start = way ? runStartIndex(sorted, way) : sorted.length - 1;
+  if (start === sorted.length - 1) return sorted.length < 3 ? null : rangeOverWindowPct(sorted.slice(0, -1), now, windowMs);
+  const before = sorted.slice(0, start + 1).filter((h) => now - h.ts <= windowMs && h.price > 0);
+  return before.length < 2 ? 0 : rangeOverWindowPct(before, now, windowMs);
+}
+
+/** The way a run goes through a pool's bid band in the recorded price (Y per X): a band quoted in Y is run through by a fall, one quoted in X by a rise. */
+export const bidRunWay = (quoteSide: "X" | "Y"): "down" | "up" => (quoteSide === "Y" ? "down" : "up");
 
 /**
  * PURE. Whether a close ended its seat on the DOWN side, and how: the stop (a STOP directive or the guards'

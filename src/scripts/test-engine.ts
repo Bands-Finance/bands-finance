@@ -21,7 +21,7 @@ import {
   summary,
   workingSol,
 } from "../engine/ledger";
-import { antiChurn, bandMoveCostSol, bandStopPct, cycleDropPct, downExitOf, drawdownPct, dropOverWindowPct, forgetBand, knifeReason, knivesReason, poolMoveCostSol, priorRangeOverWindowPct, recordPrice, rollStop, stopEntryOf, trackOutOfRange, moveAfterSec, rangeOverWindowPct } from "../engine/exit";
+import { antiChurn, bandMoveCostSol, bandStopPct, bidRunWay, cycleDropPct, downExitOf, drawdownPct, dropOverWindowPct, forgetBand, knifeReason, knivesReason, poolMoveCostSol, priorRangeOverWindowPct, recordPrice, rollStop, runStartIndex, stopEntryOf, trackOutOfRange, moveAfterSec, rangeOverWindowPct } from "../engine/exit";
 import { askBandRecord, askBinsFor, askExitEnv, askExitOf, askExpiry, askOnlyPools, askOpenParams, askPoolsOf, askStopBasis, isAskExit } from "../engine/askExit";
 import type { Decision } from "../agent/schema";
 import {
@@ -734,6 +734,11 @@ test("the knives: a drop in the last cycle alone and a slow bleed over hours ref
   assert.match(knivesReason(bleed, T0, env)!, /^knife: -18\.5% in 240 min \(limit 10%\)$/);
   // two hours into it (-9.75%) the slow knife still waits
   assert.equal(knivesReason(bleed.filter((b) => b.ts <= T0 - 180 * M), T0 - 180 * M, env), null);
+  // a cycle that ticks up inside the bleed does not lift it: the slow knife reads the four hours, not the last cycle
+  // (refusing only while the last cycle fell lost 12 and 19 SOL on the 5-minute replay of 30 days, 22 Sep)
+  const tick = [...bleed.slice(0, -1), { ts: T0, price: bleed[bleed.length - 2].price * 1.004 }];
+  assert.ok(cycleDropPct(tick, 5 * M)! < 0, "the last cycle rose");
+  assert.match(knivesReason(tick, T0, env)!, /in 240 min \(limit 10%\)$/);
   // 0 turns either knife off
   assert.match(knivesReason(crash, T0, { ...env, cycleKnifePct: 0 })!, /in 240 min/, "the per-cycle knife off: the slow one still reads the drop");
   assert.equal(knivesReason(crash, T0, { ...env, cycleKnifePct: 0, slowKnifePct: 0 }), null);
@@ -746,6 +751,35 @@ test("priorRangeOverWindowPct: the hour's travel before this cycle's sample, so 
   near(Math.round(rangeOverWindowPct(h, T0)! * 100) / 100, 4.38);
   assert.equal(priorRangeOverWindowPct(h.slice(-2), T0), null, "two samples: nothing before the last to read");
   assert.equal(priorRangeOverWindowPct(undefined, T0), null);
+});
+
+test("priorRangeOverWindowPct with the bid band's way: a run through the band is taken out whole, a crash in steps is one move", () => {
+  const at = (prices: number[]) => prices.map((price, i) => ({ ts: T0 - (prices.length - 1 - i) * 5 * M, price }));
+  const pct = (v: number | null) => (v === null ? null : Math.round(v * 100) / 100);
+  // the reviewer's staircase: x0.955 every five minutes after a calm hour. The one-sample answer left the first step's
+  // 4.5% in "before", which reaches the 4% cover cap; the run leaves the calm hour's 0.2%
+  const calm = [1, 1.002, 1, 1.002, 1, 1.002, 1, 1.002, 1];
+  const stair = at([...calm, 0.955, 0.912]);
+  assert.equal(pct(priorRangeOverWindowPct(stair, T0)), 4.92);
+  assert.equal(pct(priorRangeOverWindowPct(stair, T0, undefined, "down")), 0.2);
+  // the run starts at its high: a bounce of 1% before it is too small to split a 9% fall
+  assert.equal(runStartIndex(at([0.99, 1, 0.955, 0.912]), "down"), 1);
+  assert.equal(runStartIndex(at([0.99, 1, 0.955, 0.912]), "up"), 3, "the last cycle fell: no run up");
+  // a dead-cat bounce between the two legs does not split the crash; a bounce that gives back half of it does
+  assert.equal(pct(priorRangeOverWindowPct(at([...calm, 0.955, 0.958, 0.915]), T0, undefined, "down")), 0.2);
+  assert.equal(pct(priorRangeOverWindowPct(at([...calm, 0.955, 0.99, 0.95]), T0, undefined, "down")), pct(rangeOverWindowPct(at([...calm, 0.955, 0.99]), T0)), "chop: only the last leg comes out");
+  // a last move the other way keeps the one-sample answer; the way is the bid band's (a band quoted in X is run through by a rise)
+  const up = at([...calm, 1.045, 1.092]);
+  assert.equal(priorRangeOverWindowPct(up, T0, undefined, "down"), priorRangeOverWindowPct(up, T0));
+  assert.ok(priorRangeOverWindowPct(up, T0, undefined, "up")! <= 0.2, "the calm hour's wiggles at most");
+  assert.equal(bidRunWay("Y"), "down");
+  assert.equal(bidRunWay("X"), "up");
+  // a run that is the whole window left no travel before it: 0, and two samples that fell read 0, not "unknown"
+  assert.equal(priorRangeOverWindowPct(at([1, 0.99, 0.98, 0.97, 0.96, 0.95, 0.94, 0.93, 0.92, 0.91, 0.9, 0.89, 0.88, 0.87]), T0, undefined, "down"), 0);
+  assert.equal(priorRangeOverWindowPct(at([1, 0.96]), T0, undefined, "down"), 0);
+  assert.equal(priorRangeOverWindowPct(at([1, 0.96]), T0), null);
+  // flat cycles do not end a run
+  assert.equal(pct(priorRangeOverWindowPct(at([...calm, 0.96, 0.96, 0.93]), T0, undefined, "down")), 0.2);
 });
 
 test("downExitOf: a stop, or a quote-only band closed through its range at a loss, is a down exit; an ask, a re-lay, a straddle or a close in profit is not", () => {

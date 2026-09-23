@@ -740,7 +740,7 @@ export interface HotContextRow {
   venue: string;
   tradable: boolean;
   thisPool: boolean;
-  /** false: this pool's own row, shown whatever its flags, which is not on the tradable list */
+  /** false: this pool's own row, shown whatever its flags, which the desk's tradable list does not pick */
   pick: boolean;
   liquidityUsd: number | null;
   vol1hUsd: number | null;
@@ -752,14 +752,22 @@ export interface HotContextRow {
   surge: boolean;
 }
 
-/** PURE. The fast watch's list as the observation shows it: every venue, launch rows included, and this pool's own row whatever its flags. */
-export function hotContextFor(hot: HotFile | null, address: string, launch: LaunchEnv | null, tradableVenue: (venue: string) => boolean): HotContextRow[] {
-  return hotPicksWithOwn(hot, address, { tradable: () => true, max: 8, launch }).map((r) => ({
+/**
+ * PURE. The fast watch's list as the observation shows it: every venue's top 8, launch rows included, and this
+ * pool's own row whatever its flags. `picks` is the desk's own TRADABLE list (the options the policy's extras are
+ * built with, src/index.ts hotRowsFor), and this pool's `pick` says whether that list picks it, as the extras do.
+ * It used to be read off the every-venue top 8, where Raydium and Orca rows take most of the places: a Meteora
+ * pool the tradable list picked read as off the hot list, and the policy refused it the standing of a hot pick (a
+ * fresh open at score 20 or under, an idle re-lay, the one more cycle of a band the price went through).
+ */
+export function hotContextFor(hot: HotFile | null, address: string, tradableVenue: (venue: string) => boolean, picks: HotPickOptions): HotContextRow[] {
+  const onList = hotPicks(hot, picks).some((r) => r.address === address);
+  return hotPicksWithOwn(hot, address, { ...picks, tradable: () => true, max: 8 }).map((r) => ({
     name: r.name,
     venue: r.venue,
     tradable: tradableVenue(r.venue) && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC"),
     thisPool: r.address === address,
-    pick: r.pick,
+    pick: r.address === address ? onList : r.pick,
     liquidityUsd: r.liquidityUsd,
     vol1hUsd: r.vol1hUsd,
     feeToTvlDailyPct: r.feeToTvlDailyPct,

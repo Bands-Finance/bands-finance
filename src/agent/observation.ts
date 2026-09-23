@@ -31,9 +31,10 @@ export interface ScreenContext {
   /** how far the price travelled in the last hour, high to low, in percent: what the band must survive */
   recentMovePct?: number | null;
   /**
-   * the same hour's travel measured from the loop's samples BEFORE this cycle's: what the pool moved before the
-   * move this cycle saw. The gap to recentMovePct is the last move's own travel, which widens a band and must not
-   * grow its seat (src/agent/policy.ts sizeBand). Null when there are not samples enough to say.
+   * the same hour's travel measured from the loop's samples BEFORE the move that brought the price here: this
+   * cycle's, or a run of cycles the way that goes through the bid band (src/engine/exit.ts priorRangeOverWindowPct).
+   * The gap to recentMovePct is that move's own travel, which widens a band and must not grow its seat
+   * (src/agent/policy.ts sizeBand). Null when there are not samples enough to say.
    */
   priorMovePct?: number | null;
   generatedAt: string;
@@ -55,7 +56,7 @@ export interface ScreenContext {
     venue: string;
     tradable: boolean;
     thisPool: boolean;
-    /** false: this pool's own row, shown for its flags and its 1h move, which is not on the tradable hot list (flagged new, dumping or wild, or under the list's floors); absent reads as a pick */
+    /** false: this pool's own row, shown for its flags and its 1h move, which is not on the tradable hot list (flagged new, dumping or wild, under the list's floors, or outside its top 8: the desk's own tradable list, not this every-venue one); absent reads as a pick */
     pick?: boolean;
     liquidityUsd: number | null;
     vol1hUsd: number | null;
