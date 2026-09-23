@@ -67,7 +67,11 @@ export interface BandMark {
 
 export interface EngineState {
   version: 1;
-  /** pool -> epoch ms of stop-loss closes; the bench ladder reads the trailing 6h */
+  /**
+   * pool -> epoch ms of its DOWN exits: stop-loss closes, and closes of a quote-only band the price went through
+   * at a loss (src/engine/exit.ts downExitOf). The bench ladder reads the trailing 6h. A slow bleed never stops a
+   * band, it runs through one an hour at a time, and the ladder used to count none of those.
+   */
   stopTimes: Record<string, number[]>;
   circuit: CircuitState;
   portfolio: PortfolioState;
@@ -153,12 +157,12 @@ export function benchView(state: Pick<EngineState, "stopTimes">, pool: string, n
     stops6h === 0
       ? null
       : benched
-        ? `benched: ${stops6h} stop-loss closes in the last 6h (the oldest ages out on its own)`
-        : `${stops6h} stop-loss close${stops6h === 1 ? "" : "s"} in the last 6h: size x${multiplier}`;
+        ? `benched: ${stops6h} stop-loss closes or losing closes through the band in the last 6h (the oldest ages out on its own)`
+        : `${stops6h} stop-loss close${stops6h === 1 ? "" : "s"} or losing close${stops6h === 1 ? "" : "s"} through the band in the last 6h: size x${multiplier}`;
   return { stops6h, multiplier, benched, reason };
 }
 
-/** Record a stop-loss close for the bench ladder; keeps only what the window can read. */
+/** Record a down exit (a stop-loss close, or a losing close through the band) for the bench ladder; keeps only what the window can read. */
 export function recordStop(state: Pick<EngineState, "stopTimes">, pool: string, now: number): void {
   const times = (state.stopTimes[pool] ?? []).filter((t) => now - t < BENCH_WINDOW_MS);
   times.push(now);

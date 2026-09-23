@@ -21,7 +21,7 @@ import {
   summary,
   workingSol,
 } from "../engine/ledger";
-import { antiChurn, bandStopPct, drawdownPct, dropOverWindowPct, forgetBand, knifeReason, recordPrice, rollStop, stopEntryOf, trackOutOfRange, moveAfterSec, rangeOverWindowPct } from "../engine/exit";
+import { antiChurn, bandMoveCostSol, bandStopPct, cycleDropPct, downExitOf, drawdownPct, dropOverWindowPct, forgetBand, knifeReason, knivesReason, poolMoveCostSol, priorRangeOverWindowPct, recordPrice, rollStop, stopEntryOf, trackOutOfRange, moveAfterSec, rangeOverWindowPct } from "../engine/exit";
 import { askBandRecord, askBinsFor, askExitEnv, askExitOf, askExpiry, askOnlyPools, askOpenParams, askPoolsOf, askStopBasis, isAskExit } from "../engine/askExit";
 import type { Decision } from "../agent/schema";
 import {
@@ -45,6 +45,7 @@ import { clearFeesPending, collectDirective, skimPlan, trackFeesPending, unclaim
 import { engineDirective } from "../engine/directives";
 import { CARRY_HAIRCUT_PCT, carriedBands, carriedUsdToSol, foldMarksHealth, marksHealth, marksStale, MARKS_STALE_CYCLES, noteMarks, readOfBook, recordMarks, resetMarksHealth } from "../engine/marks";
 import { lockBlocks, loopStale, staleWindowMs } from "../engine/watchdog";
+import { binWalkImpactPct } from "../paper/impact";
 
 const limits: RiskLimits = {
   maxPositionSol: 0.5,
@@ -708,6 +709,100 @@ test("moveAfterSec: a band moves once the fees it is missing cover the move", ()
   assert.equal(moveAfterSec(0, 2000, 600), 600);
   // a dead band is not held forever
   assert.equal(moveAfterSec(21, 0.5, 60), 3600);
+});
+
+test("the knives: a drop in the last cycle alone and a slow bleed over hours refuse opens beside the 30-minute crash", () => {
+  const env = { knifePct: 20, cycleKnifePct: 5, cycleMs: 5 * M, slowKnifePct: 10, slowKnifeMs: 240 * M };
+  // the flash crash of the scenario harness: -40% in ten minutes, the cycle halfway down it reads -19.9%, under the 30-minute knife
+  const crash = [{ ts: T0 - 10 * M, price: 1 }, { ts: T0 - 5 * M, price: 1 }, { ts: T0, price: 0.801 }];
+  assert.equal(knifeReason(crash, T0, 20), null, "the 30-minute knife lets -19.9% through");
+  assert.match(knivesReason(crash, T0, env)!, /^knife: -19\.9% since the last cycle \(limit 5% a cycle\)$/);
+  // -4% in a cycle is inside the per-cycle knife
+  assert.equal(knivesReason([{ ts: T0 - 5 * M, price: 1 }, { ts: T0, price: 0.96 }], T0, env), null);
+  // early cycles 90 s apart read the whole drop inside the last cycle and a half, not just the last 90 s
+  const early = [{ ts: T0 - 6 * M, price: 1 }, { ts: T0 - 3 * M, price: 0.98 }, { ts: T0 - 1.5 * M, price: 0.96 }, { ts: T0, price: 0.94 }];
+  assert.equal(Math.round(cycleDropPct(early, 5 * M)! * 10) / 10, 6);
+  // a pool coming back after a sit-out has no last cycle: an hour-old sample is the slower knives' business
+  assert.equal(cycleDropPct([{ ts: T0 - 60 * M, price: 1 }, { ts: T0, price: 0.9 }], 5 * M), null);
+  assert.equal(knivesReason([{ ts: T0 - 60 * M, price: 1 }, { ts: T0, price: 0.93 }], T0, env), null);
+  // the 30-minute knife still reads first
+  assert.match(knivesReason([{ ts: T0 - 20 * M, price: 1 }, { ts: T0 - 5 * M, price: 0.75 }, { ts: T0, price: 0.74 }], T0, env)!, /in 30 min \(limit 20%\)$/);
+  // a slow bleed, -5% an hour sampled every five minutes: no cycle and no half hour trips, four hours do
+  const bleed = Array.from({ length: 61 }, (_, i) => ({ ts: T0 - (300 - i * 5) * M, price: Math.pow(0.95, (i * 5) / 60) }));
+  assert.equal(knifeReason(bleed, T0, 20), null);
+  assert.equal(cycleDropPct(bleed, 5 * M)! < 1, true);
+  assert.match(knivesReason(bleed, T0, env)!, /^knife: -18\.5% in 240 min \(limit 10%\)$/);
+  // two hours into it (-9.75%) the slow knife still waits
+  assert.equal(knivesReason(bleed.filter((b) => b.ts <= T0 - 180 * M), T0 - 180 * M, env), null);
+  // 0 turns either knife off
+  assert.match(knivesReason(crash, T0, { ...env, cycleKnifePct: 0 })!, /in 240 min/, "the per-cycle knife off: the slow one still reads the drop");
+  assert.equal(knivesReason(crash, T0, { ...env, cycleKnifePct: 0, slowKnifePct: 0 }), null);
+  assert.equal(knivesReason(bleed, T0, { ...env, slowKnifePct: 0 }), null);
+});
+
+test("priorRangeOverWindowPct: the hour's travel before this cycle's sample, so the last move's own travel can be told apart", () => {
+  const h = [{ ts: T0 - 50 * M, price: 1 }, { ts: T0 - 25 * M, price: 1.002 }, { ts: T0 - 5 * M, price: 1 }, { ts: T0, price: 0.96 }];
+  near(Math.round(priorRangeOverWindowPct(h, T0)! * 1000) / 1000, 0.2);
+  near(Math.round(rangeOverWindowPct(h, T0)! * 100) / 100, 4.38);
+  assert.equal(priorRangeOverWindowPct(h.slice(-2), T0), null, "two samples: nothing before the last to read");
+  assert.equal(priorRangeOverWindowPct(undefined, T0), null);
+});
+
+test("downExitOf: a stop, or a quote-only band closed through its range at a loss, is a down exit; an ask, a re-lay, a straddle or a close in profit is not", () => {
+  const through = position({ inRange: false, binsFromRange: -6, valueInSol: 0.2, entryValueSol: 0.25, amountX: 90, amountY: 0 });
+  const base = { closed: true, stopped: false, action: "CLOSE_POSITION" as const, band: through, quoteSide: "Y" as const, quoteOnly: true };
+  assert.equal(downExitOf(base), "through-band");
+  assert.equal(downExitOf({ ...base, stopped: true }), "stop");
+  assert.equal(downExitOf({ ...base, stopped: true, quoteOnly: false }), "stop", "a stop is a stop in any pool");
+  assert.equal(downExitOf({ ...base, band: { ...through, valueInSol: 0.26 } }), null, "through the band but up on the seat");
+  assert.equal(downExitOf({ ...base, band: { ...through, binsFromRange: 3 } }), null, "the price ran off the quote side: an idle band");
+  assert.equal(downExitOf({ ...base, quoteSide: "X", band: { ...through, binsFromRange: 6 } }), "through-band", "a quote-X band is run through from below");
+  assert.equal(downExitOf({ ...base, quoteOnly: false }), null, "a straddle's close is the stock lane's");
+  assert.equal(downExitOf({ ...base, exitAsk: true }), null, "an ask exit: the chain is still working the token");
+  assert.equal(downExitOf({ ...base, action: "REBALANCE" }), null);
+  assert.equal(downExitOf({ ...base, closed: false }), null);
+  assert.equal(downExitOf({ ...base, band: { ...through, entryValueSol: undefined } }), null, "no entry, no loss to read");
+  // on the bench ladder beside the stops: a bleed's third losing close benches the pool
+  const e = emptyEngineState();
+  recordStop(e, "pool", T0 - 2 * H);
+  assert.match(benchView(e, "pool", T0).reason!, /^1 stop-loss close or losing close through the band in the last 6h: size x0\.5$/);
+  recordStop(e, "pool", T0 - 1 * H);
+  recordStop(e, "pool", T0);
+  assert.match(benchView(e, "pool", T0).reason!, /^benched: 3 stop-loss closes or losing closes through the band in the last 6h/);
+});
+
+test("the out-of-range wait counts what waiting can save: an idle band's re-lay rent at its own width; a band run through keeps the bare rent unless ENGINE_WAIT_COUNTS_SALE", () => {
+  // the cost of leaving a band full of token: 44 SOL of it at 0.66% (the pool's current fee) and 0.4% of impact
+  const c = bandMoveCostSol({ tokenUi: 22_000, tokenPriceInSol: 0.002, feePct: 0.66, impactPct: 0.4, relaySunkSol: 0.0715 });
+  near(c.saleSol, 44 * 0.0106);
+  near(c.relaySol, 0.0715);
+  near(c.totalSol, 44 * 0.0106 + 0.0715);
+  // at $117 and $4,500 a day of the band's fees that is paid for after about 16 minutes, where the rent alone waits the floor
+  assert.equal(Math.round(moveAfterSec(c.totalSol * 117, 4500, 120)), Math.round((c.totalSol * 117) / (4500 / 86400)));
+  assert.equal(moveAfterSec(0, 4500, 120), 120);
+  // the pool, band by band, from the snapshot's own bins
+  const bins = Array.from({ length: 21 }, (_, i) => ({ binId: 250 + i, price: 0.002, xAmount: 250 + i > 260 ? 5000 : 0, yAmount: 250 + i < 260 ? 9 : 0, isActive: 250 + i === 260 }));
+  const s = { ...snapshot, bins };
+  const through = position({ lowerBinId: 265, upperBinId: 284, inRange: false, binsFromRange: -5, amountX: 4_000, amountY: 0, feeX: 10, feeY: 0 });
+  const idle = position({ lowerBinId: 230, upperBinId: 249, inRange: false, binsFromRange: 11, amountX: 0, amountY: 8, feeX: 0, feeY: 0 });
+  const sunk: [number, number][] = [];
+  const opts = { quoteSide: "Y" as const, tokenPriceInQuote: 0.002, quoteOnly: true, countSale: false, feePct: 0.66, impactCapPct: 8, rentOnlySol: 0, relaySunkSol: (below: number, above: number) => (sunk.push([below, above]), 0.0715) };
+  // an idle band waits for its re-lay into a fresh bin array: the rent it would leave behind (it used to read the active bin's array alone: 0)
+  near(poolMoveCostSol([idle], s, opts), 0.0715, "the re-lay's rent at the band's own width");
+  assert.deepEqual(sunk, [[19, 0]], "costed as a band of its width from the price, on the quote side");
+  // a band the price went through keeps the bare rent: its sale and its re-lay come whenever it leaves unless the price comes back
+  near(poolMoveCostSol([through], s, opts), 0, "the bare rent, as before");
+  near(poolMoveCostSol([through, idle], s, opts), 0.0715, "the costliest band of the pool");
+  // ENGINE_WAIT_COUNTS_SALE: the sale at the fee plus the impact of walking the bins, and the re-lay
+  const counted = poolMoveCostSol([through], s, { ...opts, countSale: true });
+  assert.ok(counted > 4010 * 0.002 * 0.0066 + 0.0715, `the sale's fee, its impact and the re-lay's rent: ${counted}`);
+  const impact = binWalkImpactPct({ bins, activeBinId: 260, quoteSide: "Y", binStepBps: 20, tokenPriceInQuote: 0.002 }, "sell", 4010);
+  assert.ok(impact > 0, "a 4,010-token sale walks past the active bin");
+  near(counted, 0.0715 + (4010 * 0.002 * (0.66 + impact)) / 100, "the sale at its fee and impact, and the re-lay");
+  // a straddle's pool and a pool of ours keep the bare rent
+  near(poolMoveCostSol([through, idle], s, { ...opts, quoteOnly: false, countSale: true, rentOnlySol: 0.01 }), 0.01);
+  // a re-lay the venue cannot cost keeps the bare rent
+  near(poolMoveCostSol([idle], s, { ...opts, relaySunkSol: () => { throw new Error("no plan"); }, rentOnlySol: 0.02 }), 0.02);
 });
 
 // ---- the ask exit (src/engine/askExit.ts) --------------------------------------------------------

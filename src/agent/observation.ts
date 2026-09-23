@@ -30,6 +30,12 @@ export interface ScreenContext {
   pair?: { ok: true; ageHours: number; turnover: number } | null;
   /** how far the price travelled in the last hour, high to low, in percent: what the band must survive */
   recentMovePct?: number | null;
+  /**
+   * the same hour's travel measured from the loop's samples BEFORE this cycle's: what the pool moved before the
+   * move this cycle saw. The gap to recentMovePct is the last move's own travel, which widens a band and must not
+   * grow its seat (src/agent/policy.ts sizeBand). Null when there are not samples enough to say.
+   */
+  priorMovePct?: number | null;
   generatedAt: string;
   /** the screen's stock tag when the base is a tokenized stock (the stock book's pools) */
   stock?: { ticker: string; issuer: string } | null;
@@ -43,12 +49,14 @@ export interface ScreenContext {
   /** the flow scout's last hour for this pool (src/scouts/flow.ts), when the scout is running and fresh */
   flow?: FlowContext | null;
   alternatives: { name: string; score: number; feeToTvl24hPct: number | null; tvlUsd: number | null }[];
-  /** the fast watch's surges (src/hot): what printed fees in the last hour, across every venue */
+  /** the fast watch's surges (src/hot): what printed fees in the last hour, across every venue, and this pool's own row whatever its flags */
   hot?: {
     name: string;
     venue: string;
     tradable: boolean;
     thisPool: boolean;
+    /** false: this pool's own row, shown for its flags and its 1h move, which is not on the tradable hot list (flagged new, dumping or wild, or under the list's floors); absent reads as a pick */
+    pick?: boolean;
     liquidityUsd: number | null;
     vol1hUsd: number | null;
     feeToTvlDailyPct: number | null;
@@ -114,7 +122,8 @@ export interface Observation {
   /** quote / quoteSymbol: the wallet's balance of the pool's quote token (absent or = sol for a SOL pool) */
   wallet: { address: string; sol: number; token: number; tokenSymbol: string; quote?: number; quoteSymbol?: string };
   analytics: PoolAnalytics | null;
-  state: { actionsToday: number; lastActionAt: number | null; lastMoveAt?: number | null; lastPrice: number | null; killSwitch: boolean };
+  /** hotHeldAt: position -> when the policy gave that band its one more cycle on a hot pool (RiskState.hotHeldAt) */
+  state: { actionsToday: number; lastActionAt: number | null; lastMoveAt?: number | null; lastPrice: number | null; killSwitch: boolean; hotHeldAt?: Record<string, number> };
   recent: JournalGlimpse[];
   screen: ScreenContext | null;
   /** the flow scout's reading for a pool that has no screen context (a pick off the board); a board pool carries it on `screen.flow` */
@@ -325,7 +334,7 @@ export function formatObservation(o: Observation): string {
     lines.push("Daily pace = what a dollar in the pool earned in the last hour, times 24. Acceleration = last hour versus the 24h rate.");
     for (const h of o.screen.hot) {
       lines.push(
-        `- ${h.thisPool ? "THIS POOL: " : ""}${h.name} on ${h.venue}${h.tradable ? "" : " (not tradable yet)"}: liquidity ${usdShort(h.liquidityUsd)}, vol 1h ${usdShort(h.vol1hUsd)}, daily pace ${r(h.feeToTvlDailyPct, 2)}%, acceleration ${r(h.acceleration, 1)}x, 1h move ${r(h.priceChange1hPct, 1)}%, heat ${r(h.heat, 0)}${h.surge ? ", SURGE" : ""}${h.flags.length ? ` [${h.flags.join(", ")}]` : ""}`,
+        `- ${h.thisPool ? "THIS POOL: " : ""}${h.name} on ${h.venue}${h.tradable ? "" : " (not tradable yet)"}${h.pick === false ? " (not on the tradable list)" : ""}: liquidity ${usdShort(h.liquidityUsd)}, vol 1h ${usdShort(h.vol1hUsd)}, daily pace ${r(h.feeToTvlDailyPct, 2)}%, acceleration ${r(h.acceleration, 1)}x, 1h move ${r(h.priceChange1hPct, 1)}%, heat ${r(h.heat, 0)}${h.surge ? ", SURGE" : ""}${h.flags.length ? ` [${h.flags.join(", ")}]` : ""}`,
       );
     }
     lines.push("");

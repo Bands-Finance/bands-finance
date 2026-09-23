@@ -99,6 +99,9 @@ desk: `readLearning` refuses a file whose `mode` is not the reader's, and so doe
 
 **What it moves.** A multiple on the seat the sizing rule would already have given (never above 1.0), and
 extra minutes on the sit-out the seat ranking already keeps (`sittingOut`, `METEORA_STOCK_REENTRY_MIN`).
+That sit-out starts at a rotation, at the end of an ask chain, and (since 22 Sep) at a DOWN exit: a stop, or a
+losing close of a band the price went through (`downExitOf` in `src/engine/exit.ts`). Before that it started
+only at a rotation, so the stretch this memory learned never applied to the exits that earned it.
 
 **The evidence.** On the real-money run, seats that ended ABOVE the band made +4.311 SOL over 38 closes
 with 29 winners. Seats that went DOWN through the band or hit the stop lost 2.401 SOL over 7 closes with

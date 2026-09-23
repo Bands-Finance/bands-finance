@@ -8,6 +8,7 @@
  *   hotRoutes(app)        GET /api/hot
  *   startHotWatch(opts)   a self-scheduling timer that never overlaps ticks and catches every error
  *   hotPicks(hot, opts)   the tradable surges, best heat first, for pickPools
+ *   hotPicksWithOwn(...)  the same, plus the decided pool's own row whatever its flags, for the policy
  *
  * Sources: GeckoTerminal trending (5m + 1h) finds what moves; GeckoTerminal's top PumpSwap pools
  * (HOT_PUMPSWAP_PAGES pages of 20) bring the biggest graduated pump.fun tokens, which the pair lane
@@ -715,4 +716,57 @@ export function hotPicks(hot: HotFile | null, o: HotPickOptions): HotRow[] {
     .filter((r) => o.tradable(r) && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC") && !blocked(r) && (r.liquidityUsd ?? 0) >= floor && r.heat > 0)
     .sort((a, b) => b.heat - a.heat)
     .slice(0, Math.max(0, o.max ?? 3));
+}
+
+/**
+ * THE LIST THE DESK DECIDES A POOL WITH: the tradable picks, plus THIS pool's own row whatever its flags, marked
+ * `pick: false` when hotPicks would not have handed it back. hotPicks is a list of pools worth PICKING, and it
+ * drops a row flagged dumping or wild before anything reads it; the policy deciding the pool read that same list,
+ * so its "flagged dumping/wild" and "last hour inside +/-15%" refusals could never fire (a row moving more than
+ * 15% in an hour is always flagged wild). The pick rule is unchanged for picking; this pool's flags, its 1h
+ * move and its heat now reach the policy that judges it (src/agent/policy.ts hotView reads `pick` as "on the
+ * hot list"). PURE.
+ */
+export function hotPicksWithOwn(hot: HotFile | null, address: string, o: HotPickOptions): (HotRow & { pick: boolean })[] {
+  const picks = hotPicks(hot, o).map((r) => ({ ...r, pick: true }));
+  if (picks.some((r) => r.address === address)) return picks;
+  const own = hot?.rows.find((r) => r.address === address);
+  return own ? [...picks, { ...own, pick: false }] : picks;
+}
+
+/** One row of the hot list as the observation carries it (src/agent/observation.ts ScreenContext.hot). */
+export interface HotContextRow {
+  name: string;
+  venue: string;
+  tradable: boolean;
+  thisPool: boolean;
+  /** false: this pool's own row, shown whatever its flags, which is not on the tradable list */
+  pick: boolean;
+  liquidityUsd: number | null;
+  vol1hUsd: number | null;
+  feeToTvlDailyPct: number | null;
+  acceleration: number | null;
+  priceChange1hPct: number | null;
+  heat: number;
+  flags: string[];
+  surge: boolean;
+}
+
+/** PURE. The fast watch's list as the observation shows it: every venue, launch rows included, and this pool's own row whatever its flags. */
+export function hotContextFor(hot: HotFile | null, address: string, launch: LaunchEnv | null, tradableVenue: (venue: string) => boolean): HotContextRow[] {
+  return hotPicksWithOwn(hot, address, { tradable: () => true, max: 8, launch }).map((r) => ({
+    name: r.name,
+    venue: r.venue,
+    tradable: tradableVenue(r.venue) && (r.quoteSymbol === "SOL" || r.quoteSymbol === "USDC"),
+    thisPool: r.address === address,
+    pick: r.pick,
+    liquidityUsd: r.liquidityUsd,
+    vol1hUsd: r.vol1hUsd,
+    feeToTvlDailyPct: r.feeToTvlDailyPct,
+    acceleration: r.acceleration,
+    priceChange1hPct: r.priceChange1hPct,
+    heat: r.heat,
+    flags: r.flags,
+    surge: r.surge,
+  }));
 }

@@ -6,14 +6,16 @@
  *   - out-of-range persistence: a band must sit out of range for ENGINE_OUT_OF_RANGE_SEC before
  *     the LLM may move it (Meridian's OUT_OF_RANGE_MIN_MS), unless it is already down half its stop.
  *   - knife: a drop over the trailing 30 min past ENGINE_KNIFE_PCT blocks opens in that pool
- *     (Meridian's knife gate on tick drift).
+ *     (Meridian's knife gate on tick drift); so does a drop since the last cycle past
+ *     ENGINE_CYCLE_KNIFE_PCT, and a slow one past ENGINE_SLOW_KNIFE_PCT over ENGINE_SLOW_KNIFE_MIN.
  * The global cooldown between actions stays in the guards (minSecondsBetweenActions).
  * Nothing here touches the disk or the network; the loop persists the state it returns.
  */
 import type { Decision } from "../agent/schema";
 import type { RiskLimits } from "../risk/limits";
 import type { PriceSample, RiskState } from "../risk/state";
-import type { PositionSnapshot } from "../tools/dlmm";
+import type { PoolSnapshot, PositionSnapshot } from "../tools/dlmm";
+import { binWalkImpactPct } from "../paper/impact";
 import { askStopBasis } from "./askExit";
 import { unclaimedFeesSol, type CollectSnapshot } from "./collect";
 
@@ -95,11 +97,12 @@ export function outOfRangeSec(outOfRangeSince: Record<string, number> | undefine
 /**
  * How long a band should sit out of range before moving it is worth the cost.
  *
- * Out of range it earns nothing, so every minute costs the fees it would have made. Moving costs the
- * rent that does not come back plus the swap fees on the token half. Wait until the foregone fees
- * cover the move, and no longer: on a venue where a move costs a dollar that is a minute or two, and
- * a tight band can be re-centred all day. Floors at `minSec` so a pool with no fee estimate still has
- * a brake, and caps at an hour so a dead band is not held forever.
+ * Out of range it earns nothing, so every minute costs the fees it would have made. Moving costs what
+ * waiting could save (poolMoveCostSol): the rent a re-lay leaves behind, and, where ENGINE_WAIT_COUNTS_SALE
+ * says so, the sale of the token a band the price went through holds. Wait until the foregone fees cover
+ * the move, and no longer: on a venue where a move costs a dollar that is a minute or two, and a tight
+ * band can be re-centred all day. Floors at `minSec` so a pool with no fee estimate still has a brake, and
+ * caps at an hour so a dead band is not held forever.
  */
 export function moveAfterSec(moveCostUsd: number, feesPerDayUsd: number | null, minSec: number, maxSec = 3600): number {
   if (!feesPerDayUsd || feesPerDayUsd <= 0 || moveCostUsd <= 0) return minSec;
@@ -201,6 +204,99 @@ export function knifeReason(history: readonly PriceSample[] | undefined, now: nu
   return `knife: -${drop.toFixed(1)}% in ${Math.round(windowMs / 60000)} min (limit ${knifePct}%)`;
 }
 
+/**
+ * The drop since the pool's price one cycle ago, in percent (positive = fell): the latest sample against the
+ * oldest one taken inside 1.5 cycles before it. Null when there is no such sample: a pool the desk has not
+ * watched in the last cycle or so (a pick coming back after a sit-out, a restart) has no "last cycle", and a
+ * reference hours old is the slower knives' question, not this one.
+ */
+export function cycleDropPct(history: readonly PriceSample[] | undefined, cycleMs: number): number | null {
+  if (!history || history.length < 2 || !(cycleMs > 0)) return null;
+  const sorted = [...history].sort((a, b) => a.ts - b.ts);
+  const latest = sorted[sorted.length - 1];
+  const ref = sorted.find((s) => s !== latest && s.ts < latest.ts && latest.ts - s.ts <= cycleMs * 1.5);
+  if (!ref || !(ref.price > 0)) return null;
+  return (1 - latest.price / ref.price) * 100;
+}
+
+/** The knives in force (ENGINE_KNIFE_PCT and the two below it); 0 turns the per-cycle or the slow one off. */
+export interface KnifeEnv {
+  /** ENGINE_KNIFE_PCT over the trailing 30 min */
+  knifePct: number;
+  /** ENGINE_CYCLE_KNIFE_PCT: the drop since the last cycle that refuses an open (0 = off) */
+  cycleKnifePct: number;
+  /** the cycle the per-cycle knife reads, ms (CYCLE_INTERVAL_SEC) */
+  cycleMs: number;
+  /** ENGINE_SLOW_KNIFE_PCT over ENGINE_SLOW_KNIFE_MIN: a bleed, not a crash (0 = off) */
+  slowKnifePct: number;
+  slowKnifeMs: number;
+}
+
+/**
+ * The knife reason for a pool, or null, from the three knives in the order they are read:
+ *   - the 30-minute knife (ENGINE_KNIFE_PCT): a crash;
+ *   - the PER-CYCLE knife (ENGINE_CYCLE_KNIFE_PCT): the last cycle alone fell that far. A flash crash of -40%
+ *     in ten minutes read -19.9% at the cycle halfway down it, under the 20% the 30-minute knife wants, and the
+ *     desk opened its biggest seat there;
+ *   - the SLOW knife (ENGINE_SLOW_KNIFE_PCT over ENGINE_SLOW_KNIFE_MIN): a bleed. -5% an hour never trips a
+ *     30-minute knife, and the desk re-laid a full seat into it every hour until the circuit breaker stopped it.
+ * Every one of them only refuses opens and re-lays; exits never read a knife as a reason to stay.
+ */
+export function knivesReason(history: readonly PriceSample[] | undefined, now: number, env: KnifeEnv): string | null {
+  const crash = knifeReason(history, now, env.knifePct);
+  if (crash) return crash;
+  if (env.cycleKnifePct > 0) {
+    const drop = cycleDropPct(history, env.cycleMs);
+    if (drop !== null && drop > env.cycleKnifePct) return `knife: -${drop.toFixed(1)}% since the last cycle (limit ${env.cycleKnifePct}% a cycle)`;
+  }
+  if (env.slowKnifePct > 0 && env.slowKnifeMs > 0) return knifeReason(history, now, env.slowKnifePct, env.slowKnifeMs);
+  return null;
+}
+
+/**
+ * How far the price travelled in the window BEFORE this cycle's sample: the same range as rangeOverWindowPct
+ * over every sample but the latest. The difference between the two is the part of the hour's travel the last
+ * move made on its own, which widens a band and must not also grow its seat (src/agent/policy.ts sizeBand).
+ */
+export function priorRangeOverWindowPct(history: readonly PriceSample[] | undefined, now: number, windowMs = 60 * 60 * 1000): number | null {
+  if (!history || history.length < 3) return null;
+  const sorted = [...history].sort((a, b) => a.ts - b.ts);
+  return rangeOverWindowPct(sorted.slice(0, -1), now, windowMs);
+}
+
+/**
+ * PURE. Whether a close ended its seat on the DOWN side, and how: the stop (a STOP directive or the guards'
+ * stop-loss override), or a plain close of a quote-only band the price went THROUGH (it holds the token now)
+ * at a loss against what went in. A down exit counts on the bench ladder beside a stop (src/engine/breakers.ts)
+ * and starts the pool's sit-out (RiskState.rotatedOutAt), which is the wait the learner stretches for a pool
+ * that keeps ending this way (src/desk/learning.ts reentryMinFor). A slow bleed never stops a band: it runs
+ * through it an hour at a time, and until 22 Sep neither the bench nor the sit-out ever heard of it.
+ *
+ * Not a down exit: an ask exit (the chain is still working the token; its own end is judged there), a
+ * re-lay, a straddle or a pool of our own (the quote-only rule is about bid bands; a straddle's re-centre and
+ * its hedge are the stock lane's), and a close that did not lose.
+ */
+export function downExitOf(i: {
+  /** the close landed this cycle */
+  closed: boolean;
+  /** a STOP directive, or the guards overrode the proposal with the stop-loss close */
+  stopped: boolean;
+  action: Decision["action"];
+  exitAsk?: boolean;
+  /** the closed band as observed this cycle, with its entry */
+  band: Pick<PositionSnapshot, "inRange" | "binsFromRange" | "valueInSol" | "entryValueSol"> | null | undefined;
+  quoteSide: "X" | "Y";
+  /** a quote-only bid band's pool (not a stock, a basis pool or a pair of ours) */
+  quoteOnly: boolean;
+}): "stop" | "through-band" | null {
+  if (!i.closed || i.exitAsk) return null;
+  if (i.stopped) return "stop";
+  if (!i.quoteOnly || i.action !== "CLOSE_POSITION" || !i.band || i.band.inRange) return null;
+  const through = i.quoteSide === "Y" ? i.band.binsFromRange < 0 : i.band.binsFromRange > 0;
+  const entry = i.band.entryValueSol;
+  return through && typeof entry === "number" && entry > 0 && i.band.valueInSol < entry ? "through-band" : null;
+}
+
 /** Drop the per-band bookkeeping of a band that no longer exists. */
 export function forgetBand(state: RiskState, position: string): void {
   delete state.entryValueSol[position];
@@ -210,4 +306,69 @@ export function forgetBand(state: RiskState, position: string): void {
   if (state.launchBands) delete state.launchBands[position];
   if (state.askBands) delete state.askBands[position];
   if (state.proposalBands) delete state.proposalBands[position];
+  if (state.hotHeldAt) delete state.hotHeldAt[position];
+}
+
+/**
+ * PURE. WHAT LEAVING A BAND COSTS, SOL: the sale of the token it holds (its token and token fees, at the
+ * sale's fee plus the price impact of walking the pool's bins with it) and the rent a fresh band of the same
+ * width at the price would leave behind (the venue's open cost less what comes back on close).
+ */
+export function bandMoveCostSol(i: {
+  /** the token the band would hand back and the close would sell, in token units */
+  tokenUi: number;
+  tokenPriceInSol: number;
+  /** the sale's fee, percent */
+  feePct: number;
+  /** the sale's price impact, percent */
+  impactPct: number;
+  /** the rent the re-lay leaves behind, SOL */
+  relaySunkSol: number;
+}): { saleSol: number; relaySol: number; totalSol: number } {
+  const tokenSol = Math.max(0, i.tokenUi) * Math.max(0, i.tokenPriceInSol);
+  const pct = Math.max(0, i.feePct) + Math.max(0, i.impactPct);
+  const saleSol = Number.isFinite(tokenSol * pct) ? (tokenSol * pct) / 100 : 0;
+  const relaySol = Number.isFinite(i.relaySunkSol) ? Math.max(0, i.relaySunkSol) : 0;
+  return { saleSol, relaySol, totalSol: saleSol + relaySol };
+}
+
+/**
+ * PURE. WHAT WAITING CAN SAVE, SOL: the cost the out-of-range wait (moveAfterSec) weighs the missed fees against,
+ * for the costliest band in a pool. It used to read the venue's bare open cost alone, the active bin's array, which
+ * on a Meteora pool whose arrays exist is 0: every move waited the 120 s floor whatever it cost.
+ *
+ *   - a band the price ran off on its QUOTE side (all quote) waits for its re-lay: the rent a fresh band of its own
+ *     width, laid from the price, leaves behind (`relaySunkSol`). If the price comes back, that rent is never paid.
+ *   - a quote-only band the price went THROUGH (all token) is sold on the way out and re-laid lower. Its sale and its
+ *     re-lay are paid whenever it leaves, unless the price comes back, and waiting holds the token's price risk,
+ *     which this arithmetic cannot see. Counted in full (the sale plus the re-lay) only under ENGINE_WAIT_COUNTS_SALE
+ *     (`countSale`). The scenario harness ran it both ways on 22 Sep: counting the sale held such bands to the
+ *     hour's cap and cost 17 to 19.5 SOL over three seeds of each wide chop and 1.1 to 2.6 of each bleed and
+ *     downtrend, for 3.6 gained in a tight chop; and of the 9 bands the books closed through their range whose pool
+ *     was read again within the hour, 8 never came back into range in it. Off, it keeps the bare rent, as before.
+ *   - a straddle's pool, or a pool of our own (`quoteOnly` false), keeps the bare rent: a straddle prices its own
+ *     re-centre swap in the policy (recentreCost), and nobody else trades a pool of ours.
+ */
+export function poolMoveCostSol(
+  positions: readonly Pick<PositionSnapshot, "lowerBinId" | "upperBinId" | "inRange" | "binsFromRange" | "amountX" | "amountY" | "feeX" | "feeY">[],
+  s: Pick<PoolSnapshot, "bins" | "activeBinId" | "binStep" | "tokenPriceInSol">,
+  o: { quoteSide: "X" | "Y"; tokenPriceInQuote: number; quoteOnly: boolean; countSale: boolean; feePct: number; impactCapPct: number; rentOnlySol: number; relaySunkSol: (binsBelowActive: number, binsAboveActive: number) => number },
+): number {
+  const rentOnly = Math.max(0, o.rentOnlySol);
+  if (!o.quoteOnly) return rentOnly;
+  return positions.reduce((worst, p) => {
+    const width = Math.max(0, p.upperBinId - p.lowerBinId);
+    let relaySunkSol = rentOnly;
+    try {
+      relaySunkSol = o.relaySunkSol(o.quoteSide === "Y" ? width : 0, o.quoteSide === "Y" ? 0 : width);
+    } catch {
+      /* a plan the venue cannot cost keeps the bare estimate */
+    }
+    const through = !p.inRange && (o.quoteSide === "Y" ? p.binsFromRange < 0 : p.binsFromRange > 0);
+    if (!through) return Math.max(worst, relaySunkSol);
+    if (!o.countSale) return Math.max(worst, rentOnly);
+    const tokenUi = o.quoteSide === "X" ? p.amountY + p.feeY : p.amountX + p.feeX;
+    const impactPct = tokenUi > 0 ? Math.min(o.impactCapPct, binWalkImpactPct({ bins: s.bins ?? [], activeBinId: s.activeBinId, quoteSide: o.quoteSide, binStepBps: s.binStep, tokenPriceInQuote: o.tokenPriceInQuote }, "sell", tokenUi)) : 0;
+    return Math.max(worst, bandMoveCostSol({ tokenUi, tokenPriceInSol: s.tokenPriceInSol, feePct: tokenUi > 0 ? o.feePct : 0, impactPct, relaySunkSol }).totalSol);
+  }, rentOnly);
 }
