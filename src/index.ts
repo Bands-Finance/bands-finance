@@ -115,15 +115,16 @@ import {
   regimeView,
   saveEngineState,
 } from "./engine/breakers";
-import { clearFeesPending, skimPlan, trackFeesPending, unclaimedFeesSol } from "./engine/collect";
-import { CARRY_HAIRCUT_PCT, carriedBands, carriedUsdToSol, marksHealth, marksNotedCycle, marksStale, MARKS_STALE_CYCLES, noteMarks, persistMarksHealth, readOfBook, recordMarks, restoreMarksHealth } from "./engine/marks";
+import { skimPlan, trackFeesPending, unclaimedFeesSol } from "./engine/collect";
+import { blindExposure, CARRY_HAIRCUT_PCT, carriedBands, carriedUsdToSol, marksHealth, marksNotedCycle, marksStale, MARKS_STALE_CYCLES, NO_BLIND_EXPOSURE, noteMarks, persistMarksHealth, readOfBook, recordMarks, restoreMarksHealth, type BlindExposure } from "./engine/marks";
 import { marketDrawdownPct, stopEntryOf } from "./engine/exit";
 import { askBandRecord, askExitEnv, askExitOf, askOnlyPools, askPoolsOf, isAskExit, type AskBand } from "./engine/askExit";
 import { sellResidue, swapImpactEnv } from "./executor";
 import { engineDirective } from "./engine/directives";
-import { bidRunWay, downExitOf, forgetBand, knifeReason, knivesReason, moveAfterSec, outOfRangeSec, poolMoveCostSol, priorRangeOverWindowPct, rangeOverWindowPct, recordPrice, rollStop, trackOutOfRange } from "./engine/exit";
+import { bidRunWay, downExitOf, forgetBand, knifeReason, knivesReason, moveAfterSec, outOfRangeSec, poolMoveCostSol, priorRangeOverWindowPct, rangeOverWindowPct, recordPrice, trackOutOfRange } from "./engine/exit";
 import { collectsOnDay, dayOf, readLedgerRows, realizedOnDaySol, rowsOf, workingSol } from "./engine/ledger";
 import { acquireLock, heartbeat, releaseLock, startWatchdog } from "./engine/watchdog";
+import { bookExecution } from "./engine/bookkeeping";
 import { assertPaperEnv, bandsInPool, emptyBook, loadPaperBook, markPool, paperBinRows, paperEnabled, paperEnv, paperHedgeEquityUsd, paperPoolTokenInventory, paperTokenBalance, poolsWithBands, savePaperBook, type PaperBook, type PaperEnv } from "./paper";
 import { backpack, tickerOfXstock } from "./tools/backpack";
 import { baseInventoryOf } from "./engine/hedge";
@@ -188,6 +189,8 @@ interface App {
   memeHistory: Map<string, HistoryRecord>;
   /** Meteora's tokenized-stock pools (the RWA category, src/screener/meteoraStocks.ts) and when they were read */
   meteoraStocks: { at: number; pools: MeteoraStockPool[] } | null;
+  /** the held pools this cycle could not observe, as the pool count and the exposure limit still count them (src/engine/marks.ts) */
+  blindHeld: BlindExposure;
 }
 
 interface Observed {
@@ -1361,74 +1364,9 @@ function paperFeeSource(app: App, address: string): { fees24hUsd: number | null;
   return null;
 }
 
-/**
- * `launch` marks a band opened through the launch lane: its stop is rolled tighter (LAUNCH_STOP_PCT
- * in place of STOP_LOSS_PCT, same jitter, same place on disk) and its opening mark is recorded in
- * state.launchBands, which is what the EXPIRE directive reads for the maximum hold and the
- * volume-fade exit, and what the picker counts against LAUNCH_MAX_SEATS.
- */
+/** The execution's bookkeeping on the risk state (src/engine/bookkeeping.ts), then the state saved. */
 function updateState(state: RiskState, exec: ExecutionResult, positions: PositionSnapshot[], snapshot: PoolSnapshot, launch?: { env: LaunchEnv; vol1hUsd: number | null } | null, ask?: { band: AskBand; stopPct: number } | null): void {
-  state.lastPrice = snapshot.activePrice;
-  for (const p of positions) {
-    if (!(p.address in state.entryValueSol)) state.entryValueSol[p.address] = p.entryValueSol ?? p.valueInSol;
-  }
-  if (exec.txs.length > 0) {
-    state.actionsToday += 1;
-    state.lastActionAt = Date.now();
-    // Band moves start this pool's cooldown; a fee claim does not.
-    // a move that landed, and a move that was SENT and failed: both start the per-pool cooldown, so a
-    // failing open is not re-sent every cycle until the daily cap (fees are paid either way)
-    if (exec.opened || exec.closed || exec.txs.some((t) => !t.ok)) (state.lastMoveByPool ??= {})[snapshot.address] = Date.now();
-  }
-  // the band closed was an ask band (read before forgetBand drops it): its final close puts the pool on the bench for a while,
-  // and a re-lay keeps the chain's rolled stop rather than rolling a new one (a fresh roll could land under the chain's drawdown)
-  const closedAsk = exec.closed ? state.askBands?.[exec.closed] : undefined;
-  const carriedStop = exec.closed && closedAsk ? state.stops?.[exec.closed] : undefined;
-  // a proposal band re-laid stays a proposal band: the auto-approval budget follows the capital, not the address
-  const carriedProposal = exec.closed ? state.proposalBands?.[exec.closed] : undefined;
-  if (exec.ok && exec.opened) {
-    state.entryValueSol[exec.opened.address] = exec.opened.entryValueSol;
-    // an ask band's stop is the chain's (EXIT_ASK_STOP_PCT, measured against the chain's basis by stopEntryOf), a launch band's the lane's
-    (state.stops ??= {})[exec.opened.address] = ask && carriedStop ? carriedStop : rollStop(riskLimits, Math.random, ask ? ask.stopPct : launch ? launch.env.stopPct : null);
-    if (launch && !ask) (state.launchBands ??= {})[exec.opened.address] = { pool: snapshot.address, openedAt: Date.now(), vol1hUsd: launch.vol1hUsd };
-    if (ask) (state.askBands ??= {})[exec.opened.address] = ask.band;
-    if (carriedProposal && exec.closed !== exec.opened.address) (state.proposalBands ??= {})[exec.opened.address] = carriedProposal;
-  }
-  // the close landed whether or not the sale after it did: the band is gone, its records go with it
-  if (exec.closed) forgetBand(state, exec.closed);
-  // the seat's tenure in this pool: starts at the first open, survives a re-lay (a close and an open), ends at a plain close.
-  // An ask band is not a seat: laying one ends the tenure, and the pool sits out a while after the chain's end (the token
-  // just ran through us; the lanes may seat it again after METEORA_STOCK_REENTRY_MIN).
-  if (exec.ok && exec.opened && !ask && !state.seatSince?.[snapshot.address]) (state.seatSince ??= {})[snapshot.address] = Date.now();
-  if (((exec.closed && !exec.opened) || (exec.ok && exec.opened && ask)) && state.seatSince) delete state.seatSince[snapshot.address];
-  if (closedAsk && !(exec.ok && exec.opened && ask)) (state.rotatedOutAt ??= {})[snapshot.address] = Date.now();
-  // a claim restarts the "pending above the floor" clock: the next claim by that rule is two hours away, not next cycle
-  if (exec.ok && exec.claimed) clearFeesPending(state, exec.claimed);
-  // what an exit could not sell under the caps waits in the wallet; the residue pass comes back for it every cycle
-  if (exec.residue) {
-    const prev = state.residues?.[exec.residue.mint];
-    // a new leftover starts the ladder over, and it already counts what an older residue left in the wallet (the
-    // liquidation on a sweep book sells the wallet's whole holding): it replaces the old record, never adds to it
-    if (prev) console.log(`[cycle ${exec.residue.cycle}] residue ${exec.residue.symbol}: ${prev.amountUi} on record replaced by this exit's leftover of ${exec.residue.amountUi}`);
-    (state.residues ??= {})[exec.residue.mint] = exec.residue;
-  }
-  // a made pair's pool landed on chain: remember it is ours, and which real address the alias stands for
-  if (exec.created && snapshot.pair) {
-    (state.pairPools ??= {})[exec.created.pool] = {
-      lbPair: exec.created.lbPair,
-      mint: snapshot.pair.mint,
-      symbol: snapshot.pair.symbol,
-      ...(snapshot.pair.stock ? { stock: snapshot.pair.stock } : {}),
-      quote: snapshot.pair.quote,
-      binStep: snapshot.binStep,
-      feeBps: Math.round(snapshot.baseFeePct * 100),
-      createdAt: Date.now(),
-      rentSol: exec.created.rentSol,
-      refPool: snapshot.pair.refPool,
-      refVenue: snapshot.pair.refVenue,
-      sig: exec.created.sig,
-    };
-  }
+  bookExecution(state, exec, positions, snapshot, launch, ask);
   saveState(state);
 }
 
@@ -1563,12 +1501,14 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // this one opened or closed since (app.exposureDelta): with one band allowed the whole stake, two
   // opens in a pass sized from the cycle-start read would each take it.
   const movedSol = [...app.exposureDelta].filter(([a]) => a !== o.address).reduce((t, [, d]) => t + d, 0);
+  // a held pool this cycle could not read still holds its seat and its bands: counted at their last mark (app.blindHeld)
+  const blind = app.blindHeld;
   const portfolio = {
     activePools: all.map((x) => x.snapshot.label),
     // an ask band (src/engine/askExit.ts) is inventory being worked off, not a seat: a pool holding only ask bands leaves its seat free
-    poolsWithBands: others.filter((x) => x.positions.some((p) => !state.askBands?.[p.address])).length,
+    poolsWithBands: others.filter((x) => x.positions.some((p) => !state.askBands?.[p.address])).length + blind.seats,
     maxActivePools: config.maxActivePools,
-    otherExposureSol: Math.max(0, others.reduce((s, x) => s + x.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + movedSol),
+    otherExposureSol: Math.max(0, others.reduce((s, x) => s + x.positions.reduce((t, p) => t + p.valueInSol, 0), 0) + movedSol + blind.exposureSol),
   };
   const screen = screenContext(app, o.address, state, snapshot);
   // the flow scout's last hour for this pool, when its file is fresh (src/scouts/flow.ts)
@@ -1947,9 +1887,11 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
       ...(isAskExit(verdict.decision) ? { ask: true } : {}),
     };
   }
+  // a rehearsal (dry-run) books nothing on the live state: src/engine/bookkeeping.ts
+  const rehearsal = execution.mode === "dry-run";
   if (execution.ok && (execution.opened || execution.closed)) {
     app.movedThisCycle = true;
-    if (directive?.kind === "ROTATE" && execution.closed) state.rotatedOutAt = { ...(state.rotatedOutAt ?? {}), [o.address]: now };
+    if (directive?.kind === "ROTATE" && execution.closed && !rehearsal) state.rotatedOutAt = { ...(state.rotatedOutAt ?? {}), [o.address]: now };
     const closedSol = execution.closed ? (positions.find((p) => p.address === execution.closed)?.valueInSol ?? 0) : 0;
     app.exposureDelta.set(o.address, (app.exposureDelta.get(o.address) ?? 0) + (execution.opened?.entryValueSol ?? 0) - closedSol);
   }
@@ -1962,7 +1904,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     : null;
   if (askLaid) console.log(`${tag} ask band ${execution.opened!.address.slice(0, 6)}: ${askLaid.band.relays > 0 ? `re-lay ${askLaid.band.relays} of the chain from ${askLaid.band.from.slice(0, 6)}` : `the chain starts here`}, basis ${askLaid.band.basisSol.toFixed(4)} SOL${askLaid.band.bankedSol > 0 ? ` less ${askLaid.band.bankedSol.toFixed(4)} banked` : ""}, stop ${askLaid.stopPct}% under it${askExitEnv(process.env).maxHoldMin > 0 ? `, ${Math.max(0, Math.round(askExitEnv(process.env).maxHoldMin - (now - askLaid.band.since) / 60_000))} min left` : ""}`);
   // a band an outside proposal laid: the auto-approval budget counts it until it closes (src/platform/autoDecide.ts)
-  if (proposal && !proposalRefusal && proposal.kind === "OPEN_BAND" && execution.ok && execution.opened && verdict.decision.action === "OPEN_POSITION") {
+  if (proposal && !proposalRefusal && proposal.kind === "OPEN_BAND" && execution.ok && execution.opened && verdict.decision.action === "OPEN_POSITION" && !rehearsal) {
     (state.proposalBands ??= {})[execution.opened.address] = { proposal: proposal.id, pool: o.address, at: now };
   }
   // A DOWN EXIT (src/engine/exit.ts downExitOf): the stop, or a quote-only band closed after the price went through it,
@@ -1974,8 +1916,9 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // replayed on 22 Sep: with the bench entry lifted too it lost 24 SOL on both 5-minute models and wide chop was no
   // better; the sit-out alone gained 1 to 2.5 in wide chop and lost it back in bleeds; waiting for the band's entry
   // edge changed nothing. It stands until an acceptance check that keeps the wide-chop cell says otherwise.
+  // A rehearsal (dry-run) closed nothing: no sit-out, no bench entry (src/engine/bookkeeping.ts).
   const downExit = downExitOf({
-    closed: execution.ok && !!execution.closed && !execution.opened,
+    closed: execution.ok && !!execution.closed && !execution.opened && !rehearsal,
     stopped: directive?.kind === "STOP" || verdict.overrides.some((v) => v.startsWith("stop-loss")),
     action: verdict.decision.action,
     exitAsk: isAskExit(verdict.decision),
@@ -2041,7 +1984,8 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   }
 
   // A down exit counts against the pool on the bench ladder: a stop-loss close that went through, and a losing close of
-  // a band the price went through (a slow bleed never stops a band; it runs through one an hour at a time).
+  // a band the price went through (a slow bleed never stops a band; it runs through one an hour at a time). A rehearsal's
+  // close is none (downExit above).
   if (downExit) {
     recordStop(app.engine, o.address, now);
     saveEngineState(app.engine);
@@ -2390,6 +2334,21 @@ async function runIteration(app: App): Promise<void> {
       if (err instanceof QuotePriceUnknownError || err instanceof UnsupportedQuoteError) console.log(`[cycle ${app.cycle}] skipping ${address}: ${err.message}`);
       else console.error(`[cycle ${app.cycle}] could not observe ${address}: ${(err as Error).message}`);
     }
+  }
+
+  // THE BLIND HELD POOLS: a pool holding bands whose read failed this cycle is not among the observed, and the pool count and
+  // the exposure limit are read from the observed. Its seat and its bands (at their last mark) are carried into every decision.
+  {
+    const st = loadState();
+    app.blindHeld = blindExposure({
+      held: withPositions,
+      observed: observed.map((o) => o.address),
+      marks: app.engine.bandMarks,
+      entryValueSol: st.entryValueSol,
+      metaPool: Object.fromEntries(Object.entries(st.bandMeta ?? {}).map(([a, meta]) => [a, meta.pool] as const)),
+      askBands: st.askBands,
+    });
+    if (app.blindHeld.pools.length) console.log(`[cycle ${app.cycle}] ${app.blindHeld.pools.length} held pool(s) not read this cycle (${app.blindHeld.pools.map((a) => a.slice(0, 6)).join(", ")}): ${app.blindHeld.seats} seat(s) and ${app.blindHeld.exposureSol.toFixed(4)} SOL of bands still count against the limits`);
   }
 
   // Price history for the knife check, then the board regime for this iteration.
@@ -2812,6 +2771,7 @@ async function main(): Promise<void> {
     movedThisCycle: false,
     swappedThisCycle: new Set(),
     exposureDelta: new Map(),
+    blindHeld: NO_BLIND_EXPOSURE,
     flowWatch: new Map(),
     fadeStreak: new Map(),
     predictedYield: new Map(),

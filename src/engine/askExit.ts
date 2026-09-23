@@ -140,7 +140,9 @@ export function askOpenParams(tokens: number, s: PoolSnapshot, env: Pick<AskExit
  * PURE. A CLOSE that would sell the token a band hands back, turned into the ask exit: a REBALANCE that
  * closes the same band and lays its token (and the wallet's) as an ask band, marked exitAsk. Null when
  * the close should stay a sale: the ask exit is off, the band is itself an ask band (its close is the
- * chain's end), the token is worth less than the minimum, or the position is not on the book.
+ * chain's end), the token is worth less than the minimum, the position is not on the book, or the token
+ * charges a Token-2022 transfer fee: every ask laid pays it into the pool and again back out (a TACZ ask
+ * of 48,923 came back as 47,455 on 18 Sep), more than the pool fee the ask exit saves over one sale.
  */
 export function askExitOf(decision: Decision, i: AskExitInput): Decision | null {
   if (!i.env.on || decision.action !== "CLOSE_POSITION" || !decision.positionAddress) return null;
@@ -148,6 +150,7 @@ export function askExitOf(decision: Decision, i: AskExitInput): Decision | null 
   if (!p) return null;
   if (i.askBands?.[p.address]) return null;
   const s = i.snapshot;
+  if ((s.baseToken.transferFee?.bps ?? 0) > 0) return null;
   const tokens = baseTokenOf(p, s) + Math.max(0, i.walletToken);
   const worthSol = tokens * s.tokenPriceInSol;
   if (!(worthSol >= i.env.minSol) || !(worthSol > 0)) return null;

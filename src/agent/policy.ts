@@ -85,6 +85,7 @@ import { applyTuning, readTuningCached, tuneEnv } from "../learn/lessons";
 import { FEE_SHARE_DEFAULT, factorFor, learnEnv, readLearningCached, type Lane, type LearningState } from "../desk/learning";
 import { OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, quoteOf, type PoolSnapshot, type PositionSnapshot, type QuoteView } from "../tools/dlmm";
 import { jupiterEnv, meteoraOnlyRoutes } from "../tools/jupiter";
+import { transferFeeShare } from "../tools/transferFee";
 import { bookEnv, type Book } from "../venues/env";
 import type { Observation } from "./observation";
 import { holdDecision, type Decision, type OpenParams } from "./schema";
@@ -622,8 +623,10 @@ export interface SeatEarnings {
   sharePct: number;
   feesPerDayUsd: number;
   yieldPctPerDay: number;
-  /** rent that never comes back, plus the swap round trip on a straddle's token half */
+  /** rent that never comes back, plus the swap round trip on a straddle's token half, plus a fee mint's transfer fees on the token leg */
   costUsd: number;
+  /** the part of costUsd a Token-2022 transfer fee takes (0 for a mint without one) */
+  transferFeeUsd: number;
   paybackHours: number | null;
   /** the lane this seat is learned in */
   lane: Lane;
@@ -660,7 +663,12 @@ export function seatEarnings(o: Observation, x: PolicyExtras, seatSol: number, s
   // above 0.5 whatever is learned. Day one is byte-identical to the old line.
   const lane = laneOf(o);
   const feeShare = Math.min(FEE_SHARE_DEFAULT, Math.max(0, pe.feeShare?.[lane] ?? FEE_SHARE_DEFAULT));
-  const feesPerDayUsd = poolFeesPerDayUsd * (Math.min(sharePct, 50) / 100) * feeShare;
+  // A TOKEN-2022 TRANSFER FEE (src/tools/transferFee.ts) keeps a cut of every move of the token. The half of the fees
+  // paid in the token (sellers pay in what they sell) pays it twice before it is SOL: the claim out of the pool and the
+  // sale into it. On 17-18 Sep seven 3% mints took 2.6 SOL of a 19.8 SOL book in 39 hours and the desk priced none of it.
+  const transferFee = o.snapshot.baseToken?.transferFee ?? null;
+  const tokenRoundTrip = transferFeeShare(transferFee, 2);
+  const feesPerDayUsd = poolFeesPerDayUsd * (Math.min(sharePct, 50) / 100) * feeShare * (1 - tokenRoundTrip / 2);
   const seatUsd = seatSol * solPriceUsd;
   const yieldPctPerDay = (feesPerDayUsd / seatUsd) * 100;
   // Rent: only the part that does not come back on close is a cost. The refundable share differs by
@@ -671,9 +679,13 @@ export function seatEarnings(o: Observation, x: PolicyExtras, seatSol: number, s
   const rentUsd = Math.max(0, openCost - refundable) * solPriceUsd;
   // A straddle buys its token half and sells it back: two swaps on half the seat.
   const swapUsd = straddle ? (seatUsd / 2) * (jupiterEnv().feePct / 100) * 2 : 0;
-  const costUsd = rentUsd + swapUsd;
+  // and the token leg's own round trip on a fee mint: a quote-only band the price runs through hands back the whole seat
+  // as token, which pays on the way out of the pool and again into the sale; a straddle's token half is bought, laid,
+  // taken back and sold, four moves
+  const transferFeeUsd = transferFee ? (straddle ? (seatUsd / 2) * transferFeeShare(transferFee, 4) : seatUsd * tokenRoundTrip) : 0;
+  const costUsd = rentUsd + swapUsd + transferFeeUsd;
   const paybackHours = feesPerDayUsd > 0 ? costUsd / (feesPerDayUsd / 24) : null;
-  return { seatUsd, poolFeesPerDayUsd, sharePct, feesPerDayUsd, yieldPctPerDay, costUsd, paybackHours, lane, feeShare, feeShareN: pe.feeShareN?.[lane] ?? 0, feeShareWhy: pe.feeShareWhy?.[lane] ?? null };
+  return { seatUsd, poolFeesPerDayUsd, sharePct, feesPerDayUsd, yieldPctPerDay, costUsd, transferFeeUsd, paybackHours, lane, feeShare, feeShareN: pe.feeShareN?.[lane] ?? 0, feeShareWhy: pe.feeShareWhy?.[lane] ?? null };
 }
 
 /** PURE. What the hold reason says about the share of face it priced at, when a lane has been calibrated. */
@@ -1195,7 +1207,7 @@ function entrySeatRefusal(o: Observation, x: PolicyExtras, env: PolicyEnv, hot: 
   if (earn && env.maxPaybackHours > 0 && earn.paybackHours !== null && earn.paybackHours > env.maxPaybackHours) {
     return {
       sep: ". ",
-      body: `Opening costs about $${r(earn.costUsd, 2)} in rent that does not come back and swap fees, and the seat earns about $${r(earn.feesPerDayUsd, 2)} a day, so it pays that back in ${r(earn.paybackHours, 1)}h, past the ${env.maxPaybackHours}h the policy will wait. ${poolClause(o, hot)}.`,
+      body: `Opening costs about $${r(earn.costUsd, 2)} in rent that does not come back and swap fees${earn.transferFeeUsd > 0 ? `, $${r(earn.transferFeeUsd, 2)} of it the ${r((o.snapshot.baseToken.transferFee?.bps ?? 0) / 100, 2)}% transfer fee ${o.snapshot.baseToken.symbol} charges on every move of the token` : ""}, and the seat earns about $${r(earn.feesPerDayUsd, 2)} a day, so it pays that back in ${r(earn.paybackHours, 1)}h, past the ${env.maxPaybackHours}h the policy will wait. ${poolClause(o, hot)}.`,
       headline: clip(`${r(earn.paybackHours, 0)}h to earn the rent back. Passing.`),
       branch: "not-worth",
       reason: `payback ${r(earn.paybackHours, 1)}h over the ${env.maxPaybackHours}h limit`,

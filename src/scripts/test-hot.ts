@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
 import {
+  boardFee,
   boardTop,
   DEXSCREENER_URL,
   detectSurges,
@@ -44,6 +45,7 @@ import {
 } from "../hot";
 import type { FeeCacheEntry, HotFile, HotHistoryRow, HotMetrics, HotRow, PoolSample } from "../hot";
 import type { ScreenedPool, ScreenResult } from "../screener/types";
+import { meteoraBoardFees } from "../screener/scan";
 
 let passed = 0;
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -213,6 +215,20 @@ async function main(): Promise<void> {
     assert.equal(heatOf(deep, ENV).heat, 100, "100%/day on a deep pool saturates");
     near(heat({ vol1hUsd: 20_000 }).heat, 100 * (Math.log10(3.4) / Math.log10(101)) * (0.6 + 0.4 * (Math.log10(10) / Math.log10(25))), 1e-3);
     assert.deepEqual(heat().flags, []);
+  });
+  await test("a Meteora board row is priced at base + variable (22 Sep review M9): a 1% pool that has moved is not read at a sliver of its fee, and outranks a 0.01% pool with the same flow", () => {
+    const sParams = { baseFactor: 10_000, baseFeePowerFactor: 0, variableFeeControl: 7_500 } as never;
+    const moved = boardRow({ address: "M1", name: "MEME / SOL", venue: "meteora-dlmm", rank: 3, ...meteoraBoardFees(100, sParams, { volatilityAccumulator: 1_000 } as never) });
+    // the scan stores the fee a trader pays now
+    near(moved.dynamicFeePct, 1.000075, 1e-12);
+    near(boardFee(moved), 1.000075, 1e-12);
+    // the board as it was written before the fix: the variable part alone
+    // a stale row reads at its base, never at 0.000075%
+    near(boardFee({ ...moved, dynamicFeePct: 0.000075 }), 1, 1e-12);
+    const thin = boardRow({ address: "M2", name: "LOW / SOL", venue: "meteora-dlmm", rank: 4, baseFeePct: 0.01, dynamicFeePct: 0.01 });
+    const hot = heat({ feePct: boardFee(moved) });
+    const cool = heat({ feePct: boardFee(thin) });
+    assert.ok(hot.heat > cool.heat, `${hot.heat} > ${cool.heat}`);
   });
   await test("heat: a pool with no fee is ordered by turnover, flagged fee-unknown, and loses to a known fee", () => {
     const known = heat({ feePct: 0.25 });

@@ -8,7 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { actionsOf, bookOf, deskBlocks, flowOf, flowTotalsOf, realEntries, realPoints, recordOf, statusOf, verdictOf } from "../../web/src/model";
-import { bookCycle, completeCycles, cycleEquity, cyclesOf, equitySeriesOf, summarize } from "../../web/src/derive";
+import { bookCycle, completeCycles, cycleEquity, cyclesOf, equityOf, equitySeriesOf, LIVE_POSITION_RENT_SOL, POSITION_RENT_SOL, rentOf, summarize } from "../../web/src/derive";
 import type { EquityHistoryPoint, JournalEntry, Position } from "../../web/src/types";
 import { dayWord, narrativeOf, noBookNarrative, num, sinceWord } from "../../web/src/narrative";
 import { trimEntries } from "../publish/live";
@@ -172,6 +172,19 @@ async function main() {
     const series = equitySeriesOf(fixture());
     assert.equal(series.length, 3, "the cut cycle is not a point");
     assert.ok(Math.abs(series[0].equity - cycleEquity(cycles[1])) < 1e-9);
+  });
+
+  await test("the rent a band gets back: its own figure when the journal carries it, else the chain's 0.0419 for a live band and the paper book's 0.0574 for a paper one", () => {
+    // 22 Sep review M4: a real position account holds (8120 + 128) x 5080 lamports since the rent change; the site added
+    // the SDK's 0.0574 to every live band, 0.0155 SOL of equity per band that no close would ever hand back
+    const b = band("r1", 5);
+    assert.ok(Math.abs(rentOf(b, { mode: "live" }) - 0.04189984) < 1e-12);
+    assert.equal(LIVE_POSITION_RENT_SOL, 0.04189984);
+    assert.ok(Math.abs(rentOf(b, { mode: "paper" }) - POSITION_RENT_SOL) < 1e-12);
+    assert.ok(Math.abs(rentOf({ ...b, rentSol: 0.05 }, { mode: "live" }) - 0.05) < 1e-12, "the journal's own figure wins");
+    const e = entry({ cycle: 1, min: 0, pool: "AAA", sol: 5, positions: [band("r1", 20), band("r2", 10)] });
+    const live = { ...e, mode: "live" } as JournalEntry;
+    assert.ok(Math.abs(equityOf(live) - equityOf(e) - 2 * (0.04189984 - 0.0574)) < 1e-9, "two live bands: 0.031 SOL less than the paper rule");
   });
 
   console.log("the book and the record");

@@ -657,9 +657,15 @@ async function main(): Promise<void> {
     const noFloor = { ...poorPool };
     process.env.POLICY_MIN_SEAT_YIELD_PCT = "0";
     const payback = policy.policyDecide(noFloor, yieldOn);
+    // a Token-2022 fee mint: the shared entry rules (entrySeatRefusal) still name the part of the cost its transfer fee takes
+    const feeMint = { ...noFloor, snapshot: { ...noFloor.snapshot, baseToken: { ...noFloor.snapshot.baseToken, transferFee: { bps: 300, maxUi: null } } } } as typeof rich;
+    const paybackFee = policy.policyDecide(feeMint, yieldOn);
     process.env.POLICY_MIN_SEAT_YIELD_PCT = "";
     assert.equal(payback.branch, "not-worth");
     assert.match(payback.reason, /payback .*h over the .*h limit/);
+    assert.doesNotMatch(payback.decision.reasoning, /transfer fee/);
+    assert.equal(paybackFee.branch, "not-worth");
+    assert.match(paybackFee.decision.reasoning, /^No band in .*\. Opening costs about \$[\d.]+ in rent that does not come back and swap fees, \$[\d.]+ of it the 3% transfer fee ANSEM charges on every move of the token, and the seat earns/);
   });
 
   await test("no band, score above the floor: OPEN a 24-bin SOL-only Spot band sized at the max band", () => {

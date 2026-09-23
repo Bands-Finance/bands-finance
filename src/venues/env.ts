@@ -6,7 +6,8 @@
  *                               that is tradable but not live runs in paper and dry-run only
  *   BOOK                        "all" (default) or "stocks": tokenized-stock pools are picked first
  *   STOCK_MIN_LIQUIDITY_USD     liquidity floor for the stock book (default 250000)
- *   PRIORITY_FEE_MICROLAMPORTS  compute-unit price for Raydium transactions (default 0)
+ *   PRIORITY_FEE_MICROLAMPORTS  compute-unit price for Raydium transactions (default 0); every legacy (Meteora)
+ *                               transaction takes it too when set, else the network's reading (src/tools/priorityFee.ts)
  * Pure functions of an env object so tests pin their own.
  */
 import { VENUE_IDS, type VenueId } from "./types";

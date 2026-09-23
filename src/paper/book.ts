@@ -12,6 +12,13 @@
  *   create a made pair (src/venues/pair.ts): the wallet pays the pool's creation rent, none of it refundable
  *          (rentSpentSol); the pool is recorded in pairPools so a later open there pays the seed's rent only
  *
+ * A Token-2022 TRANSFER FEE (src/tools/transferFee.ts; the snapshot's baseToken.transferFee, passed in as `transferFee`)
+ * is charged wherever the chain charges it: the band receives a deposit less the fee (its entry is what the wallet
+ * paid, so the fee shows at once in the band's mark), a close and a claim land in the wallet less the fee (the close's
+ * proceeds, and so its realized P&L, and the claim's fees are what arrived), a paper buy lands less the fee and a paper
+ * sale reaches the pool less it (both in swapCostSol, the leg's cost). transferFeeSol tallies all of it, for the
+ * report; it is not a term of the identity below, since each charge already sits inside one of its terms.
+ *
  * Every SOL figure is SOL-equivalent at the mark passed in; a USDC pool's quote converts at
  * quotePriceInSol. The entry value of a band is the deposit at the open mark, and the wallet's
  * base tokens carry a SOL cost basis from the mark they arrived at (tokenBasisSol), so that
@@ -26,6 +33,7 @@ import type { PriceModel } from "../tools/bins";
 import type { StockTag } from "../screener/types";
 import { BIN_ARRAY_RENT_SOL, OPEN_COST_ESTIMATE_SOL, POSITION_RENT_SOL, type QuoteSymbol } from "../tools/dlmm";
 import { paperCostToBuy, paperSwap } from "../tools/jupiter";
+import { afterTransferFee, transferFeeCharged, type TransferFee } from "../tools/transferFee";
 import { emptyHedgeBook, normalizeHedgeBook, type PaperHedgeBook } from "./hedge";
 
 export const PAPER_BOOK_FILE = "paper-book.json";
@@ -122,7 +130,9 @@ export interface PaperClosed {
   feeSol: number;
   /** slippage charged on the token leg, SOL-equivalent */
   slippageSol: number;
-  /** quote + token (after slippage) + fees, SOL-equivalent, excluding the rent refund */
+  /** token units the mint's Token-2022 transfer fee kept on the way to the wallet (absent: none) */
+  transferFeeToken?: number;
+  /** quote + token (after slippage and any transfer fee) + fees, SOL-equivalent, excluding the rent refund */
   proceedsSol: number;
   /** proceedsSol - entryValueSol */
   realizedSol: number;
@@ -206,6 +216,10 @@ export interface PaperBook {
   txFeesSol?: number;
   /** pools the paper desk made (the pair lane), by their pair-<mint> address; absent on older books: none */
   pairPools?: Record<string, PaperPairPool>;
+  /** Token-2022 transfer fees charged so far, SOL-equivalent at the mark (informational: each sits inside another term); absent: 0 */
+  transferFeeSol?: number;
+  /** the same by base mint */
+  transferFeeByMint?: Record<string, number>;
 }
 
 /** marked network fee per paper transaction, as the real dry-run rows carry */
@@ -305,6 +319,14 @@ function creditQuote(book: PaperBook, quoteSymbol: QuoteSymbol, amount: number):
   else book.wallet.usdc = r9(book.wallet.usdc + amount);
 }
 
+/** Tally a Token-2022 transfer fee charged on `units` of a mint (informational, src/tools/transferFee.ts). */
+function tallyTransferFee(book: PaperBook, mint: string, units: number, priceInSol: number): void {
+  if (!(units > 0)) return;
+  const sol = units * priceInSol;
+  book.transferFeeSol = r9((book.transferFeeSol ?? 0) + sol);
+  (book.transferFeeByMint ??= {})[mint] = r9((book.transferFeeByMint[mint] ?? 0) + sol);
+}
+
 /** Move base tokens in or out of the wallet; arrivals add their SOL value to the basis, departures scale it down pro rata. */
 function creditToken(book: PaperBook, mint: string, amount: number, priceInSol: number): void {
   const before = book.wallet.tokens[mint] ?? 0;
@@ -386,6 +408,8 @@ export interface OpenBandInput {
   /** the venue's open cost: charged now, and the part refunded on close (default: the Meteora estimate and position rent) */
   rentChargedSol?: number;
   rentRefundableSol?: number;
+  /** the base mint's Token-2022 transfer fee: the band receives the token deposit less it */
+  transferFee?: TransferFee | null;
 }
 
 export interface OpenBandResult {
@@ -395,6 +419,8 @@ export interface OpenBandResult {
   slippageToken: number;
   slippageSol: number;
   rentChargedSol: number;
+  /** base token units the mint kept of the deposit (its transfer fee) */
+  transferFeeToken: number;
 }
 
 /**
@@ -424,9 +450,13 @@ export function openBand(book: PaperBook, i: OpenBandInput): OpenBandResult {
   const tokenHeld = paperTokenBalance(book, i.tokenMint);
   if (tokenCost > 0 && tokenHeld + tokenTol < tokenCost) throw new Error(`paper wallet holds ${tokenHeld} ${i.tokenSymbol}, needs ${tokenCost}`);
   const tokenTaken = tokenCost > 0 ? Math.min(tokenCost, tokenHeld) : 0;
+  // a transfer-fee mint keeps its cut of the deposit on the way into the pool: the band holds what arrived
+  const transferFeeToken = transferFeeCharged(tokenTaken, i.transferFee);
+  const tokenInBand = tokenTaken - transferFeeToken;
 
   creditQuote(book, i.quoteSymbol, -quoteCost);
   if (tokenTaken > 0) creditToken(book, i.tokenMint, -tokenTaken, i.tokenPriceInQuote * i.quotePriceInSol);
+  tallyTransferFee(book, i.tokenMint, transferFeeToken, i.tokenPriceInQuote * i.quotePriceInSol);
   book.wallet.sol = r9(book.wallet.sol - rentChargedSol);
   book.rentLockedSol = r9(book.rentLockedSol + rentRefundableSol);
   book.rentSpentSol = r9(book.rentSpentSol + (rentChargedSol - rentRefundableSol));
@@ -457,10 +487,11 @@ export function openBand(book: PaperBook, i: OpenBandInput): OpenBandResult {
     strategyNote,
     side: i.side,
     quoteDeposit: i.amountQuote,
-    tokenDeposit: tokenTaken,
+    tokenDeposit: tokenInBand,
     openedAt: i.now,
     openedBinId: i.activeBinId,
     openedPrice: i.activePrice,
+    // the entry is what the wallet paid: a transfer fee on the deposit is a loss the band's mark shows from the first cycle
     entryValueSol: (i.amountQuote + tokenTaken * i.tokenPriceInQuote) * i.quotePriceInSol + slippageSol,
     feeQuote: 0,
     feeToken: 0,
@@ -468,7 +499,7 @@ export function openBand(book: PaperBook, i: OpenBandInput): OpenBandResult {
     lastActiveBinId: i.activeBinId,
   };
   book.bands.push(band);
-  return { band, slippageQuote, slippageToken, slippageSol, rentChargedSol };
+  return { band, slippageQuote, slippageToken, slippageSol, rentChargedSol, transferFeeToken };
 }
 
 /** A band's current contents as the mark computed them (src/paper/mark.ts valueBand). */
@@ -491,11 +522,13 @@ export interface CloseBandInput {
   now: number;
   reason: string;
   emergency: boolean;
+  /** the base mint's Token-2022 transfer fee: the token (and the token fees) land in the wallet less it */
+  transferFee?: TransferFee | null;
 }
 
 /**
- * Close a band: the wallet gets the quote back, the token less slippage, the fees and the
- * position rent; the band moves to `closed` with its realized P&L against the all-in entry.
+ * Close a band: the wallet gets the quote back, the token less slippage and the mint's transfer fee, the fees and
+ * the position rent; the band moves to `closed` with its realized P&L against the all-in entry.
  */
 export function closeBand(book: PaperBook, i: CloseBandInput): PaperClosed {
   const idx = book.bands.findIndex((b) => b.address === i.address);
@@ -504,13 +537,18 @@ export function closeBand(book: PaperBook, i: CloseBandInput): PaperClosed {
   const v = i.value;
   const slip = i.slippagePct / 100;
   const tokenGross = v.amountToken + v.feeToken;
-  const tokenNet = tokenGross * (1 - slip);
+  const tokenSlipped = tokenGross * (1 - slip);
+  // the mint keeps its transfer fee of what leaves the pool: the wallet, the proceeds and the realized P&L get the rest
+  const transferFeeToken = transferFeeCharged(tokenSlipped, i.transferFee);
+  const tokenNet = tokenSlipped - transferFeeToken;
   const slippageSol = tokenGross * slip * v.tokenPriceInQuote * v.quotePriceInSol;
-  const feeSol = (v.feeQuote + v.feeToken * v.tokenPriceInQuote) * v.quotePriceInSol;
+  // the fee leg as it arrives: the token fees less the mint's cut of them
+  const feeSol = (v.feeQuote + afterTransferFee(v.feeToken, i.transferFee) * v.tokenPriceInQuote) * v.quotePriceInSol;
   const proceedsSol = (v.amountQuote + v.feeQuote + tokenNet * v.tokenPriceInQuote) * v.quotePriceInSol;
 
   creditQuote(book, b.quoteSymbol, v.amountQuote + v.feeQuote);
   if (tokenNet > 0) creditToken(book, b.tokenMint, tokenNet, v.tokenPriceInQuote * v.quotePriceInSol);
+  tallyTransferFee(book, b.tokenMint, transferFeeToken, v.tokenPriceInQuote * v.quotePriceInSol);
   const rentRefund = bandRentRefund(b);
   book.wallet.sol = r9(book.wallet.sol + rentRefund);
   book.rentLockedSol = r9(Math.max(0, book.rentLockedSol - rentRefund));
@@ -539,6 +577,7 @@ export function closeBand(book: PaperBook, i: CloseBandInput): PaperClosed {
     feeToken: v.feeToken,
     feeSol,
     slippageSol,
+    ...(transferFeeToken > 0 ? { transferFeeToken } : {}),
     proceedsSol,
     realizedSol: proceedsSol - b.entryValueSol,
     realizedPct: b.entryValueSol > 0 ? (proceedsSol / b.entryValueSol - 1) * 100 : 0,
@@ -559,16 +598,21 @@ export interface ClaimResult {
   feeSol: number;
 }
 
-/** Move a band's accrued fees to the wallet. Returns null when there was nothing to claim. */
-export function claimFees(book: PaperBook, address: string, mark: Pick<BandValue, "tokenPriceInQuote" | "quotePriceInSol">, now: number): ClaimResult | null {
+/**
+ * Move a band's accrued fees to the wallet. Returns null when there was nothing to claim. A transfer-fee mint keeps
+ * its cut of the token fees on the way out of the pool: `feeToken` and `feeSol` are what arrived.
+ */
+export function claimFees(book: PaperBook, address: string, mark: Pick<BandValue, "tokenPriceInQuote" | "quotePriceInSol">, now: number, transferFee?: TransferFee | null): ClaimResult | null {
   const b = book.bands.find((x) => x.address === address);
   if (!b) throw new Error(`paper band ${address} not found`);
   if (b.feeQuote <= 0 && b.feeToken <= 0) return null;
   const feeQuote = b.feeQuote;
-  const feeToken = b.feeToken;
+  const transferFeeToken = transferFeeCharged(b.feeToken, transferFee);
+  const feeToken = b.feeToken - transferFeeToken;
   const feeSol = (feeQuote + feeToken * mark.tokenPriceInQuote) * mark.quotePriceInSol;
   creditQuote(book, b.quoteSymbol, feeQuote);
   if (feeToken > 0) creditToken(book, b.tokenMint, feeToken, mark.tokenPriceInQuote * mark.quotePriceInSol);
+  tallyTransferFee(book, b.tokenMint, transferFeeToken, mark.tokenPriceInQuote * mark.quotePriceInSol);
   b.feeQuote = 0;
   b.feeToken = 0;
   b.lastMarkAt = Math.max(b.lastMarkAt, now);
@@ -589,6 +633,8 @@ export interface PaperSwapInput {
   feePct?: number;
   /** price impact in percent against the trader, from the pool's own bins (src/paper/impact.ts); 0 when absent */
   impactPct?: number;
+  /** the base mint's Token-2022 transfer fee: a buy lands less it, a sale reaches the pool less it (part of the leg's cost) */
+  transferFee?: TransferFee | null;
 }
 
 export interface PaperSwapResult {
@@ -603,6 +649,8 @@ export interface PaperSwapResult {
   /** the price impact charged, percent, and what it cost in SOL (on top of the fee) */
   impactPct: number;
   impactSol: number;
+  /** what the mint's Token-2022 transfer fee took of the leg, SOL (0 without one) */
+  transferFeeSol?: number;
 }
 
 /**
@@ -619,12 +667,17 @@ export function buyToken(book: PaperBook, i: PaperSwapInput & { tokenOut: number
   const fill = paperSwap(amountIn, 1 / paid, feePct);
   const have = quoteBalance(book, i.quoteSymbol);
   if (have < amountIn) throw new Error(`paper wallet holds ${have.toFixed(i.quoteSymbol === "SOL" ? 4 : 2)} ${i.quoteSymbol}, needs ${amountIn.toFixed(i.quoteSymbol === "SOL" ? 4 : 2)} to buy ${i.tokenOut} ${i.tokenSymbol}`);
+  // the token leaves the pool for the wallet: a transfer-fee mint keeps its cut, and the leg pays for it
+  const transferFeeToken = transferFeeCharged(fill.amountOut, i.transferFee);
+  const arrived = fill.amountOut - transferFeeToken;
   creditQuote(book, i.quoteSymbol, -amountIn);
-  creditToken(book, i.tokenMint, fill.amountOut, i.tokenPriceInQuote * i.quotePriceInSol);
+  creditToken(book, i.tokenMint, arrived, i.tokenPriceInQuote * i.quotePriceInSol);
   const feeSol = fill.feeIn * i.quotePriceInSol;
   const impactSol = fill.amountOut * (paid - i.tokenPriceInQuote) * i.quotePriceInSol;
-  tallySwapCost(book, i.tokenMint, feeSol + impactSol);
-  return { amountIn, amountOut: fill.amountOut, feeIn: fill.feeIn, feeSol, feePct: fill.feePct, impactPct, impactSol };
+  const transferFeeSol = transferFeeToken * i.tokenPriceInQuote * i.quotePriceInSol;
+  tallySwapCost(book, i.tokenMint, feeSol + impactSol + transferFeeSol);
+  tallyTransferFee(book, i.tokenMint, transferFeeToken, i.tokenPriceInQuote * i.quotePriceInSol);
+  return { amountIn, amountOut: arrived, feeIn: fill.feeIn, feeSol, feePct: fill.feePct, impactPct, impactSol, transferFeeSol };
 }
 
 /** A paper Jupiter leg: SELL `tokenIn` base tokens into the quote at the pool's price less the fee. Throws when the wallet holds less. */
@@ -635,13 +688,18 @@ export function sellToken(book: PaperBook, i: PaperSwapInput & { tokenIn: number
   const impactPct = Math.min(99, Math.max(0, i.impactPct ?? 0));
   // the price the sale actually gets per token: the mark less the impact of walking the pool's bins
   const got = i.tokenPriceInQuote * (1 - impactPct / 100);
-  const fill = paperSwap(i.tokenIn, got, i.feePct);
+  // the token leaves the wallet for the pool: a transfer-fee mint keeps its cut before the pool sees it
+  const transferFeeToken = transferFeeCharged(i.tokenIn, i.transferFee);
+  const reaches = i.tokenIn - transferFeeToken;
+  const fill = paperSwap(reaches, got, i.feePct);
   creditToken(book, i.tokenMint, -Math.min(have, i.tokenIn), i.tokenPriceInQuote * i.quotePriceInSol);
   creditQuote(book, i.quoteSymbol, fill.amountOut);
   const feeSol = fill.feeIn * i.tokenPriceInQuote * i.quotePriceInSol;
-  const impactSol = (i.tokenIn - fill.feeIn) * (i.tokenPriceInQuote - got) * i.quotePriceInSol;
-  tallySwapCost(book, i.tokenMint, feeSol + impactSol);
-  return { amountIn: i.tokenIn, amountOut: fill.amountOut, feeIn: fill.feeIn, feeSol, feePct: fill.feePct, impactPct, impactSol };
+  const impactSol = (reaches - fill.feeIn) * (i.tokenPriceInQuote - got) * i.quotePriceInSol;
+  const transferFeeSol = transferFeeToken * i.tokenPriceInQuote * i.quotePriceInSol;
+  tallySwapCost(book, i.tokenMint, feeSol + impactSol + transferFeeSol);
+  tallyTransferFee(book, i.tokenMint, transferFeeToken, i.tokenPriceInQuote * i.quotePriceInSol);
+  return { amountIn: i.tokenIn, amountOut: fill.amountOut, feeIn: fill.feeIn, feeSol, feePct: fill.feePct, impactPct, impactSol, transferFeeSol };
 }
 
 function tallySwapCost(book: PaperBook, mint: string, feeSol: number): void {

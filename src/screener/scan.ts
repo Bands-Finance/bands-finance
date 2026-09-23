@@ -2,7 +2,7 @@
  * On-chain universe: every DLMM LbPair on Solana, narrowed to live SOL/USDC-quoted pools,
  * with reserves fetched so liquidity is measured from chain rather than reported.
  */
-import DLMM, { getBaseFee, getVariableFee, LbPairAccount } from "@meteora-ag/dlmm";
+import DLMM, { getBaseFee, getTotalFee, LbPairAccount } from "@meteora-ag/dlmm";
 import { AccountInfo, Connection, PublicKey } from "@solana/web3.js";
 import { binPriceUi } from "../tools/dlmm";
 import type { OnchainPool } from "./types";
@@ -34,6 +34,17 @@ export interface ScanOutput {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const bnNum = (v: unknown): number => Number((v as { toString(): string }).toString());
 const feePct = (bn: { toString(): string }) => (Number(bn.toString()) / 1e9) * 100;
+
+/**
+ * PURE. A DLMM pool's fees as the board carries them, percent. `dynamicFeePct` is the fee a trader pays NOW: base plus
+ * the variable part (the SDK's getTotalFee, capped at its maximum), which is what every other venue's row and every
+ * pool snapshot mean by it (getPoolSnapshot's getDynamicFee is the same total). It used to be getVariableFee, the
+ * variable part alone: the hot watch then priced a 1%-base pool at 0.003% whenever it had moved at all, and ranked
+ * the pools it should have watched last first.
+ */
+export function meteoraBoardFees(binStep: number, parameters: LbPairAccount["account"]["parameters"], vParameters: LbPairAccount["account"]["vParameters"]): { baseFeePct: number; dynamicFeePct: number } {
+  return { baseFeePct: feePct(getBaseFee(binStep, parameters)), dynamicFeePct: feePct(getTotalFee(binStep, parameters, vParameters)) };
+}
 
 /** getMultipleAccounts in sequential chunks with pacing and backoff, so a public RPC survives it. */
 async function pacedGetMultipleAccounts(
@@ -111,8 +122,7 @@ export async function scanOnchain(connection: Connection, opts: ScanOptions): Pr
       baseDecimals: dec,
       quoteDecimals: quote.decimals,
       binStep: a.binStep,
-      baseFeePct: feePct(getBaseFee(a.binStep, a.parameters)),
-      dynamicFeePct: feePct(getVariableFee(a.binStep, a.parameters, a.vParameters)),
+      ...meteoraBoardFees(a.binStep, a.parameters, a.vParameters),
       activeBinId: a.activeId,
       price,
       reserveBase,

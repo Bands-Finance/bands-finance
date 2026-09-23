@@ -63,4 +63,9 @@ export interface Venue {
   openCostSol(snapshot: PoolSnapshot, plan?: OpenPlan): OpenCost;
   /** pools in which the owner holds a position on this venue (for the loop's "pools with bands") */
   poolsWithPositions?(connection: Connection, owner: PublicKey): Promise<string[]>;
+  /**
+   * The rent closing this position refunds, SOL, read from the chain before the close (the rent actually paid at
+   * open, whatever the rate was then); null when it cannot be read. Absent: the venue's openCostSol().refundable.
+   */
+  closeRefundSol?(connection: Connection, raw: unknown): Promise<number | null>;
 }
