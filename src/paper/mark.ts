@@ -12,11 +12,12 @@
  * a marked loss in between is the token bought above the current price, valued at the current
  * price. When the quote is token X the sides flip.
  *
- * Fees: while in range, fees per mark = (screen fees24hUsd, else volume24hUsd x dynamicFeePct,
- * else 0) x our share of the band x 0.5 x dt/86400, converted to quote at the SOL price, split
- * half quote / half token at the current price. Our share = deposit / (band depth + deposit),
- * the depth being the snapshot's quote-side liquidity scaled to the band's width, capped at 50%.
- * dt is capped at MAX_MARK_GAP_SEC so a restart never accrues a day of fees in one mark.
+ * Fees: while in range, fees per mark = the LP fees the flow scout saw print in the band's own bins over its last
+ * 15 minutes (flowFeeRate) x our share of the band x dt, split half quote / half token at the current price. Only
+ * without a fresh reading of this band does the old estimate stand: (screen fees24hUsd, else volume24hUsd x
+ * dynamicFeePct) x our share x 0.5 x dt/86400, capped at 3x the scout's pace for the whole pool. Our share =
+ * deposit / (band depth + deposit), the depth being the snapshot's quote-side liquidity scaled to the band's width,
+ * capped at 50%. dt is capped at MAX_MARK_GAP_SEC so a restart never accrues a day of fees in one mark.
  *
  * A MADE PAIR (snapshot.pair, src/venues/pair.ts) accrues the same way with two substitutions: the
  * pool's fees per day are the routing model's (what the reference pool's flow pays us at our fee),
