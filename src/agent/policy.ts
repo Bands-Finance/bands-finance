@@ -8,7 +8,8 @@
  *   band open, price through it (token now)  CLOSE once out of range >= the engine minimum,
  *                                            unless the pool is still on the hot list (HOLD one more cycle)
  *   band open, price above it (idle quote)   REBALANCE to a fresh quote-only band under the price
- *                                            once idle >= 3x the minimum
+ *                                            once idle >= 3x the minimum, when a fresh open would pass
+ *                                            every entry rule below; else CLOSE (a re-lay IS a fresh open)
  *   no band                                  OPEN a quote-only Spot band under the active bin covering
  *                                            POLICY_COVER_PCT of price (default 5%), sized at
  *                                            min(effective max band, 95% of the wallet's quote, half the
@@ -72,9 +73,10 @@
 import { sessionClock } from "../basis/session";
 import { sessionWidthMultiplier } from "../basis/verdict";
 import type { HotRow } from "../hot/types";
-import { bandDepthQuote, shareOfBand } from "../paper/mark";
+import { shareOfBand } from "../paper/mark";
 import type { RiskLimits } from "../risk/limits";
 import { askOpenParams, baseTokenOf, type AskBand, type AskExitEnv } from "../engine/askExit";
+import { bandStopPct, marketDrawdownPct } from "../engine/exit";
 import { launchEnv, launchSeatSol, type LaunchEnv } from "../screener/launch";
 import { pairEnv, pairHouseSeatSol, pairSeatSol, type PairEnv } from "../screener/pair";
 import { pairStockEnv, pairStockSeatSol, type PairStockEnv } from "../screener/pairStock";
@@ -245,11 +247,16 @@ export const POLICY_BLOCK_FLAGS = ["thin", "new", "dumping", "wild"];
 /** a band smaller than this in SOL is not worth its rent */
 export const MIN_BAND_SOL = 0.1;
 export const WALLET_SHARE = 0.95;
-/** the headline of the one-cycle hold on a hot pool under its band: the next cycle reads it back and closes */
+/**
+ * the headline of the one-cycle hold on a hot pool under its band. The next cycle does NOT read it back: the
+ * journal rewrites every headline in his voice, so a headline is display text. The loop stamps
+ * RiskState.hotHeldAt instead (src/index.ts) and the next cycle reads that (observation.state.hotHeldAt).
+ */
 export const HOT_HOLD_HEADLINE = "Under the band but the tape is hot. One more cycle.";
 export const IDLE_MULTIPLE = 3;
 
-export type PolicyHot = Pick<HotRow, "address" | "priceChange1hPct" | "flags" | "heat" | "surge">;
+/** A hot row as the policy reads it; `pick: false` marks this pool's own row, carried whatever its flags, which is not on the tradable list (src/hot hotPicksWithOwn). */
+export type PolicyHot = Pick<HotRow, "address" | "priceChange1hPct" | "flags" | "heat" | "surge"> & { pick?: boolean };
 
 export interface PolicyExtras {
   limits: RiskLimits;
@@ -272,6 +279,12 @@ export interface PolicyExtras {
   grow?: { allowed: boolean };
   /** the ask bands on the book (state.askBands) and the ask exit's settings (src/engine/askExit.ts); absent = no ask bands */
   askExit?: { bands: Record<string, AskBand>; env: AskExitEnv };
+  /**
+   * whether the snapshot's bins hold the book's own bands: true for a chain read (the default), false on paper,
+   * whose bands are virtual (src/paper) and were never in the pool. The depth a seat is capped against is
+   * everybody else's, so our own liquidity comes out of it only where the snapshot actually holds it.
+   */
+  ownInSnapshot?: boolean;
 }
 
 export type PolicyBranch = "in-range" | "resting" | "close" | "hot-hold" | "rebalance" | "idle-wait" | "churn-wait" | "recentre-wait" | "flow-wait" | "lively" | "gated" | "open" | "not-worth" | "flagged" | "moved" | "no-size" | "ask-working" | "ask-sold" | "ask-wait" | "ask-relay" | "ask-pulled";
@@ -399,7 +412,10 @@ const usd0 = (n: number | null | undefined) => (n === null || n === undefined ||
 const clip = (s: string, n = 90) => (s.length <= n ? s : s.slice(0, n - 1).trimEnd() + ".");
 
 interface HotView {
+  /** on the tradable hot list: a hot pick (the one-more-cycle and the "hot pick" standing read this) */
   onList: boolean;
+  /** the hot watch has a row for this pool at all, a pick or not: its flags and its 1h move are read either way */
+  seen: boolean;
   priceChange1hPct: number | null;
   flags: string[];
   heat: number | null;
@@ -420,12 +436,20 @@ export function livelyReason(o: Observation, x: PolicyExtras, env: PolicyEnv): s
   return `the price travelled ${r(cover.movePct, 1)}% in the last hour, over the ${env.maxTravelPct}% the desk sits out (POLICY_MAX_TRAVEL_PCT): not idle volume`;
 }
 
+/**
+ * THIS POOL ON THE HOT LIST: the observation's own list first, then the extras. The pool's own row arrives
+ * whatever its flags (src/hot hotPicksWithOwn): a row flagged dumping or wild is not a pick (`pick: false`), but
+ * its flags and its 1h move are exactly what the entry rules refuse on, and until 22 Sep they never reached here.
+ * On the list is what EITHER list says: the extras are the desk's tradable list (src/index.ts hotRowsFor), and
+ * an observation's own row once read its pick off the every-venue top 8, where a tradable pick can be ninth.
+ */
 function hotView(o: Observation, x: PolicyExtras): HotView {
   const mine = o.screen?.hot?.find((h) => h.thisPool);
-  if (mine) return { onList: true, priceChange1hPct: mine.priceChange1hPct, flags: mine.flags, heat: mine.heat, surge: mine.surge };
   const row = x.hot?.find((h) => h.address === o.snapshot.address);
-  if (row) return { onList: true, priceChange1hPct: row.priceChange1hPct, flags: row.flags, heat: row.heat, surge: row.surge };
-  return { onList: false, priceChange1hPct: null, flags: [], heat: null, surge: false };
+  const picked = !!row && row.pick !== false;
+  if (mine) return { onList: mine.pick !== false || picked, seen: true, priceChange1hPct: mine.priceChange1hPct, flags: mine.flags, heat: mine.heat, surge: mine.surge };
+  if (row) return { onList: picked, seen: true, priceChange1hPct: row.priceChange1hPct, flags: row.flags, heat: row.heat, surge: row.surge };
+  return { onList: false, seen: false, priceChange1hPct: null, flags: [], heat: null, surge: false };
 }
 
 const hold = (reasoning: string, headline: string, branch: PolicyBranch, reason: string, confidence = 0.7): PolicyResult => ({
@@ -476,6 +500,49 @@ interface Sizing {
   none: string | null;
 }
 
+/**
+ * OUR OWN BAND IN THE SNAPSHOT'S BINS. The depth a seat is capped against is everybody else's, and a chain
+ * snapshot holds our own band too, so a re-lay must not count itself. But the depth is an estimate: the mean
+ * of the observed bins on a side (the snapshot reads about ten each way) times the band's width. What has to
+ * come out is our liquidity inside THOSE observed bins, the band's value spread evenly over its bins, split by
+ * the side of the active bin each one sits on. Until 22 Sep a re-lay took the whole band off the new window's
+ * depth whenever the two overlapped by a bin (ORE/SOL: 44 SOL off for 6.3 SOL in three overlapping bins), and on
+ * paper, whose snapshots never held the band at all, took it off anyway; a straddle took its whole value off
+ * without looking where it sat. PURE. Quote units for the quote side, token units for the token side.
+ */
+export function ownObservedLiquidity(
+  s: Pick<PoolSnapshot, "bins" | "activeBinId">,
+  band: Pick<PositionSnapshot, "lowerBinId" | "upperBinId" | "valueInSol">,
+  q: Pick<QuoteView, "side" | "priceInSol" | "tokenPriceInQuote">,
+): { quote: number; token: number } {
+  const width = band.upperBinId - band.lowerBinId + 1;
+  if (!(width > 0) || !(band.valueInSol > 0) || !(q.priceInSol > 0)) return { quote: 0, token: 0 };
+  const perBinQuote = band.valueInSol / q.priceInSol / width;
+  const quoteBelow = q.side === "Y";
+  let quoteBins = 0;
+  let tokenBins = 0;
+  for (const b of s.bins) {
+    if (b.binId < band.lowerBinId || b.binId > band.upperBinId || b.binId === s.activeBinId) continue;
+    if (quoteBelow ? b.binId < s.activeBinId : b.binId > s.activeBinId) quoteBins++;
+    else tokenBins++;
+  }
+  const p = q.tokenPriceInQuote;
+  return { quote: perBinQuote * quoteBins, token: p > 0 ? (perBinQuote * tokenBins) / p : 0 };
+}
+
+/**
+ * PURE. The part of the hour's travel the move that brought the price here made on its own: the loop's own range
+ * now against its range before that move (screen.recentMovePct against screen.priorMovePct; the loop takes a run
+ * through the bid band out whole, src/engine/exit.ts priorRangeOverWindowPct). 0 when either is unknown: without
+ * the samples there is nothing to take out.
+ */
+export const lastMoveTravelPct = (o: Pick<Observation, "screen">): number => {
+  const nowPct = o.screen?.recentMovePct;
+  const before = o.screen?.priorMovePct;
+  if (typeof nowPct !== "number" || typeof before !== "number" || !Number.isFinite(nowPct) || !Number.isFinite(before)) return 0;
+  return Math.max(0, Math.abs(nowPct) - Math.abs(before));
+};
+
 /** Size a fresh quote-only band: min(effective max, 95% of the wallet's quote, half the depth, exposure room), rounded down to the quote's decimals. */
 function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv, closing: PositionSnapshot | null, now: number): Sizing {
   const s = o.snapshot;
@@ -490,18 +557,35 @@ function sizeBand(o: Observation, x: PolicyExtras, q: QuoteView, env: PolicyEnv,
   const upperBinId = quoteBelow ? s.activeBinId : s.activeBinId + bins;
   const closingQuote = closing ? (closing.quoteInPosition ?? closing.solInPosition / q.priceInSol) : 0;
   const closingSol = closing ? closing.valueInSol : 0;
-  // the depth that is not ours: a band being re-laid over its own bins must not count itself as the pool's depth
-  const overlaps = !!closing && closing.lowerBinId <= upperBinId && closing.upperBinId >= lowerBinId;
-  const depthQuote = Math.max(0, bandDepthQuote({ quoteSide: q.side, lowerBinId, upperBinId }, s) - (overlaps ? closingQuote : 0));
+  // the depth that is not ours: the observed side's mean per bin less our own band where the snapshot holds it
+  // (a chain read; a paper snapshot never held it), times the width
+  const observedSide = s.bins.filter((b) => (quoteBelow ? b.binId < s.activeBinId : b.binId > s.activeBinId)).length || 1;
+  const ownQuote = closing && x.ownInSnapshot !== false ? ownObservedLiquidity(s, closing, q).quote : 0;
+  const theirsPerBin = Math.max(0, (quoteBelow ? s.liquidityBelowY : s.liquidityAboveX) - ownQuote) / observedSide;
+  const depthQuote = theirsPerBin * (upperBinId - lowerBinId + 1);
+  // THE CRASH'S OWN TRAVEL. The band is as wide as the pool's travel and the depth cap is the depth across that
+  // width, so the seat grew with the move itself: a pool too calm for a minimum seat took the biggest one the
+  // cycle a crash widened its band (a 3.9% drop turned 6.5 SOL into 44). The depth cap reads the width the
+  // travel BEFORE that move would lay (a crash in steps is one move); the band keeps its full width, and its share is read on it.
+  const lastMove = lastMoveTravelPct(o);
+  const multiple = isStockPool(o) ? env.volMultiple : (env.tunedVolMultiple ?? env.volMultiple);
+  const sizingBins =
+    lastMove > 0 && multiple > 0 && cover.movePct !== null && Number.isFinite(cover.movePct)
+      ? Math.min(bins, binsForCover(s.binStep, Math.min(env.maxCoverPct, Math.max(env.minCoverPct, Math.max(0, cover.movePct - lastMove) * multiple)), limits.maxBinWidth, widthMultiplier))
+      : bins;
+  const capDepthQuote = theirsPerBin * (sizingBins + 1);
   const travelMultiple = isStockPool(o) ? 1 : travelSizeMultiple(cover.movePct, env.sizeRefTravelPct, env.sizeMinMultiple);
   const walletQuote = (o.wallet.quote ?? (quoteIsSol ? o.wallet.sol : 0)) + closingQuote;
   const effectiveMaxSol = Math.min(limits.maxPositionSol, o.engine?.effectiveMaxPositionSol ?? limits.maxPositionSol);
   const thisPoolExposure = o.positions.reduce((t, p) => t + p.valueInSol, 0);
   const roomSol = limits.maxTotalExposureSol - o.portfolio.otherExposureSol - thisPoolExposure + closingSol;
+  const shareWords = env.maxSideSharePct === 50 ? "half the depth" : `${env.maxSideSharePct}% of the depth, with ours in it,`;
   const caps: { name: string; quote: number }[] = [
     { name: `max band ${r(effectiveMaxSol)} SOL`, quote: effectiveMaxSol / q.priceInSol },
     { name: `95% of the wallet's ${r(walletQuote, quoteIsSol ? 4 : 2)} ${q.symbol}`, quote: walletQuote * WALLET_SHARE },
-    { name: env.maxSideSharePct === 50 ? `half the band's depth (${r(depthQuote, 2)} ${q.symbol})` : `${env.maxSideSharePct}% of the band's depth with ours in it (${r(depthQuote, 2)} ${q.symbol} of others' there)`, quote: depthCapQuote(depthQuote, env.maxSideSharePct) },
+    sizingBins < bins
+      ? { name: `${shareWords} of the ${sizingBins + 1} bins the pool's travel before its last ${r(lastMove, 1)}% move would lay (${r(capDepthQuote, 2)} ${q.symbol} of others' there; the move widens the band, not the seat)`, quote: depthCapQuote(capDepthQuote, env.maxSideSharePct) }
+      : { name: env.maxSideSharePct === 50 ? `half the band's depth (${r(depthQuote, 2)} ${q.symbol})` : `${env.maxSideSharePct}% of the band's depth with ours in it (${r(depthQuote, 2)} ${q.symbol} of others' there)`, quote: depthCapQuote(depthQuote, env.maxSideSharePct) },
     { name: `exposure room ${r(roomSol)} SOL`, quote: roomSol / q.priceInSol },
     ...(travelMultiple < 1 ? [{ name: `${r(cover.movePct ?? 0, 1)}% of hourly travel against the ${env.sizeRefTravelPct}% reference: ${r(travelMultiple, 2)} of the max band`, quote: (effectiveMaxSol * travelMultiple) / q.priceInSol }] : []),
   ];
@@ -722,10 +806,11 @@ function sizeStraddle(o: Observation, x: PolicyExtras, q: QuoteView, env: Policy
   // what the wallet (and a closing band) can put up
   const closingQuote = closing ? (closing.quoteInPosition ?? closing.solInPosition / q.priceInSol) : 0;
   const closingToken = closing ? (q.side === "X" ? closing.amountY + closing.feeY : closing.amountX + closing.feeX) : 0;
-  // the depth that is not ours: a held straddle sits in the very bins the snapshot sums, and counting it as the pool's
-  // depth lets successive re-lays walk past the share rule (each one sees a deeper pool: its own)
-  const ownInBand = closing ? closingQuote + (q.side === "X" ? closing.amountY : closing.amountX) * p : 0;
-  const depthQuote = Math.max(0, (quoteSideLiq / observedQuote) * bins + (tokenSideLiq / observedToken) * bins * p - ownInBand);
+  // the depth that is not ours: a held straddle sits in the very bins a chain snapshot sums, and counting it as the
+  // pool's depth lets successive re-lays walk past the share rule (each one sees a deeper pool: its own). Only what
+  // the observed bins hold of it comes out, side by side; a paper snapshot never held it (ownObservedLiquidity)
+  const own = closing && x.ownInSnapshot !== false ? ownObservedLiquidity(s, closing, q) : { quote: 0, token: 0 };
+  const depthQuote = Math.max(0, (Math.max(0, quoteSideLiq - own.quote) / observedQuote) * bins + (Math.max(0, tokenSideLiq - own.token) / observedToken) * bins * p);
   const closingSol = closing ? closing.valueInSol : 0;
   const walletQuote = (o.wallet.quote ?? (quoteIsSol ? o.wallet.sol : 0)) + closingQuote;
   const heldToken = o.wallet.token + closingToken;
@@ -944,6 +1029,7 @@ function poolClause(o: Observation, hot: HotView): string {
   const parts: string[] = [];
   if (o.screen) parts.push(`screen #${o.screen.rank} of ${o.screen.rankedPools}, score ${r(o.screen.score, 1)}, fee/TVL 24h ${o.screen.feeToTvl24hPct === null ? "n/a" : `${r(o.screen.feeToTvl24hPct, 2)}%`}, TVL ${usd0(o.screen.tvlUsd)}, 24h vol ${usd0(o.screen.volume24hUsd)}`);
   if (hot.onList) parts.push(`hot list heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}${hot.surge ? " (surge)" : ""}, 1h move ${hot.priceChange1hPct === null ? "n/a" : pct(hot.priceChange1hPct)}`);
+  else if (hot.seen) parts.push(`the hot watch reads heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}, 1h move ${hot.priceChange1hPct === null ? "n/a" : pct(hot.priceChange1hPct)}${hot.flags.length ? ` [${hot.flags.join(", ")}]` : ""}, off the tradable list`);
   return parts.length ? parts.join("; ") : "not on the screen or the hot list";
 }
 
@@ -960,6 +1046,167 @@ function bandClause(o: Observation, p: PositionSnapshot, q: QuoteView): string {
   return `holds ${r(amountQuote, 4)} ${q.symbol} + ${r(amountToken, 4)} ${s.baseToken.symbol}, fees ${r(feeSol, 6)} SOL unclaimed, value ${r(p.valueInSol)} SOL${pnl}`;
 }
 
+/** The band the policy works in a pool: the largest by value (the loop stamps the hot-hold on the same one). */
+export const policyBandOf = <P extends Pick<PositionSnapshot, "valueInSol">>(positions: readonly P[]): P | undefined => [...positions].sort((a, b) => b.valueInSol - a.valueInSol)[0];
+
+/**
+ * A refusal by the entry rules, in the words both a fresh open and an idle re-lay say it. `sep` joins it to
+ * "No band in X (the price)"; `body` carries the pool's numbers.
+ */
+interface EntryRefusal {
+  sep: ". " | ": ";
+  body: string;
+  headline: string;
+  branch: PolicyBranch;
+  reason: string;
+  /** a wait for the pool to be read or to settle, not a verdict on the pool: a re-lay holds its band through it */
+  wait?: boolean;
+}
+
+/** What a pool stands on at the entry: the lanes that admit by rule, the pin, and whether it is a hot pick or scores. */
+function entryStanding(o: Observation, env: PolicyEnv, hot: HotView) {
+  const launch = isLaunchPool(o) ? o.screen!.launch! : null;
+  const pair = isPairPool(o) ? o.screen!.pair! : null;
+  // A pinned stock (the agent's pair) is thin on Meteora on purpose: supplementing that liquidity is the point.
+  const pinned = isPinnedStock(o) ? o.screen!.pinned! : null;
+  const score = o.screen?.score ?? null;
+  return {
+    launch,
+    pair,
+    lane: !!launch || !!pair,
+    pinned,
+    house: !!o.snapshot.pair?.house,
+    isHotPick: hot.onList,
+    score,
+    scoreOk: score !== null && score > env.minScore,
+    // The stock book: a tokenized-stock pool is the book's purpose; the guards and the basis still gate it.
+    stockBook: env.book === "stocks" && isStockPool(o),
+    // The operator's watchlist is a judgement about the token; the score is a judgement about the unknown.
+    // A listed token does not need a score, but every other gate (volume, yield, payback, flags, the
+    // guards, the basis and session rules) still applies to it.
+    listed: o.screen?.watchlisted === true,
+  };
+}
+
+/**
+ * THE ENTRY RULES, the pool's half: its flags, its day's volume, whether it is worth a band at all (a hot pick, a
+ * score over the floor, the stock book, the watchlist, a lane, a pin), and the last hour's move. The same rules
+ * for a fresh open and for an idle re-lay, which is a close and a fresh open: until 22 Sep a band the price ran
+ * off was re-laid at a full seat on a pool scoring 8.7, flagged wild and dumping, trading $50k a day, 40% up in
+ * the hour, every one of which refuses the same pool with no band.
+ */
+function entryPoolRefusal(o: Observation, env: PolicyEnv, hot: HotView): EntryRefusal | null {
+  const st = entryStanding(o, env, hot);
+  // The launch lane bought the right to be new and to move: `new` and `wild` are what a launch looks
+  // like, and the lane's own floors (liquidity, 24h and 1h volume, turnover, its own dumping rule)
+  // are harsher than these flags. `thin` and `dumping` still stop it dead.
+  const blockFlags = (st.lane ? POLICY_BLOCK_FLAGS.filter((f) => f !== "new" && f !== "wild") : POLICY_BLOCK_FLAGS).filter((f) => !(st.pinned && f === "thin"));
+  const flagged = (list: string[]) => list.filter((f) => blockFlags.includes(f));
+  const flags = [...new Set([...flagged(o.screen?.flags ?? []), ...flagged(hot.flags)])];
+  if (flags.length) {
+    return { sep: ". ", body: `The pool is flagged ${flags.join(", ")}; ${poolClause(o, hot)}. Not a market to make.`, headline: `Flagged ${flags.join(", ")}. Not touching it.`, branch: "flagged", reason: `flagged ${flags.join(", ")}` };
+  }
+  // Volume is what pays the fees: a pool that barely trades cannot pay a seat, whatever its yield looks like.
+  // (A house token clears every floor by definition: its pool is made whatever it trades.)
+  const vol24h = o.screen?.volume24hUsd ?? null;
+  if (env.minVolume24hUsd > 0 && vol24h !== null && vol24h < env.minVolume24hUsd && !st.house && !st.pinned) {
+    return {
+      sep: ". ",
+      body: `The pool traded $${r(vol24h, 0)} in 24h, under the $${r(env.minVolume24hUsd, 0)} the policy will make a market in: fees come from volume, and there is not enough here to pay a seat. ${poolClause(o, hot)}.`,
+      headline: clip(`Only $${r(vol24h / 1000, 0)}k traded here in a day. Passing.`),
+      branch: "not-worth",
+      reason: `24h volume $${r(vol24h, 0)} under the $${r(env.minVolume24hUsd, 0)} floor`,
+    };
+  }
+  if (!st.isHotPick && !st.scoreOk && !st.stockBook && !st.listed && !st.lane && !st.pinned) {
+    const why = st.score === null ? `not on the screen and not on the hot list` : `score ${r(st.score, 1)} is not above ${env.minScore} and the pool is not on the hot list`;
+    return { sep: ": ", body: `${why}. ${poolClause(o, hot)}.`, headline: "Nothing worth a band here. Holding.", branch: "not-worth", reason: why };
+  }
+  // A launch that has not moved in the last hour is not a launch: the lane judges the move itself.
+  if (!st.lane && hot.priceChange1hPct !== null && Math.abs(hot.priceChange1hPct) > POLICY_MAX_1H_MOVE_PCT) {
+    return {
+      sep: ". ",
+      body: `The last hour moved ${pct(hot.priceChange1hPct)}, outside the +/-${POLICY_MAX_1H_MOVE_PCT}% the policy will lay a band into. ${poolClause(o, hot)}.`,
+      headline: `Moved ${pct(hot.priceChange1hPct, 0)} in an hour. Not chasing it.`,
+      branch: "moved",
+      reason: `1h move ${pct(hot.priceChange1hPct)} outside +/-${POLICY_MAX_1H_MOVE_PCT}%`,
+    };
+  }
+  return null;
+}
+
+/**
+ * THE ENTRY RULES, the seat's half: the scout's reading (POLICY_REQUIRE_FLOW), idle volume (POLICY_MAX_TRAVEL_PCT),
+ * and what the seat earns against its floor and its payback. Records the forecast the open, or the re-lay, will
+ * write onto the band's meta (rememberEntryForecast): the number that decided is the number that is scored.
+ */
+function entrySeatRefusal(o: Observation, x: PolicyExtras, env: PolicyEnv, hot: HotView, seat: { seatSol: number; sharePct: number; none: string | null }, straddle: boolean, now: number): EntryRefusal | null {
+  const st = entryStanding(o, env, hot);
+  // A board pool is not opened on the venue's day figure: the scout reads it first (POLICY_REQUIRE_FLOW).
+  // Pinned stocks, the lanes and our own pools are not board pools.
+  const entryFlow = flowOf(o);
+  const coveredMin = entryFlow?.coveredMin ?? 0;
+  if (env.requireFlow && !st.pinned && !st.launch && !st.pair && (!entryFlow || coveredMin < env.minFlowCoverMin)) {
+    return entryFlow
+      ? {
+          sep: ". ",
+          body: `The flow scout has read ${coveredMin} minutes of this pool and the desk wants ${env.minFlowCoverMin} before it seats: a few minutes are not an hour's travel or an hour's fees. ${poolClause(o, hot)}.`,
+          headline: clip(`${coveredMin} min of the scout's reading, ${env.minFlowCoverMin} wanted. Waiting.`),
+          branch: "flow-wait",
+          reason: `the scout's reading covers ${coveredMin} min < ${env.minFlowCoverMin} (POLICY_MIN_FLOW_COVER_MIN)`,
+          wait: true,
+        }
+      : {
+          sep: ". ",
+          body: `The flow scout has not read this pool yet: the desk seats on what it measures, not on the venue's day figure, so it waits for the reading. ${poolClause(o, hot)}.`,
+          headline: "Waiting for the scout's reading. Not seated on the day figure.",
+          branch: "flow-wait",
+          reason: "the flow scout has not read the pool yet (POLICY_REQUIRE_FLOW)",
+          wait: true,
+        };
+  }
+  // Idle volume only: a token in flight is not seated, whatever it pays this hour.
+  const livelyNow = st.pinned || st.launch || st.pair ? null : livelyReason(o, x, env);
+  if (livelyNow) {
+    return {
+      sep: ": ",
+      body: `${livelyNow}. The fees are earned while the price chops inside a band, not while it runs; the desk waits for the pool to settle. ${poolClause(o, hot)}.`,
+      headline: clip(`In flight: ${r(coverPctFor(o, env, env.coverPct, hotView(o, x)).movePct ?? 0, 0)}% an hour. Waiting for idle volume.`),
+      branch: "lively",
+      reason: livelyNow,
+      wait: true,
+    };
+  }
+  // Is the seat worth taking? What it earns, against what it costs.
+  // a pinned stock is seated for the pairing, not for its yield: the earnings are reported, never a reason to pass
+  const earn = seat.none || st.pinned ? null : seatEarnings(o, x, seat.seatSol, seat.sharePct, straddle, env);
+  // THE FORECAST HE DECIDED ON. Kept so the open can write the exact number onto the band's meta,
+  // and the lesson can score it at the close: a recomputed forecast is a different forecast.
+  rememberEntryForecast(o.snapshot.address, earn, now);
+  if (earn && env.minSeatYieldPct > 0 && earn.yieldPctPerDay < env.minSeatYieldPct) {
+    return {
+      sep: ". ",
+      body: `The seat would earn about $${r(earn.feesPerDayUsd, 2)} a day on $${r(earn.seatUsd, 0)}, ${r(earn.yieldPctPerDay, 2)}% a day, under the ${env.minSeatYieldPct}% floor: the pool pays $${r(earn.poolFeesPerDayUsd, 0)} a day, our share of the band would be ${r(earn.sharePct, 1)}%, and I take that pace at ${earn.feeShare} of face${earn.feeShareN > 0 && earn.feeShareWhy ? ` because ${earn.feeShareWhy}` : ` (the shipped share; ${earn.lane} seats have not taught me another yet)`}. ${poolClause(o, hot)}.`,
+      headline: clip(`${r(earn.yieldPctPerDay, 2)}% a day here. Not worth the rent.`),
+      branch: "not-worth",
+      reason: `seat yield ${r(earn.yieldPctPerDay, 2)}%/day under the ${env.minSeatYieldPct}% floor${calibrationClause(earn)}`,
+    };
+  }
+  if (earn && env.maxPaybackHours > 0 && earn.paybackHours !== null && earn.paybackHours > env.maxPaybackHours) {
+    return {
+      sep: ". ",
+      body: `Opening costs about $${r(earn.costUsd, 2)} in rent that does not come back and swap fees, and the seat earns about $${r(earn.feesPerDayUsd, 2)} a day, so it pays that back in ${r(earn.paybackHours, 1)}h, past the ${env.maxPaybackHours}h the policy will wait. ${poolClause(o, hot)}.`,
+      headline: clip(`${r(earn.paybackHours, 0)}h to earn the rent back. Passing.`),
+      branch: "not-worth",
+      reason: `payback ${r(earn.paybackHours, 1)}h over the ${env.maxPaybackHours}h limit`,
+    };
+  }
+  return null;
+}
+
+/** A refusal of a fresh open, as the HOLD the no-band path answers with. */
+const entryHold = (o: Observation, priceLine: string, e: EntryRefusal): PolicyResult => hold(`No band in ${o.poolLabel} (${priceLine})${e.sep}${e.body}`, e.headline, e.branch, e.reason);
+
 export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   const env: PolicyEnv = { ...policyEnv(), ...x.env };
   const parsed = Date.parse(o.ts);
@@ -973,7 +1220,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
   const flaggedBy = (flags: string[]) => flags.filter((f) => POLICY_BLOCK_FLAGS.includes(f));
 
   // ---- a band is open in this pool -------------------------------------------------------------
-  const band = [...o.positions].sort((a, b) => b.valueInSol - a.valueInSol)[0];
+  const band = policyBandOf(o.positions);
   const askBand = band && x.askExit?.bands[band.address];
   if (band && askBand) return askBandDecide(o, x, q, band, askBand, x.askExit!.env, now);
   if (band && isPairPool(o) && !straddlePool(o)) return pairBandDecide(o, x, env, q, band, now);
@@ -1001,7 +1248,13 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       // pool gets no extra cycle to come back: an ask at the price catches the bounce better than a band above it.
       const askOn = !!x.askExit?.env.on && q.symbol === "SOL" && !isStockPool(o) && !isPairPool(o) && !isLaunchPool(o) && !o.state.killSwitch;
       const throughWait = askOn ? Math.min(minSec, x.askExit!.env.relaySec) : minSec;
-      if (oor < throughWait) {
+      // A band already down half its stop is not churning: the guards let a move of it through at once (antiChurn,
+      // src/engine/exit.ts), and so does the policy. In the scenario harness's pump-and-dump the fast watch woke a fresh
+      // band 8.6% down, the policy held it for the out-of-range clock, and the stop took it at 29.4% three minutes later.
+      const ddNow = marketDrawdownPct(band, s, band.entryValueSol);
+      const halfStop = bandStopPct(o.engine?.stops, band.address, limits) / 2;
+      const deep = ddNow !== null && ddNow >= halfStop;
+      if (oor < throughWait && !deep) {
         return hold(
           `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) and the band ${bandClause(o, band, q)}. Out of range ${oor}s against the ${askOn ? `${throughWait}s the ask exit waits before laying the token at the price` : `engine minimum ${throughWait}s`}: moving it now is churn.`,
           `${dist} bins through the band, ${oor}s out. Not long enough. Holding.`,
@@ -1009,8 +1262,13 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
           `band ${addr} through, ${oor}s < ${throughWait}s minimum`,
         );
       }
-      const heldOnce = o.recent[0]?.action === "HOLD" && o.recent[0]?.headline === HOT_HOLD_HEADLINE;
-      if (hot.onList && !heldOnce && !askOn) {
+      // THE ONE MORE CYCLE RUNS OUT. It used to be read back off the journal's last headline, which the journal
+      // rewrites in his voice: the match never held again after 15 Sep and a hot pool got "one more cycle" every
+      // cycle. The loop stamps RiskState.hotHeldAt when this branch is the answer, whoever decided (src/index.ts),
+      // and a stamp inside the band's current spell out of range means the cycle is spent.
+      const heldAt = o.state.hotHeldAt?.[band.address];
+      const heldOnce = typeof heldAt === "number" && Number.isFinite(heldAt) && heldAt >= now - oor * 1000 - 1000;
+      if (hot.onList && !heldOnce && !askOn && !deep) {
         return hold(
           `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s, past the ${minSec}s minimum; the band ${bandClause(o, band, q)}. The pool is still on the hot list (heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}, 1h ${hot.priceChange1hPct === null ? "n/a" : pct(hot.priceChange1hPct)}), so it gets one more cycle to come back.`,
           HOT_HOLD_HEADLINE,
@@ -1026,11 +1284,11 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
           // The book is denominated in the quote. Token left in the wallet after an exit is not a
           // position anyone chose, and it is capital the desk cannot lay into the next band.
           liquidate: true,
-          reasoning: `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s, past the ${throughWait}s minimum. The quote turned into token: the band ${bandClause(o, band, q)}. ${askOn ? "The token comes off this band" : `${hot.onList ? "The pool is still hot but already had its extra cycle" : "The pool is not on the hot list"}; closing and selling the token back to ${q.symbol}`}.`,
+          reasoning: `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s, ${oor < throughWait ? `under the ${throughWait}s minimum but ${r(ddNow ?? 0, 1)}% down, past half its ${r(halfStop * 2, 2)}% stop: not churn` : `past the ${throughWait}s minimum`}. The quote turned into token: the band ${bandClause(o, band, q)}. ${askOn ? "The token comes off this band" : `${hot.onList ? (deep && !heldOnce ? "The pool is still hot, but a band this far down gets no extra cycle" : "The pool is still hot but already had its extra cycle") : "The pool is not on the hot list"}; closing and selling the token back to ${q.symbol}`}.`,
           confidence: 0.75,
           headline: clip(`${dist} bins through the band and ${oor}s out. Off the table.`),
         },
-        reason: `band ${addr} through for ${oor}s${hot.onList ? ", extra cycle spent" : ", not hot"}`,
+        reason: `band ${addr} through for ${oor}s${deep ? `, ${r(ddNow ?? 0, 1)}% down (half the stop)` : ""}${hot.onList ? (deep ? ", no extra cycle that deep" : ", extra cycle spent") : ", not hot"}`,
         branch: "close",
       };
     }
@@ -1083,6 +1341,33 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
         branch: "close",
       };
     }
+    // A RE-LAY IS A FRESH OPEN: a close and an open, the old band all quote. It passes the entry rules a pool with
+    // no band would (entryPoolRefusal, entrySeatRefusal), or the band comes off: an all-quote band left under a
+    // pump the rules refuse is a bid laid for the dump. A wait (the scout's reading) holds the band as it is.
+    const entry = entryPoolRefusal(o, env, hot) ?? entrySeatRefusal(o, x, env, hot, { seatSol: sz.amountSol, sharePct: sz.sharePct, none: sz.none }, false, now);
+    if (entry?.wait) {
+      return hold(
+        `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s; the band ${bandClause(o, band, q)} and earns nothing there. A re-lay is a fresh open, and a fresh open waits here: ${entry.body}`,
+        entry.headline,
+        entry.branch,
+        `band ${addr} idle ${oor}s; re-lay waits: ${entry.reason}`,
+      );
+    }
+    if (entry) {
+      return {
+        decision: {
+          action: "CLOSE_POSITION",
+          open: null,
+          positionAddress: band.address,
+          liquidate: true,
+          reasoning: `Price is ${dist} bins ${where} band ${addr} ${range} (${priceLine}) for ${oor}s; the band ${bandClause(o, band, q)} and earns nothing there. A re-lay is a fresh open, and the entry rules refuse one here: ${entry.body} The capital comes back to the wallet as ${q.symbol}.`,
+          confidence: 0.7,
+          headline: clip(`Idle ${oor}s above the band and the entry rules refuse a fresh one. Pulling it.`),
+        },
+        reason: `band ${addr} idle ${oor}s; re-lay refused by the entry rules (${entry.branch}): ${entry.reason}`,
+        branch: "close",
+      };
+    }
     return {
       decision: {
         action: "REBALANCE",
@@ -1110,57 +1395,15 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       `pool cap ${o.portfolio.poolsWithBands}/${o.portfolio.maxActivePools}`,
     );
   }
-  // The launch lane bought the right to be new and to move: `new` and `wild` are what a launch looks
-  // like, and the lane's own floors (liquidity, 24h and 1h volume, turnover, its own dumping rule)
-  // are harsher than these flags. `thin` and `dumping` still stop it dead.
-  const launch = isLaunchPool(o) ? o.screen!.launch! : null;
-  const pair = isPairPool(o) ? o.screen!.pair! : null;
-  const lane = !!launch || !!pair;
-  // A pinned stock (the agent's pair) is thin on Meteora on purpose: supplementing that liquidity is the point.
-  const pinned = isPinnedStock(o) ? o.screen!.pinned! : null;
-  const blockFlags = (lane ? POLICY_BLOCK_FLAGS.filter((f) => f !== "new" && f !== "wild") : POLICY_BLOCK_FLAGS).filter((f) => !(pinned && f === "thin"));
-  const flagged = (list: string[]) => list.filter((f) => blockFlags.includes(f));
-  const flags = [...new Set([...flagged(o.screen?.flags ?? []), ...flagged(hot.flags)])];
-  if (flags.length) {
-    return hold(`No band in ${o.poolLabel} (${priceLine}). The pool is flagged ${flags.join(", ")}; ${poolClause(o, hot)}. Not a market to make.`, `Flagged ${flags.join(", ")}. Not touching it.`, "flagged", `flagged ${flags.join(", ")}`);
-  }
-  // Volume is what pays the fees: a pool that barely trades cannot pay a seat, whatever its yield looks like.
-  // (A house token clears every floor by definition: its pool is made whatever it trades.)
-  const vol24h = o.screen?.volume24hUsd ?? null;
-  const house = !!o.snapshot.pair?.house;
-  if (env.minVolume24hUsd > 0 && vol24h !== null && vol24h < env.minVolume24hUsd && !house && !pinned) {
-    return hold(
-      `No band in ${o.poolLabel} (${priceLine}). The pool traded $${r(vol24h, 0)} in 24h, under the $${r(env.minVolume24hUsd, 0)} the policy will make a market in: fees come from volume, and there is not enough here to pay a seat. ${poolClause(o, hot)}.`,
-      clip(`Only $${r(vol24h / 1000, 0)}k traded here in a day. Passing.`),
-      "not-worth",
-      `24h volume $${r(vol24h, 0)} under the $${r(env.minVolume24hUsd, 0)} floor`,
-    );
-  }
+  // THE ENTRY RULES (entryPoolRefusal, entrySeatRefusal), the same ones an idle re-lay passes: the pool's flags,
+  // its volume, whether it is worth a band and its last hour; then the lanes of our own; then the scout's reading,
+  // idle volume and what the seat earns.
+  const { launch, pair, pinned, isHotPick, score, scoreOk, listed } = entryStanding(o, env, hot);
+  const poolRefused = entryPoolRefusal(o, env, hot);
+  if (poolRefused) return entryHold(o, priceLine, poolRefused);
   // Size the seat once, here: the earnings test below needs to know how big it would be.
   const straddleHere = straddlePool(o);
   const szPreview = straddleHere ? sizeStraddle(o, x, q, env, null, now) : sizeBand(o, x, q, env, null, now);
-  const isHotPick = hot.onList;
-  const score = o.screen?.score ?? null;
-  const scoreOk = score !== null && score > env.minScore;
-  // The stock book: a tokenized-stock pool is the book's purpose; the guards and the basis still gate it.
-  const stockBook = env.book === "stocks" && isStockPool(o);
-  // The operator's watchlist is a judgement about the token; the score is a judgement about the unknown.
-  // A listed token does not need a score, but every other gate (volume, yield, payback, flags, the
-  // guards, the basis and session rules) still applies to it.
-  const listed = o.screen?.watchlisted === true;
-  if (!isHotPick && !scoreOk && !stockBook && !listed && !lane && !pinned) {
-    const why = score === null ? `not on the screen and not on the hot list` : `score ${r(score, 1)} is not above ${env.minScore} and the pool is not on the hot list`;
-    return hold(`No band in ${o.poolLabel} (${priceLine}): ${why}. ${poolClause(o, hot)}.`, "Nothing worth a band here. Holding.", "not-worth", why);
-  }
-  // A launch that has not moved in the last hour is not a launch: the lane judges the move itself.
-  if (!lane && hot.priceChange1hPct !== null && Math.abs(hot.priceChange1hPct) > POLICY_MAX_1H_MOVE_PCT) {
-    return hold(
-      `No band in ${o.poolLabel} (${priceLine}). The last hour moved ${pct(hot.priceChange1hPct)}, outside the +/-${POLICY_MAX_1H_MOVE_PCT}% the policy will lay a band into. ${poolClause(o, hot)}.`,
-      `Moved ${pct(hot.priceChange1hPct, 0)} in an hour. Not chasing it.`,
-      "moved",
-      `1h move ${pct(hot.priceChange1hPct)} outside +/-${POLICY_MAX_1H_MOVE_PCT}%`,
-    );
-  }
   // A pump.fun pair pool: our own shape, our own arithmetic (the routing model), and the lane's terms.
   // A STOCK pair is a stock pool: it takes the straddle path below with the lane's cap and the stock model's payback.
   if (pair && !straddleHere) return pairOpenDecide(o, x, env, q, now, hot, pair);
@@ -1185,58 +1428,9 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
       }
     }
   }
-  // A board pool is not opened on the venue's day figure: the scout reads it first (POLICY_REQUIRE_FLOW).
-  // Pinned stocks, the lanes and our own pools are not board pools.
-  const entryFlow = flowOf(o);
-  const coveredMin = entryFlow?.coveredMin ?? 0;
-  if (env.requireFlow && !pinned && !launch && !pair && (!entryFlow || coveredMin < env.minFlowCoverMin)) {
-    return entryFlow
-      ? hold(
-          `No band in ${o.poolLabel} (${priceLine}). The flow scout has read ${coveredMin} minutes of this pool and the desk wants ${env.minFlowCoverMin} before it seats: a few minutes are not an hour's travel or an hour's fees. ${poolClause(o, hot)}.`,
-          clip(`${coveredMin} min of the scout's reading, ${env.minFlowCoverMin} wanted. Waiting.`),
-          "flow-wait",
-          `the scout's reading covers ${coveredMin} min < ${env.minFlowCoverMin} (POLICY_MIN_FLOW_COVER_MIN)`,
-        )
-      : hold(
-          `No band in ${o.poolLabel} (${priceLine}). The flow scout has not read this pool yet: the desk seats on what it measures, not on the venue's day figure, so it waits for the reading. ${poolClause(o, hot)}.`,
-          "Waiting for the scout's reading. Not seated on the day figure.",
-          "flow-wait",
-          "the flow scout has not read the pool yet (POLICY_REQUIRE_FLOW)",
-        );
-  }
-  // Idle volume only: a token in flight is not seated, whatever it pays this hour.
-  const livelyNow = pinned || launch || pair ? null : livelyReason(o, x, env);
-  if (livelyNow) {
-    return hold(
-      `No band in ${o.poolLabel} (${priceLine}): ${livelyNow}. The fees are earned while the price chops inside a band, not while it runs; the desk waits for the pool to settle. ${poolClause(o, hot)}.`,
-      clip(`In flight: ${r(coverPctFor(o, env, env.coverPct, hotView(o, x)).movePct ?? 0, 0)}% an hour. Waiting for idle volume.`),
-      "lively",
-      livelyNow,
-    );
-  }
-  // Is the seat worth taking? What it earns, against what it costs.
   const seatSolPreview = straddleHere ? (szPreview as StraddleSizing).seatSol : (szPreview as Sizing).amountSol;
-  // a pinned stock is seated for the pairing, not for its yield: the earnings are reported, never a reason to pass
-  const earn = szPreview.none || pinned ? null : seatEarnings(o, x, seatSolPreview, szPreview.sharePct, straddleHere, env);
-  // THE FORECAST HE DECIDED ON. Kept so the open can write the exact number onto the band's meta,
-  // and the lesson can score it at the close: a recomputed forecast is a different forecast.
-  rememberEntryForecast(o.snapshot.address, earn, now);
-  if (earn && env.minSeatYieldPct > 0 && earn.yieldPctPerDay < env.minSeatYieldPct) {
-    return hold(
-      `No band in ${o.poolLabel} (${priceLine}). The seat would earn about $${r(earn.feesPerDayUsd, 2)} a day on $${r(earn.seatUsd, 0)}, ${r(earn.yieldPctPerDay, 2)}% a day, under the ${env.minSeatYieldPct}% floor: the pool pays $${r(earn.poolFeesPerDayUsd, 0)} a day, our share of the band would be ${r(earn.sharePct, 1)}%, and I take that pace at ${earn.feeShare} of face${earn.feeShareN > 0 && earn.feeShareWhy ? ` because ${earn.feeShareWhy}` : ` (the shipped share; ${earn.lane} seats have not taught me another yet)`}. ${poolClause(o, hot)}.`,
-      clip(`${r(earn.yieldPctPerDay, 2)}% a day here. Not worth the rent.`),
-      "not-worth",
-      `seat yield ${r(earn.yieldPctPerDay, 2)}%/day under the ${env.minSeatYieldPct}% floor${calibrationClause(earn)}`,
-    );
-  }
-  if (earn && env.maxPaybackHours > 0 && earn.paybackHours !== null && earn.paybackHours > env.maxPaybackHours) {
-    return hold(
-      `No band in ${o.poolLabel} (${priceLine}). Opening costs about $${r(earn.costUsd, 2)} in rent that does not come back and swap fees, and the seat earns about $${r(earn.feesPerDayUsd, 2)} a day, so it pays that back in ${r(earn.paybackHours, 1)}h, past the ${env.maxPaybackHours}h the policy will wait. ${poolClause(o, hot)}.`,
-      clip(`${r(earn.paybackHours, 0)}h to earn the rent back. Passing.`),
-      "not-worth",
-      `payback ${r(earn.paybackHours, 1)}h over the ${env.maxPaybackHours}h limit`,
-    );
-  }
+  const seatRefused = entrySeatRefusal(o, x, env, hot, { seatSol: seatSolPreview, sharePct: szPreview.sharePct, none: szPreview.none }, straddleHere, now);
+  if (seatRefused) return entryHold(o, priceLine, seatRefused);
   const worth = pinned
     ? `pinned: the agent is paired with ${pinned.ticker}, so the desk works ${pinned.ticker}'s Meteora liquidity whatever its floors say (${usd0(o.screen?.volume24hUsd ?? null)} traded here in 24h on ${usd0(o.screen?.tvlUsd ?? null)} of depth${o.screen?.feeToTvl24hPct !== null && o.screen?.feeToTvl24hPct !== undefined ? `, ${r(o.screen.feeToTvl24hPct, 2)}% of it in fees a day` : ""})`
     : launch

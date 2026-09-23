@@ -147,3 +147,53 @@ export function earlyCycleAllowed(taken: readonly number[], now: number, env: Fa
   const last = lastHour.length ? Math.max(...lastHour) : 0;
   return now - last >= env.minGapSec * 1000;
 }
+
+/** A band laid this cycle, as the execution and the decision describe it. */
+export interface LaidBand {
+  pool: string;
+  label: string;
+  /** the position the open made */
+  position: string;
+  /** the active bin the band was laid from, and the open's reach either side of it */
+  activeBinId: number;
+  binsBelowActive: number;
+  binsAboveActive: number;
+  quoteSide: "X" | "Y";
+  binStep: number;
+  /** the band's rolled stop, percent (state.stops, written as the open landed) */
+  stopPct: number;
+  /** what went in, SOL (the open's entry value) */
+  entrySol: number;
+  /** an ask band: the chain's basis its stop reads (src/engine/askExit.ts); absent for a bid band or a straddle */
+  askBasisSol?: number | null;
+  idleWaitSec: number;
+  now: number;
+}
+
+/**
+ * PURE. A band laid THIS cycle (an open, a re-lay, an ask), watched from the open's own geometry until the next
+ * cycle observes it. The watch list is built from the positions the cycle observed at its start, so a band opened
+ * or re-laid in it used to be unwatched for a whole interval, exactly the minutes that matter most: a flash crash
+ * stopped a fresh band at 23.8% against a 13.9% stop, and TACZ's re-laid band sat 356 s unwatched on 18 Sep while
+ * the price went four bins through its bottom. Laid at the price it is in range; a bid band has lost nothing yet,
+ * an ask band carries the chain's drawdown against its basis.
+ */
+export function laidBandWatch(l: LaidBand): WatchedBand {
+  const drawdownPct = l.askBasisSol && l.askBasisSol > 0 ? (1 - l.entrySol / l.askBasisSol) * 100 : 0;
+  return {
+    pool: l.pool,
+    label: l.label,
+    position: l.position,
+    lowerBinId: l.activeBinId - Math.max(0, l.binsBelowActive),
+    upperBinId: l.activeBinId + Math.max(0, l.binsAboveActive),
+    quoteSide: l.quoteSide,
+    binStep: l.binStep,
+    inRange: true,
+    stopPct: l.stopPct,
+    drawdownPct,
+    outSince: null,
+    idleWaitSec: l.idleWaitSec,
+    observedAt: l.now,
+    ...(l.askBasisSol !== undefined && l.askBasisSol !== null ? { ask: true, markBinId: l.activeBinId } : {}),
+  };
+}
