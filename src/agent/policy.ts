@@ -1112,7 +1112,11 @@ function entryPoolRefusal(o: Observation, env: PolicyEnv, hot: HotView): EntryRe
   // The launch lane bought the right to be new and to move: `new` and `wild` are what a launch looks
   // like, and the lane's own floors (liquidity, 24h and 1h volume, turnover, its own dumping rule)
   // are harsher than these flags. `thin` and `dumping` still stop it dead.
-  const blockFlags = (st.lane ? POLICY_BLOCK_FLAGS.filter((f) => f !== "new" && f !== "wild") : POLICY_BLOCK_FLAGS).filter((f) => !(st.pinned && f === "thin"));
+  // A tokenized stock is exempt from `dumping` (Zach, 22 Sep): on SILV, wXMR, COPX and DFDVx it fired on a sell
+  // share alone, at a 1h move of -0.05%. `wild` and the 1h-move check still apply to stocks, and so does the basis gate.
+  const blockFlags = (st.lane ? POLICY_BLOCK_FLAGS.filter((f) => f !== "new" && f !== "wild") : POLICY_BLOCK_FLAGS)
+    .filter((f) => !(st.pinned && f === "thin"))
+    .filter((f) => !(f === "dumping" && isStockPool(o)));
   const flagged = (list: string[]) => list.filter((f) => blockFlags.includes(f));
   const flags = [...new Set([...flagged(o.screen?.flags ?? []), ...flagged(hot.flags)])];
   if (flags.length) {

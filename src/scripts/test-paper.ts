@@ -904,6 +904,11 @@ async function main(): Promise<void> {
     assert.equal(policy.policyDecide(obs({ screen: { ...obs().screen!, hot: ctx.filter((h) => h.pick) } }), x).branch, "open", "without its own row the same pool opened");
     // off the board the policy's extras carry it the same way
     assert.equal(policy.policyDecide(obs({ screen: null }), { ...x, hot: hotPicksWithOwn(hot, POOL, { tradable: () => true, max: 8 }) }).branch, "flagged");
+    // a tokenized stock is exempt from "dumping" alone (Zach, 22 Sep: it fired on a sell share at a -0.05% move); "wild" still holds it
+    const stockScreen = (flags: string[]) => ({ ...obs().screen!, stock: { ticker: "DFDV", issuer: "xstocks" }, hot: hotContextFor(file([row({ flags, priceChange1hPct: -0.05 }), other]), POOL, () => true, { tradable: () => true, max: 8 }) });
+    assert.notEqual(policy.policyDecide(obs({ screen: stockScreen(["dumping"]) as never }), x).branch, "flagged", "a stock flagged dumping alone is not refused as flagged");
+    assert.equal(policy.policyDecide(obs({ screen: stockScreen(["dumping", "wild"]) as never }), x).branch, "flagged", "wild still refuses a stock");
+    assert.equal(policy.policyDecide(obs({ screen: { ...obs().screen!, hot: hotContextFor(file([row({ flags: ["dumping"], priceChange1hPct: -0.05 }), other]), POOL, () => true, { tradable: () => true, max: 8 }) } }), x).branch, "flagged", "a memecoin flagged dumping is still refused");
     // the last hour's move: an unflagged row under the hot list's liquidity floor (so not a pick) that moved 22%
     const moved = policy.policyDecide(obs({ screen: { ...obs().screen!, hot: hotContextFor(file([row({ flags: [], priceChange1hPct: -22, liquidityUsd: 1_000 }), other]), POOL, () => true, { tradable: () => true, max: 8 }) } }), x);
     assert.equal(moved.branch, "moved");
