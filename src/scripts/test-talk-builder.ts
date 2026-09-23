@@ -551,7 +551,7 @@ async function main(): Promise<void> {
   const vetClose = { facts: close.facts, length: close.length, lint: CTX, recent: [], type: close.type, past: close.past };
   const mem0 = { recent: [], buildLines: [], promises: [] };
   await test("fail closed: down (the key stays unspent), a skip, a broken contract, or two refused drafts mean no post", async () => {
-    const down = await builder.draftMoment(close, vetClose, mem0, draftOpts(dir("fc"), async () => { throw new OpenHermitError("unreachable", "down"); }));
+    const down = await builder.draftMoment({ ...close, fallback: undefined }, vetClose, mem0, draftOpts(dir("fc"), async () => { throw new OpenHermitError("unreachable", "down"); }));
     assert.ok(down.text === null && down.transient);
     const skip = await builder.draftMoment(close, vetClose, mem0, draftOpts(dir("fc"), async () => reply(`{"key":"close:ore","skip":"nothing to add"}`)));
     assert.ok(skip.text === null && !skip.transient && /skipped/.test(skip.reason!));
@@ -582,6 +582,88 @@ async function main(): Promise<void> {
     assert.equal(capped.source, "template");
     const refusedTpl = await builder.draftMoment({ ...daily, template: "gm, huge day on paper!" }, vetDaily, mem0, draftOpts(dir("dt"), async () => reply(`{"key":"${daily.key}","skip":"no"}`)));
     assert.equal(refusedTpl.text, null, "a template the guards refuse does not go either");
+  });
+
+  // ------------------------------------------------------------ keep posting (23 Sep): pacing, fallbacks, the repeat rule
+  console.log("keep posting: the paced cap, the fallbacks, repeats counted without the shared close words");
+  const pace = await import("../talk/pace.js");
+  await test("the cap is paced across the UTC day: the hour's even share plus a burst, all of it from 20:00 UTC", () => {
+    const at = (h: number) => Date.parse(`2026-09-23T${String(h).padStart(2, "0")}:30:00Z`);
+    assert.equal(pace.pacedAllowance(48, at(0)), 8);
+    assert.equal(pace.pacedAllowance(48, at(12)), 32);
+    assert.equal(pace.pacedAllowance(48, at(19)), 46);
+    assert.equal(pace.pacedAllowance(48, at(20)), 48);
+    assert.equal(pace.pacedAllowance(48, at(23)), 48);
+    assert.equal(pace.pacedAllowance(0, at(12)), 0);
+    for (let h = 1; h < 24; h++) assert.ok(pace.pacedAllowance(120, at(h)) >= pace.pacedAllowance(120, at(h - 1)), "never shrinks within a day");
+    const st = dir("pace");
+    fs.writeFileSync(path.join(st, brain.POST_BRAIN_FILE), JSON.stringify({ version: 1, day: "2026-09-23", calls: 8 }));
+    const early = brain.spendBrainCall(st, at(0), 48);
+    assert.ok(!early.ok && early.paced && /paced/.test(early.reason), "8 spent in the first hour: the next waits");
+    assert.deepEqual(brain.spendBrainCall(st, at(1), 48), { ok: true, used: 9 }, "the next hour frees more");
+  });
+  const T16 = Date.parse("2026-09-23T16:10:00Z");
+  const bigCap = (st: string, calls: number) => fs.writeFileSync(path.join(st, brain.POST_BRAIN_FILE), JSON.stringify({ version: 1, day: "2026-09-23", calls }));
+  await test("a close falls back to its own plain post only when his model cannot be asked: down or the day's cap; never over his skip or a refused draft", async () => {
+    assert.ok(close.fallback, "a close carries a fallback");
+    assert.equal(vC(close.fallback!, { fallback: true }), null, `the fallback passes the guards: ${close.fallback}`);
+    const down = await builder.draftMoment(close, vetClose, mem0, draftOpts(dir("fb"), async () => { throw new OpenHermitError("unreachable", "down"); }));
+    assert.equal(down.text, close.fallback);
+    assert.equal(down.source, "template");
+    const st = dir("fb");
+    bigCap(st, 8);
+    const capped = await builder.draftMoment(close, vetClose, mem0, { env: { OPENHERMIT_TOKEN: GATEWAY_TOKEN }, statePath: st, now: T16, askImpl: (async () => assert.fail("never asked past the cap")) as never });
+    assert.equal(capped.text, close.fallback, "the day's cap spent: the fallback");
+    const noToken = await builder.draftMoment(close, vetClose, mem0, { env: {}, statePath: dir("fb"), now: T16 });
+    assert.equal(noToken.text, close.fallback, "no gateway token: the fallback");
+    const skip = await builder.draftMoment(close, vetClose, mem0, draftOpts(dir("fb"), async () => reply(`{"key":"close:ore","skip":"nothing to add"}`)));
+    assert.equal(skip.text, null, "his skip stands");
+    const bad = await builder.draftMoment(close, vetClose, mem0, draftOpts(dir("fb"), async () => reply(`{"key":"close:ore","post":"ORE/SOL to the moon, buy now!"}`)));
+    assert.equal(bad.text, null, "two refused drafts: silence, as before");
+    const refusedFb = await builder.draftMoment({ ...close, fallback: "ORE/SOL to the moon on paper." }, vetClose, mem0, draftOpts(dir("fb"), async () => { throw new OpenHermitError("unreachable", "down"); }));
+    assert.ok(refusedFb.text === null && refusedFb.transient && /the fallback too/.test(refusedFb.reason!), "a fallback the guards refuse does not go; the key stays unspent");
+  });
+  await test("paced: past the hour's share the moment waits for a later tick, with no fallback and no call", async () => {
+    const st = dir("pc");
+    bigCap(st, 45);
+    const d = await builder.draftMoment(close, vetClose, mem0, { env: { OPENHERMIT_TOKEN: GATEWAY_TOKEN, TALK_MODEL_CALLS_PER_DAY: "48" }, statePath: st, now: T16, askImpl: (async () => assert.fail("never asked past the hour's share")) as never });
+    assert.ok(d.text === null && d.transient && /paced/.test(d.reason!), d.reason ?? "");
+  });
+  await test("the fallbacks read right and pass: a past close, a follow-up, a halt", () => {
+    const pastL = lesson({ position: "met", label: "MET/SOL", net: -1.21, closedAt: NOW - 2 * HOUR, inRange: 43 });
+    const past = mo.gatherMoments(base({ lessons: [pastL], journal: journalFor(pastL.pool, pastL.label, pastL.openedAt, pastL.closedAt) })).find((m) => m.key === "close:met")!;
+    assert.match(past.fallback!, /^Earlier I closed my band on MET\/SOL after 2\.0 hours: a loss of 1\.21 SOL on paper, rent and swaps included\. It was in range for 43% of my checks\.$/);
+    assert.equal(g.vetBuilderPost(past.fallback!, { facts: past.facts, length: past.length, lint: CTX, recent: [], type: past.type, past: past.past, fallback: true }), null);
+    const fuL = lesson({ position: "ore2", label: "ORE/SOL", net: 0.31, closedAt: NOW - 10 * MIN });
+    const fu = mo.gatherMoments(base({ lessons: [fuL], journal: journalFor(fuL.pool, fuL.label, fuL.openedAt, fuL.closedAt), posts: [post(NOW - 5 * HOUR, "I laid a band on ORE/SOL on paper.", "desk", "close:ore0")] })).find((m) => m.key === "close:ore2")!;
+    assert.equal(fu.type, "followup");
+    assert.match(fu.fallback!, /^Follow-up on ORE\/SOL: on paper that band closed after 2\.0 hours, at 16:00 UTC, net 0\.31 SOL for its whole life/);
+    assert.equal(g.vetBuilderPost(fu.fallback!, { facts: fu.facts, length: fu.length, lint: CTX, recent: [], type: fu.type, past: fu.past, followUpOf: fu.followUpOf, fallback: true }), null);
+    const held = journalFor("POOLH", "ORE/SOL", NOW - 100 * MIN, NOW - 5 * MIN, { violations: ["kill switch on: no new bands"] });
+    const h = mo.gatherMoments(base({ journal: held })).find((m) => m.type === "halt")!;
+    assert.equal(g.vetBuilderPost(h.fallback!, { facts: h.facts, length: h.length, lint: CTX, recent: [], type: h.type, fallback: true }), null);
+    for (const x of [past, fu, h]) assert.ok(!/\bI closed it\.$/.test(x.fallback!), "never the first sentence said twice");
+  });
+  await test("repeats are counted without the words every close must use (the 23 Sep refusals), and a near-copy is still refused", () => {
+    const ORE = "Follow-up on ORE/SOL: the fresh band I laid there earlier today closed after 2.2 hours, a loss of 1.32 SOL on paper for its whole life, rent and swaps included. Price went through the band and out the other side.";
+    const CATE = 'My CATE/USDC band closed earlier today at a loss of 1.07 SOL on paper, counting rent and swaps. My journal line at the exit: "7 bins through the band and 318s out. Off the table."';
+    const MET = "Earlier today I closed my MET/SOL band on paper after 0.4 hours, a loss of 1.21 SOL with rent and swaps counted. On paper it was in range for 43% of my checks before price ran straight through it.";
+    const ROUTER = "Earlier today I closed my band on ROUTER/SOL after 1.1 hours. On paper it lost 2.76 SOL over its whole life, rent and swaps included. Price went through the band and out the other side.";
+    assert.ok(g.builderSimilarity(CATE, ORE) < g.BUILDER_SIMILARITY_MAX, "a different close is not a repeat");
+    assert.ok(g.builderSimilarity(MET, ORE) < g.BUILDER_SIMILARITY_MAX, "a different close is not a repeat");
+    assert.ok(g.builderSimilarity(ROUTER, ORE) >= g.BUILDER_SIMILARITY_MAX, "the same post with another pool is");
+    assert.equal(g.builderSimilarity("At 16:00 UTC I closed ORE/SOL.", "At 09:00 UTC I closed BP/SOL."), 0, "too few words of its own to call a repeat");
+    // the same shape word for word with another pool: still refused (0.85 with every word), quoted for the retry
+    const nearCopy = "On paper I closed my band on BP/SOL at 09:00 UTC, a loss of 1.32 SOL over the band's life. It was in range for 40% of my checks.";
+    const r = vC(GOOD_CLOSE, { recent: [{ at: NOW - 20 * HOUR, text: nearCopy, key: "close:bp", type: "desk" }] });
+    assert.equal(ruleOf(r), "repeat");
+    assert.ok(r!.detail.includes(`"${nearCopy.slice(0, 60)}`), "the refusal quotes the post it repeats");
+    assert.equal(vC(GOOD_CLOSE, { recent: [{ at: NOW - 20 * HOUR, text: nearCopy, key: "close:bp", type: "desk" }], fallback: true }), null, "a fallback is a fixed shape: not compared");
+  });
+  await test("the prompt tells him to word it fresh, and a repeat's retry carries the post it repeated", () => {
+    const p = brain.postPrompt(close, mem0, 'repeat: 0.90 overlap with his post of 2026-09-22T21:28Z, "Follow-up on ORE/SOL: the fresh band"');
+    assert.match(p, /Word it fresh/);
+    assert.match(p, /reason: repeat: 0\.90 overlap with his post of 2026-09-22T21:28Z, "Follow-up on ORE\/SOL/);
   });
 
   // ------------------------------------------------------------ runTick in the builder voice
@@ -675,7 +757,7 @@ async function main(): Promise<void> {
     fs.appendFileSync(path.join(st, x.INTENTS_FILE), JSON.stringify({ key: "close:paper-X-1", resolved: "refused", at: new Date(at - 19 * MIN).toISOString() }) + "\n");
     assert.equal(x.unresolvedIntentKeys(st, 0).size, 0);
   });
-  await test("a desk moment with the gateway down posts nothing and spends neither the key nor the day; the cap then holds the gateway off", async () => {
+  await test("a desk moment with the gateway down goes out as its own fallback (23 Sep: keep posting); past the cap the gateway is never called", async () => {
     const at = T14 + 90 * MIN; // 15:50: past the daily's hour, the big loss of 14:50 is 1 hour old
     const data = makeData(at);
     const st = dir("state");
@@ -683,13 +765,15 @@ async function main(): Promise<void> {
     const env = envOf(data, st, { TALK_MODEL_CALLS_PER_DAY: "1" });
     let calls = 0;
     const r = await tick.runTick({ env, paperDesk: true, now: at, askImpl: (async () => (calls++, Promise.reject(new OpenHermitError("unreachable", "down")))) as never });
-    assert.equal(r.status, "not-posted", r.detail);
-    assert.match(r.detail, /close:paper-X-1/);
-    assert.equal(readJ(path.join(st, "x-drafts.jsonl")).length, 0, "no draft row: the key stays unspent");
-    assert.equal(readJ(path.join(st, "x-posts.jsonl")).length, 0);
+    assert.equal(r.status, "drafted", r.detail);
+    assert.equal(r.source, "template");
+    assert.match(r.detail, /close:paper-X-1, written by its fallback \(model down: unreachable/);
+    assert.match(r.text!, /^Earlier I closed my band on DFDVx\/SOL after [\d.]+ hours: a loss of 2\.25 SOL on paper, rent and swaps included\./);
+    const posts = readJ(path.join(st, "x-posts.jsonl"));
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].key, "close:paper-X-1", "the key is used: never posted twice");
     const r2 = await tick.runTick({ env, paperDesk: true, now: at + 15 * MIN, askImpl: (async () => (calls++, reply("{}"))) as never });
-    assert.equal(r2.status, "not-posted");
-    assert.match(r2.detail, /model cap/);
+    assert.ok(!/close:paper-X-1/.test(r2.detail) || r2.status !== "drafted", r2.detail);
     assert.equal(calls, 1, "past TALK_MODEL_CALLS_PER_DAY the gateway is never called");
   });
   await test("a model draft that passes goes as his words; a refused one is a draft row and the key is spent", async () => {

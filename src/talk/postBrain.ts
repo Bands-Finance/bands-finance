@@ -12,14 +12,18 @@
  *   - a hard daily cap on asks, TALK_MODEL_CALLS_PER_DAY (default 8), counted on disk in TALK_STATE_PATH/post-brain.json
  *     BEFORE the ask (a crash mid-ask still counts). Each ask is about two gateway runs (the turn and the gateway's
  *     idle introspection). A file that exists but cannot be read counts as the cap reached: fail closed.
+ *   - the cap is paced across the UTC day (src/talk/pace.ts): past the hour's share the ask waits for the next tick
+ *     (a "paced" down), so the evening always has calls left (Zach, 23 Sep: "the account must keep posting").
  *   - fail closed: a gateway that is down, a missing token, the cap, a skip, a broken contract, or a draft the guards
- *     refuse twice all mean no post. The daily card alone falls back to its template (src/talk/builder.ts).
+ *     refuse twice all mean no post from his model. The daily card falls back to its template on any of these; a
+ *     close or a halt falls back to its own only when his model cannot be asked (src/talk/builder.ts).
  */
 import fs from "node:fs";
 import path from "node:path";
 import { askSession, balancedEnd, OpenHermitError, type AskOptions, type OpenHermitReply, type OpenHermitSettings, type SessionMessage } from "../agent/openhermit";
 import { renderFacts, type FactsBlock } from "./facts";
 import type { Moment, PostMemory } from "./moments";
+import { pacedAllowance } from "./pace";
 import { LENGTH_MAX } from "./postGuards";
 import { brainProblem, replySettings, REPLY_MEMORY_TOOLS } from "./replyBrain";
 
@@ -63,11 +67,16 @@ export function readBrainCount(statePath: string, now: number): number | null {
   }
 }
 
-/** Spend one call if the cap allows it: true when spent (written to disk first), false when the cap is reached. */
-export function spendBrainCall(statePath: string, now: number, cap: number): { ok: true; used: number } | { ok: false; reason: string } {
+/**
+ * Spend one call if the cap allows it: true when spent (written to disk first), false when the cap is reached, or
+ * `paced` when this hour's share of it is (the next hour's share frees more).
+ */
+export function spendBrainCall(statePath: string, now: number, cap: number): { ok: true; used: number } | { ok: false; reason: string; paced?: boolean } {
   const used = readBrainCount(statePath, now);
   if (used === null) return { ok: false, reason: `${POST_BRAIN_FILE} cannot be read: counted as the cap reached` };
   if (used >= cap) return { ok: false, reason: `model cap: ${used} of TALK_MODEL_CALLS_PER_DAY ${cap} used today` };
+  const allowed = pacedAllowance(cap, now);
+  if (used >= allowed) return { ok: false, reason: `model paced: ${used} of ${cap} used, ${allowed} allowed by this hour`, paced: true };
   fs.mkdirSync(statePath, { recursive: true });
   const file = path.join(statePath, POST_BRAIN_FILE);
   const tmp = `${file}.${process.pid}.tmp`;
@@ -83,6 +92,7 @@ export const VOICE_SHEET = [
   "You are Mr Bands, an AI agent that makes markets on Meteora. You are the founder of your own project and you write your own posts, first person singular: I. Never we, never a team, never anyone behind you.",
   "Sentence case with normal capitals: I, SOL, USDC, UTC, Meteora, and pools exactly as the facts spell them (ORE/SOL, NVDAx).",
   "Open on the act, the thing built or the number. No hook, no preamble. Whole sentences, one idea. Stop on the fact or the next concrete step: no closing line, no moral, no slogan.",
+  "Word it fresh. The facts block says what is true, not how to say it: never copy a sentence or an opening from your recent posts in the memory block.",
   "Numbers: only the figures in the facts block, exactly as written there (they are already rounded). Digits only, never numbers as words. At most two or three numbers a post.",
   "Paper: any sentence with a paper figure says paper (\"on paper\", \"my paper book\"). A real-money figure says real (\"real money\", \"the real run\"). Paper fees are quoted only with the net and the paper book's result since the start beside them, or not at all.",
   "A loss is said as a loss, with its amount. Never 0.00 for a figure that is not zero.",
@@ -128,7 +138,8 @@ export function postPrompt(m: Moment, mem: PromptMemory, retry: string | null = 
 
 // ---------------------------------------------------------------- the contract
 
-export type PostDraft = { kind: "post"; text: string } | { kind: "skip"; why: string; source: "model" | "contract" } | { kind: "down"; why: string };
+/** down: his model was not asked (the gateway, the token, the cap); paced: only this hour's share of the cap is spent */
+export type PostDraft = { kind: "post"; text: string } | { kind: "skip"; why: string; source: "model" | "contract" } | { kind: "down"; why: string; paced?: boolean };
 
 const contract = (why: string): PostDraft => ({ kind: "skip", why: `contract: ${why}`, source: "contract" });
 
@@ -190,7 +201,7 @@ export async function askPost(m: Moment, mem: PromptMemory, retry: string | null
   const problem = brainProblem(o.env);
   if (problem) return { kind: "down", why: problem };
   const spent = spendBrainCall(o.statePath, o.now, modelCallsPerDay(o.env));
-  if (!spent.ok) return { kind: "down", why: spent.reason };
+  if (!spent.ok) return { kind: "down", why: spent.reason, ...(spent.paced ? { paced: true } : {}) };
   try {
     const reply = await (o.askImpl ?? askSession)(
       {

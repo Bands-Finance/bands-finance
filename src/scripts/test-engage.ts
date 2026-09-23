@@ -104,6 +104,7 @@ function fakeX(o: { me?: () => Answer; mentions?: (url: string) => Answer; post?
 async function main(): Promise<void> {
   const engage = await import("../talk/engage.js");
   const guards = await import("../talk/replyGuards.js");
+  const pace = await import("../talk/pace.js");
   const x = await import("../talk/x.js");
   const tick = await import("../talk/tick.js");
   const envMod = await import("../talk/env.js");
@@ -783,7 +784,8 @@ async function main(): Promise<void> {
     const r = await engage.runEngagePass({ env: liveEnv(dir), now: NOW, fetch: X.fetch, brain, sleep: noSleep });
     assert.equal(r.replied, 3, r.detail);
     const texts = X.posts().map((p) => (p.body as { text: string }).text);
-    assert.deepEqual(texts, [T.price, T.price, T.tokenPrelaunch], "the model-call cap (60 of 60) does not stop a fixed line");
+    // the second price answer goes out in its next wording: one line word for word to many accounts reads as a bot
+    assert.deepEqual(texts, [T.price, brainMod.REPLY_VARIANTS.price[1], T.tokenPrelaunch], "the model-call cap (60 of 60) does not stop a fixed line");
     assert.equal(engage.readEngageState(dir).modelCalls, 60);
   });
 
@@ -945,7 +947,7 @@ async function main(): Promise<void> {
     await engage.runEngagePass({ env: liveEnv(dir), now: NOW, fetch: X.fetch, brain: realWith(B.brain.draftReply), sleep: noSleep });
     assert.equal(B.asked.length, 0);
     const T = brainMod.REPLY_TEMPLATES;
-    assert.deepEqual(postedTexts(X), [T.copycat, T.tokenPrelaunch, T.tokenPrelaunch]);
+    assert.deepEqual(postedTexts(X), [T.copycat, T.tokenPrelaunch, brainMod.REPLY_VARIANTS.tokenPrelaunch[1]], "the second token answer in its next wording");
   });
 
   await test("a model reply never claims live money; 'not paper' is not paper; a live-money question gets the paper line", async () => {
@@ -1095,16 +1097,66 @@ async function main(): Promise<void> {
     assert.equal(engage.readEngageState(dir).pending.length, 2);
   });
 
-  await test("one fixed line goes out at most TEMPLATE_REPLIES_PER_DAY times a day: the rest are skipped, never carried over", async () => {
+  await test("one fixed answer goes out at most TEMPLATE_REPLIES_PER_DAY times a day in all its wordings, each time the wording sent least: the rest are skipped, never carried over", async () => {
     const brainMod = await import("../talk/replyBrain.js");
     const dir = freshDir();
     const ms = Array.from({ length: 7 }, (_, i) => mention(idN(200 + i), "@MrBandsSol should i sell?", { authorId: `55520${i}`, authorHandle: `reader_v${i}`, conversationId: idN(200 + i) }));
     seeded(dir, { pending: ms.map((m) => ({ ...m, queuedAt: NOW })) });
     const X = fakeX();
     await engage.runEngagePass({ env: liveEnv(dir, { ENGAGE_REPLIES_PER_PASS: "10" }), now: NOW, fetch: X.fetch, brain: realWith(async () => assert.fail("fixed lines only")), sleep: noSleep });
-    assert.deepEqual(postedTexts(X), Array(engage.TEMPLATE_REPLIES_PER_DAY).fill(brainMod.REPLY_TEMPLATES.price));
-    assert.equal(mentionsLog(dir).filter((l) => /^skip: this fixed line went out 5 times today/.test(l.outcome)).length, 2);
+    const V = brainMod.REPLY_VARIANTS.price;
+    assert.deepEqual(postedTexts(X), [V[0], V[1], V[2], V[0], V[1]], "never the same wording twice in a row");
+    assert.equal(mentionsLog(dir).filter((l) => /^skip: this fixed answer went out 5 times today/.test(l.outcome)).length, 2);
     assert.equal(engage.readEngageState(dir).pending.length, 0);
+  });
+
+  await test("wordings: the one sent least today, the earlier on a tie, never one X refused today as duplicate content", async () => {
+    const brainMod = await import("../talk/replyBrain.js");
+    const V = brainMod.REPLY_VARIANTS.price;
+    assert.equal(engage.pickWording(V, [], new Set()), V[0]);
+    assert.equal(engage.pickWording(V, [V[0]], new Set()), V[1]);
+    assert.equal(engage.pickWording(V, [V[0], V[1], V[2], V[0]], new Set()), V[1]);
+    assert.equal(engage.pickWording(V, [], new Set([V[0].trim()])), V[1], "X refused the first today: the next");
+    assert.equal(engage.pickWording(V, [], new Set(V.map((v) => v.trim()))), V[0], "all refused: the first, which the duplicate check then skips");
+    assert.deepEqual(engage.wordingsOf(V[2], brainMod.REPLY_VARIANTS), V);
+    assert.deepEqual(engage.wordingsOf("a model reply", brainMod.REPLY_VARIANTS), ["a model reply"]);
+    assert.equal(new Set(brainMod.TEMPLATE_TEXTS).size, brainMod.TEMPLATE_TEXTS.length, "no wording twice");
+    for (const [name, w] of Object.entries(brainMod.REPLY_VARIANTS)) {
+      assert.equal(w[0], brainMod.REPLY_TEMPLATES[name as keyof typeof brainMod.REPLY_TEMPLATES], `${name}: the canonical line first`);
+      for (const text of w) assert.equal(vet(text, { source: "template" }), null, text);
+    }
+  });
+
+  await test("follow-back, DM and collab pitches are skipped in code, before any model call (23 Sep: 17 of 30 asks)", async () => {
+    const pitches = ["@MrBandsSol can you follow me back?", "@MrBandsSol Hey Let\u2019s Collaborate, Send DM Or Follow Back", "@MrBandsSol Sir, let\u2019s connect through DM. \u{1F91D}", "@MrBandsSol Great idea! My DMs are always open", "@MrBandsSol There may be a strong partnership opportunity here. Reach out to me.", "@MrBandsSol Let's help this project reach more people"];
+    for (const t of pitches) assert.ok(guards.pitchIn(t), t);
+    for (const t of ["@MrBandsSol does the stop follow the price back into range?", "@MrBandsSol how do you pick the bin range for a follow-up band?", "@MrBandsSol Really clean setup no stale calls getting through"]) assert.equal(guards.pitchIn(t), null, t);
+    const dir = freshDir();
+    const ms = [...pitches, "@MrBandsSol how do the guards decide?"].map((q, i) => mention(idN(700 + i), q, { authorId: `55570${i}`, authorHandle: `reader_p${i}`, conversationId: idN(700 + i) }));
+    seeded(dir, { pending: ms.map((m) => ({ ...m, queuedAt: NOW })) });
+    const B = fakeBrain(() => ({ kind: "reply", text: REPLIES[0], source: "model" }));
+    await engage.runEngagePass({ env: liveEnv(dir, { ENGAGE_REPLIES_PER_PASS: "10" }), now: NOW, fetch: fakeX().fetch, brain: B.brain, sleep: noSleep });
+    assert.deepEqual(B.asked.map((i) => i.text), ["@MrBandsSol how do the guards decide?"], "only the real question reaches the model");
+    assert.equal(mentionsLog(dir).filter((l) => /^skip: screen: a follow-back, DM or collab pitch/.test(l.outcome)).length, pitches.length);
+  });
+
+  await test("reply calls are paced across the day: past this hour's share a mention waits for a later pass, and a fixed line still goes", async () => {
+    // 08:00 UTC with 60 a day: 23 for the 9 hours begun, plus a burst of 8
+    assert.equal(pace.pacedAllowance(60, NOW), 31);
+    const dir = freshDir();
+    const q = mention(idN(720), "@MrBandsSol how do the guards decide?");
+    const f = mention(idN(721), "@MrBandsSol should i sell?", { authorId: "5557201", authorHandle: "reader_q1", conversationId: idN(721) });
+    seeded(dir, { pending: [q, f].map((m) => ({ ...m, queuedAt: NOW })), modelCalls: 30, day: "2026-09-22" });
+    const B = fakeBrain(() => ({ kind: "reply", text: REPLIES[0], source: "model" }));
+    const X = fakeX();
+    const r = await engage.runEngagePass({ env: liveEnv(dir), now: NOW, fetch: X.fetch, brain: { ...B.brain, fixedAnswer: engage.loadReplyBrain().fixedAnswer, REPLY_VARIANTS: engage.loadReplyBrain().REPLY_VARIANTS }, sleep: noSleep });
+    assert.equal(B.asked.length, 0, "30 spent, 31 allowed by 08:00: an ask (2) waits");
+    assert.match(r.detail, /allowed by this hour/);
+    assert.equal(X.posts().length, 1, "the fixed line spends no model call and goes");
+    assert.deepEqual(engage.readEngageState(dir).pending.map((p) => p.id), [q.id], "the question stays pending");
+    const B2 = fakeBrain(() => ({ kind: "reply", text: REPLIES[0], source: "model" }));
+    await engage.runEngagePass({ env: liveEnv(dir), now: NOW + 3600e3, fetch: X.fetch, brain: B2.brain, sleep: noSleep });
+    assert.equal(B2.asked.length, 1, "the next hour's share frees it");
   });
 
   await test("a 403 'duplicate content' refuses that one text, not the account: three people asking the same thing never hold the five LP questions behind them", async () => {
@@ -1133,10 +1185,14 @@ async function main(): Promise<void> {
     });
     const answers = new Map(LP.map(([q, a]) => [`@MrBandsSol ${q}`, a]));
     const asked: string[] = [];
-    const brain = realWith(async (i) => {
-      asked.push(i.text);
-      return { kind: "reply", text: answers.get(i.text) ?? assert.fail(`asked about ${i.text}`), source: "model" };
-    });
+    // one wording per fixed answer here (no REPLY_VARIANTS), so X sees the same text again, as on 22 Sep
+    const brain = {
+      ...realWith(async (i) => {
+        asked.push(i.text);
+        return { kind: "reply", text: answers.get(i.text) ?? assert.fail(`asked about ${i.text}`), source: "model" };
+      }),
+      REPLY_VARIANTS: undefined,
+    };
     const r1 = await engage.runEngagePass({ env: liveEnv(dir), now: NOW, fetch: X.fetch, brain, sleep: noSleep });
     assert.equal(r1.status, "ran", r1.detail);
     let st = engage.readEngageState(dir);

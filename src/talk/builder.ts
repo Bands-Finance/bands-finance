@@ -8,8 +8,11 @@
  *      build ledger, his own posts of 7 days
  *   2. CODE PICKS: pickMoment (src/talk/moments.ts), at most one, under POSTS_PER_DAY and the loop's spacing
  *   3. HIS MODEL WORDS: askPost (src/talk/postBrain.ts), one fresh session per post, under TALK_MODEL_CALLS_PER_DAY
+ *      paced across the day (src/talk/pace.ts: past the hour's share, the moment waits for a later tick)
  *   4. CODE DECIDES: vetBuilderPost (src/talk/postGuards.ts); one retry with the reason; then silence, except the
- *      daily card, whose template (built from the same facts) goes through the same guards
+ *      daily card, whose template (built from the same facts) goes through the same guards, and a close or a halt
+ *      when his model cannot be asked at all (the gateway down, the day's cap spent): its fallback, from its own
+ *      facts, goes through the same guards (Zach, 23 Sep: "the account must keep posting")
  *   5. post through postTweet (src/talk/x.ts) with the sentence-case lint. Only with TALK_BUILDER_LIVE=true does a
  *      builder post reach X; until then every pick is a dry record and a draft row (the plan's 48 hours dry).
  *
@@ -62,7 +65,7 @@ export interface BuilderTickOptions {
 export interface BuilderOutcome extends TickOutcome {
   moment?: Moment | null;
   text?: string;
-  /** who wrote the text: his model or the daily's template */
+  /** who wrote the text: his model, or the daily's template or a moment's fallback */
   source?: "model" | "template";
   /** the state runTick writes */
   state: TickState;
@@ -192,7 +195,7 @@ export interface Drafted {
   asks: number;
 }
 
-/** Ask, vet, retry once with the reason, then the daily's template or silence. */
+/** Ask, vet, retry once with the reason, then the daily's template, a fallback (his model not asked), or silence. */
 export async function draftMoment(m: Moment, vet: BuilderVetContext, mem: PromptMemory, o: { env: NodeJS.ProcessEnv; statePath: string; now: number; askImpl?: AskImpl }): Promise<Drafted> {
   let asks = 0;
   let lastDraft: string | null = null;
@@ -202,8 +205,16 @@ export async function draftMoment(m: Moment, vet: BuilderVetContext, mem: Prompt
   for (let attempt = 0; attempt < 2; attempt++) {
     const d: PostDraft = await askPost(m, mem, retry, o);
     if (d.kind === "down") {
+      // paced: this hour's share of the cap is spent; the moment waits for a later tick, no fallback
+      if (d.paced) return { text: null, source: null, reason: `model paced: ${d.why}`, transient: attempt === 0, lastDraft, asks };
       transient = attempt === 0;
       reason = `model down: ${d.why}`;
+      if (attempt === 0 && m.fallback) {
+        // his model cannot be asked at all: the moment's own plain post, through the same guards
+        const r = vetBuilderPost(m.fallback, { ...vet, fallback: true });
+        if (!r) return { text: m.fallback, source: "template", reason, transient: false, lastDraft, asks };
+        reason = `${reason}; the fallback too: ${r.rule}: ${r.detail}`;
+      }
       break;
     }
     asks++;
@@ -306,7 +317,7 @@ export async function runBuilderTick(o: BuilderTickOptions): Promise<BuilderOutc
     }
     confirmed = { confirmedHandle: id.handle, confirmedTokenHash: id.tokenHash };
   }
-  const who = drafted.source === "template" ? `the daily's template (${drafted.reason ?? "model not used"})` : "his model";
+  const who = drafted.source === "template" ? `${m.type === "daily" ? "the daily's template" : "its fallback"} (${drafted.reason ?? "model not used"})` : "his model";
   const r = await postTweet(text, { type: m.type, key: m.key, sentenceCase: true, intent: true }, { env: postEnv, now, fetch: o.fetch });
   if (r.posted) return { status: "posted", detail: `posted ${r.id}: ${m.key}, written by ${who}`, moment: m, text, source: drafted.source ?? undefined, id: r.id, state: { ...spentState, ...confirmed, ...afterX("posted", "").state } };
   if (r.reason.startsWith("dormant")) {

@@ -404,6 +404,20 @@ export function isHollow(text: string): boolean {
   return meaningfulWords(noLinks).size <= 3;
 }
 
+/**
+ * A follow-back, DM, collaboration or promotion pitch. On 23 Sep 17 of the 30 mentions his model was asked about were
+ * these ("Can I get a follow back", "Let's collab. Message me", "My DMs are always open"), and it skipped every one:
+ * code skips them now, before any model call. Read through look-alike letters, with the handles removed.
+ */
+const SOLICIT_RE =
+  /\bfollow ?(me )?back\b|\bfollow (me|for follow)\b|\bf4f\b|\bcollab\w*|\bcollaborat\w*|\bpartnership\b|\bpartner (up|with me)\b|\bwork(ing)? together\b|\blet'?s (connect|talk|discuss|chat|link|build)\b|\bconnect (through|via|on|in|over) (dm|dms|inbox)\b|\b(dm|message|inbox|text) me\b|\bsend (me )?(a |your )?(dm|message)\b|\b(my )?dms? (is |are )?(always |wide )?open\b|\bcome (to )?inbox\b|\bcheck (your |ur |my )?(dm|dms|inbox)\b|\breach out\b|\breach more people\b|\bpromot(e|ion|ing)\b|\bmarketing\b|\bshoutout\b/;
+
+/** The pitch a mention makes, or null. PURE. */
+export function pitchIn(text: string): string | null {
+  const m = foldForMatch(String(text ?? "").replace(/@\w{1,15}/g, " ")).match(SOLICIT_RE);
+  return m ? m[0] : null;
+}
+
 /** accounts he never answers, whatever they say: they answer every mention of him, and he would answer back */
 export const BOT_DENY_HANDLES: readonly string[] = ["clawpumptech"];
 const BOT_BIO_RE = /\b(bot|automated|ai agent|agent|autonomous|auto-?reply)\b/i;

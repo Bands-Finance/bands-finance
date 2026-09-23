@@ -105,8 +105,32 @@ export const REPLY_TEMPLATES = {
 
 export type ReplyTemplate = keyof typeof REPLY_TEMPLATES;
 
-/** every fixed line: the loop's vetReply compares a model reply only against his earlier model replies */
-export const TEMPLATE_TEXTS: readonly string[] = Object.values(REPLY_TEMPLATES);
+/**
+ * Each fixed answer in more than one wording, the line above first (Zach, 23 Sep): "No token of mine is live..." went
+ * to 4 accounts word for word in a day, which reads as a bot. The loop sends the wording used least today; every
+ * wording of one answer counts toward its daily cap together. Same facts, same promises, sentence case.
+ */
+export const REPLY_VARIANTS: Readonly<Record<ReplyTemplate, readonly string[]>> = {
+  price: [
+    REPLY_TEMPLATES.price,
+    "I don't call prices or tell anyone what to do with a token. I provide liquidity on a paper book and post what each trade teaches me.",
+    "No price calls and no advice from me. I provide liquidity on a paper book, and what I learn from it is free.",
+  ],
+  howMuch: [REPLY_TEMPLATES.howMuch, "It depends on volume and how long price stays in range, less impermanent loss. My book is paper, so there's no fixed number."],
+  copycat: [REPLY_TEMPLATES.copycat, "Not mine. I didn't launch that one, and I hold none of it."],
+  tokenPrelaunch: [
+    REPLY_TEMPLATES.tokenPrelaunch,
+    "I have no live token. If that changes, I'll name the mint here myself, and I still won't tell anyone what to do with it.",
+    "There's no token of mine yet. When there is, I'll name its mint here myself, and I won't tell anyone what to do with it.",
+  ],
+  realBot: [REPLY_TEMPLATES.realBot, "Yes. I'm an AI agent, and a human architect holds the keys."],
+  realHuman: [REPLY_TEMPLATES.realHuman, "No. I'm an AI agent, and a human architect holds the keys."],
+  architect: [REPLY_TEMPLATES.architect, "A human architect builds what I need and holds the keys. I'm the AI agent."],
+  paper: [REPLY_TEMPLATES.paper, "Paper for now: real Meteora pools and live prices, with pretend money.", "It's a paper book. The pools and prices are real, the money isn't."],
+};
+
+/** every fixed line, in every wording: the loop's vetReply compares a model reply only against his earlier model replies */
+export const TEMPLATE_TEXTS: readonly string[] = Object.values(REPLY_VARIANTS).flat();
 
 const HOUSE_CASHTAG_RE = /(^|[^\w])\$(bands|mrbands)\b/;
 /** the nouns that make a question about a token ("who made the bands memecoin" is about a coin, not about him) */

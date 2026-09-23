@@ -45,7 +45,8 @@ import type { OpenHermitFailure } from "../agent/openhermit";
 import { BACKOFF_AFTER_FAILS, backingOff, backoff, backoffMinutes, DEFAULT_RETRY_BACKOFF_MIN } from "./guards";
 import { lintContextOf, normalizeHandle, talkEnv, type TalkEnv } from "./env";
 import { withLock } from "./lock";
-import { classifyMention, instructionIn, isFarm, isHollow, looksLikeBot, massTag, optOutIn, SELF_USER_ID, spelledDomainIn, vetReply, type MentionKind } from "./replyGuards";
+import { pacedAllowance } from "./pace";
+import { classifyMention, instructionIn, isFarm, isHollow, looksLikeBot, massTag, optOutIn, pitchIn, SELF_USER_ID, spelledDomainIn, vetReply, type MentionKind } from "./replyGuards";
 import { readTickState, tokenHashOf } from "./tick";
 import { blockedWordsIn } from "./wordguard";
 import { byIdAsc, DRAFTS_FILE, getMentions, linksInMentionBody, noteUncertainReply, postReply, readDrafts, readPosts, readRate, rateProblem, screenMention, TALK_STOP_FILE, whoAmI, xGateProblem, type Mention, type XDeps } from "./x";
@@ -83,6 +84,8 @@ export interface ReplyBrain {
   fixedAnswer?(input: ReplyInput, env: NodeJS.ProcessEnv): ReplyDraft | null;
   /** the fixed lines: a model reply is compared only against his earlier model replies */
   TEMPLATE_TEXTS?: readonly string[];
+  /** each fixed answer's wordings, by template name (the first is the canonical line) */
+  REPLY_VARIANTS?: Readonly<Record<string, readonly string[]>>;
   /** his reply rules and the prompt's instructions: a model reply that restates them is refused */
   PROMPT_TEXTS?: readonly string[];
 }
@@ -102,6 +105,7 @@ export function loadReplyBrain(): ReplyBrain {
         REPLY_FACTS_NUMBERS: mod.REPLY_FACTS_NUMBERS ?? [],
         ...(typeof mod.fixedAnswer === "function" ? { fixedAnswer: mod.fixedAnswer } : {}),
         ...(Array.isArray(mod.TEMPLATE_TEXTS) ? { TEMPLATE_TEXTS: mod.TEMPLATE_TEXTS } : {}),
+        ...(mod.REPLY_VARIANTS && typeof mod.REPLY_VARIANTS === "object" ? { REPLY_VARIANTS: mod.REPLY_VARIANTS } : {}),
         ...(Array.isArray(mod.PROMPT_TEXTS) ? { PROMPT_TEXTS: mod.PROMPT_TEXTS } : {}),
       };
   } catch {
@@ -146,6 +150,24 @@ export const ASKS_PER_REPLY_PER_PASS = 2;
 export const MODEL_RUNS_PER_ASK = 2;
 /** one fixed line goes out at most this many times a UTC day, to anyone (X: duplicated replies to many accounts are spam) */
 export const TEMPLATE_REPLIES_PER_DAY = 5;
+
+/** The wordings of the fixed answer this text is one of (itself alone when it is none). PURE. */
+export function wordingsOf(text: string, variants: Readonly<Record<string, readonly string[]>> | undefined): readonly string[] {
+  const t = text.trim();
+  for (const w of Object.values(variants ?? {})) if (w.some((x) => x.trim() === t)) return w;
+  return [text];
+}
+
+/**
+ * The wording to send: the one sent least today, the earlier in the list on a tie, never one X refused today as
+ * duplicate content (all refused: the first, which the duplicate check then skips). PURE.
+ */
+export function pickWording(wordings: readonly string[], sentToday: readonly string[], refused: ReadonlySet<string>): string {
+  const open = wordings.filter((w) => !refused.has(w.trim()));
+  if (!open.length) return wordings[0];
+  const uses = (w: string) => sentToday.filter((x) => x.trim() === w.trim()).length;
+  return open.reduce((best, w) => (uses(w) < uses(best) ? w : best));
+}
 /** the first brain hold after a timeout or outage, doubling each one after, capped */
 export const BRAIN_HOLD_BASE_MIN = 10;
 export const BRAIN_HOLD_MAX_MIN = 120;
@@ -398,6 +420,8 @@ export function screenForReply(m: Mention, c: ScreenContext, queuedAt = c.now): 
   if (kind !== "reply-to-mine" && massTag(m, self)) return { skip: "screen: mass tag" };
   const shill = shillIn(m.text, t);
   if (shill) return { skip: `shill: ${shill}` };
+  const pitch = pitchIn(m.text);
+  if (pitch) return { skip: `screen: a follow-back, DM or collab pitch ("${pitch}")` };
   // the conversation caps: one reply per mention, one per author per conversation a day (two with a question), four per conversation
   if (st.handled[m.id]) return { skip: "already handled" };
   const today = Object.values(st.handled).filter((h) => countsAsReply(h.outcome) && utcDay(h.at) === utcDay(now));
@@ -792,8 +816,11 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
       }
     }
     const asks = !m.draft && !fixed;
-    // the same fixed line goes to at most TEMPLATE_REPLIES_PER_DAY mentions a UTC day, whoever asks (X: duplicated
-    // replies to many accounts are spam); past that the mention is skipped, never carried into the next day
+    const repliedToday = readPosts(t.statePath).filter((p) => p.type === "reply" && utcDay(Date.parse(p.at)) === utcDay(now)).map((p) => p.text);
+    // a fixed answer goes out in its wording sent least today: one line word for word to many accounts reads as a bot
+    if (fixed?.kind === "reply" && fixed.source === "template") fixed = { ...fixed, text: pickWording(wordingsOf(fixed.text, brain.REPLY_VARIANTS), repliedToday, duplicates) };
+    // the same fixed answer, in any of its wordings, goes to at most TEMPLATE_REPLIES_PER_DAY mentions a UTC day, whoever
+    // asks (X: duplicated replies to many accounts are spam); past that the mention is skipped, never carried over
     const line = m.draft?.source === "template" ? m.draft.text : fixed?.kind === "reply" && fixed.source === "template" ? fixed.text : null;
     // X refused this very text as duplicate content today: it would refuse it again, so no POST is spent on it
     const ready = m.draft?.text ?? (fixed?.kind === "reply" ? fixed.text : null);
@@ -803,9 +830,10 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
       continue;
     }
     if (line !== null) {
-      const sent = readPosts(t.statePath).filter((p) => p.type === "reply" && p.text.trim() === line.trim() && utcDay(Date.parse(p.at)) === utcDay(now)).length;
+      const same = wordingsOf(line, brain.REPLY_VARIANTS).map((w) => w.trim());
+      const sent = repliedToday.filter((x) => same.includes(x.trim())).length;
       if (sent >= TEMPLATE_REPLIES_PER_DAY) {
-        finish(m, `skip: this fixed line went out ${sent} times today (${TEMPLATE_REPLIES_PER_DAY} a day)`, sc.kind);
+        finish(m, `skip: this fixed answer went out ${sent} times today (${TEMPLATE_REPLIES_PER_DAY} a day)`, sc.kind);
         skipped++;
         continue;
       }
@@ -817,6 +845,8 @@ async function lockedPass(t: TalkEnv, env: NodeJS.ProcessEnv, now: number, brain
     let heldOne: string | null = null;
     if (posts >= t.engageRepliesPerPass) capped = `${posts} replies tried this pass, ENGAGE_REPLIES_PER_PASS is ${t.engageRepliesPerPass}`;
     else if (asks && st.modelCalls + MODEL_RUNS_PER_ASK > t.engageModelCallsPerDay) heldOne = modelHeld = `${st.modelCalls} model calls today (${MODEL_RUNS_PER_ASK} an ask), ENGAGE_MODEL_CALLS_PER_DAY is ${t.engageModelCallsPerDay}`;
+    // paced across the UTC day (src/talk/pace.ts): past this hour's share the mention waits for a later pass
+    else if (asks && st.modelCalls + MODEL_RUNS_PER_ASK > pacedAllowance(t.engageModelCallsPerDay, now)) heldOne = modelHeld = `${st.modelCalls} model calls today, ${pacedAllowance(t.engageModelCallsPerDay, now)} of ${t.engageModelCallsPerDay} allowed by this hour`;
     else if (asks && asksThisPass >= asksPerPass) heldOne = modelHeld = `${asksThisPass} model asks this pass (ENGAGE_REPLIES_PER_PASS times ${ASKS_PER_REPLY_PER_PASS})`;
     else if (asks && (st.asksByAuthor[author] ?? 0) >= ASKS_PER_AUTHOR_PER_DAY) heldOne = `${st.asksByAuthor[author]} model asks for @${normalizeHandle(m.authorHandle) ?? m.authorHandle} today (${ASKS_PER_AUTHOR_PER_DAY} a day)`;
     else {
