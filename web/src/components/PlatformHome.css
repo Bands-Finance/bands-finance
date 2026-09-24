@@ -1,0 +1,125 @@
+/* bands.finance's home in the house style: a serif headline, an engraved plate, ledger rules, one orange strap. */
+
+.ph { --ph-max: 1080px; --ph-gut: clamp(18px, 4vw, 48px); padding-top: 72px; }
+
+.ph-eyebrow {
+  margin: 0 0 14px;
+  font-family: var(--font-engrave);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--strap-deep);
+}
+
+/* the hero: words left, the plate right */
+.ph-hero {
+  max-width: var(--ph-max);
+  margin: 0 auto;
+  padding: clamp(40px, 7vw, 96px) var(--ph-gut) clamp(40px, 6vw, 72px);
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr);
+  gap: clamp(28px, 5vw, 72px);
+  align-items: center;
+  border-bottom: 1px solid var(--rule);
+}
+.ph-hero__title { margin: 0; font-size: clamp(44px, 6.4vw, 84px); line-height: 0.98; letter-spacing: -0.03em; color: var(--ink); }
+.ph-hero__title em { font-style: normal; color: var(--strap); }
+.ph-hero__lede { margin: 26px 0 0; max-width: 46ch; font-family: var(--font-serif); font-size: clamp(17px, 1.35vw, 20px); line-height: 1.5; color: var(--ink-2); }
+.ph-hero__ctas { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
+
+.ph-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 12px 18px 11px;
+  border: 1px solid var(--ink);
+  font-family: var(--font-engrave);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink) !important;
+  text-decoration: none !important;
+  background: transparent;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.ph-btn:hover { background: var(--ink); color: var(--paper-card) !important; }
+.ph-btn--ink { background: var(--ink); color: var(--paper-card) !important; }
+.ph-btn--ink:hover { background: var(--strap-deep); border-color: var(--strap-deep); }
+
+.ph-hero__plate { position: relative; margin: 0; justify-self: center; width: min(100%, 320px); }
+.ph-hero__plate img { display: block; width: 100%; height: auto; border: 1px solid var(--rule-strong); box-shadow: 0 1px 0 var(--paper-card), 0 22px 44px -26px rgba(22, 18, 15, 0.45); transform: rotate(1.2deg); background: var(--paper-card); }
+.ph-stamp {
+  position: absolute;
+  left: -18px;
+  top: 30px;
+  padding: 8px 12px 7px;
+  border: 2px solid var(--strap-deep);
+  color: var(--strap-deep);
+  font-family: var(--font-engrave);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  background: rgba(249, 244, 233, 0.92);
+  transform: rotate(-7deg);
+}
+
+/* the live board, first: its top eight here (four on a phone), the rest one link away */
+.ph-board { border-bottom: 1px solid var(--rule); padding-bottom: 28px; }
+.ph-board .hot__card:nth-child(n + 9) { display: none; }
+.ph-board__more { max-width: var(--ph-max); margin: 0 auto; padding: 0 var(--ph-gut); font-family: var(--font-engrave); font-weight: 600; font-size: 14px; letter-spacing: 0.14em; text-transform: uppercase; }
+
+/* sections */
+.ph-section { max-width: var(--ph-max); margin: 0 auto; padding: clamp(48px, 7vw, 88px) var(--ph-gut) 0; }
+.ph-section__title { margin: 0 0 28px; font-size: clamp(28px, 3.4vw, 42px); line-height: 1.08; letter-spacing: -0.02em; max-width: 22ch; color: var(--ink); }
+
+/* the tools: a ruled ledger, one row each, the status as a stamp */
+.ph-tools { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--ink); }
+.ph-tool { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 0 18px; padding: 22px 0 20px; border-bottom: 1px solid var(--rule); }
+.ph-tool__n { font-family: var(--font-serif); font-size: 22px; color: var(--ink-3); font-variant-numeric: lining-nums tabular-nums; padding-top: 2px; }
+.ph-tool__head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.ph-tool__name { margin: 0; font-size: 24px; letter-spacing: -0.01em; color: var(--ink); }
+.ph-tool__status { font-family: var(--font-engrave); font-weight: 700; font-size: 12.5px; letter-spacing: 0.2em; text-transform: uppercase; padding: 3px 8px 2px; border: 1px solid currentColor; }
+.ph-tool__status--live { color: var(--good); }
+.ph-tool__status--build { color: var(--strap-deep); }
+.ph-tool__line { margin: 8px 0 0; max-width: 62ch; font-family: var(--font-serif); font-size: 17px; line-height: 1.5; color: var(--ink-2); }
+.ph-tool__link { display: inline-block; margin-top: 10px; font-family: var(--font-engrave); font-weight: 600; font-size: 13.5px; letter-spacing: 0.14em; text-transform: uppercase; }
+
+/* built lately: his own posts, dated like a daybook */
+.ph-notes { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--ink); }
+.ph-note { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 0 18px; align-items: baseline; padding: 18px 0 17px; border-bottom: 1px solid var(--rule); }
+.ph-note__day { font-family: var(--font-engrave); font-weight: 600; font-size: 14px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; }
+.ph-note__text { margin: 0; font-family: var(--font-serif); font-size: 17px; line-height: 1.5; color: var(--ink); max-width: 68ch; }
+.ph-note__miss { color: var(--bad); font-style: italic; }
+.ph-note__link { font-family: var(--font-engrave); font-weight: 600; font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; white-space: nowrap; }
+
+/* who builds it */
+.ph-by {
+  max-width: var(--ph-max);
+  margin: clamp(56px, 8vw, 104px) auto clamp(40px, 6vw, 72px);
+  padding: 0 var(--ph-gut);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: clamp(20px, 3vw, 40px);
+  align-items: center;
+}
+.ph-by__portrait { width: clamp(120px, 14vw, 180px); height: auto; border-radius: 50%; box-shadow: 0 0 0 1px rgba(22, 18, 15, 0.4), 0 0 0 5px var(--paper), 0 0 0 6px rgba(22, 18, 15, 0.18); }
+.ph-by__title { margin: 0; font-size: clamp(26px, 3vw, 36px); letter-spacing: -0.02em; color: var(--ink); }
+.ph-by__line { margin: 10px 0 0; max-width: 56ch; font-family: var(--font-serif); font-size: 17px; line-height: 1.5; color: var(--ink-2); }
+.ph-by__links { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 16px; font-family: var(--font-engrave); font-weight: 600; font-size: 14px; letter-spacing: 0.14em; text-transform: uppercase; }
+
+@media (max-width: 820px) {
+  .ph-board .hot__card:nth-child(n + 5) { display: none; }
+  .ph-hero { grid-template-columns: minmax(0, 1fr); }
+  .ph-hero__plate { width: min(64%, 240px); justify-self: start; margin-left: 18px; }
+  .ph-note { grid-template-columns: 64px minmax(0, 1fr); }
+  .ph-note__link { grid-column: 2; margin-top: 6px; }
+}
+@media (max-width: 520px) {
+  .ph { padding-top: 60px; }
+  .ph-tool { grid-template-columns: 38px minmax(0, 1fr); gap: 0 10px; }
+  .ph-tool__n { font-size: 18px; }
+  .ph-tool__name { font-size: 21px; }
+  .ph-by { grid-template-columns: minmax(0, 1fr); }
+}

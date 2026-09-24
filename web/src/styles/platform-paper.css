@@ -1,0 +1,122 @@
+/*
+ * bands.finance in the house style (24 Sep): paper, ink, one orange strap, the palette mrbands.finance uses
+ * (src/components/Dash.css), so the platform reads as his product. Scoped under .app (the platform's root) and
+ * html[data-site="platform"]: the dashboard's .dash never reads it. The ported components re-theme through
+ * the --bands-* tokens they already read; the few colours they hard-coded for the dark theme are overridden here.
+ */
+
+html[data-site="platform"] { color-scheme: light; }
+html[data-site="platform"] body {
+  background: #f3ecdd;
+  background-image: none;
+  color: #16120f;
+}
+html[data-site="platform"] ::selection { background: #ff7a1a; color: #fff; }
+html[data-site="platform"] ::-webkit-scrollbar-thumb { background: rgba(22, 18, 15, 0.22); }
+
+.app {
+  /* the palette (Dash.css) */
+  --paper: #f3ecdd;
+  --paper-2: #ebe2cf;
+  --paper-card: #f9f4e9;
+  --ink: #16120f;
+  --ink-2: #3d362f;
+  --ink-3: #6f665b;
+  --rule: rgba(22, 18, 15, 0.14);
+  --rule-strong: rgba(22, 18, 15, 0.34);
+  --strap: #ff7a1a;
+  --strap-deep: #c9560a;
+  --good: #1f7a4d;
+  --bad: #b8321f;
+  --font-serif: "Fraunces", "Iowan Old Style", Georgia, serif;
+  --font-engrave: "Cormorant SC", "Cormorant Garamond", "Iowan Old Style", Georgia, serif;
+
+  /* what the ported components read */
+  --bands-void: var(--paper);
+  --bands-ink: var(--paper);
+  --bands-ink-2: var(--paper-2);
+  --bands-text: var(--ink);
+  --bands-text-dim: var(--ink-2);
+  --bands-text-faint: var(--ink-3);
+  --bands-border: var(--rule);
+  --bands-border-strong: var(--rule-strong);
+  --bands-panel: var(--paper-card);
+  --bands-panel-alt: rgba(22, 18, 15, 0.04);
+  --bands-panel-solid: var(--paper-card);
+  --bands-positive: var(--good);
+  --bands-danger: var(--bad);
+  --bands-gold: #8a6a1c;
+  --bands-gold-dim: #a68b4a;
+  --bands-accent: var(--strap);
+  --bands-accent-soft: var(--strap-deep);
+  --bands-accent-light: #c9560a;
+  --bands-on-accent: #fff;
+  --bands-terminal: var(--paper-card);
+  --bands-brass: #8a6a1c;
+  --bands-peri: var(--strap-deep);
+  --bands-peri-dim: #9a5a2a;
+  --panel-shadow: none;
+  --glow-accent: none;
+  --glow-accent-soft: none;
+  --glow-cyan: none;
+  --glow-lime: none;
+  --glow-peri: none;
+  --glow-gold: none;
+  --blur: none;
+  --radius: 4px;
+  --radius-sm: 3px;
+  --font-display: var(--font-serif);
+
+  color: var(--ink);
+}
+
+/* headings in the house serif; links in the deep strap so they read on paper */
+.app h1, .app h2, .app h3 { font-family: var(--font-serif); font-weight: 600; letter-spacing: -0.015em; }
+.app a { color: var(--strap-deep); }
+.app code { background: rgba(22, 18, 15, 0.06); color: var(--ink); }
+
+/* the hard-coded dark bits */
+.app .header { border-bottom: 1px solid var(--rule); }
+.app .header__mnav { box-shadow: 0 18px 50px rgba(22, 18, 15, 0.16) !important; }
+.app .header__cta { background: var(--ink) !important; color: var(--paper-card) !important; box-shadow: none !important; }
+.app .header__status { background: transparent !important; box-shadow: none !important; }
+.app .hot__card:hover { box-shadow: 0 1px 0 var(--rule-strong); }
+.app .footer { border-top: 1px solid var(--rule); }
+.app .footer__eco-item--text:hover .footer__eco-dot { box-shadow: none; }
+.app .error { background: rgba(184, 50, 31, 0.08); color: var(--bad); }
+
+/* the sticky header: solid paper (it had a glass blur on the dark theme; without it, text showed through) */
+.app .header { background: rgba(243, 236, 221, 0.97); }
+.app .header__link, .app .header__mnav-link { color: var(--ink-2); }
+.app .header__link:hover, .app .header__mnav-link:hover { color: var(--ink); }
+.app .header__link--active, .app .header__mnav-link[aria-current="page"] { color: var(--ink); }
+/* pool names read as ink; the figures carry the strap */
+.app .hot__name, .app .hot__name a { color: var(--ink); }
+
+/* the older variables (styles.css :root) are computed at the root from the dark tokens, so they are set again here */
+.app {
+  --bg: var(--paper);
+  --surface: var(--paper-card);
+  --surface-2: var(--paper-2);
+  --surface-3: #e4dac5;
+  --line: var(--rule);
+  --line-2: var(--rule-strong);
+  --muted: var(--ink-3);
+  --accent: var(--strap);
+  --accent-soft: rgba(255, 122, 26, 0.12);
+  --accent-line: rgba(201, 86, 10, 0.5);
+  --good-soft: rgba(31, 122, 77, 0.1);
+  --warn: #a8650f;
+  --warn-soft: rgba(168, 101, 15, 0.1);
+  --crit: var(--bad);
+  --crit-soft: rgba(184, 50, 31, 0.08);
+  /* two names Learned.css reads that no token ever defined: it fell back to white text */
+  --bands-dim: var(--ink-2);
+  --bands-line: var(--rule);
+}
+.app .learned [class*="learned__"] { border-color: var(--rule); }
+.app .learn__card { background: var(--paper-card); }
+/* the consoles: paper cards with ink type, like the desk's journal on mrbands.finance */
+.app .tryit__term { background: var(--paper-card); color: var(--ink); border-radius: 4px; }
+.app .term__chrome { background: var(--paper-2); }
+.app .livepos__card, .app .profit { background: var(--paper-card); }

@@ -5,6 +5,10 @@ import DashboardApp from "./DashboardApp";
 import { SITE } from "./site";
 import "./styles/global.css";
 import "./styles.css";
+import "./styles/platform-paper.css";
+
+// which site this is, for the page-level styles (the platform's paper ground: src/styles/platform-paper.css)
+document.documentElement.dataset.site = SITE;
 
 // Stale-chunk guard: after a deploy an old tab may hold references to hashed files that no longer exist.
 window.addEventListener("unhandledrejection", (ev) => {

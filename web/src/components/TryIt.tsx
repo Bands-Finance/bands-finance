@@ -194,8 +194,8 @@ export function TryIt() {
       </div>
 
       <p className="tryit__fine r-item" style={ri(2)}>
-        <strong>Every number on this site comes from these three sources</strong>:{" "}
-        <span className="tryit__402">/api/screen</span>, <span className="tryit__402">/api/journal</span>, <span className="tryit__402">/api/limits</span>. The journal is one JSON line per decision.
+        <strong>Every number here comes from three files</strong>:{" "}
+        <a className="tryit__402" href="/screen.json">screen.json</a>, <a className="tryit__402" href="/journal.json">journal.json</a> and <a className="tryit__402" href="/limits.json">limits.json</a>.
       </p>
     </section>
   );

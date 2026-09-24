@@ -20,7 +20,8 @@ const realDir = at(process.env.REAL_DATA_DIR, "data-mainnet");
 const learnedDir = at(process.env.LEARNED_DATA_DIR, "data-mainnet");
 const screen = loadScreen();
 const hot = loadHot();
-const r = writeSnapshot({ out, book, realDir, learnedDir, liveEnvFile: path.resolve(cwd, "ops/live.env"), screen, hot });
+const talkDir = at(process.env.TALK_STATE_PATH, "data-talk");
+const r = writeSnapshot({ out, book, realDir, learnedDir, liveEnvFile: path.resolve(cwd, "ops/live.env"), screen, hot, talkDir });
 
 const from = r.staleReal ? `no book (REAL_DATA_DIR=${shown(realDir)} is not current: newest ${r.staleReal})` : r.book === "none" ? "no book" : book === "real" ? `REAL_DATA_DIR=${shown(realDir)}` : `DATA_DIR=${config.dataDir}`;
 console.log(`snapshot: SNAPSHOT_BOOK=${book}${r.book !== book ? ` -> ${r.book}` : ""}: ${r.entries} entries from ${from} (newest ${r.newest ?? "none"}), equity ${r.points} points, limits max position ${r.limits.maxPositionSol} SOL -> ${shown(out)}`);
