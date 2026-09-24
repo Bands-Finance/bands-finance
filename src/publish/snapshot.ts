@@ -103,6 +103,42 @@ export interface SnapshotOptions {
   /** market data, written as is when present */
   screen?: unknown;
   hot?: unknown;
+  /** the talk loop's state (TALK_STATE_PATH, default data-talk): build.json is his posted build notes from its x-posts.jsonl */
+  talkDir?: string;
+}
+
+/** A build note he posted on X, as bands.finance shows it ("Built lately"). */
+export interface BuildNote {
+  id: string;
+  at: string;
+  type: "build" | "miss";
+  text: string;
+}
+
+export const BUILD_NOTES_MAX = 8;
+export const BUILD_NOTES_DAYS = 14;
+
+/**
+ * PURE. His posted build notes, newest first: type build or miss, posted (an X id, never a dry record), no replies,
+ * within BUILD_NOTES_DAYS. They are public already (his own posts); bands.finance shows them as the platform's build log.
+ */
+export function buildNotesFrom(xPostsJsonl: string, now: number): BuildNote[] {
+  const out: BuildNote[] = [];
+  for (const line of xPostsJsonl.split("\n")) {
+    if (!line.trim()) continue;
+    let r: { id?: unknown; at?: unknown; type?: unknown; text?: unknown; replyTo?: unknown; dry?: unknown };
+    try {
+      r = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const id = String(r.id ?? "");
+    const at = Date.parse(String(r.at ?? ""));
+    if (!/^\d{15,}$/.test(id) || r.dry || r.replyTo || (r.type !== "build" && r.type !== "miss") || typeof r.text !== "string") continue;
+    if (!Number.isFinite(at) || at > now || now - at > BUILD_NOTES_DAYS * 86_400_000) continue;
+    out.push({ id, at: new Date(at).toISOString(), type: r.type, text: r.text.trim() });
+  }
+  return out.sort((a, b) => b.at.localeCompare(a.at)).slice(0, BUILD_NOTES_MAX);
 }
 
 export interface SnapshotResult {
@@ -168,6 +204,17 @@ export function writeSnapshot(o: SnapshotOptions): SnapshotResult {
   // The SAME builder as /api/status (src/status.ts readLearnedView), so the panel and the API agree on a dir.
   const learned = readLearnedView({ dir: o.learnedDir, mode: "live", modelOn: false, env: { ...env, ...liveEnv }, now: o.now });
   put("learned.json", JSON.stringify(learned));
+
+  // His build notes as posted on X: the platform's build log (bands.finance, "Built lately")
+  if (o.talkDir) {
+    let posts = "";
+    try {
+      posts = fs.readFileSync(path.join(o.talkDir, "x-posts.jsonl"), "utf8");
+    } catch {
+      posts = "";
+    }
+    put("build.json", JSON.stringify({ notes: redactCopycatDeep(buildNotesFrom(posts, o.now ?? Date.now())), generatedAt }));
+  }
 
   const newest = entries[0] as { mode?: string; ts?: string } | undefined;
   return { book, staleReal, entries: entries.length, points: points.length, newest: newest ? `${newest.mode} ${newest.ts}` : null, limits, learned, wrote };

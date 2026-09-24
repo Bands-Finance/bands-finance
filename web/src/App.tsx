@@ -5,7 +5,6 @@ import { groupAgents } from "./derive";
 import { bookOf, madePairsOf, recordOf, statusOf } from "./model";
 import { useScrollFx } from "./hooks/useScrollFx";
 import { Header } from "./components/Header";
-import { Hero } from "./components/Hero";
 import { ModeBanner } from "./components/ModeBanner";
 import { Desk } from "./components/Desk";
 import { Record } from "./components/Record";
@@ -24,6 +23,7 @@ import { WalletProviders } from "./platform/WalletProviders";
 import { MePage } from "./platform/MePage";
 import { ToolCatalog } from "./components/ToolCatalog";
 import { HotNow } from "./components/HotNow";
+import { PlatformHome } from "./components/PlatformHome";
 import { useLiveRun } from "./hooks/useLiveRun";
 
 export type Route = "home" | "pools" | "learn" | "agents" | "me";
@@ -116,15 +116,8 @@ export default function App() {
     <div className="app">
       <Header route={route} />
 
-      {route === "home" && (
-        <>
-          <Hero record={record} screen={screen} status={status} workingNow={workingNow} agentName={agentName} run={liveRun} />
-          {entries && <ModeBanner status={status} run={liveRun} />}
-          {error && !entries && <div className="error">Could not load the journal: <code>{error}</code>.</div>}
-          <HotNow />
-          {entries && deskStack("desk")}
-        </>
-      )}
+      {/* the platform he is building (24 Sep): his desk, book and record live on mrbands.finance, and on the Agents tab */}
+      {route === "home" && <PlatformHome />}
 
       {route === "pools" && (
         <main className="app__tabview">
