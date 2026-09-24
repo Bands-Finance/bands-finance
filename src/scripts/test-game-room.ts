@@ -22,6 +22,7 @@ import {
   ERROR_GAP_MS,
   HELLO_TIMEOUT_MS,
   HISTORY_KEEP,
+  historyFromFile,
   HISTORY_RETRY_MS,
   HISTORY_TTL_MS,
   historySource,
@@ -1020,6 +1021,30 @@ async function main() {
     await lay;
     assert.equal(ofType(v.inbox(gone), "laid").length, 0);
     assert.equal(v.core.roundOf(gone), null);
+  });
+
+  await test("historyFromFile: the desk's history.json entry for a pool as a History that plays real hours", async () => {
+    const price = CANDLES.map((c) => [c[0], c[4]]).reverse();
+    const volume = CANDLES.map((c) => [c[0], (c[5] as number) * 150]).reverse();
+    const FILE = { generatedAt: "2026-09-24T16:00:00Z", pools: { [LIVE.address]: { at: 1, price, volume } } };
+    const h = historyFromFile(FILE, LIVE.address)!;
+    const series = hourlySeries(h.price, h.volume);
+    assert.equal(series.length, 100);
+    assert.equal(series[5].close, CANDLES[CANDLES.length - 6][4]);
+    assert.equal(series[5].volUsd, (CANDLES[CANDLES.length - 6][5] as number) * 150);
+    for (const [why, file, addr] of [
+      ["not in it", FILE, "Other1111111111111111111111111111111"],
+      ["no file", null, LIVE.address],
+      ["no pools", { generatedAt: "x" }, LIVE.address],
+      ["a prototype key", FILE, "__proto__"],
+      ["junk rows", { pools: { [LIVE.address]: { price: [["x", 1]], volume: [[1]] } } }, LIVE.address],
+    ] as [string, unknown, string][]) assert.equal(historyFromFile(file, addr), null, why);
+    const w = world({ pools: [LIVE], history: async (p) => historyFromFile(FILE, p.address) });
+    const id = await w.join();
+    w.take(id);
+    const { laid, view } = await w.lay(id, LIVE.label);
+    assert.equal(laid.real, true);
+    assert.ok(view.from !== null);
   });
 
   await test("historySource: held a while per pool, one read in flight, a failure backs off, the oldest goes first", async () => {

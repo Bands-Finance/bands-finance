@@ -5,6 +5,8 @@ compatibility_date = "2025-09-01"
 
 [vars]
 BOARD_URL = "https://bands.finance/hot.json"
+# the stall pools' hourly history, written by the desk at each publish (GeckoTerminal rate-limits Workers)
+HISTORY_URL = "https://bands.finance/history.json"
 ALLOWED_ORIGINS = "https://bands.finance,http://localhost:5173,http://localhost:4312"
 
 [[durable_objects.bindings]]

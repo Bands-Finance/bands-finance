@@ -7,17 +7,18 @@
  *   - a setInterval at TICK_HZ runs core.tick() (the batched moves, and the ticks of every round in play) while any
  *     socket is open, and stops when the room empties, so an empty room can hibernate and costs nothing
  *   - the leaderboard is kept in the object's storage under "board" and loaded before the first event
- *   - pools' hourly histories are read from GeckoTerminal (fetchHistory) and held in memory by historySource
+ *   - pools' hourly histories come from the desk's history.json (HISTORY_URL) and are held in memory by historySource
  */
 import { DurableObject } from "cloudflare:workers";
-import { candlesOf, historyUrls, type History, type PoolParams } from "../../web/src/game/lpGame";
 import type { S2C } from "../../web/src/game/protocol";
-import { boardSource, CLOSE_FULL, historySource, ROOM_TICK_MS, RoomCore } from "./core";
+import { boardSource, CLOSE_FULL, historyFromFile, historySource, ROOM_TICK_MS, RoomCore } from "./core";
 
 export interface Env {
   ROOM: DurableObjectNamespace<Room>;
   /** the live board the room deals rounds from (hot.json) */
   BOARD_URL: string;
+  /** the stall pools' hourly history (history.json, written by the desk) */
+  HISTORY_URL: string;
   /** comma-separated origins allowed to open /ws */
   ALLOWED_ORIGINS: string;
 }
@@ -34,22 +35,27 @@ const BOARD_KEY = "board";
 /** uniform [0, 1) from the platform's CSPRNG (seeds, ids and names come from here) */
 const cryptoRandom = (): number => crypto.getRandomValues(new Uint32Array(1))[0] / 4294967296;
 
-/** a pool's hourly history from GeckoTerminal (public, keyless; about 30 reads a minute allowed, the room makes a few an hour) */
-async function fetchHistory(pool: PoolParams): Promise<History | null> {
-  const urls = historyUrls(pool);
-  if (!urls) return null;
-  const read = async (url: string) => {
-    const res = await fetch(url, {
-      headers: { accept: "application/json", "user-agent": "bands-exchange/1" },
-      signal: AbortSignal.timeout(4_000),
-    });
-    if (!res.ok) throw new Error(`history ${res.status}`);
-    const c = candlesOf(await res.json());
-    if (!c) throw new Error("history unreadable");
-    return c;
+/**
+ * The desk's history.json (the stall pools' hourly history), held HISTORY_FILE_TTL_MS, one read in flight. The room
+ * can't read GeckoTerminal itself: it answers Cloudflare's shared addresses with 429.
+ */
+const HISTORY_FILE_TTL_MS = 5 * 60_000;
+function historyFile(url: string): () => Promise<unknown> {
+  let held: { at: number; data: unknown } | null = null;
+  let inflight: Promise<unknown> | null = null;
+  return () => {
+    if (held && Date.now() - held.at < HISTORY_FILE_TTL_MS) return Promise.resolve(held.data);
+    if (inflight) return inflight;
+    inflight = fetch(url, { headers: { accept: "application/json", "user-agent": "bands-exchange/1" }, signal: AbortSignal.timeout(6_000) })
+      .then((res) => (res.ok ? res.json() : held?.data ?? null))
+      .catch(() => held?.data ?? null)
+      .then((data) => {
+        held = { at: Date.now(), data };
+        inflight = null;
+        return data;
+      });
+    return inflight;
   };
-  const [price, volume] = await Promise.all([read(urls.price), read(urls.volume)]);
-  return { price, volume };
 }
 
 async function fetchBoard(url: string): Promise<unknown> {
@@ -73,7 +79,8 @@ export class Room extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const board = boardSource({ load: () => fetchBoard(env.BOARD_URL), now: () => Date.now() });
-    const history = historySource({ load: fetchHistory, now: () => Date.now() });
+    const file = historyFile(env.HISTORY_URL);
+    const history = historySource({ load: async (pool) => historyFromFile(await file(), pool.address), now: () => Date.now() });
     this.core = new RoomCore({
       send: (id, msg) => this.sendText(id, this.textOf(msg)),
       broadcast: (msg, exceptId) => {

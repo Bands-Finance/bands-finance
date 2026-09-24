@@ -18,6 +18,7 @@ web/artifact/
 web/.vercel/
 data-test/
 hot.json
+web/public/history.json
 data-once/
 data-test*/
 data-paper/
