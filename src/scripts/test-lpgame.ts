@@ -1,7 +1,7 @@
 /**
  * Lay-a-band tests (web/src/game/lpGame.ts, the Play mini-game the room server replays to score the board):
  * the seeded rng against reference mulberry32, determinism, the sigma clamp, the band's bounds, fees only on in-range
- * ticks, narrow vs wide on a flat path, value flat above the band and tracking the token below it, hold math, the
+ * ticks and capped at FEES_CAP_PCT, narrow vs wide on a flat path, value flat above the band and tracking the token below it, hold math, the
  * score at closeAt, validateChoice, poolParamsFromHot on real and bad rows, a pool's real history (hourlySeries,
  * marketWindow, simulate replaying a Market, historyUrls, seriesOf, candlesOf), and a scan of the source for anything impure.
  * Pure math, no network.
@@ -58,6 +58,7 @@ interface LpGame {
   TICKS: number;
   WIDTH_MIN: number;
   WIDTH_MAX: number;
+  FEES_CAP_PCT: number;
   rng(seed: number): () => number;
   pricePath(pool: PoolParams, seed: number): number[];
   validateChoice(c: unknown): string | null;
@@ -112,13 +113,13 @@ function mulberry32Ref(a: number) {
 
 async function main() {
   const lp = (await import(MODULE)) as LpGame;
-  const { pricePath, poolParamsFromHot, rng, simulate, TICKS, validateChoice, WIDTH_MAX, WIDTH_MIN } = lp;
+  const { pricePath, poolParamsFromHot, rng, simulate, TICKS, validateChoice, WIDTH_MAX, WIDTH_MIN, FEES_CAP_PCT } = lp;
   const { MARKET_HOURS, hourlySeries, seriesOf, marketWindow, historyUrls, candlesOf } = lp;
 
   const CARDS = poolParamsFromHot(CARDS_ROW)!;
   const pool = (over: Partial<PoolParams> = {}): PoolParams => ({ ...CARDS, ...over });
-  /** the tiniest vol clamps to sigma 0.003: a nearly flat hour-by-hour path */
-  const FLAT = pool({ volPctPerHour: 0.0001, binStepBps: 100, feePctPerHour: 0.5 });
+  /** the tiniest vol clamps to sigma 0.003: a nearly flat hour-by-hour path (a fee rate low enough that no band meets the cap) */
+  const FLAT = pool({ volPctPerHour: 0.0001, binStepBps: 100, feePctPerHour: 0.1 });
   /** the wildest vol clamps to sigma 0.08 */
   const WILD = pool({ volPctPerHour: 15, binStepBps: 20, feePctPerHour: 0.5 });
 
@@ -131,13 +132,14 @@ async function main() {
   test("the module exports exactly the agreed API", () => {
     const names = Object.keys(lp).filter((k) => k !== "default" && k !== "__esModule");
     assert.deepEqual(names.sort(), [
-      "MARKET_HOURS", "TICKS", "WIDTH_MAX", "WIDTH_MIN", "candlesOf", "historyUrls", "hourlySeries", "marketWindow",
+      "FEES_CAP_PCT", "MARKET_HOURS", "TICKS", "WIDTH_MAX", "WIDTH_MIN", "candlesOf", "historyUrls", "hourlySeries", "marketWindow",
       "poolParamsFromHot", "pricePath", "rng", "seriesOf", "simulate", "validateChoice",
     ]);
     assert.equal(MARKET_HOURS, 49);
     assert.equal(TICKS, 48);
     assert.equal(WIDTH_MIN, 3);
     assert.equal(WIDTH_MAX, 120);
+    assert.equal(FEES_CAP_PCT, 30);
     const arity: [unknown, number][] = [
       [rng, 1],
       [pricePath, 2],
@@ -259,9 +261,11 @@ async function main() {
 
   test("fees accrue only on in-range ticks, a fixed amount each, never at tick 0", () => {
     const choice: Choice = { widthBins: 8, offsetBins: 0 };
-    const seed = findSeed(WILD, choice, (r) => r.inRange.slice(1).includes(true) && r.inRange.slice(1).includes(false));
-    const r = simulate(WILD, seed, choice);
-    const perTick = 100 * (0.5 / 100) * 5; // concentration 40/8 = 5
+    // a fee rate low enough that 47 in-range ticks at concentration 5 stay under the cap (23.5)
+    const p = pool({ ...WILD, feePctPerHour: 0.1 });
+    const seed = findSeed(p, choice, (r) => r.inRange.slice(1).includes(true) && r.inRange.slice(1).includes(false));
+    const r = simulate(p, seed, choice);
+    const perTick = 100 * (0.1 / 100) * 5; // concentration 40/8 = 5
     assert.equal(r.feesPct[0], 0);
     let inTicks = 0;
     for (let t = 1; t <= TICKS; t++) {
@@ -282,9 +286,42 @@ async function main() {
       [120, 1 / 3],
     ];
     for (const [w, conc] of cases) {
-      const r = simulate(pool({ volPctPerHour: 0, binStepBps: 100, feePctPerHour: 0.4 }), 3, { widthBins: w, offsetBins: 0 });
+      // 0.1 an hour: 3 bins earn 28.8 over the round, just under the cap
+      const r = simulate(pool({ volPctPerHour: 0, binStepBps: 100, feePctPerHour: 0.1 }), 3, { widthBins: w, offsetBins: 0 });
       assert.ok(r.inRange.every(Boolean), `width ${w} stays in range on this seed`);
-      near(r.feesPct[TICKS], TICKS * 0.4 * conc, 1e-9, `width ${w}`);
+      near(r.feesPct[TICKS], TICKS * 0.1 * conc, 1e-9, `width ${w}`);
+    }
+  });
+
+  test("a round's fees stop at FEES_CAP_PCT: a hot rate at every width, on a few seeds, and on a market", () => {
+    // the hottest rate hot.json allows on a near-flat path: uncapped, every width would pass 30 inside a day
+    const hot = pool({ volPctPerHour: 0, binStepBps: 100, feePctPerHour: 5 });
+    let met = 0;
+    for (const seed of [1, 2, 3]) {
+      for (let w = WIDTH_MIN; w <= WIDTH_MAX; w++) {
+        const r = simulate(hot, seed, { widthBins: w, offsetBins: 0 });
+        const perTick = 100 * (5 / 100) * Math.min(6, Math.max(0.25, 40 / w));
+        let inTicks = 0;
+        for (let t = 1; t <= TICKS; t++) {
+          if (r.inRange[t]) inTicks++;
+          near(r.feesPct[t], Math.min(FEES_CAP_PCT, inTicks * perTick), 1e-9, `width ${w} seed ${seed} at ${t}`);
+          assert.ok(r.feesPct[t] <= FEES_CAP_PCT + 1e-12, `width ${w} seed ${seed}: ${r.feesPct[t]} at ${t}`);
+          assert.ok(r.feesPct[t] >= r.feesPct[t - 1], "never falls");
+        }
+        if (r.feesPct[TICKS] === FEES_CAP_PCT) met++;
+        // the cap holds at an early close too, and the score carries it
+        const early = simulate(hot, seed, { widthBins: w, offsetBins: 0, closeAt: 10 });
+        assert.ok(early.feesPct[10] <= FEES_CAP_PCT + 1e-12);
+        near(early.scorePct, Math.round((early.valuePct[10] + early.feesPct[10] - early.holdPct[10]) * 100) / 100, 1e-12);
+      }
+    }
+    assert.ok(met > 3 * (WIDTH_MAX - WIDTH_MIN) * 0.8, `${met} of the rounds met the cap`);
+    // a market whose every hour pays the clamp (5% of liquidity): capped the same way
+    const m = { path: Array.from({ length: TICKS + 1 }, () => 1), feePct: Array.from({ length: TICKS + 1 }, (_, t) => (t === 0 ? 0 : 5)), from: 0 };
+    for (const w of [WIDTH_MIN, 12, 40, WIDTH_MAX]) {
+      const mr = simulate(CARDS, 1, { widthBins: w, offsetBins: 0 }, m);
+      near(mr.feesPct[TICKS], FEES_CAP_PCT, 1e-12, `market width ${w}`);
+      assert.ok(mr.feesPct.every((f) => f <= FEES_CAP_PCT + 1e-12));
     }
   });
 

@@ -11,3 +11,6 @@ export function bands(n: number): string {
   const t = b >= 100 ? Math.floor(b).toLocaleString("en-US") : (Math.floor(b * 10) / 10).toFixed(1).replace(/\.0$/, "");
   return `${t} band${t === "1" ? "" : "s"}`;
 }
+
+/** the bands word beside a dollar figure: null under a band, where it would only repeat the figure */
+export const bandsWord = (n: number): string | null => (n >= BAND ? bands(n) : null);

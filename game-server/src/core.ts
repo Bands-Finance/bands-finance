@@ -10,27 +10,36 @@
  *     carry the recipient's own entry, so an own-id entry always means "snap back to this".
  *   - a round is played here: the player lays a band on a pool from the server's own copy of the live board, the
  *     server deals a seed it never sends, runs simulate() once and streams the result one tick at a time as its
- *     clock reaches each tick (tick()). A close settles at the last tick already sent; TICKS settles by itself. The
- *     score is simulate() re-run with that closeAt, so the browser never holds the seed or a tick ahead of time.
+ *     clock reaches each tick (tick()). The score is simulate() re-run with the hour it settled at, so the browser
+ *     never holds the seed or a tick ahead of time.
+ *   - a staked round is committed at the lay (24 Sep, after the review): its band, stake and hold (12, 24 or 48 hours)
+ *     are fixed before the hours are dealt, the stall keeps RAKE_PCT of the stake there and then, and the round
+ *     settles at its hold whatever happens after. A close skips to the end (the ticks left are sent at once), a leave
+ *     or the TTL settles it at the hold quietly, a restart refunds the stake (the rake is gone). So working out the
+ *     hours from the ticks (the real ones are public data) changes nothing about what a staked round pays. A practice
+ *     round (stake 0) may still be closed at any hour, and records nothing: no board row, no job, no write.
  *   - the stack: a visitor's account (name, strap, stack, today's jobs) is kept in an AccountStore, opened again by a
- *     key only their browser holds (its hash is what is stored). A staked round takes the stake from the stack at the
- *     lay and pays back the position's worth at the close (value + fees, from the same simulate() the score comes
- *     from); a round cut short by a leave settles at the last hour sent, and a stake left open by a restart is
- *     refunded. Mr Bands pays a daily wage and daily jobs at his desk, and loose notes turn up about the plaza.
+ *     key only their browser holds (its hash is what is stored). A staked round takes the stake and the rake from the
+ *     stack at the lay and pays back the position's worth at its hold (value + fees, from the same simulate() the
+ *     score comes from). Mr Bands pays a daily wage and daily jobs at his desk, and loose notes turn up about the
+ *     plaza. The store is written only when something changed: a keyless hello is one insert, a paid 0 none.
  *   - the hours are real where they can be: the room reads the pool's hourly history (historySource) and deals a
  *     random 48-hour stretch of it (a Market), named to the player only once the round is scored. A pool too new for
  *     that, or a history that can't be read, plays the seeded simulation as before.
  */
 import {
   DESK_SPOT,
+  HOLDS,
   isEmote,
   isPhrase,
   JOBS,
   MAX_SPEED,
+  MAX_STAKE,
   MIN_STAKE,
   MOVE_HZ,
   NOTE_REACH,
   NOTES_PER_DAY,
+  RAKE_PCT,
   ROOM_CAP,
   ROUND_TICK_MS,
   ROUNDS_PER_DAY,
@@ -59,8 +68,15 @@ export const SLOW_NOTICE_MS = 5_000;
 export const SOCIAL_GAP_MS = 1_000;
 /** lays: one a second */
 export const LAY_GAP_MS = 1_000;
+/** pays: one per this long (a pay that collects nothing writes nothing, but it still costs a message) */
+export const PAY_GAP_MS = 2_000;
 /** { t: "error" } replies: one per this long (a round's expiry notice is always sent) */
 export const ERROR_GAP_MS = 2_000;
+/** hellos with no (or no known) key open a new account each: the room lets this many through a second, this many at once */
+export const KEYLESS_HELLO_RATE = 1;
+export const KEYLESS_HELLO_BURST = 10;
+/** a new account's insert is tried with this many fresh names before the socket is given up on */
+export const INSERT_TRIES = 3;
 /** a round still open this long after it was laid is dropped, whatever state it is in */
 export const ROUND_TTL_MS = TICKS * ROUND_TICK_MS + 30_000;
 /** the leaderboard: each name's best, this many rows */
@@ -80,10 +96,18 @@ export const HISTORY_KEEP = 32;
 export const HELLO_TIMEOUT_MS = 10_000;
 /** open sockets (joined or not) beyond this are turned away at the door */
 export const MAX_CONNECTIONS = ROOM_CAP + 20;
-/** the teleport check never allows more than this many seconds of travel in one step */
+/** the speed check refills a player's distance budget for at most this many seconds between two moves */
 export const MAX_STEP_SECONDS = 2;
-/** the teleport check's slack, metres */
-export const JUMP_SLACK_M = 1;
+/**
+ * the most distance a player can have in hand: a quarter second of sprint plus a metre of slack. Each move refills
+ * the budget at MAX_SPEED for the time since the last one (a per-move slack let a 12 Hz client walk at 21 m/s)
+ */
+export const BUDGET_CAP_M = MAX_SPEED * 0.5 + 1;
+/** a dealt stretch of real history must have this many of its 48 hours with volume (the rest may be gap-filled flat) */
+export const MIN_LIVE_HOURS = 36;
+/** new accounts one address may open, per hour (a keyless or unknown-key hello); beyond it, "full" */
+export const NEW_ACCOUNTS_PER_IP = 5;
+export const IP_WINDOW_MS = 3_600_000;
 /** a clamp that moves the player more than this sends them a correction */
 export const CORRECTION_M = 0.5;
 /**
@@ -102,6 +126,8 @@ export const CLOSE_FULL = 4001;
 export const CLOSE_NO_HELLO = 4002;
 /** the account was opened in another tab */
 export const CLOSE_ELSEWHERE = 4003;
+/** a new account could not be stored (the client reconnects and tries again) */
+export const CLOSE_NO_ACCOUNT = 4004;
 
 /** the biggest stacks board, this many rows */
 export const STACK_ROWS = 20;
@@ -317,6 +343,10 @@ interface Round {
   sim: SimResult;
   /** dollars from the stack on this round (0: practice) */
   stake: number;
+  /** the stall's cut, taken with the stake at the lay (0: practice) */
+  rake: number;
+  /** the hour a staked round settles at, fixed at the lay (TICKS for practice, which may close at any hour) */
+  hold: number;
   /** when it was laid; tick i is due at start + i * ROUND_TICK_MS */
   start: number;
   /** the last tick sent, 0 before the first */
@@ -331,6 +361,8 @@ export interface RoundView {
   /** when its stretch of history began (unix seconds), or null for a simulated round */
   from: number | null;
   stake: number;
+  rake: number;
+  hold: number;
   widthBins: number;
   offsetBins: number;
   start: number;
@@ -345,8 +377,9 @@ interface Player {
   z: number;
   ry: number;
   moving: boolean;
-  /** when the last accepted move landed */
-  goodAt: number;
+  /** distance in hand for the speed check, metres, and when it was last refilled */
+  budget: number;
+  budgetAt: number;
   /** restored after a restart: the first move is taken as the position */
   trustNext: boolean;
   /** moved since the last tick */
@@ -355,6 +388,7 @@ interface Player {
   slowAt: number;
   socialAt: number;
   layAt: number;
+  payAt: number;
   errorAt: number;
   /** the open round, if any (one at a time) */
   round: Round | null;
@@ -371,6 +405,8 @@ interface Conn {
   player: Player | null;
   /** a hello is being answered (the key is being looked up) */
   greeting?: boolean;
+  /** the client's address, as the host saw it (for the new-accounts limit); "" when unknown */
+  ip: string;
 }
 
 // ---------------------------------------------------------------- small pure helpers
@@ -566,6 +602,10 @@ export class RoomCore {
   private stacksTop: StackRow[] = [];
   private readonly notes = new Map<string, Note>();
   private noteAt = -Infinity;
+  /** hellos that open a new account draw from this (one bucket for the room: the door, not the visitor, is what is guarded) */
+  private readonly keyless: Bucket;
+  /** new accounts opened per client address, this hour */
+  private readonly ipAccounts = new Map<string, { count: number; since: number }>();
 
   constructor(
     private readonly deps: RoomDeps,
@@ -575,6 +615,7 @@ export class RoomCore {
     this.store = deps.accounts ?? memoryAccounts();
     this.hashKey = deps.hashKey ?? (async (k) => `plain:${k}`);
     this.stacksTop = this.store.topStacks(STACK_ROWS);
+    this.keyless = { tokens: KEYLESS_HELLO_BURST, at: deps.now() };
   }
 
   /** the biggest stacks, biggest first */
@@ -628,30 +669,48 @@ export class RoomCore {
     return p ? this.stateOf(p) : null;
   }
 
-  /** a socket opened: its id, or null when the door is shut (the host answers { t: "full" } and closes) */
-  open(): string | null {
+  /** a socket opened (ip: the client's address, for the new-accounts limit): its id, or null when the door is shut */
+  open(ip = ""): string | null {
     if (this.conns.size >= MAX_CONNECTIONS) return null;
     let id = this.randomId(6);
     while (this.conns.has(id)) id = this.randomId(6);
     const now = this.deps.now();
-    this.conns.set(id, { id, openedAt: now, msgs: { tokens: MSG_BURST, at: now }, player: null });
+    this.conns.set(id, { id, openedAt: now, msgs: { tokens: MSG_BURST, at: now }, player: null, ip: typeof ip === "string" ? ip.slice(0, 64) : "" });
     return id;
+  }
+
+  /** one more new account for this address, if it has any of its hourly allowance left */
+  private newAccountAllowed(ip: string, now: number): boolean {
+    if (!ip) return true;
+    // forget addresses whose window has passed (on the way past, so the map never grows without bound)
+    if (this.ipAccounts.size > 256) for (const [k, v] of this.ipAccounts) if (now - v.since > IP_WINDOW_MS) this.ipAccounts.delete(k);
+    // a fixed window from the address's first new account, not a refilling bucket: five in the hour, then none
+    let w = this.ipAccounts.get(ip);
+    if (!w || now - w.since > IP_WINDOW_MS) {
+      w = { count: 0, since: now };
+      this.ipAccounts.set(ip, w);
+    }
+    if (w.count >= NEW_ACCOUNTS_PER_IP) return false;
+    w.count++;
+    return true;
   }
 
   /**
    * Put a player back after the host restarted with their socket still open (Durable Object hibernation). No
-   * broadcast: everyone else already knows them. Their first move is taken as their position.
+   * broadcast: everyone else already knows them. Their first move is taken as their position. One session per
+   * account holds here too: a second socket naming an account already in the room is refused (the host closes it).
    */
   restore(id: string, accountId: string): boolean {
     if (this.conns.has(id)) return true;
     const found = typeof accountId === "string" ? this.store.byId(accountId) : null;
     if (!found) return false;
+    for (const c of this.conns.values()) if (c.player?.acct.id === found.id) return false;
     const acct = cleanAccount(found);
     const now = this.deps.now();
     this.refund(acct);
     rollDay(acct, now);
     this.store.put(acct);
-    const conn: Conn = { id, openedAt: now, msgs: { tokens: MSG_BURST, at: now }, player: null };
+    const conn: Conn = { id, openedAt: now, msgs: { tokens: MSG_BURST, at: now }, player: null, ip: "" };
     conn.player = this.newPlayer(id, acct, now);
     conn.player.trustNext = true;
     this.conns.set(id, conn);
@@ -706,16 +765,16 @@ export class RoomCore {
   roundOf(id: string): RoundView | null {
     const r = this.conns.get(id)?.player?.round;
     if (!r) return null;
-    const { roundId, pool, seed, widthBins, offsetBins, start, sent, stake } = r;
-    return { roundId, pool: { ...pool }, seed, from: r.market?.from ?? null, widthBins, offsetBins, start, sent, stake };
+    const { roundId, pool, seed, widthBins, offsetBins, start, sent, stake, rake, hold } = r;
+    return { roundId, pool: { ...pool }, seed, from: r.market?.from ?? null, widthBins, offsetBins, start, sent, stake, rake, hold };
   }
 
-  /** a socket closed; an open round settles at the last hour sent, its stake paid back to the stack */
+  /** a socket closed; an open round settles quietly (a staked one at its hold, its worth paid to the stack) */
   leave(id: string): void {
     const conn = this.conns.get(id);
     if (!conn) return;
     const p = conn.player;
-    if (p?.round) this.settle(p, p.round, Math.max(1, p.round.sent), this.deps.now(), true);
+    if (p?.round) this.settle(p, p.round, this.endOf(p.round), this.deps.now(), true);
     this.conns.delete(id);
     if (p) this.deps.broadcast({ t: "leave", id });
   }
@@ -753,16 +812,21 @@ export class RoomCore {
 
   // ---------------------------------------------------------------- handlers
 
+  /**
+   * A hello opens an account: the one its key names, or a new one. A keyless hello is turned away at the cap and
+   * metered by the keyless bucket before any work is done, since each one is an insert; a keyed hello may be a player
+   * already inside coming back from a new tab, so its cap check waits until their old seat is freed. A new account is
+   * written once, after the checks, with its strap and seen set: a socket that leaves while its key is hashed, or is
+   * turned away as full, leaves no row.
+   */
   private async hello(conn: Conn, msg: Record<string, unknown>, now: number): Promise<void> {
     if (conn.greeting) return;
-    if (this.size >= ROOM_CAP) {
-      this.deps.send(conn.id, { t: "full" });
-      this.conns.delete(conn.id);
-      this.deps.close?.(conn.id, CLOSE_FULL, "full");
+    const key = typeof msg.key === "string" && KEY_RE.test(msg.key) ? msg.key : null;
+    if (!key && (this.size >= ROOM_CAP || !takeToken(this.keyless, now, KEYLESS_HELLO_RATE, KEYLESS_HELLO_BURST) || !this.newAccountAllowed(conn.ip, now))) {
+      this.turnAway(conn);
       return;
     }
     conn.greeting = true;
-    const key = typeof msg.key === "string" && KEY_RE.test(msg.key) ? msg.key : null;
     let found: Account | null = null;
     try {
       if (key) found = this.store.byKeyHash(await this.hashKey(key));
@@ -770,12 +834,18 @@ export class RoomCore {
       found = null;
     }
     let newKey: string | null = null;
+    let hash: string | undefined;
     let acct: Account;
     if (found) {
       acct = cleanAccount(found);
     } else {
+      // an unknown key opens a new account like no key does, and draws from the same buckets
+      if (key && (!takeToken(this.keyless, now, KEYLESS_HELLO_RATE, KEYLESS_HELLO_BURST) || !this.newAccountAllowed(conn.ip, now))) {
+        conn.greeting = false;
+        this.turnAway(conn);
+        return;
+      }
       newKey = this.randomKey();
-      let hash: string;
       try {
         hash = await this.hashKey(newKey);
       } catch {
@@ -796,7 +866,6 @@ export class RoomCore {
         created: now,
         seen: now,
       };
-      this.store.put(acct, hash);
     }
     conn.greeting = false;
     if (this.conns.get(conn.id) !== conn) return; // gone while the key was looked up
@@ -811,16 +880,18 @@ export class RoomCore {
       }
     }
     if (this.size >= ROOM_CAP) {
-      this.deps.send(conn.id, { t: "full" });
-      this.conns.delete(conn.id);
-      this.deps.close?.(conn.id, CLOSE_FULL, "full");
+      this.turnAway(conn);
       return;
     }
     this.refund(acct);
     rollDay(acct, now);
     acct.strap = this.clampStrap(msg.strap);
     acct.seen = now;
-    this.store.put(acct);
+    if (!this.insert(acct, hash)) {
+      this.conns.delete(conn.id);
+      this.deps.close?.(conn.id, CLOSE_NO_ACCOUNT, "no account");
+      return;
+    }
     const p = this.newPlayer(conn.id, acct, now);
     conn.player = p;
     const players: PlayerState[] = [];
@@ -849,19 +920,26 @@ export class RoomCore {
       return;
     }
     const [cx, cz] = clampToDisc(x, z);
-    if (!p.trustNext) {
-      const seconds = Math.min(MAX_STEP_SECONDS, Math.max(0, now - p.goodAt) / 1000);
-      if (Math.hypot(cx - p.x, cz - p.z) > MAX_SPEED * seconds + JUMP_SLACK_M) {
+    // the speed check: a running distance budget, refilled at MAX_SPEED for the time since the last move (a refused
+    // move still spends the time), capped so an idle spell never buys a jump
+    const seconds = Math.min(MAX_STEP_SECONDS, Math.max(0, now - p.budgetAt) / 1000);
+    p.budget = Math.min(BUDGET_CAP_M, p.budget + MAX_SPEED * seconds);
+    p.budgetAt = now;
+    if (p.trustNext) {
+      p.budget = BUDGET_CAP_M;
+    } else {
+      const step = Math.hypot(cx - p.x, cz - p.z);
+      if (step > p.budget) {
         this.correct(p);
         return;
       }
+      p.budget -= step;
     }
     p.trustNext = false;
     p.x = cx;
     p.z = cz;
     p.ry = wrapAngle(ry);
     p.moving = msg.moving === true;
-    p.goodAt = now;
     p.dirty = true;
     if (Math.hypot(cx - x, cz - z) > CORRECTION_M) this.correct(p);
   }
@@ -896,7 +974,11 @@ export class RoomCore {
   private pick(p: Player, msg: Record<string, unknown>, now: number): void {
     const id = typeof msg.note === "string" ? msg.note : "";
     const note = this.notes.get(id);
-    if (!note) return;
+    if (!note) {
+      // gone (someone else's, or lost in a restart): tell the asker, whose walker would otherwise ask again and again
+      if (id && id.length <= 16) this.deps.send(p.id, { t: "notes", add: [], gone: [id] });
+      return;
+    }
     const a = p.acct;
     rollDay(a, now);
     if (a.notes >= NOTES_PER_DAY) {
@@ -915,8 +997,13 @@ export class RoomCore {
     this.stackChanged(p);
   }
 
-  /** collect the wage and the finished jobs, standing at Mr Bands' desk */
+  /** collect the wage and the finished jobs, standing at Mr Bands' desk; one pay per PAY_GAP_MS */
   private pay(p: Player, now: number): void {
+    if (now - p.payAt < PAY_GAP_MS) {
+      this.slow(p, now);
+      return;
+    }
+    p.payAt = now;
     if (Math.hypot(p.x - DESK_SPOT.x, p.z - DESK_SPOT.z) > DESK_SPOT.r) {
       this.error(p, "not at the desk", now);
       return;
@@ -935,11 +1022,16 @@ export class RoomCore {
         amount += j.reward;
       }
     }
+    // nothing to collect: nothing changed, so nothing is written or re-sent (a new day always has the wage)
+    if (!amount) {
+      this.deps.send(p.id, { t: "paid", amount: 0 });
+      return;
+    }
     a.stack += amount;
     this.store.put(a);
     this.deps.send(p.id, { t: "paid", amount });
     this.deps.send(p.id, { t: "me", me: meOf(a) });
-    if (amount) this.stackChanged(p);
+    this.stackChanged(p);
   }
 
   /** a note on open ground, clear of the others */
@@ -999,13 +1091,25 @@ export class RoomCore {
     }
     const widthBins = band.widthBins as number;
     const offsetBins = band.offsetBins as number;
-    // the stake: none (a practice round), or MIN_STAKE up to the whole stack, within today's staked rounds
+    // the stake: none (a practice round), or MIN_STAKE..MAX_STAKE whole dollars with the rake on top of it in the stack,
+    // within today's staked rounds; the hold: one of HOLDS for a staked round (TICKS when absent), TICKS for practice
     const stake = msg.stake === undefined ? 0 : msg.stake;
-    if (!isNum(stake) || !Number.isInteger(stake) || stake < 0 || (stake > 0 && (stake < MIN_STAKE || stake > p.acct.stack))) {
+    if (!isNum(stake) || !Number.isInteger(stake) || stake < 0 || (stake > 0 && (stake < MIN_STAKE || stake > MAX_STAKE))) {
       this.error(p, "bad stake", now);
       return;
     }
-    rollDay(p.acct, now);
+    const rake = stake > 0 ? Math.ceil((stake * RAKE_PCT) / 100) : 0;
+    if (stake + rake > p.acct.stack) {
+      this.error(p, "bad stake", now);
+      return;
+    }
+    const hold = stake > 0 ? (msg.hold === undefined ? TICKS : msg.hold) : TICKS;
+    if (!isNum(hold) || !(HOLDS as readonly number[]).includes(hold)) {
+      this.error(p, "bad choice", now);
+      return;
+    }
+    // a new day at the lay: the page learns its fresh counts now (a practice settle would not write or say so)
+    if (rollDay(p.acct, now)) this.deps.send(p.id, { t: "me", me: meOf(p.acct) });
     if (stake > 0 && p.acct.rounds >= ROUNDS_PER_DAY) {
       this.error(p, "no rounds left", now);
       return;
@@ -1039,6 +1143,13 @@ export class RoomCore {
         p.laying = false;
       }
       if (this.conns.get(p.id)?.player !== p || p.round) return; // left while the history loaded
+      // money rides on real hours only: a simulated round pays the board's one hot hour for every hour it is in
+      // range, with nothing to vary it, so a stake on a hot pool with no history was a sure +30% (measured 24 Sep).
+      // A room with no history service at all (tests, a dev without the file) still stakes on simulated rounds.
+      if (stake > 0 && !market) {
+        this.error(p, "practice only", this.deps.now());
+        return;
+      }
     }
     const start = this.deps.now();
     const seed = this.seed();
@@ -1049,14 +1160,15 @@ export class RoomCore {
       this.error(p, "bad choice", start);
       return;
     }
-    if (stake > p.acct.stack) {
+    if (stake + rake > p.acct.stack) {
       this.error(p, "bad stake", start);
       return;
     }
-    const round: Round = { roundId: this.roundId(), pool, seed, widthBins, offsetBins, market, sim, start, sent: 0, stake };
+    const round: Round = { roundId: this.roundId(), pool, seed, widthBins, offsetBins, market, sim, start, sent: 0, stake, rake, hold };
     p.round = round;
     if (stake > 0) {
-      p.acct.stack -= stake;
+      // the stake and the rake leave the stack together; only the stake is in play (the rake is the stall's)
+      p.acct.stack -= stake + rake;
       p.acct.staked = stake;
       p.acct.rounds += 1;
       this.store.put(p.acct);
@@ -1071,18 +1183,34 @@ export class RoomCore {
       upper: sim.upper,
       tickMs: ROUND_TICK_MS,
       real: market !== null,
+      ...(stake > 0 ? { stake, rake, hold } : {}),
     });
   }
 
-  /** a random stretch of the pool's history long enough for a round, or null (too short, unreadable, unpriceable) */
+  /**
+   * A random stretch of the pool's history long enough for a round, or null (too short, unreadable, unpriceable, or
+   * too quiet). A stretch must have MIN_LIVE_HOURS of its hours with volume: hourlySeries fills a silent hour with the
+   * last close and no volume, so a thin history would deal flat stretches that pay exactly nothing (a sure loss of the
+   * rake) and stretches that all hold its one move, which anyone reading the history could tell apart.
+   */
   private marketFrom(pool: PoolParams, history: unknown): Market | null {
     const series = seriesOf(history);
     if (series.length < MARKET_HOURS) return null;
-    const start = Math.min(series.length - MARKET_HOURS, Math.floor(this.deps.random() * (series.length - MARKET_HOURS + 1)));
+    const starts: number[] = [];
+    for (let s = 0; s + MARKET_HOURS <= series.length; s++) {
+      let live = 0;
+      for (let t = 1; t <= TICKS; t++) if (series[s + t].volUsd > 0) live++;
+      if (live >= MIN_LIVE_HOURS) starts.push(s);
+    }
+    if (!starts.length) return null;
+    const start = starts[Math.min(starts.length - 1, Math.floor(this.deps.random() * starts.length))];
     return marketWindow(series, start, pool);
   }
 
-  /** settle the open round at the last tick already sent (tick 1, sent now, if none had gone out) */
+  /**
+   * a practice round: settle at the last tick already sent (tick 1, sent now, if none had gone out). A staked round:
+   * skip to the end, the ticks left to its hold sent at once and the round settled there
+   */
   private close(p: Player, msg: Record<string, unknown>, now: number): void {
     const { roundId } = msg;
     if (typeof roundId !== "string" || roundId.length > 64) return;
@@ -1091,21 +1219,28 @@ export class RoomCore {
       this.error(p, "no such round", now);
       return;
     }
-    const closeAt = Math.max(1, r.sent);
-    this.sendTicks(p, r, closeAt);
-    this.settle(p, r, closeAt, now);
+    const at = this.endOf(r);
+    this.sendTicks(p, r, at);
+    this.settle(p, r, at, now);
   }
 
-  /** the heartbeat's work on one round: expire it, or send the ticks now due and settle at TICKS */
+  /** the hour a round cut short settles at: a staked round's hold, whatever was sent; the last hour sent for practice */
+  private endOf(r: Round): number {
+    return r.stake > 0 ? r.hold : Math.max(1, r.sent);
+  }
+
+  /** the heartbeat's work on one round: expire it, or send the ticks now due and settle at its hold */
   private advance(p: Player, r: Round, now: number): void {
     if (now - r.start > ROUND_TTL_MS) {
-      // (the ticks stalled): settle at the last hour sent, so a stake is never stranded
-      this.settle(p, r, Math.max(1, r.sent), now);
+      // (the ticks stalled): settle now, where a close would, so a stake is never stranded
+      const at = this.endOf(r);
+      this.sendTicks(p, r, at);
+      this.settle(p, r, at, now);
       return;
     }
-    const due = Math.min(TICKS, Math.floor((now - r.start) / ROUND_TICK_MS));
+    const due = Math.min(r.hold, Math.floor((now - r.start) / ROUND_TICK_MS));
     if (due > r.sent) this.sendTicks(p, r, due);
-    if (r.sent >= TICKS) this.settle(p, r, TICKS, now);
+    if (r.sent >= r.hold) this.settle(p, r, r.hold, now);
   }
 
   private sendTicks(p: Player, r: Round, upTo: number): void {
@@ -1125,41 +1260,58 @@ export class RoomCore {
   }
 
   /**
-   * Score the round: simulate() re-run with closeAt, recorded, "scored" to the player, "board" if the top changed. A
-   * stake comes back as the position's worth at the close (value + fees, percent of the deposit), and the day's jobs
-   * move on. quiet: the player has gone, so nothing is sent to them.
+   * Score the round at hour `at`: simulate() re-run with that closeAt, "scored" to the player. A staked round pays the
+   * stake back as the position's worth there (value + fees, percent of the deposit; the rake stays with the stall),
+   * moves the day's jobs on and goes on the Best rounds board ("board" to the room if the top changed). A practice
+   * round records nothing, so the account is written only when something changed (a stake, a job, the day rolling).
+   * quiet: the player has gone, so nothing is sent to them.
    */
-  private settle(p: Player, r: Round, closeAt: number, now: number, quiet = false): void {
+  private settle(p: Player, r: Round, at: number, now: number, quiet = false): void {
     p.round = null;
     let res: SimResult;
     try {
-      res = simulate(r.pool, r.seed, { widthBins: r.widthBins, offsetBins: r.offsetBins, closeAt }, r.market);
+      res = simulate(r.pool, r.seed, { widthBins: r.widthBins, offsetBins: r.offsetBins, closeAt: at }, r.market);
     } catch {
       // cannot happen for a round that was dealt; the stake goes back rather than vanishing
-      res = { ...r.sim, closedAt: closeAt, scorePct: 0, valuePct: r.sim.valuePct.map(() => 100), feesPct: r.sim.feesPct.map(() => 0) };
+      res = { ...r.sim, closedAt: at, scorePct: 0, valuePct: r.sim.valuePct.map(() => 100), feesPct: r.sim.feesPct.map(() => 0) };
     }
     const pct = isNum(res.scorePct) ? r2(res.scorePct) : 0;
     const a = p.acct;
+    const staked = r.stake > 0;
     let back = 0;
-    if (r.stake > 0) {
-      const worth = res.valuePct[closeAt] + res.feesPct[closeAt];
-      back = isNum(worth) ? Math.max(0, Math.round((r.stake * worth) / 100)) : r.stake;
+    if (staked) {
+      // the stake plus what the band made against just holding (fees less the loss to holding), never the position's
+      // raw worth: the board's pools just surged, and their history is a rise already known, so the raw worth was a
+      // long on it (measured 24 Sep: a wide all-token band paid a mean 169% of the stake). A band's value never beats
+      // holding and its fees are capped, so this is at most 1.3 x the stake.
+      const made = res.valuePct[at] + res.feesPct[at] - res.holdPct[at];
+      back = isNum(made) ? Math.max(0, Math.round((r.stake * (100 + made)) / 100)) : r.stake;
       a.stack += back;
       a.staked = 0;
     }
-    rollDay(a, now);
-    const hoursIn = res.inRange.slice(1, closeAt + 1).filter(Boolean).length;
-    const range = JOBS.find((j) => j.id === "range")!.need;
-    a.jobs.range.have = Math.min(range, Math.max(a.jobs.range.have, hoursIn));
-    if (pct > 0) a.jobs.beat.have = 1;
-    this.store.put(a);
-    const { rank, changed } = this.record({ name: p.name, pool: r.pool.label, pct, at: now });
-    if (!quiet) {
-      const stakeBits = r.stake > 0 ? { stake: r.stake, back } : {};
-      this.deps.send(p.id, r.market ? { t: "scored", roundId: r.roundId, pct, rank, from: r.market.from, ...stakeBits } : { t: "scored", roundId: r.roundId, pct, rank, ...stakeBits });
-      this.deps.send(p.id, { t: "me", me: meOf(a) });
+    const rolled = rollDay(a, now);
+    let moved = false;
+    if (staked) {
+      const hoursIn = res.inRange.slice(1, at + 1).filter(Boolean).length;
+      const range = JOBS.find((j) => j.id === "range")!.need;
+      const next = Math.min(range, Math.max(a.jobs.range.have, hoursIn));
+      if (next !== a.jobs.range.have) {
+        a.jobs.range.have = next;
+        moved = true;
+      }
+      if (pct > 0 && a.jobs.beat.have < 1) {
+        a.jobs.beat.have = 1;
+        moved = true;
+      }
     }
-    if (r.stake > 0) this.stackChanged(p);
+    if (staked || rolled || moved) this.store.put(a);
+    const { rank, changed } = staked ? this.record({ name: p.name, pool: r.pool.label, pct, at: now }) : { rank: null, changed: false };
+    if (!quiet) {
+      const stakeBits = staked ? { stake: r.stake, back } : {};
+      this.deps.send(p.id, r.market ? { t: "scored", roundId: r.roundId, pct, at, rank, from: r.market.from, ...stakeBits } : { t: "scored", roundId: r.roundId, pct, at, rank, ...stakeBits });
+      if (staked || rolled) this.deps.send(p.id, { t: "me", me: meOf(a) });
+    }
+    if (staked) this.stackChanged(p);
     if (changed) {
       this.deps.broadcast({ t: "board", rows: this.leaderboard() });
       this.deps.saveBoard?.(this.leaderboard());
@@ -1193,7 +1345,7 @@ export class RoomCore {
   /** errors are fixed server strings, never anything the client sent */
   private error(
     p: Player,
-    why: "unknown pool" | "board unavailable" | "round in play" | "no such round" | "bad choice" | "bad stake" | "no rounds left" | "not at the desk" | "notes done",
+    why: "unknown pool" | "board unavailable" | "round in play" | "no such round" | "bad choice" | "bad stake" | "no rounds left" | "not at the desk" | "notes done" | "practice only",
     now: number,
   ): void {
     if (now - p.errorAt < ERROR_GAP_MS) return;
@@ -1204,6 +1356,34 @@ export class RoomCore {
   /** tell a player where the server has them (a rejected jump, or a clamp to the disc) */
   private correct(p: Player): void {
     this.deps.send(p.id, { t: "moves", m: [this.entryOf(p)] });
+  }
+
+  /** the door is shut to this socket: say so and close it */
+  private turnAway(conn: Conn): void {
+    this.deps.send(conn.id, { t: "full" });
+    this.conns.delete(conn.id);
+    this.deps.close?.(conn.id, CLOSE_FULL, "full");
+  }
+
+  /**
+   * write an account: an update for one the store holds, an insert (with its key's hash) for a new one. An insert
+   * that throws (the name or the hash collided with a row written meanwhile) is tried again with a fresh name, a few
+   * times; false when none took, so the caller gives the socket up rather than the room
+   */
+  private insert(acct: Account, hash: string | undefined): boolean {
+    if (!hash) {
+      this.store.put(acct);
+      return true;
+    }
+    for (let i = 0; i < INSERT_TRIES; i++) {
+      try {
+        this.store.put(acct, hash);
+        return true;
+      } catch {
+        acct.name = this.makeName();
+      }
+    }
+    return false;
   }
 
   private newPlayer(id: string, acct: Account, now: number): Player {
@@ -1220,13 +1400,15 @@ export class RoomCore {
       z,
       ry: r3(Math.atan2(-x, -z)),
       moving: false,
-      goodAt: now,
+      budget: BUDGET_CAP_M,
+      budgetAt: now,
       trustNext: false,
       dirty: false,
       moves: { tokens: MOVE_BURST, at: now },
       slowAt: -Infinity,
       socialAt: -Infinity,
       layAt: -Infinity,
+      payAt: -Infinity,
       errorAt: -Infinity,
       round: null,
       laying: false,

@@ -3,13 +3,17 @@
  * Both deal a random 48-hour stretch of the pool's real hourly history where it has one (a Market), and a simulated
  * path where it doesn't; which stretch is told only with the score.
  *   offline: the round runs here, on a local seed and history read from here, revealed one hour per ROUND_TICK_MS;
- *            the score is local.
- *   online:  the room server deals the seed, keeps the path to itself and streams each hour as its clock reaches it;
- *            a close is a message, scored by the server at the last hour it sent. Nobody sees the future, so the
- *            leaderboard cannot be gamed by replaying seeds.
+ *            the score is local, and every round is practice.
+ *   online:  the room server deals the seed, keeps the path to itself and streams each hour as its clock reaches it.
+ *            A staked round is committed at the lay (width, centre, stake, hold) and settles at its hold whatever
+ *            happens; a close only skips to the end. A practice round settles at a close, at the last hour sent.
+ *            Nobody sees the future, and knowing it changes nothing a stake pays.
+ * A round rides on the server whether or not its panel is open: stop() (the panel closed) only stops listening, and
+ * resume() (the panel opened again) listens on. The page keeps the riding round (LiveRound) meanwhile.
  */
 import { candlesOf, historyUrls, MARKET_HOURS, marketWindow, seriesOf, simulate, TICKS, type History, type Market, type PoolParams } from "./lpGame";
-import { ROUND_TICK_MS } from "./protocol";
+import { MAX_STAKE, MIN_STAKE, RAKE_PCT, ROUND_TICK_MS, ROUNDS_PER_DAY } from "./protocol";
+import { usd } from "./money";
 import type { ExchangeNet } from "./net";
 
 export interface Laid {
@@ -19,6 +23,11 @@ export interface Laid {
   tickMs: number;
   /** the hours are a real stretch of the pool's history (undefined: a room server too old to say) */
   real?: boolean;
+  /** the dollars staked (0: practice) and the stall's cut, taken with the stake at the lay */
+  stake: number;
+  rake: number;
+  /** the hour the round settles at: one of HOLDS for a staked round, TICKS for practice (which may close sooner) */
+  hold: number;
 }
 
 /** one hour of a round, as it happens */
@@ -34,6 +43,8 @@ export interface Frame {
 export interface Score {
   pct: number;
   rank: number | null;
+  /** the hour the round settled at (undefined: a room server too old to say) */
+  at?: number;
   /** a real round: when its stretch of history began (unix seconds) */
   from?: number;
   /** a staked round: the dollars staked, and what came back to the stack */
@@ -41,13 +52,33 @@ export interface Score {
   back?: number;
 }
 
+/** the round riding on the room server, as the page keeps it whether or not a stall panel is open */
+export interface LiveRound {
+  roundId: string;
+  /** the pool it was laid on */
+  label: string;
+  address: string;
+  laid: Laid;
+  /** the hours so far */
+  frames: Frame[];
+}
+
 export interface RoundSource {
-  /** lay a band, staking dollars from the stack (0: practice; offline rounds are always practice); frames and the score arrive through the callbacks */
-  start(pool: PoolParams, widthBins: number, offsetBins: number, stake: number, onFrame: (f: Frame) => void, onScore: (s: Score) => void): Promise<Laid>;
+  /**
+   * lay a band, staking dollars from the stack (0: practice; offline rounds are always practice) to ride `hold` hours;
+   * frames and the score arrive through the callbacks
+   */
+  start(pool: PoolParams, widthBins: number, offsetBins: number, stake: number, hold: number, onFrame: (f: Frame) => void, onScore: (s: Score) => void): Promise<Laid>;
+  /** a practice round: settle now; a staked round: skip to the end */
   close(roundId: string): void;
-  /** stop listening (the panel closed) */
+  /** listen on to a round already riding (the panel was closed and opened again) */
+  resume(roundId: string, onFrame: (f: Frame) => void, onScore: (s: Score) => void): void;
+  /** stop listening (the panel closed); a round on the server rides on */
   stop(): void;
 }
+
+/** the room's worst case for a lay: a cold board read (8 s) and a cold history read (6 s), and a little over */
+const LAY_WAIT_MS = 16_000;
 
 /** pools' hourly histories read from here, kept 20 minutes (a failed read, 2), so a replay doesn't read them again */
 const histories = new Map<string, { at: number; history: History | null }>();
@@ -86,7 +117,7 @@ export function offlineSource(): RoundSource {
   let timer = 0;
   let closeFn: (() => void) | null = null;
   return {
-    async start(pool, widthBins, offsetBins, _stake, onFrame, onScore) {
+    async start(pool, widthBins, offsetBins, _stake, _hold, onFrame, onScore) {
       const a = new Uint32Array(1);
       crypto.getRandomValues(a);
       const seed = a[0];
@@ -98,7 +129,7 @@ export function offlineSource(): RoundSource {
         window.clearInterval(timer);
         closeFn = null;
         const at = Math.max(1, i);
-        onScore({ pct: simulate(pool, seed, { widthBins, offsetBins, closeAt: at }, market).scorePct, rank: null, from: market?.from });
+        onScore({ pct: simulate(pool, seed, { widthBins, offsetBins, closeAt: at }, market).scorePct, rank: null, at, from: market?.from });
       };
       closeFn = finish;
       window.clearInterval(timer);
@@ -107,10 +138,13 @@ export function offlineSource(): RoundSource {
         onFrame({ i, p: sim.path[i], feesPct: sim.feesPct[i], valuePct: sim.valuePct[i], holdPct: sim.holdPct[i], inRange: sim.inRange[i] });
         if (i >= TICKS) finish();
       }, ROUND_TICK_MS);
-      return { roundId, lower: sim.lower, upper: sim.upper, tickMs: ROUND_TICK_MS, real: market !== null };
+      return { roundId, lower: sim.lower, upper: sim.upper, tickMs: ROUND_TICK_MS, real: market !== null, stake: 0, rake: 0, hold: TICKS };
     },
     close() {
       closeFn?.();
+    },
+    resume() {
+      /* nothing rides here once the panel is closed: stop() ended the round */
     },
     stop() {
       window.clearInterval(timer);
@@ -121,45 +155,67 @@ export function offlineSource(): RoundSource {
 
 /** a round the room server deals, streams and scores */
 export function onlineSource(net: ExchangeNet, route: RoundRoutes): RoundSource {
+  /** the round this panel is listening to */
   let current: string | null = null;
+  /** a lay waiting on the room: cleared by the answer, the refusal, the timer, or stop() (so nothing of it outlives the panel) */
+  let pending: { address: string; timer: number; refused: (why: string) => void } | null = null;
+  const clearPending = () => {
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    route.laid.delete(pending.address);
+    if (route.refused === pending.refused) route.refused = null;
+    pending = null;
+  };
+  const listen = (roundId: string, onFrame: (f: Frame) => void, onScore: (s: Score) => void) => {
+    current = roundId;
+    route.frames.set(roundId, onFrame);
+    route.scores.set(roundId, (s) => {
+      route.frames.delete(roundId);
+      route.scores.delete(roundId);
+      current = null;
+      onScore(s);
+    });
+  };
   return {
-    start(pool, widthBins, offsetBins, stake, onFrame, onScore) {
+    start(pool, widthBins, offsetBins, stake, hold, onFrame, onScore) {
       return new Promise<Laid>((resolve, reject) => {
+        clearPending();
         const timer = window.setTimeout(() => {
-          route.laid.delete(pool.label);
-          route.refused = null;
+          clearPending();
           reject(new Error("The Exchange didn't answer. Try again in a moment."));
-        }, 10_000);
+        }, LAY_WAIT_MS);
         // a refusal (a bad stake, no rounds left, an unknown pool) ends the wait at once
-        route.refused = (why) => {
-          window.clearTimeout(timer);
-          route.laid.delete(pool.label);
-          route.refused = null;
+        const refused = (why: string) => {
+          clearPending();
           reject(new Error(REFUSALS[why] ?? "The Exchange refused that band. Try again."));
         };
-        route.laid.set(pool.label, (laid) => {
-          window.clearTimeout(timer);
-          route.refused = null;
-          current = laid.roundId;
-          route.frames.set(laid.roundId, onFrame);
-          route.scores.set(laid.roundId, (s) => {
-            route.frames.delete(laid.roundId);
-            route.scores.delete(laid.roundId);
-            current = null;
-            onScore(s);
-          });
+        pending = { address: pool.address, timer, refused };
+        route.refused = refused;
+        route.laid.set(pool.address, (laid) => {
+          clearPending();
+          listen(laid.roundId, onFrame, onScore);
           resolve(laid);
         });
-        net.lay(pool.label, widthBins, offsetBins, stake);
+        // lay by address: two board rows can share a label, and the room prefers an address match
+        if (!net.lay(pool.address, widthBins, offsetBins, stake, hold)) {
+          clearPending();
+          reject(new Error("The Exchange is offline. Try again in a moment."));
+        }
       });
     },
     close(roundId) {
       net.closeRound(roundId);
     },
+    resume(roundId, onFrame, onScore) {
+      listen(roundId, onFrame, onScore);
+    },
     stop() {
+      clearPending();
+      // a round on the server rides on (a staked one settles at its hold; the page closes a practice one it walks away from)
       if (current) {
         route.frames.delete(current);
         route.scores.delete(current);
+        current = null;
       }
     },
   };
@@ -167,6 +223,7 @@ export function onlineSource(net: ExchangeNet, route: RoundRoutes): RoundSource 
 
 /** the page's switchboard: the net's callbacks look up the round they belong to here */
 export interface RoundRoutes {
+  /** a lay waiting on the room, by the pool's address */
   laid: Map<string, (l: Laid) => void>;
   frames: Map<string, (f: Frame) => void>;
   scores: Map<string, (s: Score) => void>;
@@ -176,14 +233,15 @@ export interface RoundRoutes {
 
 export const newRoutes = (): RoundRoutes => ({ laid: new Map(), frames: new Map(), scores: new Map(), refused: null });
 
-/** the room's refusals of a lay, in words */
+/** the room's refusals of a lay, in words (the limits from protocol.ts, never written out) */
 export const REFUSALS: Record<string, string> = {
-  "bad stake": "That stake doesn't fit your stack. Stake at least $100 and no more than you hold.",
-  "no rounds left": "That's all 24 staked rounds for today. Practice rounds are still open, and the count starts again at midnight UTC.",
-  "round in play": "You already have a band down. Close it first.",
+  "bad stake": `That stake doesn't fit your stack. Stake ${usd(MIN_STAKE)} to ${usd(MAX_STAKE)}, with the stall's ${RAKE_PCT}% on top.`,
+  "no rounds left": `That's all ${ROUNDS_PER_DAY} staked rounds for today. Practice rounds are still open, and the count starts again at midnight UTC.`,
+  "round in play": "Your band is still riding. Lay again when it settles.",
   "unknown pool": "That pool just left the board. Pick another stall.",
   "board unavailable": "The Exchange can't read the board right now. Try again in a moment.",
-  "bad choice": "That band can't be laid. Try another width or centre.",
+  "bad choice": "That band can't be laid. Try another width, centre or hold.",
+  "practice only": "This pool is too new to stake on: a staked band needs two days of its real hours. Practise here, or stake at another stall.",
 };
 
 /** errors that belong to a lay (the rest are the page's) */
