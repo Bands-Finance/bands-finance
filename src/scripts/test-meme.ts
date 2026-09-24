@@ -133,22 +133,22 @@ async function main(): Promise<void> {
     assert.match(src, /marketCapUsd: r\.marketCapUsd, ageHours: r\.ageHours, priceChange24hPct: r\.priceChange24hPct, sustainedHours: sustainedHoursOf\(r\.address\)/, "the history refresh's hot-row loop");
     assert.match(src, /\$\{v\.sustained\} and the \$\{hist\.minDays\}-day history rule/, "the admission note names the history rule it set aside");
   });
-  await test("sustainedSeatNote: after a restart a HELD pool the floor refuses today keeps the smaller seat; an unheld one, or one the floor admits on its own, gets none", () => {
+  await test("sustainedSeatNote: an admission is its own note and nothing else is; the desk remembers admissions with its risk state, never guessing one after a restart", () => {
     const admitted = memeVerdict({ ...cracker, sustainedHours: 14 }, env720);
-    assert.equal(sustainedSeatNote(admitted, true), admitted.sustained);
-    assert.equal(sustainedSeatNote(admitted, false), admitted.sustained, "a fresh admission is the note whether or not the band is laid yet");
+    assert.equal(sustainedSeatNote(admitted), admitted.sustained);
     const cooled = memeVerdict({ ...cracker, sustainedHours: null }, env720);
-    assert.equal(sustainedSeatNote(cooled, true), "held on an admission the restart forgot; the floor refuses it today (CRACKER is 98.2h old, under the 720h memecoin floor: not on launch)");
-    assert.equal(sustainedSeatNote(cooled, false), null, "not held: the picker's business, not the seat's");
-    assert.equal(sustainedSeatNote(memeVerdict({ symbol: "ZCAT", marketCapUsd: 121_273_935, ageHours: 800 }, env720), true), null, "the floor admits it on its own: a full seat");
-    assert.equal(sustainedSeatNote(memeVerdict({ symbol: "TSLAx", marketCapUsd: null, ageHours: null, stock: { ticker: "TSLA" } }, env720), true), null, "a stock is never judged");
-    assert.equal(sustainedSeatNote(memeVerdict({ symbol: "BANDS", marketCapUsd: 40_000, ageHours: 3, house: true }, env720), true), null, "nor the house token");
-    // and the desk asks it with the seats the floor never judged left out: a pinned pool is not 'held', and the house pool is marked
+    assert.equal(sustainedSeatNote(cooled), null, "a refusal today says nothing about how a held pool was let in (ENA/USDC, 24 Sep)");
+    assert.equal(sustainedSeatNote(memeVerdict({ symbol: "ZCAT", marketCapUsd: 121_273_935, ageHours: 800 }, env720)), null, "the floor admits it on its own: a full seat");
+    assert.equal(sustainedSeatNote(memeVerdict({ symbol: "TSLAx", marketCapUsd: null, ageHours: null, stock: { ticker: "TSLA" } }, env720)), null, "a stock is never judged");
+    // and the desk keeps its admissions on disk: read back at start, written with every save, none guessed
     const src = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
-    assert.match(src, /sustainedSeatNote\(memeVerdict\(memeCandidateOf\(app, address\), memeFloorEnv\(\)\), held && !pinned\)/, "sustainedSeatFor");
-    assert.match(src, /const pinned = config\.pinnedPools\.includes\(address\) \|\| seatFlagsOf\(app, address\)\.pinned;/);
-    assert.match(src, /const house = seatFlagsOf\(app, address\)\.house;/, "memeCandidateOf");
+    assert.match(src, /sustainedSeats: new Map\(Object\.entries\(loadState\(\)\.sustainedSeats \?\? \{\}\)\)/, "read back at start");
+    assert.equal((src.match(/saveState\(withSeats\(state\)\)/g) ?? []).length, 3, "every save carries them");
+    assert.doesNotMatch(src, /restart forgot/, "no guess after a restart");
+    const st = fs.readFileSync(path.join(process.cwd(), "src/risk/state.ts"), "utf8");
+    assert.match(st, /sustainedSeats: parsed\.sustainedSeats \?\? \{\}/, "loaded with the state");
   });
+
   await test("a token in collapse is never admitted on its heat: a collapse day is a high-fee day", () => {
     assert.equal(memeRefusal({ ...cracker, priceChange24hPct: -50, sustainedHours: 20 }, env720), "CRACKER is 98.2h old, under the 720h memecoin floor: not on launch; 20h of sustained heat would stand in, but a token down 50% on the day is in collapse");
     assert.equal(memeRefusal({ ...cracker, priceChange24hPct: -49.9, sustainedHours: 20 }, env720), null);

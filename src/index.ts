@@ -456,25 +456,25 @@ function memeCandidateOf(app: App, address: string): MemeCandidate {
 /**
  * THE SUSTAINED-HEAT SEAT: a pool the floor admitted on its tape and nothing else gets HOT_SUSTAINED_SEAT of the seat it
  * would otherwise get (half by default), for as long as it is held. The admission is remembered from the picker
- * (app.sustainedSeats). After a restart nothing is remembered, and the floor's verdict on the pool NOW cannot recover
- * it: a pool that has cooled since it was seated no longer qualifies, and re-reading the floor would hand a held
- * CRACKER band a full seat on its next re-lay. So a HELD memecoin the floor refuses today is sized as the smaller seat
- * as well (sustainedSeatNote: it was admitted on sustained heat, or its cap has since fallen under the floor; either
- * way the desk would not seat it today), in shadow mode too, so a band seated before the switch keeps its seat. A pinned
- * pool (PINNED_POOLS, or a pinned stock) was never the floor's to admit, so its refusal says nothing about how it was
- * seated and it keeps its full seat. Only a pool the floor admits on its own gets the full seat otherwise. Null when the
- * exemption is off.
+ * (app.sustainedSeats) and written with the risk state at every save (withSeats), so a restart reads it back and a
+ * held CRACKER band keeps its smaller seat on its next re-lay. Nothing is guessed from the floor's verdict on the pool
+ * now: a pool the desk let in some other way (a hot pick through the unreadable-cap clause, a pin) keeps its full seat
+ * even when the floor would refuse it today. Null when the exemption is off or the pool was not admitted this way.
  */
-function sustainedSeatFor(app: App, address: string, held: boolean): { multiplier: number; note: string } | null {
+function sustainedSeatFor(app: App, address: string): { multiplier: number; note: string } | null {
   const env = hotEnv();
   if (env.sustainedHours <= 0) return null;
-  let note = app.sustainedSeats.get(address) ?? null;
-  if (note === null) {
-    const pinned = config.pinnedPools.includes(address) || seatFlagsOf(app, address).pinned;
-    note = sustainedSeatNote(memeVerdict(memeCandidateOf(app, address), memeFloorEnv()), held && !pinned);
-    if (note !== null) app.sustainedSeats.set(address, note);
-  }
+  const note = app.sustainedSeats.get(address) ?? null;
   return note === null ? null : { multiplier: env.sustainedSeat, note };
+}
+
+/** the running desk's admissions (set when the app is built), for withSeats */
+let sustainedSeatsRef: Map<string, string> | null = null;
+
+/** the risk state with the sustained-heat admissions on it, so every save carries them and a restart reads them back */
+function withSeats(state: RiskState): RiskState {
+  if (sustainedSeatsRef) state.sustainedSeats = Object.fromEntries(sustainedSeatsRef);
+  return state;
 }
 
 /**
@@ -1440,7 +1440,7 @@ function paperFeeSource(app: App, address: string): { fees24hUsd: number | null;
 /** The execution's bookkeeping on the risk state (src/engine/bookkeeping.ts), then the state saved. */
 function updateState(state: RiskState, exec: ExecutionResult, positions: PositionSnapshot[], snapshot: PoolSnapshot, launch?: { env: LaunchEnv; vol1hUsd: number | null } | null, ask?: { band: AskBand; stopPct: number } | null): void {
   bookExecution(state, exec, positions, snapshot, launch, ask);
-  saveState(state);
+  saveState(withSeats(state));
 }
 
 /** What the journal calls this run: a paper book says so, a dry run says so, and only DRY_RUN=false says live. */
@@ -1494,7 +1494,7 @@ async function sellResidues(app: App): Promise<void> {
       notes.push(`residue ${r.symbol}: ${(err as Error).message}`);
     }
   }
-  saveState(state);
+  saveState(withSeats(state));
   for (const n of notes) console.log(`[cycle ${app.cycle}] ${n}`);
 }
 
@@ -1681,7 +1681,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   const moveSec = bandFeesPerDayUsd !== null && px ? Math.round(moveAfterSec(moveCostUsd, bandFeesPerDayUsd, cfg.outOfRangeSec)) : Math.max(cfg.outOfRangeSec, OUT_OF_RANGE_FALLBACK_SEC);
   // THE SUSTAINED-HEAT SEAT (sustainedSeatFor): folded into the engine's own multiple below, so the policy's "max band"
   // cap, and everything downstream of it, sees HOT_SUSTAINED_SEAT of the seat without a new path of its own.
-  const sustainedSeat = sustainedSeatFor(app, o.address, positions.length > 0);
+  const sustainedSeat = sustainedSeatFor(app, o.address);
   const engineObs: EngineObservation = {
     halt: view.haltedUntil !== null ? { until: view.haltedUntil, stage: view.haltStage, reason: view.haltReason } : null,
     standDown: view.standDownUntil !== null ? { until: view.standDownUntil, reason: view.standDownReason } : null,
@@ -2442,7 +2442,7 @@ async function runIteration(app: App): Promise<void> {
       forgetBand(state, addr);
     }
   }
-  saveState(state);
+  saveState(withSeats(state));
   // The board regime reads the broad tradable board (top 20 by score) plus the pools being worked,
   // not just the picks: the picks are the surges, and two dumping surges must not switch the whole book off.
   const usdcPriced = solPriceOf(app) !== null;
@@ -2866,10 +2866,11 @@ async function main(): Promise<void> {
     pinnedAt: 0,
     rotateOut: null,
     memeHistory: new Map(),
-    sustainedSeats: new Map(),
+    sustainedSeats: new Map(Object.entries(loadState().sustainedSeats ?? {})),
     meteoraStocks: null,
   };
   appRef = app;
+  sustainedSeatsRef = app.sustainedSeats;
   // the marks count as the last process left it: a restart does not lift "marks stale" (src/engine/marks.ts)
   const restored = restoreMarksHealth(app.engine);
   if (marksStale(restored)) console.error(`[alert] marks stale at boot: ${restored.skippedMarks} incomplete cycles carried over from before the restart; new opens stay blocked until a complete read`);

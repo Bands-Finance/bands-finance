@@ -176,17 +176,13 @@ export function memeVerdict(c: MemeCandidate, env: MemeFloorEnv): MemeVerdict {
 export const memeRefusal = (c: MemeCandidate, env: MemeFloorEnv): string | null => memeVerdict(c, env).refusal;
 
 /**
- * PURE. The note a pool's seat is sized on when the process has no memory of admitting it (a restart): the floor's
- * verdict now, read with the seat in mind. An admission on sustained heat is its own note. A refusal on a pool that is
- * HELD means it was admitted on sustained heat and has since cooled, or, rarer, its cap fell under the floor while it
- * sat; either way the desk would not seat it today, so the seat stays the smaller one rather than growing to a full
- * seat on the next re-lay because nobody remembers why it was let in. Null when the floor admits the pool on its own,
- * and for a pool that is not held: a refusal there is the picker's business, and the seat question does not arise.
+ * PURE. The note a pool's seat is sized on: an admission on sustained heat is its own note, anything else is none. The
+ * desk remembers admissions with its risk state (src/risk/state.ts sustainedSeats), so a restart never has to guess
+ * one from the floor's verdict now: that guess halved ENA/USDC on 24 Sep, a plain hot pick the floor happened to refuse
+ * that day on an unknown age.
  */
-export function sustainedSeatNote(v: MemeVerdict, held: boolean): string | null {
-  if (v.sustained !== null) return v.sustained;
-  if (held && v.refusal !== null) return `held on an admission the restart forgot; the floor refuses it today (${v.refusal})`;
-  return null;
+export function sustainedSeatNote(v: MemeVerdict): string | null {
+  return v.sustained;
 }
 
 /**

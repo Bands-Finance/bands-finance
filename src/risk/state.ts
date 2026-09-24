@@ -89,6 +89,13 @@ export interface RiskState {
   /** pool -> epoch ms the desk first took its seat there in the current tenure (a re-lay keeps it; a plain close ends it) */
   seatSince?: Record<string, number>;
   /**
+   * pool -> the note it was admitted on past the memecoin floor on sustained heat (src/screener/memeFloor.ts), for as
+   * long as it is held: the seat stays the smaller one across a restart, and a pool the desk let in some other way is
+   * never mistaken for one of these (24 Sep: a guess from the floor's verdict after a restart halved ENA/USDC, which
+   * had come in as a plain hot pick).
+   */
+  sustainedSeats?: Record<string, string>;
+  /**
    * pair-<mint> alias -> the pool the desk created for that token (src/venues/pair.ts). What a
    * restart reads to know a real Meteora pool is one of ours, and what maps its real address back
    * to the alias the loop works it under.
@@ -128,6 +135,7 @@ export function emptyState(day = todayUtc()): RiskState {
     askBands: {},
     pairPools: {},
     proposalBands: {},
+    sustainedSeats: {},
   };
 }
 
@@ -152,6 +160,7 @@ export function loadState(): RiskState {
       askBands: parsed.askBands ?? {},
       pairPools: parsed.pairPools ?? {},
       proposalBands: parsed.proposalBands ?? {},
+      sustainedSeats: parsed.sustainedSeats ?? {},
     };
     if (s.day !== todayUtc()) {
       s.day = todayUtc();
