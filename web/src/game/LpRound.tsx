@@ -154,7 +154,7 @@ export function LpRound({ pool, source, ranked, onClose }: LpRoundProps) {
       <canvas ref={chart} className="lp__chart" aria-label="Price over 48 hours with your band" />
       {laid && laid.real !== undefined && phase !== "setup" && (
         <p className="lp__src">
-          {laid.real ? "48 real hours from this pool's last eight days, prices and fees as they traded. Which hours is revealed at the end." : "Simulated hours: this pool hasn't traded long enough for two days of history."}
+          {laid.real ? "48 real hours from this pool's last eight days, prices and fees as they traded. Which hours is revealed at the end." : "Simulated hours this time, shaped by how this pool moved in its last hour."}
         </p>
       )}
 
@@ -240,7 +240,7 @@ export function LpRound({ pool, source, ranked, onClose }: LpRoundProps) {
           )}
         </div>
       )}
-      <p className="lp__fine">A game with play money. The hours replay this pool's own history where it has two days of it, and are simulated where it doesn't. Not a forecast, not advice.</p>
+      <p className="lp__fine">A game with play money. The hours replay this pool's own history when it can be read, and are simulated when it can't. Not a forecast, not advice.</p>
     </div>
   );
 }
