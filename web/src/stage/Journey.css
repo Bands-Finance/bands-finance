@@ -28,7 +28,9 @@
 /* the page's tail, unless the last chapter travels: its pinned words must still be in place when the document ends, so it gets no tail at all */
 .beat:last-child:not(.beat--travel) { padding-bottom: 22vh; }
 .beat--right { justify-content: flex-end; }
-.beat__words { position: relative; width: min(100%, 540px); padding: 8px 0; }
+.beat__words { position: relative; width: min(100%, 540px); padding: 8px 0; isolation: isolate; }
+/* a paper wash under the words: the desk's linework passes behind a chapter's copy at some scroll points */
+.beat__words::before { content: ""; position: absolute; inset: -28px -40px; z-index: -1; pointer-events: none; background: radial-gradient(closest-side, rgba(243, 236, 221, 0.92) 55%, rgba(243, 236, 221, 0)); }
 .beat--right .beat__words { width: min(100%, 470px); }
 .beat--wide .beat__words, .beat--right.beat--wide .beat__words { width: min(100%, 620px); }
 .beat--hero .beat__words { width: min(100%, 640px); }

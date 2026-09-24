@@ -7,5 +7,8 @@
 /* On a phone the journey hides the ledger's transaction column; here the transactions are the point of the chapter, so the link
    moves under the row's result instead, as the ledger does on its own page (Actions.css). */
 @media (max-width: 820px) {
+  /* the four desktop columns left the text ~90px wide on a phone: time, then everything else in one column */
+  .beat .lived .acts__row { grid-template-columns: 50px minmax(0, 1fr); gap: 2px 12px; }
+  .beat .lived .acts__result { grid-column: 2; text-align: left; padding-left: 12px; }
   .beat .lived .acts__tx { display: block; grid-column: 2; text-align: left; padding-left: 12px; }
 }
