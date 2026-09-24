@@ -2,7 +2,8 @@
  * THE BANDS EXCHANGE (bands.finance Play, 24 Sep): a plaza you walk, drawn as an engraving like mrbands.finance's desk
  * (src/stage/engrave.ts: every surface ink lines on paper, one contour round every form). Four landmarks: the Pools
  * Board (the live top pools) with a stall for each of the first four, Mr Bands at his desk, the Guard House (his rules)
- * and the Notice Board (his build notes).
+ * and the Notice Board (his build notes). Round it, the city (./city.ts): the Exchange, the clock tower, the banks and
+ * the streets; at its centre, the fountain.
  *
  * This file is the engine only: scene, avatars, input, camera, collisions and the spots you can use. It knows nothing
  * of React, the network or the mini-game; it reports where you are (onMove) and what you stand near (onNear), and the
@@ -10,7 +11,8 @@
  */
 import * as THREE from "three";
 import { outlineRes, shared, SPECS } from "../stage/engrave";
-import { CAPS, fitText, flat, hexRgb, INK, labelSprite, mat, OUTLINE_FINE, PAPER, part, SERIF, signTexture } from "./engraved";
+import { CAPS, fitText, flat, hexRgb, INK, labelSprite, mat, OUTLINE, OUTLINE_FINE, PAPER, part, SERIF, signTexture } from "./engraved";
+import { buildCity, type City } from "./city";
 import { makeFigure, type Figure, type Gesture } from "./figure";
 import { STRAPS, WORLD_RADIUS } from "./protocol";
 
@@ -46,6 +48,9 @@ export interface WorldCallbacks {
 interface Walker {
   fig: Figure;
   root: THREE.Group;
+  /** the figure's contours: drawn near, dropped far (half a figure's draws, and too fine to see at that size) */
+  lines: THREE.Object3D[];
+  near: boolean;
   tag: THREE.Sprite | null;
   bubble: THREE.Sprite | null;
   bubbleUntil: number;
@@ -60,6 +65,12 @@ interface Walker {
 const SPAWN = new THREE.Vector3(0, 0, 20);
 const WALK = 4.4;
 const SPRINT = 7.2;
+/** figures farther than this from the camera are drawn without their contours */
+const DETAIL_M = 26;
+/** a label nearer the camera than this is shrunk to keep its size on screen */
+const LABEL_NEAR_M = 11;
+/** a name tag fades out between these distances from the camera (a bubble does not) */
+const TAG_FADE_M = [22, 30] as const;
 /** the camera looks at a point this high above your feet: above the head, so tall signs stay in frame */
 const EYE = 2.4;
 
@@ -83,7 +94,12 @@ interface Box {
 /** a visitor (./figure.ts): a jointed figure in a frock coat and a hat, the strap and bow tie in their colour */
 function makeWalker(strapHex: string, seed?: number, kind: "visitor" | "mrbands" = "visitor"): Walker {
   const fig = makeFigure({ strap: strapHex, kind, seed });
-  return { fig, root: fig.root, tag: null, bubble: null, bubbleUntil: 0, target: new THREE.Vector3(), targetRy: 0, moving: false, pace: 0 };
+  const lines: THREE.Object3D[] = [];
+  fig.root.traverse((o) => {
+    const m = (o as THREE.Mesh).material;
+    if (m === OUTLINE || m === OUTLINE_FINE) lines.push(o);
+  });
+  return { fig, root: fig.root, lines, near: true, tag: null, bubble: null, bubbleUntil: 0, target: new THREE.Vector3(), targetRy: 0, moving: false, pace: 0 };
 }
 
 // ---------------------------------------------------------------- the world
@@ -125,6 +141,7 @@ export class ExchangeWorld {
   private noticeMesh: THREE.Mesh | null = null;
   private stallSigns: THREE.Mesh[] = [];
   private npc: Walker | null = null;
+  private city!: City;
   /** passers-by: walkers on loops through the open plaza, placed by the clock so every visitor sees them in the same places */
   private strollers: { w: Walker; path: THREE.Vector3[]; lengths: number[]; total: number; speed: number; offset: number }[] = [];
   private moved = false;
@@ -221,6 +238,11 @@ export class ExchangeWorld {
     this.buildDesk();
     this.buildDecor();
     this.buildStrollers();
+
+    this.city = buildCity();
+    this.scene.add(this.city.root);
+    this.colliders.push(...this.city.colliders);
+    this.walls.push(...this.city.walls);
   }
 
   /** the Pools Board: a tall printed billboard of the live top pools */
@@ -668,6 +690,7 @@ export class ExchangeWorld {
     w.target.set(x, 0, z);
     w.targetRy = ry;
     w.tag = labelSprite(name);
+    w.tag.userData.base = w.tag.scale.clone();
     w.tag.position.y = w.fig.height + 0.3;
     w.root.add(w.tag);
     this.scene.add(w.root);
@@ -695,6 +718,7 @@ export class ExchangeWorld {
     if (!w) return;
     if (w.bubble) w.root.remove(w.bubble);
     w.bubble = labelSprite(text, { bubble: true });
+    w.bubble.userData.base = w.bubble.scale.clone();
     w.bubble.position.y = w.fig.height + 1.1;
     w.root.add(w.bubble);
     w.bubbleUntil = performance.now() + 4200;
@@ -854,6 +878,9 @@ export class ExchangeWorld {
     outlineRes.value.set(w, h);
     shared.uPitch.value = 5.2 * dpr;
     this.camera.aspect = w / h;
+    // a phone held upright: open the view out so the plaza is not seen through a slot (about 37 degrees across at
+    // most phone shapes, where a 50 degree view gives 24)
+    this.camera.fov = w < h ? Math.min(72, (2 * Math.atan(Math.tan((40 * Math.PI) / 360) / (w / h)) * 180) / Math.PI) : 50;
     this.camera.updateProjectionMatrix();
   }
 
@@ -966,6 +993,9 @@ export class ExchangeWorld {
     }
 
     this.placeStrollers(dt, secs);
+    this.city.update(secs, new Date());
+    for (const w of this.remotes.values()) this.detail(w);
+    for (const s of this.strollers) this.detail(s.w);
 
     // Mr Bands, standing at his desk (his idle: breath, weight, a look round)
     this.npc?.fig.animate(dt, 0, secs);
@@ -996,6 +1026,32 @@ export class ExchangeWorld {
     this.camera.lookAt(target);
     this.key.position.set(me.position.x - 16, 26, me.position.z + 13);
     this.key.target.position.set(me.position.x, 0, me.position.z);
+  }
+
+  /** contours on a figure near the camera, off one far from it (switched only when it crosses, with a metre of slack) */
+  private detail(w: Walker) {
+    const d = this.camera.position.distanceTo(w.root.position);
+    // labels: no bigger on screen than at LABEL_NEAR_M when someone comes close, and names fade out across the plaza
+    // (measured to the label itself, which floats well above the feet, nearer the camera)
+    const cam = this.camera.position;
+    const p = w.root.position;
+    for (const s of [w.tag, w.bubble]) {
+      const b = s?.userData.base as THREE.Vector3 | undefined;
+      if (!s || !b) continue;
+      const ds = Math.hypot(cam.x - p.x, cam.y - (p.y + s.position.y), cam.z - p.z);
+      const f = Math.min(1, Math.max(0.2, ds / LABEL_NEAR_M));
+      s.scale.set(b.x * f, b.y * f, 1);
+      if (s === w.tag) {
+        const o = 1 - Math.min(1, Math.max(0, (ds - TAG_FADE_M[0]) / (TAG_FADE_M[1] - TAG_FADE_M[0])));
+        (s.material as THREE.SpriteMaterial).opacity = o;
+        // (and none for someone right at the lens, between the camera and you)
+        s.visible = o > 0.02 && ds > 3.5;
+      }
+    }
+    const near = w.near ? d < DETAIL_M + 1 : d < DETAIL_M - 1;
+    if (near === w.near) return;
+    w.near = near;
+    for (const l of w.lines) l.visible = near;
   }
 
   /** you reached a click-walk's end: stop, face the spot, open it */
