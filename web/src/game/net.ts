@@ -30,10 +30,16 @@ export type TickMsg = Extract<S2C, { t: "tick" }>;
 export type MoveEntry = Extract<S2C, { t: "moves" }>["m"][number];
 
 /** the room's WebSocket URL from the build (VITE_GAME_WS_URL, e.g. wss://bands-exchange.<subdomain>.workers.dev/ws) */
+/** the room server bands.finance talks to (game-server/, deployed 24 Sep); its ALLOWED_ORIGINS admit bands.finance only */
+export const PRODUCTION_GAME_WS_URL = "wss://bands-exchange.bands-exchange.workers.dev/ws";
+
 export function gameWsUrl(): string | null {
   const env = import.meta.env as Record<string, string | undefined>;
   const raw = (env.VITE_GAME_WS_URL ?? "").trim();
-  return /^wss?:\/\/\S+$/i.test(raw) ? raw : null;
+  if (/^wss?:\/\/\S+$/i.test(raw)) return raw;
+  // bands.finance itself knows its room, whatever env the build ran in (the desk's auto-deploy may predate the setting)
+  if (typeof location !== "undefined" && /^(www\.)?bands\.finance$/i.test(location.hostname)) return PRODUCTION_GAME_WS_URL;
+  return null;
 }
 
 /** a hair over 1000 / MOVE_HZ, so timer jitter never outruns the server's bucket */
