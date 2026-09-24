@@ -1,7 +1,9 @@
 // the Exchange alone, for looking at the scene (play-dev.html): a sample board, his notes, and a view you can set from
 // the URL: ?x=&z= (where you stand: the plaza, the ring or out on a street), &yaw= (the camera's heading round you),
 // &dist= (4.5..18), &pitch= (0.08..1.1); &kit=crown,cane,cigar,glasses,Cloth dresses the nearer visitor (a hat, the
-// coat's cloth, the things worn); &marker=hatter hangs the errand's sign at that door; &climb=1 takes the tower's view
+// coat's cloth, the things worn); &marker=hatter hangs the page's signpost at that door; &spill=0..3 hangs the Mint's at
+// that street's mouth (town.ts's order: east, north, west, south); &climb=1 takes the tower's view. A few coins and a
+// mint mark lie about where you stand, dropped here (no room: nothing picks them up)
 import { ExchangeWorld } from "./World";
 import { COATS, HATS, type Kit } from "./protocol";
 import { PLACES } from "./town";
@@ -45,6 +47,15 @@ if (kitQ) {
   w.setKit("me", kit);
 }
 if (q.has("marker")) w.setMarker(q.get("marker"));
+if (q.has("spill")) w.setSpill(Number(q.get("spill")));
+// coins about your feet: three at the plaza's values, one mint mark, and one just where you stand (a close look)
+w.setLooseNotes([
+  { id: "coin-a", x: x0 + 1.2, z: z0 - 1.5, v: 15 },
+  { id: "coin-b", x: x0 - 1.6, z: z0 - 2.2, v: 25 },
+  { id: "coin-c", x: x0 + 3.4, z: z0 + 0.6, v: 5 },
+  { id: "coin-d", x: x0 + 0.3, z: z0 + 1.2, v: 20 },
+  { id: "mark-a", x: x0 - 0.8, z: z0 - 4.5, v: 100 },
+]);
 if (q.has("climb")) {
   const tower = PLACES.find((p) => p.id === "clock-tower");
   if (tower) w.viewFrom(tower.x * 0.9, 34, tower.z * 0.9, 12000);

@@ -2,8 +2,9 @@
  * THE MAP (bands.finance Play, 24 Sep, the town): an engraved plan of the town drawn to a canvas from the same
  * geometry the world walks (town.ts: the plaza, the boulevard ring, the four streets and PLACES), so the plan and the
  * ground never disagree. No image is loaded: ink lines on paper, the way the plaza's signs are drawn. Found places
- * are named, unfound ones are blank blocks, you are a dot with your heading, and the errand's target door is ringed.
- * North (the Exchange's side, -z) is up. The panel redraws a few times a second while open, to follow the dot.
+ * are named, unfound ones are blank blocks, you are a dot with your heading, and the street the Mint spilled on is
+ * ringed while its coins lie there. North (the Exchange's side, -z) is up. The panel redraws a few times a second
+ * while open, to follow the dot.
  */
 import { useEffect, useRef } from "react";
 import { CAPS, INK, PAPER } from "./engraved";
@@ -22,8 +23,8 @@ export interface TownMapProps {
   pose: { readonly current: MapPose };
   /** the place ids reached so far */
   found: readonly string[];
-  /** the doors the errand in hand still wants (place ids, or "guard-house" / "desk") */
-  targets: readonly string[];
+  /** the street the Mint spilled on (an index into STREET_ANGLES), or null when none is spilled */
+  spill: number | null;
 }
 
 /** the canvas's side in pixels; it is scaled to the panel by CSS */
@@ -35,7 +36,7 @@ const STREET_BLOCK_FROM = 62;
 const STREET_BLOCK_OFF = 9.5;
 const TAU = Math.PI * 2;
 
-/** the plaza's own landmarks the errands and the eye look for */
+/** the plaza's own landmarks the eye looks for */
 const PLAZA_MARKS: { id: string; name: string; x: number; z: number }[] = [
   { id: PLACE_IDS.desk, name: "The desk", x: DESK_SPOT.x, z: DESK_SPOT.z },
   { id: PLACE_IDS.guardHouse, name: "Guard House", x: GUARD_SPOT.x, z: GUARD_SPOT.z },
@@ -43,15 +44,7 @@ const PLAZA_MARKS: { id: string; name: string; x: number; z: number }[] = [
   { id: "notes", name: "Notices", x: -18, z: 20 },
 ];
 
-/** where a door id sits on the plan: a PLACES door, or one of the plaza's own */
-function doorAt(id: string): { x: number; z: number } | null {
-  const p = PLACES.find((q) => q.id === id);
-  if (p) return { x: p.x, z: p.z };
-  const m = PLAZA_MARKS.find((q) => q.id === id);
-  return m ? { x: m.x, z: m.z } : null;
-}
-
-export function drawTownMap(c: HTMLCanvasElement, pose: MapPose, found: readonly string[], targets: readonly string[]): void {
+export function drawTownMap(c: HTMLCanvasElement, pose: MapPose, found: readonly string[], spill: number | null): void {
   const g = c.getContext("2d");
   if (!g) return;
   const W = c.width;
@@ -200,14 +193,22 @@ export function drawTownMap(c: HTMLCanvasElement, pose: MapPose, found: readonly
     g.fillText(m.name, X(m.x), Y(m.z) + 4 * k);
   }
 
-  // the errand's doors, ringed
-  g.lineWidth = 2;
-  for (const id of targets) {
-    const d = doorAt(id);
-    if (!d) continue;
-    g.beginPath();
-    g.arc(X(d.x), Y(d.z), 4.5 * k, 0, TAU);
-    g.stroke();
+  // the Mint's spill: the street it fell on ringed, mouth to end, a double line so it reads over the kerbs
+  if (spill !== null && spill >= 0 && spill < STREET_ANGLES.length) {
+    const a = STREET_ANGLES[spill];
+    const mid = (KERB_OUT + TOWN_RADIUS) / 2;
+    const len = TOWN_RADIUS - KERB_OUT + 8;
+    const wide = STREET_HALF_WIDTH_M * 2 + 8;
+    g.save();
+    g.translate(X(Math.sin(a) * mid), Y(Math.cos(a) * mid));
+    g.rotate(Math.atan2(Math.cos(a), Math.sin(a)));
+    for (const [w, lw] of [[0, 2], [2.4, 0.8]] as const) {
+      g.lineWidth = lw;
+      g.beginPath();
+      g.roundRect((-len / 2 - w) * k, (-wide / 2 - w) * k, (len + 2 * w) * k, (wide + 2 * w) * k, (wide / 2 + w) * k);
+      g.stroke();
+    }
+    g.restore();
   }
 
   // you: a dot with its heading
@@ -258,21 +259,21 @@ function hatch(g: CanvasRenderingContext2D, x0: number, y0: number, x1: number, 
   g.stroke();
 }
 
-export function TownMap({ pose, found, targets }: TownMapProps) {
+export function TownMap({ pose, found, spill }: TownMapProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
-    const draw = () => drawTownMap(c, pose.current, found, targets);
+    const draw = () => drawTownMap(c, pose.current, found, spill);
     draw();
     const timer = window.setInterval(draw, 300);
     return () => window.clearInterval(timer);
-  }, [pose, found, targets]);
+  }, [pose, found, spill]);
   return (
     <div className="play__map">
       <p className="play-eyebrow">The town</p>
       <canvas ref={ref} width={SIDE} height={SIDE} role="img" aria-label="A plan of the town: the plaza, the ring, the four streets, and the places you have found" />
-      <p className="play__map-key">Named doors are the ones you have found. A ring marks the errand's door. M closes the map.</p>
+      <p className="play__map-key">Named doors are the ones you have found. A ring marks the street the Mint spilled on. M closes the map.</p>
     </div>
   );
 }

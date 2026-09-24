@@ -1,80 +1,65 @@
 /**
- * THE EXCHANGE ROOM AS PLAIN LOGIC (bands.finance Play). One RoomCore holds everyone in the plaza. It knows nothing
+ * THE EXCHANGE ROOM AS PLAIN LOGIC (bands.finance Play). One RoomCore holds everyone in the town. It knows nothing
  * of Cloudflare: the Durable Object (room.ts) hands it sockets as ids, the tests (src/scripts/test-game-room.ts) hand
  * it fakes. Every rule of the wire contract (web/src/game/protocol.ts) is enforced here:
  *
  *   - names are made here from two curated word lists and two digits; nothing a visitor sends ever becomes text
  *     another visitor reads (emotes and phrases are allow-listed ids, errors are fixed server strings)
- *   - positions are rate limited, clamped into the disc and checked against MAX_SPEED; a rejected move is answered
- *     with a correction: a { t: "moves" } carrying the player's OWN id, sent only to them. Batched moves never
- *     carry the recipient's own entry, so an own-id entry always means "snap back to this".
+ *   - positions are rate limited, pulled back onto the town's walkable ground (town.ts, the one shape the client
+ *     collides with; the rope is crossed only at a street's mouth) and checked against MAX_SPEED; a rejected move
+ *     is answered with a correction: a { t: "moves" } carrying the player's OWN id, sent only to them. Batched moves
+ *     never carry the recipient's own entry, so an own-id entry always means "snap back to this".
+ *   - the coins (24 Sep, the simple town): COIN_ZONES of town.ts says how many lie on the plaza, the ring and each
+ *     street, and a mint mark at each street's end; each zone refills one of its own every COIN_EVERY_MS (a mark every
+ *     MARK_EVERY_MS) while anyone is in. A coin's worth is drawn here from its zone's range and kept here: the ground
+ *     is told a coin and its kind, a pick is told what it was worth. A pick puts the coin in the account's pockets
+ *     (coins, coinCash); a "cashin" at Mr Bands' desk moves the cash into the stack. COINS_PER_DAY a day (UTC).
+ *     Once an hour, on the room's clock and nothing else, the Mint spills SPILL_COINS along one street over
+ *     SPILL_MS, then a mark at its end; nothing of it is persisted (a restart just skips one).
  *   - a round is played here: the player lays a band on a pool from the server's own copy of the live board, the
  *     server deals a seed it never sends, runs simulate() once and streams the result one tick at a time as its
  *     clock reaches each tick (tick()). The score is simulate() re-run with the hour it settled at, so the browser
- *     never holds the seed or a tick ahead of time.
- *   - a staked round is committed at the lay (24 Sep, after the review): its band, stake and hold (12, 24 or 48 hours)
- *     are fixed before the hours are dealt, the stall keeps RAKE_PCT of the stake there and then, and the round
- *     settles at its hold whatever happens after. A close skips to the end (the ticks left are sent at once), a leave
- *     or the TTL settles it at the hold quietly, a restart refunds the stake (the rake is gone). So working out the
- *     hours from the ticks (the real ones are public data) changes nothing about what a staked round pays. A practice
- *     round (stake 0) may still be closed at any hour, and records nothing: no board row, no job, no write.
- *   - the stack: a visitor's account (name, strap, stack, today's jobs) is kept in an AccountStore, opened again by a
- *     key only their browser holds (its hash is what is stored). A staked round takes the stake and the rake from the
- *     stack at the lay and pays back the position's worth at its hold (value + fees, from the same simulate() the
- *     score comes from). Mr Bands pays a daily wage and daily jobs at his desk, and loose notes turn up about the
- *     plaza. The store is written only when something changed: a keyless hello is one insert, a paid 0 none.
+ *     never holds the seed or a tick ahead of time. The stalls are practice only: a stake sent with a lay is refused,
+ *     no round touches a stack, and every settled round goes on the Best rounds board (each name's best).
  *   - the hours are real where they can be: the room reads the pool's hourly history (historySource) and deals a
- *     random 48-hour stretch of it (a Market), named to the player only once the round is scored. A pool too new for
- *     that, or a history that can't be read, plays the seeded simulation as before.
- *   - the town (24 Sep): a move is pulled back to the nearest walkable ground (town.ts, the one shape the client
- *     collides with). A visitor standing within DOOR_REACH_M of a door may enter it: the first time pays FOUND_PAY
- *     and is remembered in the account's `found`; an errand whose next step is that door moves on. Mr Bands' errands
- *     (ERRANDS, then a daily run of DAILY_PLACES doors the room draws) are taken at his desk or at Bands & Co.; a
- *     finished errand's reward waits in `owed` and is collected with the wage. The tower's hour is the room's own UTC
- *     hour, shown at the climb and checked at the answer. Shops sell STOCK for the stack; what is bought is worn at
- *     once and told to everyone. The Coffee House repeats the last TALK_ROWS phrases said in the plaza (room-level).
+ *     random 48-hour stretch of it (a Market) with MIN_LIVE_HOURS of volume, named to the player only once the round
+ *     is scored. A pool too new for that, or a history that can't be read, plays the seeded simulation as before.
+ *   - the stack: a visitor's account (name, strap, stack, pockets, kit, the doors found) is kept in an AccountStore,
+ *     opened again by a key only their browser holds (its hash is what is stored). The store is written only when
+ *     something changed: a keyless hello is one insert, a cash-in of nothing none.
+ *   - the town's doors: a visitor standing within DOOR_REACH_M of a door may enter it (the first time is remembered
+ *     in the account's `found`) and is answered what the interior shows: a shop's STOCK (bought for the stack, worn at
+ *     once and told to everyone), the tower's hour (the room's own UTC hour), the Coffee House's last TALK_ROWS
+ *     phrases said in the plaza (room-level).
  */
 import {
   cleanKit,
-  DAILY,
-  DAILY_PLACES,
+  COINS_PER_DAY,
   DEFAULT_KIT,
   DESK_SPOT,
   DOOR_REACH_M,
-  END_IDS,
-  ERRANDS,
-  FOUND_PAY,
-  GUARD_SPOT,
-  HOLDS,
   isEmote,
   isItem,
   isPhrase,
-  JOBS,
   owns,
   PLACE_IDS,
   shopOf,
   STOCK,
   TALK_ROWS,
-  titleOf,
   wear,
   MAX_SPEED,
-  MAX_STAKE,
-  MIN_STAKE,
   MOVE_HZ,
   NOTE_REACH,
-  NOTES_PER_DAY,
-  RAKE_PCT,
   ROOM_CAP,
   ROUND_TICK_MS,
-  ROUNDS_PER_DAY,
   START_STACK,
   STRAPS,
   TICK_HZ,
-  WAGE,
   WORLD_RADIUS,
 } from "../../web/src/game/protocol";
-import type { Errand, ErrandId, ItemId, JobId, Kit, Me, Note, PhraseId, PlayerState, S2C, ScoreRow, StackRow, TalkRow } from "../../web/src/game/protocol";
-import { crossesRope, nearestWalkable, PLACES } from "../../web/src/game/town";
+import type { ItemId, Kit, Me, Note, PhraseId, PlayerState, S2C, ScoreRow, StackRow, TalkRow } from "../../web/src/game/protocol";
+import { COIN_ZONES, coinSpot, crossesRope, nearestWalkable, PLACES, STREET_NAMES } from "../../web/src/game/town";
+import type { CoinZone } from "../../web/src/game/town";
 import { MARKET_HOURS, marketWindow, poolParamsFromHot, seriesOf, simulate, TICKS, validateChoice } from "../../web/src/game/lpGame";
 import type { History, Market, PoolParams, SimResult } from "../../web/src/game/lpGame";
 
@@ -93,11 +78,9 @@ export const SLOW_NOTICE_MS = 5_000;
 export const SOCIAL_GAP_MS = 1_000;
 /** lays: one a second */
 export const LAY_GAP_MS = 1_000;
-/** pays: one per this long (a pay that collects nothing writes nothing, but it still costs a message) */
-export const PAY_GAP_MS = 2_000;
 /** { t: "error" } replies: one per this long (a round's expiry notice is always sent) */
 export const ERROR_GAP_MS = 2_000;
-/** doors (enter, climb, answer, buy, errand): one per this long; a door answered is a write at most, never a fetch */
+/** doors (enter, climb, buy, and the desk's cashin): one per this long; a door answered is a write at most, never a fetch */
 export const DOOR_GAP_MS = 300;
 /** hellos with no (or no known) key open a new account each: the room lets this many through a second, this many at once */
 export const KEYLESS_HELLO_RATE = 1;
@@ -145,7 +128,7 @@ export const CORRECTION_M = 0.5;
 export const SPAWN_INNER = 11;
 export const SPAWN_RADIUS = 16;
 export const SPAWN_ARC = Math.PI / 6;
-/** the room's heartbeat (batched moves, round ticks), ms */
+/** the room's heartbeat (batched moves, round ticks, the coins), ms */
 export const ROOM_TICK_MS = Math.round(1000 / TICK_HZ);
 
 /** WebSocket close codes the room uses (4000-4999 are the application's) */
@@ -158,43 +141,25 @@ export const CLOSE_NO_ACCOUNT = 4004;
 
 /** the biggest stacks board, this many rows */
 export const STACK_ROWS = 20;
-/** loose notes on the ground at once, one more every NOTE_EVERY_MS while anyone is in */
-export const NOTES_ON_GROUND = 6;
-export const NOTE_EVERY_MS = 20_000;
-/** a note is worth this many dollars, NOTE_MIN .. NOTE_MIN + NOTE_SPREAD */
-export const NOTE_MIN = 5;
-export const NOTE_SPREAD = 20;
-/** a wave counts for the job when someone stands this near */
-export const WAVE_NEAR_M = 6;
+/** coins on the ground at once when every zone is full */
+export const COINS_ON_GROUND = COIN_ZONES.reduce((n, z) => n + z.count, 0);
+/** a zone short of its count drops one more of its own this long after its last, while anyone is in the room */
+export const COIN_EVERY_MS = 20_000;
+/** a mint mark taken is replaced after this long */
+export const MARK_EVERY_MS = 5 * 60_000;
+export const HOUR_MS = 3_600_000;
+/** the Mint spill: this many coins along one street over this long (one every SPILL_MS / SPILL_COINS), then a mark at its end */
+export const SPILL_COINS = 30;
+export const SPILL_MS = 3 * 60_000;
+/** spilled coins lie this close together (a trail; the zones' own keep COIN_GAP_M) */
+export const SPILL_GAP_M = 2;
+/**
+ * a spill starts on the first heartbeat of a new hour, and only if that heartbeat comes within this long of the
+ * hour: a room woken later (it hibernates when empty) skips that hour's spill rather than spilling at ten past
+ */
+export const SPILL_GRACE_MS = 60_000;
 /** an account key: what the browser keeps (base64url) */
 export const KEY_RE = /^[A-Za-z0-9_-]{24,64}$/;
-
-/** open ground a note can land on: rings across the plaza, clear of the fountain, stalls, board and buildings */
-const NOTE_KEEP_OUT: [number, number, number][] = [
-  [0, 0, 6], // the fountain
-  [-10.5, -9, 3.5], [-3.6, -11, 3.5], [3.6, -11, 3.5], [10.5, -9, 3.5], // the stalls
-  [0, -20, 9], // the Pools Board
-  [24, 2, 6], // the Guard House
-  [-24, 2, 4.5], // the desk
-  [-18, 20, 4], // the Notice Board
-  [-11, 12, 2.2], [11, 13, 2.2], [28, 18, 2.2], // benches
-  [-13.5, 4.5, 2], [-12.8, 5.8, 2], [13.5, 6.5, 2], [16, -16, 2], [-15, -15, 2], // stacks
-];
-export const NOTE_SPOTS: [number, number][] = (() => {
-  const out: [number, number][] = [];
-  for (const r of [8, 12, 16, 20, 24, 28, 33]) {
-    const n = Math.round((2 * Math.PI * r) / 7);
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * 2 * Math.PI + r * 0.37;
-      const x = Math.round(Math.sin(a) * r * 10) / 10;
-      const z = Math.round(Math.cos(a) * r * 10) / 10;
-      // (the rings run clear of the lamps at r 31 and the trees at r 36-38)
-      if (NOTE_KEEP_OUT.some(([kx, kz, kr]) => Math.hypot(x - kx, z - kz) < kr)) continue;
-      out.push([x, z]);
-    }
-  }
-  return out;
-})();
 
 // ---------------------------------------------------------------- accounts
 
@@ -203,26 +168,17 @@ export interface Account {
   name: string;
   strap: number;
   stack: number;
-  /** on an open round; refunded when a restart loses the round */
-  staked: number;
-  /** the UTC day the counts are for */
+  /** coins in the pockets, and what they are worth (dollars): known here, told at the desk */
+  coins: number;
+  coinCash: number;
+  /** the UTC day coinsToday is for */
   day: string;
-  wagePaid: boolean;
-  jobs: Record<JobId, { have: number; paid: boolean }>;
-  rounds: number;
-  notes: number;
+  coinsToday: number;
   created: number;
   seen: number;
   kit: Kit;
   /** the doors reached so far (PLACES ids; the four ends among them) */
   found: string[];
-  /** the errand in hand */
-  errand: { id: ErrandId; step: number; done: string[] } | null;
-  errandsDone: ErrandId[];
-  /** today's run, once taken */
-  daily: { places: string[]; found: string[]; paid: boolean } | null;
-  /** errand rewards waiting at the desk, dollars */
-  owed: number;
 }
 
 /** where accounts live: the Durable Object's SQLite in production, a Map in tests */
@@ -267,88 +223,61 @@ export function memoryAccounts(): AccountStore & { all(): Account[] } {
 /** "2026-09-24" for a time in ms */
 export const dayOf = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
-const freshJobs = (): Account["jobs"] => Object.fromEntries(JOBS.map((j) => [j.id, { have: 0, paid: false }])) as Account["jobs"];
-
-/** a new day: the wage, the jobs and the day's counts start again (true when it rolled) */
+/** a new day: the day's coin count starts again (true when it rolled) */
 export function rollDay(a: Account, now: number): boolean {
   const day = dayOf(now);
   if (a.day === day) return false;
   a.day = day;
-  a.wagePaid = false;
-  a.jobs = freshJobs();
-  a.rounds = 0;
-  a.notes = 0;
-  // yesterday's run is over, done or not; the chain's errand in hand carries over
-  a.daily = null;
-  if (a.errand?.id === "daily") a.errand = null;
+  a.coinsToday = 0;
   return true;
 }
 
-/** a stored account with anything missing or malformed put right (older rows, hand edits) */
+/**
+ * a stored account with anything missing or malformed put right, and nothing else kept: a row from before the coins
+ * (its jobs, errands, wage and rank) comes out as this shape with empty pockets, its stack, kit and doors as they were.
+ * A stake such a row still had out on a round a restart lost goes back to the stack, as its next hello used to do.
+ */
 export function cleanAccount(a: Account): Account {
-  const jobs = freshJobs();
-  for (const j of JOBS) {
-    const had = a.jobs?.[j.id];
-    if (had && isNum(had.have)) jobs[j.id] = { have: Math.max(0, Math.min(j.need, Math.floor(had.have))), paid: had.paid === true };
-  }
+  const o = a as unknown as Record<string, unknown>;
+  const whole = (v: unknown, cap = Infinity): number | null => (isNum(v) ? Math.max(0, Math.min(cap, Math.floor(v))) : null);
   const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length <= 40) : []);
-  const errandIds = (v: unknown): ErrandId[] => ids(v).filter((x): x is ErrandId => ERRANDS.some((e) => e.id === x));
-  const errand = isRecord(a.errand) && (ERRANDS.some((e) => e.id === a.errand?.id) || a.errand.id === "daily")
-    ? { id: a.errand.id, step: isNum(a.errand.step) ? Math.max(0, Math.floor(a.errand.step)) : 0, done: ids(a.errand.done) }
-    : null;
-  const daily = isRecord(a.daily) && Array.isArray(a.daily.places) && a.daily.places.length === DAILY_PLACES
-    ? { places: ids(a.daily.places), found: ids(a.daily.found), paid: a.daily.paid === true }
-    : null;
   return {
-    ...a,
-    stack: isNum(a.stack) ? Math.max(0, Math.floor(a.stack)) : START_STACK,
-    staked: isNum(a.staked) ? Math.max(0, Math.floor(a.staked)) : 0,
-    wagePaid: a.wagePaid === true,
-    jobs,
-    rounds: isNum(a.rounds) ? a.rounds : 0,
-    notes: isNum(a.notes) ? a.notes : 0,
-    kit: cleanKit(a.kit),
-    found: [...new Set(ids(a.found))],
-    // a daily errand in hand needs its run; the run needs its errand or its pay
-    errand: errand && (errand.id !== "daily" || daily) ? errand : null,
-    errandsDone: [...new Set(errandIds(a.errandsDone))],
-    daily,
-    owed: isNum(a.owed) ? Math.max(0, Math.floor(a.owed)) : 0,
+    id: a.id,
+    name: a.name,
+    strap: whole(o.strap, STRAPS.length - 1) ?? 0,
+    // (`staked`: a stake a round had out when the stalls still took them, 24 Sep; folded back once. Remove when no row can hold it.)
+    stack: (whole(o.stack) ?? START_STACK) + (whole(o.staked) ?? 0),
+    coins: whole(o.coins) ?? 0,
+    coinCash: whole(o.coinCash) ?? 0,
+    day: typeof o.day === "string" ? o.day : "",
+    coinsToday: whole(o.coinsToday, COINS_PER_DAY) ?? 0,
+    created: whole(o.created) ?? 0,
+    seen: whole(o.seen) ?? 0,
+    kit: cleanKit(o.kit),
+    found: [...new Set(ids(o.found))],
   };
 }
 
 export function meOf(a: Account): Me {
   return {
     stack: a.stack,
-    staked: a.staked,
+    coins: a.coins,
     day: a.day,
-    wagePaid: a.wagePaid,
-    jobs: JOBS.map((j) => ({ id: j.id, have: a.jobs[j.id].have, paid: a.jobs[j.id].paid })),
-    rounds: a.rounds,
-    notes: a.notes,
+    coinsToday: a.coinsToday,
     kit: { ...a.kit },
     found: [...a.found],
-    errand: a.errand ? { id: a.errand.id, step: a.errand.step, done: [...a.errand.done] } : null,
-    errandsDone: [...a.errandsDone],
-    daily: a.daily ? { places: [...a.daily.places], found: [...a.daily.found], paid: a.daily.paid } : null,
-    owed: a.owed,
-    title: titleOf(a.stack),
   };
 }
 
 /** the UTC hour the tower shows, 0..23 */
 export const hourOf = (ms: number): number => new Date(ms).getUTCHours();
 
-/** a door the errands and the shops can name: a PLACES entry, or the plaza's own Guard House and desk */
+/** a door the room knows: a PLACES entry, or the plaza's own desk (its wider reach) */
 export function doorOf(id: string): { x: number; z: number; r: number } | null {
   if (id === PLACE_IDS.desk) return { x: DESK_SPOT.x, z: DESK_SPOT.z, r: DESK_SPOT.r };
-  if (id === PLACE_IDS.guardHouse) return { x: GUARD_SPOT.x, z: GUARD_SPOT.z, r: DOOR_REACH_M };
   const pl = PLACES.find((q) => q.id === id);
   return pl ? { x: pl.x, z: pl.z, r: DOOR_REACH_M } : null;
 }
-
-/** the doors the daily run may draw from: every place but the four ends */
-export const DAILY_POOL: readonly string[] = PLACES.map((q) => q.id).filter((id) => !END_IDS.includes(id));
 
 /** stored talk rows -> a clean list (bad rows dropped, newest last, TALK_ROWS long) */
 export function cleanTalk(rows: unknown): { name: string; phrase: PhraseId; at: number }[] {
@@ -410,8 +339,8 @@ export interface RoomDeps {
   accounts?: AccountStore;
   /** an account key -> what is stored for it (a SHA-256 in production) */
   hashKey?(key: string): Promise<string>;
-  /** drop loose notes about the plaza (default true) */
-  notes?: boolean;
+  /** drop coins about the town, and the hourly spill (default true) */
+  coins?: boolean;
 }
 
 interface Bucket {
@@ -430,12 +359,6 @@ interface Round {
   market: Market | null;
   /** simulate() for the whole round (no closeAt): the ticks are read from it */
   sim: SimResult;
-  /** dollars from the stack on this round (0: practice) */
-  stake: number;
-  /** the stall's cut, taken with the stake at the lay (0: practice) */
-  rake: number;
-  /** the hour a staked round settles at, fixed at the lay (TICKS for practice, which may close at any hour) */
-  hold: number;
   /** when it was laid; tick i is due at start + i * ROUND_TICK_MS */
   start: number;
   /** the last tick sent, 0 before the first */
@@ -449,13 +372,24 @@ export interface RoundView {
   seed: number;
   /** when its stretch of history began (unix seconds), or null for a simulated round */
   from: number | null;
-  stake: number;
-  rake: number;
-  hold: number;
   widthBins: number;
   offsetBins: number;
   start: number;
   sent: number;
+}
+
+/** a coin on the ground as the room holds it: the wire's Note, its worth, and the zone that counts it ("spill": none) */
+export interface Coin extends Note {
+  v: number;
+  zone: string;
+}
+
+/** the Mint spill in progress: the street, when it ends, how many coins are down, when the next is due */
+interface Spill {
+  street: number;
+  until: number;
+  dropped: number;
+  nextAt: number;
 }
 
 interface Player {
@@ -477,14 +411,11 @@ interface Player {
   slowAt: number;
   socialAt: number;
   layAt: number;
-  payAt: number;
   doorAt: number;
   errorAt: number;
-  /** the hour the tower showed at this session's last climb, or null before one */
-  climbed: number | null;
   /** the open round, if any (one at a time) */
   round: Round | null;
-  /** the account behind the player: its stack, today's jobs */
+  /** the account behind the player: its stack and pockets */
   acct: Account;
   /** a lay is waiting on the board or a history */
   laying: boolean;
@@ -517,6 +448,8 @@ const safeValidate = (c: unknown): string | null => {
     return "invalid";
   }
 };
+/** a coin as the ground is told it: no worth */
+const noteOf = (c: Coin): Note => ({ id: c.id, x: c.x, z: c.z, kind: c.kind });
 
 /** refill, then take one token; false when the bucket is dry */
 export function takeToken(b: Bucket, now: number, perSecond: number, burst: number): boolean {
@@ -526,14 +459,6 @@ export function takeToken(b: Bucket, now: number, perSecond: number, burst: numb
   if (b.tokens < 1) return false;
   b.tokens -= 1;
   return true;
-}
-
-/** a point pulled back onto the disc of WORLD_RADIUS if it lies outside (the plaza alone: spawns and notes; a move uses town.ts) */
-export function clampToDisc(x: number, z: number, radius = WORLD_RADIUS): [number, number] {
-  const d = Math.hypot(x, z);
-  if (d <= radius) return [x, z];
-  const k = radius / d;
-  return [x * k, z * k];
 }
 
 /** radians into [-PI, PI) */
@@ -692,8 +617,13 @@ export class RoomCore {
   private readonly store: AccountStore;
   private readonly hashKey: (key: string) => Promise<string>;
   private stacksTop: StackRow[] = [];
-  private readonly notes = new Map<string, Note>();
-  private noteAt = -Infinity;
+  /** the coins on the ground, by id */
+  private readonly coins = new Map<string, Coin>();
+  /** when each zone (by id) may drop its next coin */
+  private readonly zoneAt = new Map<string, number>();
+  private spill: Spill | null = null;
+  /** the hour (since the epoch) the room last saw on its clock: a spill starts when a new one is seen */
+  private spillHour: number;
   /** hellos that open a new account draw from this (one bucket for the room: the door, not the visitor, is what is guarded) */
   private readonly keyless: Bucket;
   /** new accounts opened per client address, this hour */
@@ -712,6 +642,7 @@ export class RoomCore {
     this.hashKey = deps.hashKey ?? (async (k) => `plain:${k}`);
     this.stacksTop = this.store.topStacks(STACK_ROWS);
     this.keyless = { tokens: KEYLESS_HELLO_BURST, at: deps.now() };
+    this.spillHour = Math.floor(deps.now() / HOUR_MS);
   }
 
   /** the biggest stacks, biggest first */
@@ -719,9 +650,14 @@ export class RoomCore {
     return this.stacksTop.map((r) => ({ ...r }));
   }
 
-  /** the notes on the ground */
-  notesOnGround(): Note[] {
-    return [...this.notes.values()].map((n) => ({ ...n }));
+  /** the coins on the ground as the room holds them, worth included (tests, logs); the wire gets noteOf() */
+  coinsOnGround(): Coin[] {
+    return [...this.coins.values()].map((c) => ({ ...c }));
+  }
+
+  /** the spill in progress: its street and end, or null (tests, logs) */
+  spillNow(): { street: number; until: number } | null {
+    return this.spill ? { street: this.spill.street, until: this.spill.until } : null;
   }
 
   /** a joined player's account as they see it (tests, logs) */
@@ -814,7 +750,6 @@ export class RoomCore {
     for (const c of this.conns.values()) if (c.player?.acct.id === found.id) return false;
     const acct = cleanAccount(found);
     const now = this.deps.now();
-    this.refund(acct);
     rollDay(acct, now);
     this.store.put(acct);
     const conn: Conn = { id, openedAt: now, msgs: { tokens: MSG_BURST, at: now }, player: null, ip: "" };
@@ -861,18 +796,14 @@ export class RoomCore {
         return this.close(p, msg, now);
       case "pick":
         return this.pick(p, msg, now);
-      case "pay":
-        return this.pay(p, now);
+      case "cashin":
+        return this.cashin(p, now);
       case "enter":
         return this.enter(p, msg, now);
       case "climb":
         return this.climb(p, now);
-      case "answer":
-        return this.answer(p, msg, now);
       case "buy":
         return this.buy(p, msg, now);
-      case "errand":
-        return this.takeErrand(p, msg, now);
       default:
         return;
     }
@@ -882,11 +813,11 @@ export class RoomCore {
   roundOf(id: string): RoundView | null {
     const r = this.conns.get(id)?.player?.round;
     if (!r) return null;
-    const { roundId, pool, seed, widthBins, offsetBins, start, sent, stake, rake, hold } = r;
-    return { roundId, pool: { ...pool }, seed, from: r.market?.from ?? null, widthBins, offsetBins, start, sent, stake, rake, hold };
+    const { roundId, pool, seed, widthBins, offsetBins, start, sent } = r;
+    return { roundId, pool: { ...pool }, seed, from: r.market?.from ?? null, widthBins, offsetBins, start, sent };
   }
 
-  /** a socket closed; an open round settles quietly (a staked one at its hold, its worth paid to the stack) */
+  /** a socket closed; an open round settles quietly at the last hour sent */
   leave(id: string): void {
     const conn = this.conns.get(id);
     if (!conn) return;
@@ -896,7 +827,7 @@ export class RoomCore {
     if (p) this.deps.broadcast({ t: "leave", id });
   }
 
-  /** TICK_HZ: close sockets that never said hello, advance every open round, flush the moves batch */
+  /** TICK_HZ: close sockets that never said hello, advance every open round, drop the coins due, flush the moves batch */
   tick(): void {
     const now = this.deps.now();
     for (const c of this.conns.values()) {
@@ -908,9 +839,9 @@ export class RoomCore {
     const players: Player[] = [];
     for (const c of this.conns.values()) if (c.player) players.push(c.player);
     for (const p of players) if (p.round) this.advance(p, p.round, now);
-    if (this.deps.notes !== false && players.length && this.notes.size < NOTES_ON_GROUND && now >= this.noteAt) {
-      this.noteAt = now + NOTE_EVERY_MS;
-      this.dropNote();
+    if (this.deps.coins !== false && players.length) {
+      this.refill(now);
+      this.spillTick(now);
     }
     const movers = players.filter((p) => p.dirty);
     if (!movers.length) return;
@@ -974,20 +905,14 @@ export class RoomCore {
         name: this.makeName(),
         strap: 0,
         stack: START_STACK,
-        staked: 0,
+        coins: 0,
+        coinCash: 0,
         day: dayOf(now),
-        wagePaid: false,
-        jobs: freshJobs(),
-        rounds: 0,
-        notes: 0,
+        coinsToday: 0,
         created: now,
         seen: now,
         kit: { ...DEFAULT_KIT },
         found: [],
-        errand: null,
-        errandsDone: [],
-        daily: null,
-        owed: 0,
       };
     }
     conn.greeting = false;
@@ -1006,7 +931,6 @@ export class RoomCore {
       this.turnAway(conn);
       return;
     }
-    this.refund(acct);
     rollDay(acct, now);
     acct.strap = this.clampStrap(msg.strap);
     acct.seen = now;
@@ -1027,9 +951,10 @@ export class RoomCore {
       players,
       board: this.leaderboard(),
       me: meOf(acct),
-      notes: this.notesOnGround(),
+      notes: [...this.coins.values()].map(noteOf),
       stacks: this.stacks(),
       ...(newKey ? { key: newKey } : {}),
+      ...(this.spill ? { spill: { street: this.spill.street, until: this.spill.until } } : {}),
     });
     this.deps.broadcast({ t: "join", p: this.stateOf(p) }, p.id);
     this.deps.joined?.(p.id, acct.id);
@@ -1086,89 +1011,125 @@ export class RoomCore {
       if (this.talkRows.length > TALK_ROWS) this.talkRows.splice(0, this.talkRows.length - TALK_ROWS);
       this.deps.saveTalk?.(this.talkRows.map((r) => ({ ...r })));
     }
-    if (out.t === "emote" && out.e === "wave") {
-      const near = [...this.conns.values()].some((c) => c.player && c.player !== p && Math.hypot(c.player.x - p.x, c.player.z - p.z) <= WAVE_NEAR_M);
-      if (near) this.job(p, "wave", 1, now);
-    }
   }
 
-  /** progress on one of today's jobs (have is raised to at least `have`, capped at the job's need) */
-  private job(p: Player, id: JobId, have: number, now: number): void {
-    const a = p.acct;
-    rollDay(a, now);
-    const need = JOBS.find((j) => j.id === id)!.need;
-    const next = Math.min(need, Math.max(a.jobs[id].have, have));
-    if (next === a.jobs[id].have) return;
-    a.jobs[id].have = next;
-    this.store.put(a);
-    this.deps.send(p.id, { t: "me", me: meOf(a) });
-  }
+  // ---------------------------------------------------------------- the coins
 
-  /** pick up a loose note: it must be there, and you within NOTE_REACH of it, with notes left today */
+  /** pick up a coin: it must be there, and you within NOTE_REACH of it, with coins left today. Into the pockets, not the stack */
   private pick(p: Player, msg: Record<string, unknown>, now: number): void {
     const id = typeof msg.note === "string" ? msg.note : "";
-    const note = this.notes.get(id);
-    if (!note) {
+    const coin = this.coins.get(id);
+    if (!coin) {
       // gone (someone else's, or lost in a restart): tell the asker, whose walker would otherwise ask again and again
       if (id && id.length <= 16) this.deps.send(p.id, { t: "notes", add: [], gone: [id] });
       return;
     }
     const a = p.acct;
     rollDay(a, now);
-    if (a.notes >= NOTES_PER_DAY) {
+    if (a.coinsToday >= COINS_PER_DAY) {
       this.error(p, "notes done", now);
       return;
     }
-    if (Math.hypot(note.x - p.x, note.z - p.z) > NOTE_REACH) return;
-    this.notes.delete(id);
-    a.stack += note.v;
-    a.notes += 1;
-    const need = JOBS.find((j) => j.id === "notes")!.need;
-    a.jobs.notes.have = Math.min(need, a.jobs.notes.have + 1);
+    if (Math.hypot(coin.x - p.x, coin.z - p.z) > NOTE_REACH) return;
+    this.coins.delete(id);
+    a.coins += 1;
+    a.coinCash += coin.v;
+    a.coinsToday += 1;
     this.store.put(a);
-    this.deps.broadcast({ t: "picked", id: p.id, note: id, v: note.v });
+    this.deps.broadcast({ t: "picked", id: p.id, note: id, v: coin.v });
+    this.deps.send(p.id, { t: "me", me: meOf(a) });
+  }
+
+  /**
+   * cash the pockets in at Mr Bands' desk (DESK_SPOT's reach; "not there" elsewhere): the coins' worth goes into the
+   * stack and the pockets empty. Nothing carried: cashed 0 and 0, nothing written
+   */
+  private cashin(p: Player, now: number): void {
+    if (!this.doorTurn(p, now)) return;
+    if (Math.hypot(p.x - DESK_SPOT.x, p.z - DESK_SPOT.z) > DESK_SPOT.r) {
+      this.error(p, "not there", now);
+      return;
+    }
+    const a = p.acct;
+    if (!a.coins) {
+      this.deps.send(p.id, { t: "cashed", coins: 0, cash: 0 });
+      return;
+    }
+    const coins = a.coins;
+    const cash = a.coinCash;
+    a.stack += cash;
+    a.coins = 0;
+    a.coinCash = 0;
+    rollDay(a, now);
+    this.store.put(a);
+    this.deps.send(p.id, { t: "cashed", coins, cash });
     this.deps.send(p.id, { t: "me", me: meOf(a) });
     this.stackChanged(p);
   }
 
-  /** collect the wage and the finished jobs, standing at Mr Bands' desk; one pay per PAY_GAP_MS */
-  private pay(p: Player, now: number): void {
-    if (now - p.payAt < PAY_GAP_MS) {
-      this.slow(p, now);
-      return;
+  /**
+   * every zone short of its count drops one more of its own once COIN_EVERY_MS (MARK_EVERY_MS for a mark) has passed
+   * since it was last full or last dropped one: a coin taken comes back that long after, never at once, and an empty
+   * room fills a coin a zone at each pace
+   */
+  private refill(now: number): void {
+    for (const zone of COIN_ZONES) {
+      const every = zone.kind === "mark" ? MARK_EVERY_MS : COIN_EVERY_MS;
+      let down = 0;
+      for (const c of this.coins.values()) if (c.zone === zone.id) down++;
+      if (down >= zone.count) {
+        this.zoneAt.set(zone.id, now + every);
+        continue;
+      }
+      if (now < (this.zoneAt.get(zone.id) ?? -Infinity)) continue;
+      this.zoneAt.set(zone.id, now + every);
+      this.drop(zone, zone.id);
     }
-    p.payAt = now;
-    if (Math.hypot(p.x - DESK_SPOT.x, p.z - DESK_SPOT.z) > DESK_SPOT.r) {
-      this.error(p, "not at the desk", now);
-      return;
-    }
-    const a = p.acct;
-    rollDay(a, now);
-    let amount = 0;
-    if (!a.wagePaid) {
-      a.wagePaid = true;
-      amount += WAGE;
-    }
-    for (const j of JOBS) {
-      const s = a.jobs[j.id];
-      if (!s.paid && s.have >= j.need) {
-        s.paid = true;
-        amount += j.reward;
+  }
+
+  /**
+   * the Mint spill: on the first heartbeat of a new hour (within SPILL_GRACE_MS of it) one street is drawn and told
+   * to everyone; then a coin of the street's range every SPILL_MS / SPILL_COINS until SPILL_COINS are down, and a mark
+   * at the end. Nothing here is written anywhere; nothing a client sends reaches it
+   */
+  private spillTick(now: number): void {
+    const hour = Math.floor(now / HOUR_MS);
+    if (hour > this.spillHour) {
+      this.spillHour = hour;
+      if (now - hour * HOUR_MS <= SPILL_GRACE_MS) {
+        const street = Math.floor(this.deps.random() * STREET_NAMES.length) % STREET_NAMES.length;
+        this.spill = { street, until: now + SPILL_MS, dropped: 0, nextAt: now };
+        this.deps.broadcast({ t: "spill", street, until: this.spill.until });
       }
     }
-    // the errands: what the chain and the day's run earned since the last visit
-    amount += a.owed;
-    a.owed = 0;
-    // nothing to collect: nothing changed, so nothing is written or re-sent (a new day always has the wage)
-    if (!amount) {
-      this.deps.send(p.id, { t: "paid", amount: 0 });
+    const s = this.spill;
+    if (!s) return;
+    // a spill left half-dropped by an empty room (the heartbeat stops with the last visitor) is over when its time is,
+    // never resumed as a burst on the next join
+    if (now > s.until + SPILL_MS / SPILL_COINS) {
+      this.spill = null;
       return;
     }
-    a.stack += amount;
-    this.store.put(a);
-    this.deps.send(p.id, { t: "paid", amount });
-    this.deps.send(p.id, { t: "me", me: meOf(a) });
-    this.stackChanged(p);
+    if (now < s.nextAt) return;
+    const street = STREET_NAMES[s.street];
+    if (s.dropped < SPILL_COINS) {
+      this.drop(COIN_ZONES.find((z) => z.ground === street && z.kind === "coin")!, "spill", SPILL_GAP_M);
+      s.dropped++;
+      s.nextAt = now + SPILL_MS / SPILL_COINS;
+      return;
+    }
+    this.drop(COIN_ZONES.find((z) => z.ground === street && z.kind === "mark")!, "spill", SPILL_GAP_M);
+    this.spill = null;
+  }
+
+  /** one coin of the zone on the ground, worth a whole number of its range, counted under `tag`; everyone sees it land */
+  private drop(zone: CoinZone, tag: string, gap?: number): void {
+    const spot = coinSpot(zone, this.deps.random, [...this.coins.values()], gap);
+    if (!spot) return;
+    const span = zone.max - zone.min + 1;
+    const coin: Coin = { id: `n${this.randomId(7)}`, x: spot[0], z: spot[1], kind: zone.kind, v: zone.min + (Math.floor(this.deps.random() * span) % span), zone: tag };
+    this.coins.set(coin.id, coin);
+    this.deps.broadcast({ t: "notes", add: [noteOf(coin)], gone: [] });
   }
 
   // ---------------------------------------------------------------- the town's doors
@@ -1193,45 +1154,6 @@ export class RoomCore {
     return true;
   }
 
-  /** the errand in hand as a table row: the chain's, or the daily run with the doors the room drew */
-  private errandOf(a: Account): Errand | null {
-    if (!a.errand) return null;
-    if (a.errand.id === "daily") return a.daily ? { ...DAILY, steps: a.daily.places } : null;
-    return ERRANDS.find((e) => e.id === a.errand!.id) ?? null;
-  }
-
-  /**
-   * a door reached on the errand in hand: the next step in order (or any step left, for an any-order errand) is
-   * marked done, unless it is the last step and asks a task there (the task marks it). A purchase asked of someone
-   * who wears the thing already is the one task done on entering: he gets his box, the player keeps theirs (the shop
-   * sells one to a customer, so the errand would have no way through). true when the errand moved
-   */
-  private stepErrand(a: Account, place: string): boolean {
-    const e = this.errandOf(a);
-    const h = a.errand;
-    if (!e || !h) return false;
-    const last = e.steps.length - 1;
-    const i = e.any ? e.steps.indexOf(place) : e.steps[h.step] === place ? h.step : -1;
-    if (i < 0 || h.done.includes(place)) return false;
-    if (e.task && (e.any || i === last) && !(e.task.do === "buy" && owns(a.kit, e.task.item))) return false;
-    h.done.push(place);
-    h.step = h.done.length;
-    if (e.id === "daily" && a.daily && !a.daily.found.includes(place)) a.daily.found.push(place);
-    if (h.step >= e.steps.length) this.finishErrand(a, e);
-    return true;
-  }
-
-  /** the errand is done: its reward waits at the desk, the day's run's too (its row is marked, so the board says done) */
-  private finishErrand(a: Account, e: Errand): void {
-    a.errand = null;
-    a.owed += e.reward;
-    if (e.id === "daily") {
-      if (a.daily) a.daily.paid = true;
-      return;
-    }
-    if (!a.errandsDone.includes(e.id)) a.errandsDone.push(e.id);
-  }
-
   /** what a door's interior shows beyond its id */
   private placeExtras(id: string, now: number): Partial<Extract<S2C, { t: "place" }>> {
     if (id.startsWith("coffee")) return { talk: this.talk() };
@@ -1244,60 +1166,30 @@ export class RoomCore {
   }
 
   /**
-   * enter a door: the position is checked, the discovery recorded and paid the first time (FOUND_PAY at once), the
-   * errand moved on, and the interior answered; the account is written once, and only when any of that changed
+   * enter a door: the position is checked, the discovery recorded the first time (the account written then, and
+   * only then) and the interior answered
    */
   private enter(p: Player, msg: Record<string, unknown>, now: number): void {
     const id = typeof msg.place === "string" && msg.place.length <= 40 ? msg.place : "";
     if (!id || !this.doorTurn(p, now)) return;
     if (!this.atDoor(p, id, now)) return;
     const a = p.acct;
-    let changed = rollDay(a, now);
-    let paid = 0;
-    if (id !== PLACE_IDS.desk && id !== PLACE_IDS.guardHouse && !a.found.includes(id)) {
+    const found = id !== PLACE_IDS.desk && !a.found.includes(id);
+    if (found) {
       a.found.push(id);
-      a.stack += FOUND_PAY;
-      paid = FOUND_PAY;
-      changed = true;
+      this.store.put(a);
+      this.deps.send(p.id, { t: "found", place: id });
     }
-    if (this.stepErrand(a, id)) changed = true;
-    if (changed) this.store.put(a);
-    if (paid) this.deps.send(p.id, { t: "found", place: id, paid });
     const shop = shopOf(id);
     this.deps.send(p.id, { t: "place", id, ...this.placeExtras(id, now), ...(shop ? { stock: this.stockFor(a, shop) } : {}) });
-    if (changed) this.deps.send(p.id, { t: "me", me: meOf(a) });
-    if (paid) this.stackChanged(p);
+    if (found) this.deps.send(p.id, { t: "me", me: meOf(a) });
   }
 
-  /** climb the tower: the hour it shows is the room's own, kept for the errand's question; nothing is written */
+  /** climb the tower: the hour it shows is the room's own; nothing is written */
   private climb(p: Player, now: number): void {
     if (!this.doorTurn(p, now)) return;
     if (!this.atDoor(p, PLACE_IDS.clockTower, now)) return;
-    p.climbed = hourOf(now);
-    this.deps.send(p.id, { t: "place", id: PLACE_IDS.clockTower, hour: p.climbed });
-  }
-
-  /** errand "clock": the hour, at the tower, after a climb; the hour shown at the climb, or the hour now, is right */
-  private answer(p: Player, msg: Record<string, unknown>, now: number): void {
-    const hour = msg.hour;
-    if (!isNum(hour) || !Number.isInteger(hour) || hour < 0 || hour > 23) return;
-    if (!this.doorTurn(p, now)) return;
-    const a = p.acct;
-    const e = this.errandOf(a);
-    if (!e || e.task?.do !== "answer" || p.climbed === null) {
-      this.error(p, "no errand", now);
-      return;
-    }
-    if (!this.atDoor(p, e.steps[e.steps.length - 1], now)) return;
-    if (hour !== p.climbed && hour !== hourOf(now)) {
-      this.error(p, "wrong hour", now);
-      return;
-    }
-    a.errand!.done.push(e.steps[e.steps.length - 1]);
-    a.errand!.step = a.errand!.done.length;
-    this.finishErrand(a, e);
-    this.store.put(a);
-    this.deps.send(p.id, { t: "me", me: meOf(a) });
+    this.deps.send(p.id, { t: "place", id: PLACE_IDS.clockTower, hour: hourOf(now) });
   }
 
   /** buy one of STOCK at a door of its shop: one of each, from the stack; worn at once and told to everyone */
@@ -1319,84 +1211,13 @@ export class RoomCore {
       this.error(p, "no stack", now);
       return;
     }
-    rollDay(a, now);
     a.stack -= row.price;
     a.kit = wear(a.kit, row.item);
-    const e = this.errandOf(a);
-    if (e?.task?.do === "buy" && e.task.item === row.item && e.steps[e.steps.length - 1] === here.id) {
-      a.errand!.done.push(here.id);
-      a.errand!.step = a.errand!.done.length;
-      this.finishErrand(a, e);
-    }
     this.store.put(a);
     this.deps.send(p.id, { t: "bought", item: row.item });
     this.deps.send(p.id, { t: "me", me: meOf(a) });
     this.deps.broadcast({ t: "kit", id: p.id, kit: { ...a.kit } });
     this.stackChanged(p);
-  }
-
-  /**
-   * take an errand at the desk or at Bands & Co.: the chain's next, or once the chain is done today's run, DAILY_PLACES
-   * doors drawn from every place but the ends, once a day. One in hand already is answered with the account as it is
-   */
-  private takeErrand(p: Player, msg: Record<string, unknown>, now: number): void {
-    if (msg.take !== true) return;
-    if (!this.doorTurn(p, now)) return;
-    const desk = doorOf(PLACE_IDS.desk)!;
-    const house = doorOf(PLACE_IDS.bandsCo);
-    const atDesk = Math.hypot(p.x - desk.x, p.z - desk.z) <= desk.r;
-    const atHouse = house !== null && Math.hypot(p.x - house.x, p.z - house.z) <= house.r;
-    if (!atDesk && !atHouse) {
-      this.error(p, "not there", now);
-      return;
-    }
-    const a = p.acct;
-    const rolled = rollDay(a, now);
-    if (a.errand) {
-      if (rolled) this.store.put(a);
-      this.deps.send(p.id, { t: "me", me: meOf(a) });
-      return;
-    }
-    const next = ERRANDS.find((e) => !a.errandsDone.includes(e.id));
-    if (next) {
-      a.errand = { id: next.id, step: 0, done: [] };
-    } else {
-      if (a.daily || DAILY_POOL.length < DAILY_PLACES) {
-        if (rolled) this.store.put(a);
-        this.error(p, "no errand", now);
-        return;
-      }
-      const pool = [...DAILY_POOL];
-      const places: string[] = [];
-      while (places.length < DAILY_PLACES) places.push(pool.splice(Math.floor(this.deps.random() * pool.length) % pool.length, 1)[0]);
-      a.daily = { places, found: [], paid: false };
-      a.errand = { id: "daily", step: 0, done: [] };
-    }
-    this.store.put(a);
-    this.deps.send(p.id, { t: "me", me: meOf(a) });
-  }
-
-  /** a note on open ground, clear of the others */
-  private dropNote(): void {
-    const free = NOTE_SPOTS.filter(([x, z]) => ![...this.notes.values()].some((n) => Math.hypot(n.x - x, n.z - z) < 4));
-    if (!free.length) return;
-    const [x, z] = free[Math.floor(this.deps.random() * free.length) % free.length];
-    const note: Note = {
-      id: `n${this.randomId(7)}`,
-      x: r2(x + (this.deps.random() - 0.5) * 2),
-      z: r2(z + (this.deps.random() - 0.5) * 2),
-      v: NOTE_MIN + (Math.floor(this.deps.random() * (NOTE_SPREAD + 1)) % (NOTE_SPREAD + 1)),
-    };
-    this.notes.set(note.id, note);
-    this.deps.broadcast({ t: "notes", add: [{ ...note }], gone: [] });
-  }
-
-  /** a stake left on an account by a round a restart lost goes back to the stack */
-  private refund(a: Account): void {
-    if (a.staked > 0) {
-      a.stack += a.staked;
-      a.staked = 0;
-    }
   }
 
   /** tell the room the player's stack moved, and the stacks board if its top changed */
@@ -1412,7 +1233,9 @@ export class RoomCore {
     if (announce) this.deps.broadcast({ t: "stacks", rows: this.stacks() });
   }
 
-  /** lay a band: validate, find the pool on the server's board, deal a seed, run the round, say "laid" */
+  // ---------------------------------------------------------------- the stalls
+
+  /** lay a band: validate, find the pool on the server's board, deal a seed, run the round, say "laid"; practice only */
   private async lay(p: Player, msg: Record<string, unknown>, now: number): Promise<void> {
     const want = typeof msg.pool === "string" ? msg.pool.trim() : "";
     if (!want || want.length > 128) return;
@@ -1433,27 +1256,9 @@ export class RoomCore {
     }
     const widthBins = band.widthBins as number;
     const offsetBins = band.offsetBins as number;
-    // the stake: none (a practice round), or MIN_STAKE..MAX_STAKE whole dollars with the rake on top of it in the stack,
-    // within today's staked rounds; the hold: one of HOLDS for a staked round (TICKS when absent), TICKS for practice
-    const stake = msg.stake === undefined ? 0 : msg.stake;
-    if (!isNum(stake) || !Number.isInteger(stake) || stake < 0 || (stake > 0 && (stake < MIN_STAKE || stake > MAX_STAKE))) {
-      this.error(p, "bad stake", now);
-      return;
-    }
-    const rake = stake > 0 ? Math.ceil((stake * RAKE_PCT) / 100) : 0;
-    if (stake + rake > p.acct.stack) {
-      this.error(p, "bad stake", now);
-      return;
-    }
-    const hold = stake > 0 ? (msg.hold === undefined ? TICKS : msg.hold) : TICKS;
-    if (!isNum(hold) || !(HOLDS as readonly number[]).includes(hold)) {
-      this.error(p, "bad choice", now);
-      return;
-    }
-    // a new day at the lay: the page learns its fresh counts now (a practice settle would not write or say so)
-    if (rollDay(p.acct, now)) this.deps.send(p.id, { t: "me", me: meOf(p.acct) });
-    if (stake > 0 && p.acct.rounds >= ROUNDS_PER_DAY) {
-      this.error(p, "no rounds left", now);
+    // nothing rides on a stall: a stake asked for is refused, whatever the stack holds
+    if (isNum(msg.stake) && msg.stake > 0) {
+      this.error(p, "practice only", now);
       return;
     }
     p.laying = true;
@@ -1485,13 +1290,6 @@ export class RoomCore {
         p.laying = false;
       }
       if (this.conns.get(p.id)?.player !== p || p.round) return; // left while the history loaded
-      // money rides on real hours only: a simulated round pays the board's one hot hour for every hour it is in
-      // range, with nothing to vary it, so a stake on a hot pool with no history was a sure +30% (measured 24 Sep).
-      // A room with no history service at all (tests, a dev without the file) still stakes on simulated rounds.
-      if (stake > 0 && !market) {
-        this.error(p, "practice only", this.deps.now());
-        return;
-      }
     }
     const start = this.deps.now();
     const seed = this.seed();
@@ -1502,21 +1300,8 @@ export class RoomCore {
       this.error(p, "bad choice", start);
       return;
     }
-    if (stake + rake > p.acct.stack) {
-      this.error(p, "bad stake", start);
-      return;
-    }
-    const round: Round = { roundId: this.roundId(), pool, seed, widthBins, offsetBins, market, sim, start, sent: 0, stake, rake, hold };
+    const round: Round = { roundId: this.roundId(), pool, seed, widthBins, offsetBins, market, sim, start, sent: 0 };
     p.round = round;
-    if (stake > 0) {
-      // the stake and the rake leave the stack together; only the stake is in play (the rake is the stall's)
-      p.acct.stack -= stake + rake;
-      p.acct.staked = stake;
-      p.acct.rounds += 1;
-      this.store.put(p.acct);
-      this.deps.send(p.id, { t: "me", me: meOf(p.acct) });
-      this.stackChanged(p);
-    }
     this.deps.send(p.id, {
       t: "laid",
       roundId: round.roundId,
@@ -1525,15 +1310,14 @@ export class RoomCore {
       upper: sim.upper,
       tickMs: ROUND_TICK_MS,
       real: market !== null,
-      ...(stake > 0 ? { stake, rake, hold } : {}),
     });
   }
 
   /**
    * A random stretch of the pool's history long enough for a round, or null (too short, unreadable, unpriceable, or
    * too quiet). A stretch must have MIN_LIVE_HOURS of its hours with volume: hourlySeries fills a silent hour with the
-   * last close and no volume, so a thin history would deal flat stretches that pay exactly nothing (a sure loss of the
-   * rake) and stretches that all hold its one move, which anyone reading the history could tell apart.
+   * last close and no volume, so a thin history would deal flat stretches that teach nothing, and stretches that all
+   * hold its one move, which anyone reading the history could tell apart.
    */
   private marketFrom(pool: PoolParams, history: unknown): Market | null {
     const series = seriesOf(history);
@@ -1549,10 +1333,7 @@ export class RoomCore {
     return marketWindow(series, start, pool);
   }
 
-  /**
-   * a practice round: settle at the last tick already sent (tick 1, sent now, if none had gone out). A staked round:
-   * skip to the end, the ticks left to its hold sent at once and the round settled there
-   */
+  /** settle at the last tick already sent (tick 1, sent now, if none had gone out) */
   private close(p: Player, msg: Record<string, unknown>, now: number): void {
     const { roundId } = msg;
     if (typeof roundId !== "string" || roundId.length > 64) return;
@@ -1566,23 +1347,23 @@ export class RoomCore {
     this.settle(p, r, at, now);
   }
 
-  /** the hour a round cut short settles at: a staked round's hold, whatever was sent; the last hour sent for practice */
+  /** the hour a round cut short settles at: the last hour sent (tick 1 at the least) */
   private endOf(r: Round): number {
-    return r.stake > 0 ? r.hold : Math.max(1, r.sent);
+    return Math.max(1, r.sent);
   }
 
-  /** the heartbeat's work on one round: expire it, or send the ticks now due and settle at its hold */
+  /** the heartbeat's work on one round: expire it, or send the ticks now due and settle at the end */
   private advance(p: Player, r: Round, now: number): void {
     if (now - r.start > ROUND_TTL_MS) {
-      // (the ticks stalled): settle now, where a close would, so a stake is never stranded
+      // (the ticks stalled): settle now, where a close would
       const at = this.endOf(r);
       this.sendTicks(p, r, at);
       this.settle(p, r, at, now);
       return;
     }
-    const due = Math.min(r.hold, Math.floor((now - r.start) / ROUND_TICK_MS));
+    const due = Math.min(TICKS, Math.floor((now - r.start) / ROUND_TICK_MS));
     if (due > r.sent) this.sendTicks(p, r, due);
-    if (r.sent >= r.hold) this.settle(p, r, r.hold, now);
+    if (r.sent >= TICKS) this.settle(p, r, TICKS, now);
   }
 
   private sendTicks(p: Player, r: Round, upTo: number): void {
@@ -1602,11 +1383,9 @@ export class RoomCore {
   }
 
   /**
-   * Score the round at hour `at`: simulate() re-run with that closeAt, "scored" to the player. A staked round pays the
-   * stake back as the position's worth there (value + fees, percent of the deposit; the rake stays with the stall),
-   * moves the day's jobs on and goes on the Best rounds board ("board" to the room if the top changed). A practice
-   * round records nothing, so the account is written only when something changed (a stake, a job, the day rolling).
-   * quiet: the player has gone, so nothing is sent to them.
+   * Score the round at hour `at`: simulate() re-run with that closeAt, "scored" to the player, and the result on the
+   * Best rounds board ("board" to the room if the top changed). No stack moves and no account is written: the stalls
+   * are practice. quiet: the player has gone, so nothing is sent to them.
    */
   private settle(p: Player, r: Round, at: number, now: number, quiet = false): void {
     p.round = null;
@@ -1614,46 +1393,14 @@ export class RoomCore {
     try {
       res = simulate(r.pool, r.seed, { widthBins: r.widthBins, offsetBins: r.offsetBins, closeAt: at }, r.market);
     } catch {
-      // cannot happen for a round that was dealt; the stake goes back rather than vanishing
-      res = { ...r.sim, closedAt: at, scorePct: 0, valuePct: r.sim.valuePct.map(() => 100), feesPct: r.sim.feesPct.map(() => 0) };
+      // cannot happen for a round that was dealt; scored as nothing rather than not at all
+      res = { ...r.sim, closedAt: at, scorePct: 0 };
     }
     const pct = isNum(res.scorePct) ? r2(res.scorePct) : 0;
-    const a = p.acct;
-    const staked = r.stake > 0;
-    let back = 0;
-    if (staked) {
-      // the stake plus what the band made against just holding (fees less the loss to holding), never the position's
-      // raw worth: the board's pools just surged, and their history is a rise already known, so the raw worth was a
-      // long on it (measured 24 Sep: a wide all-token band paid a mean 169% of the stake). A band's value never beats
-      // holding and its fees are capped, so this is at most 1.3 x the stake.
-      const made = res.valuePct[at] + res.feesPct[at] - res.holdPct[at];
-      back = isNum(made) ? Math.max(0, Math.round((r.stake * (100 + made)) / 100)) : r.stake;
-      a.stack += back;
-      a.staked = 0;
-    }
-    const rolled = rollDay(a, now);
-    let moved = false;
-    if (staked) {
-      const hoursIn = res.inRange.slice(1, at + 1).filter(Boolean).length;
-      const range = JOBS.find((j) => j.id === "range")!.need;
-      const next = Math.min(range, Math.max(a.jobs.range.have, hoursIn));
-      if (next !== a.jobs.range.have) {
-        a.jobs.range.have = next;
-        moved = true;
-      }
-      if (pct > 0 && a.jobs.beat.have < 1) {
-        a.jobs.beat.have = 1;
-        moved = true;
-      }
-    }
-    if (staked || rolled || moved) this.store.put(a);
-    const { rank, changed } = staked ? this.record({ name: p.name, pool: r.pool.label, pct, at: now }) : { rank: null, changed: false };
+    const { rank, changed } = this.record({ name: p.name, pool: r.pool.label, pct, at: now });
     if (!quiet) {
-      const stakeBits = staked ? { stake: r.stake, back } : {};
-      this.deps.send(p.id, r.market ? { t: "scored", roundId: r.roundId, pct, at, rank, from: r.market.from, ...stakeBits } : { t: "scored", roundId: r.roundId, pct, at, rank, ...stakeBits });
-      if (staked || rolled) this.deps.send(p.id, { t: "me", me: meOf(a) });
+      this.deps.send(p.id, r.market ? { t: "scored", roundId: r.roundId, pct, at, rank, from: r.market.from } : { t: "scored", roundId: r.roundId, pct, at, rank });
     }
-    if (staked) this.stackChanged(p);
     if (changed) {
       this.deps.broadcast({ t: "board", rows: this.leaderboard() });
       this.deps.saveBoard?.(this.leaderboard());
@@ -1687,22 +1434,7 @@ export class RoomCore {
   /** errors are fixed server strings, never anything the client sent */
   private error(
     p: Player,
-    why:
-      | "unknown pool"
-      | "board unavailable"
-      | "round in play"
-      | "no such round"
-      | "bad choice"
-      | "bad stake"
-      | "no rounds left"
-      | "not at the desk"
-      | "notes done"
-      | "practice only"
-      | "not there"
-      | "no stack"
-      | "have one"
-      | "no errand"
-      | "wrong hour",
+    why: "unknown pool" | "board unavailable" | "round in play" | "no such round" | "bad choice" | "practice only" | "notes done" | "not there" | "no stack" | "have one",
     now: number,
   ): void {
     if (now - p.errorAt < ERROR_GAP_MS) return;
@@ -1765,10 +1497,8 @@ export class RoomCore {
       slowAt: -Infinity,
       socialAt: -Infinity,
       layAt: -Infinity,
-      payAt: -Infinity,
       doorAt: -Infinity,
       errorAt: -Infinity,
-      climbed: null,
       round: null,
       laying: false,
     };

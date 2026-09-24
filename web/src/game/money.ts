@@ -14,3 +14,12 @@ export function bands(n: number): string {
 
 /** the bands word beside a dollar figure: null under a band, where it would only repeat the figure */
 export const bandsWord = (n: number): string | null => (n >= BAND ? bands(n) : null);
+
+/** the stack as it is strapped: "$640" under a band, "1 band + $250", "12 bands" when nothing is loose */
+export function bandsAndCash(n: number): string {
+  const whole = Math.floor(Math.max(0, Math.round(n)) / BAND);
+  const loose = Math.max(0, Math.round(n)) - whole * BAND;
+  if (whole < 1) return usd(n);
+  const b = `${whole.toLocaleString("en-US")} band${whole === 1 ? "" : "s"}`;
+  return loose ? `${b} + ${usd(loose)}` : b;
+}

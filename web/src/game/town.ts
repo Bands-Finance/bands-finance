@@ -19,8 +19,12 @@
  * the front, stepped 1.5 m toward the plaza (a bank with steps: their foot), so it lies on the pavement just off the
  * ring; you reach it from the kerb. The numbers were computed from city.ts's own lot frames (City.doors, read by a
  * dev script that builds the city under a stub canvas) and written in below; move a lot in city.ts and rerun it.
+ *
+ * COIN_ZONES says where the coins lie (how many at once on the plaza, the ring, each street, and a mint mark at each
+ * street's end) and what each is worth; coinSpot draws a spot for one on walkable ground, clear of the doors and the
+ * furniture. The room drops and values them; the browser only draws what it is told.
  */
-import { DOOR_REACH_M, WORLD_RADIUS } from "./protocol";
+import { DESK_SPOT, DOOR_REACH_M, WORLD_RADIUS } from "./protocol";
 
 export { DOOR_REACH_M };
 
@@ -274,6 +278,100 @@ export function placeAt(x: number, z: number): Place | null {
     }
   }
   return best;
+}
+
+// ---------------------------------------------------------------- the coins
+
+/** a coin, or a mint mark (worth more, drawn larger, one at each street's end) */
+export type CoinKind = "coin" | "mark";
+/** the ground a zone covers */
+export type CoinGround = "plaza" | "ring" | StreetName;
+
+export interface CoinZone {
+  id: string;
+  ground: CoinGround;
+  kind: CoinKind;
+  /** coins of this zone on the ground at once */
+  count: number;
+  /** what one is worth, dollars of play money, min..max whole */
+  min: number;
+  max: number;
+}
+
+/**
+ * Where the coins lie and what they are worth: cheap about the plaza, better on the ring, best out along the streets,
+ * and a mint mark at each street's end. The room refills each zone on its own; the values are the room's alone.
+ */
+export const COIN_ZONES: readonly CoinZone[] = [
+  { id: "plaza", ground: "plaza", kind: "coin", count: 6, min: 5, max: 25 },
+  { id: "ring", ground: "ring", kind: "coin", count: 10, min: 10, max: 40 },
+  ...STREET_NAMES.flatMap((s): CoinZone[] => [
+    { id: s, ground: s, kind: "coin", count: 8, min: 20, max: 80 },
+    { id: `${s}-mark`, ground: s, kind: "mark", count: 1, min: 100, max: 100 },
+  ]),
+];
+
+/** a coin lands this far from any door (its keeper stands 1.6 m from it), and this far from every other coin */
+export const COIN_DOOR_M = 3.5;
+export const COIN_GAP_M = 4;
+/** the plaza's coins lie between these radii: clear of the fountain's step, and inside the lamps (r 31) and the trees */
+export const PLAZA_COIN_R = [FOUNTAIN_R + 2.5, 30] as const;
+/** the ring's: off the rope's band and its gateposts, and short of the outer kerb where the doors are */
+export const RING_COIN_R = [WORLD_RADIUS + ROPE_BAND_M + 1, KERB_OUT - 0.75] as const;
+/** a street's coins run from past the mouth to short of the end, on the carriageway and the pavements */
+export const STREET_COIN_T = [MOUTH_END + 2, TOWN_RADIUS - 14] as const;
+/** its mark lies near the end, short of the domed front's door and keeper */
+export const MARK_COIN_T = [TOWN_RADIUS - 10, TOWN_RADIUS - 4] as const;
+/** the plaza's furniture a coin keeps clear of: (x, z, radius) of the fountain, stalls, boards, Guard House, desk, benches, stacks */
+export const PLAZA_FIXTURES: readonly [number, number, number][] = [
+  [0, 0, 6],
+  [-10.5, -9, 3.5], [-3.6, -11, 3.5], [3.6, -11, 3.5], [10.5, -9, 3.5],
+  [0, -20, 9],
+  [24, 2, 6],
+  [-24, 2, 4.5], [DESK_SPOT.x, DESK_SPOT.z, DESK_SPOT.r],
+  [-18, 20, 4],
+  [-11, 12, 2.2], [11, 13, 2.2], [28, 18, 2.2],
+  [-13.5, 4.5, 2], [-12.8, 5.8, 2], [13.5, 6.5, 2], [16, -16, 2], [-15, -15, 2],
+];
+/** tries before coinSpot gives up (a zone crowded by the coins already down) */
+const COIN_TRIES = 40;
+
+/** a point drawn uniformly over the zone's ground (not yet checked against anything) */
+function coinDraw(zone: CoinZone, rng: () => number): [number, number] {
+  if (zone.ground === "plaza" || zone.ground === "ring") {
+    const [r0, r1] = zone.ground === "plaza" ? PLAZA_COIN_R : RING_COIN_R;
+    // uniform over the area, not the radius: r from the square root
+    const r = Math.sqrt(r0 * r0 + (r1 * r1 - r0 * r0) * rng());
+    const a = rng() * TAU;
+    return [Math.sin(a) * r, Math.cos(a) * r];
+  }
+  const sa = STREET_ANGLES[STREET_NAMES.indexOf(zone.ground)];
+  const [t0, t1] = zone.kind === "mark" ? MARK_COIN_T : STREET_COIN_T;
+  const half = zone.kind === "mark" ? STREET_HALF_WIDTH_M - 2 : STREET_HALF_WIDTH_M - 1;
+  const t = t0 + (t1 - t0) * rng();
+  const s = (rng() * 2 - 1) * half;
+  return [t * Math.sin(sa) + s * Math.cos(sa), t * Math.cos(sa) - s * Math.sin(sa)];
+}
+
+/**
+ * A spot for a new coin of the zone: a random point on its ground that is walkable, clear of the plaza's furniture,
+ * COIN_DOOR_M from every door (and so its keeper) and `gap` (COIN_GAP_M unless the caller packs them closer, as a
+ * spill does) from every point in `avoid` (the coins down already). Rejection sampling from `rng` (uniform [0, 1));
+ * null when COIN_TRIES draws found none. Pure: the room calls it with its own random, the tests with a seeded one.
+ */
+export function coinSpot(zone: CoinZone, rng: () => number, avoid: readonly { x: number; z: number }[], gap = COIN_GAP_M): [number, number] | null {
+  for (let i = 0; i < COIN_TRIES; i++) {
+    const [dx, dz] = coinDraw(zone, rng);
+    // rounded first, so the checks judge the point that goes on the wire
+    const x = round(dx);
+    const z = round(dz);
+    if (!walkable(x, z)) continue;
+    if (zone.ground === "plaza" && PLAZA_FIXTURES.some(([fx, fz, fr]) => Math.hypot(x - fx, z - fz) < fr)) continue;
+    if (PLACES.some((p) => Math.hypot(x - p.x, z - p.z) < COIN_DOOR_M)) continue;
+    if (avoid.some((c) => Math.hypot(x - c.x, z - c.z) < gap)) continue;
+    return [x, z];
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------- the way there

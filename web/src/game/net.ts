@@ -6,23 +6,23 @@
  *   - emote() / say() take only the allow-listed ids and return false when nothing was sent (offline, or inside the
  *     server's one-a-second limit); the server passes them to everyone else, not back to the sender, so the page
  *     shows its own bubble itself (when the call returned true)
- *   - a round is played on the server: lay(pool, widthBins, offsetBins, stake, hold) -> onLaid (the band's bounds,
- *     the pace, and for a staked round the stake, the stall's cut and the hold), then onTick for the round's ticks as
- *     the server's clock reaches each (every laid.tickMs). A staked round is committed at the lay and settles at its
- *     hold whatever happens: closeRound(roundId) only skips to the end. A practice round settles at closeRound, at the
- *     last tick already sent, or at TICKS. Either way onScored(the whole message: pct, at, rank, stake, back) follows.
- *     The seed and future ticks never reach the browser, so there is no score to send, and nothing to compute ahead.
- *     One round at a time; a lay while one is open is refused (onError "round in play")
+ *   - a round is played on the server: lay(pool, widthBins, offsetBins) -> onLaid (the band's bounds and the pace),
+ *     then onTick for the round's ticks as the server's clock reaches each (every laid.tickMs). The round settles at
+ *     closeRound(roundId), at the last tick already sent, or at TICKS; onScored (pct, at, rank) follows. Nothing is
+ *     staked. The seed and future ticks never reach the browser, so there is no score to send, and nothing to compute
+ *     ahead. One round at a time; a lay while one is open is refused (onError "round in play")
  *   - onMoves carries other players only. When the server refuses this visitor's move (a jump faster than MAX_SPEED)
  *     or pulls it back onto the plaza's disc, it says where the walker really is: onCorrect(x, z, ry), put it there
  *   - the stack: the room keeps an account for this browser, opened again by the key it sends with the first welcome
  *     (kept in memory for the session and in localStorage for the next one, so a reconnect with site data blocked
- *     still opens the same account). onMe carries the account's own changes, onStack everyone's stacks (name tags), onNotes
- *     and onPicked the loose notes, onPaid Mr Bands' pay, onStacks the biggest-stacks board. pick() and pay() ask.
+ *     still opens the same account). onMe carries the account's own changes (the stack, the coins carried), onStack
+ *     everyone's stacks (name tags), onNotes and onPicked the coins on the ground, onSpill the Mint's hourly spill,
+ *     onStacks the biggest-stacks board. pick() asks for a coin; cashin() at the desk turns the coins carried into
+ *     the stack, and onCashed says how many and for how much.
  *   - the town: enter(place) says this walker stands at a door (the room checks the distance) and onPlace answers with
- *     what the interior shows; climb() at the tower, answer(hour) for the tower errand, buy(item) at a shop (onBought,
- *     then the new kit in onMe and onKit), takeErrand() at the desk or at Bands & Co. onFound is a first visit to a
- *     door (paid at once), onKit someone's kit changed (the buyer included). A refusal comes as onError.
+ *     what the interior shows; climb() at the tower, buy(item) at a shop (onBought, then the new kit in onMe and
+ *     onKit). onFound is a first visit to a door, onKit someone's kit changed (the buyer included). A refusal comes as
+ *     onError.
  * A dropped connection is retried with exponential backoff (to 30 s); a reconnect is a new socket id, the same
  * account. A full room is not retried, nor a socket closed because the account was opened in another tab. With no URL (VITE_GAME_WS_URL unset) the
  * status is "offline", nothing is sent, and the game plays single-player, dealing its rounds locally.
@@ -57,7 +57,7 @@ const keepKey = (k: string) => {
 /** the close code the room uses when the account was opened in another tab */
 const CLOSE_ELSEWHERE = 4003;
 export type WelcomeMsg = Extract<S2C, { t: "welcome" }>;
-/** { roundId, pool, lower, upper, tickMs, real?, stake?, rake?, hold? } */
+/** { roundId, pool, lower, upper, tickMs, real? } */
 export type LaidMsg = Extract<S2C, { t: "laid" }>;
 /** { roundId, i, p, feesPct, valuePct, holdPct, inRange }: tick i of the server's round */
 export type TickMsg = Extract<S2C, { t: "tick" }>;
@@ -103,23 +103,25 @@ export class ExchangeNet {
   onLaid: (laid: LaidMsg) => void = () => {};
   /** one tick of the open round, in order, as the server's clock reaches it */
   onTick: (tick: TickMsg) => void = () => {};
-  /** the whole message: pct and the hour it settled at (at); rank on the board (or null); from: a real round's first hour; stake/back: the stack's part */
+  /** the whole message: pct and the hour it settled at (at); rank on the board (or null); from: a real round's first hour */
   onScored: (scored: ScoredMsg) => void = () => {};
-  /** this visitor's account changed (stack, jobs, the day's counts) */
+  /** this visitor's account changed (the stack, the coins carried, the day's count) */
   onMe: (me: Me) => void = () => {};
   /** someone's stack changed */
   onStack: (id: string, stack: number) => void = () => {};
   onNotes: (add: Note[], gone: string[]) => void = () => {};
-  /** someone (maybe this visitor) picked up a note worth v */
+  /** someone (maybe this visitor) picked up a coin worth v */
   onPicked: (id: string, note: string, v: number) => void = () => {};
-  /** Mr Bands paid this visitor (0: nothing to collect) */
-  onPaid: (amount: number) => void = () => {};
+  /** the Mint spilled coins along a street (0..3) until this time (ms since the epoch) */
+  onSpill: (street: number, until: number) => void = () => {};
+  /** this visitor cashed in at the desk: how many coins, and the dollars they went into the stack as (0 and 0: none carried) */
+  onCashed: (coins: number, cash: number) => void = () => {};
   onStacks: (rows: StackRow[]) => void = () => {};
   onBoard: (rows: ScoreRow[]) => void = () => {};
   /** the room's answer to enter() or climb(): what the interior shows */
   onPlace: (place: PlaceMsg) => void = () => {};
-  /** this visitor reached a door for the first time; paid dollars went into the stack */
-  onFound: (place: string, paid: number) => void = () => {};
+  /** this visitor reached a door for the first time */
+  onFound: (place: string) => void = () => {};
   /** the purchase went through */
   onBought: (item: ItemId) => void = () => {};
   /** someone's kit changed (this visitor's own too, after a purchase) */
@@ -128,8 +130,7 @@ export class ExchangeNet {
   /** the server is dropping this visitor's messages (sending too fast) */
   onSlow: () => void = () => {};
   /** a request was refused: "unknown pool", "board unavailable", "round in play", "no such round", "bad choice",
-   *  "bad stake", "no rounds left", "not at the desk", "notes done", "practice only"; in the town "not there",
-   *  "no stack", "have one", "no errand", "wrong hour" */
+   *  "practice only", "notes done"; in the town "not there" (a door, or the desk), "no stack", "have one" */
   onError: (why: string) => void = () => {};
 
   status: NetStatus;
@@ -195,30 +196,25 @@ export class ExchangeNet {
     return this.send({ t: "say", p });
   }
 
-  /**
-   * lay a band on a live pool, by its address or label ("CARDS / USDC"), staking dollars from the stack (0: practice)
-   * for `hold` hours (one of HOLDS; only sent with a stake, a practice round has no hold)
-   */
-  lay(pool: string, widthBins: number, offsetBins: number, stake = 0, hold?: number): boolean {
+  /** lay a band on a live pool, by its address or label ("CARDS / USDC"); a teaching round, nothing staked */
+  lay(pool: string, widthBins: number, offsetBins: number): boolean {
     if (typeof pool !== "string" || !pool.trim()) return false;
     if (!Number.isFinite(widthBins) || !Number.isFinite(offsetBins)) return false;
-    const s = Number.isInteger(stake) && stake > 0 ? stake : 0;
-    const h = s && Number.isInteger(hold) ? hold : undefined;
-    return this.send({ t: "lay", pool: pool.trim(), widthBins, offsetBins, ...(s ? { stake: s } : {}), ...(h ? { hold: h } : {}) });
+    return this.send({ t: "lay", pool: pool.trim(), widthBins, offsetBins });
   }
 
-  /** pick up a loose note (the room checks you are near it); the answer is onPicked */
+  /** pick up a coin (the room checks you are near it); the answer is onPicked */
   pick(note: string): boolean {
     if (typeof note !== "string" || !note) return false;
     return this.send({ t: "pick", note });
   }
 
-  /** collect Mr Bands' pay, standing at his desk; the answer is onPaid */
-  pay(): boolean {
-    return this.send({ t: "pay" });
+  /** cash in the coins carried, standing at Mr Bands' desk; the answer is onCashed then onMe, or onError "not there" */
+  cashin(): boolean {
+    return this.send({ t: "cashin" });
   }
 
-  /** I stand at this door (a PLACES id, or "guard-house" / "desk"); the answer is onPlace, or onError "not there" */
+  /** I stand at this door (a PLACES id); the answer is onPlace, or onError "not there" */
   enter(place: string): boolean {
     if (typeof place !== "string" || !/^[a-z][a-z0-9-]{0,40}$/.test(place)) return false;
     return this.send({ t: "enter", place });
@@ -229,24 +225,13 @@ export class ExchangeNet {
     return this.send({ t: "climb" });
   }
 
-  /** the tower errand: the hour the clock showed (0..23) */
-  answer(hour: number): boolean {
-    if (!Number.isInteger(hour) || hour < 0 || hour > 23) return false;
-    return this.send({ t: "answer", hour });
-  }
-
   /** buy one of STOCK, standing at its shop's door; the answer is onBought, or onError "no stack" / "have one" */
   buy(item: ItemId): boolean {
     if (!isItem(item)) return false;
     return this.send({ t: "buy", item });
   }
 
-  /** at the desk or at Bands & Co.: take the next errand, or the daily run; the answer is onMe (or onError "no errand") */
-  takeErrand(): boolean {
-    return this.send({ t: "errand", take: true });
-  }
-
-  /** a practice round: settle now, at the last tick the server has sent; a staked round: skip to its end. The answer is onScored */
+  /** settle the round now, at the last tick the server has sent; the answer is onScored */
   closeRound(roundId: string): boolean {
     if (typeof roundId !== "string" || !roundId) return false;
     return this.send({ t: "close", roundId });
@@ -398,8 +383,11 @@ export class ExchangeNet {
       case "picked":
         this.onPicked(msg.id, msg.note, msg.v);
         return;
-      case "paid":
-        this.onPaid(typeof msg.amount === "number" ? msg.amount : 0);
+      case "spill":
+        if (Number.isInteger(msg.street) && typeof msg.until === "number") this.onSpill(msg.street, msg.until);
+        return;
+      case "cashed":
+        this.onCashed(typeof msg.coins === "number" ? msg.coins : 0, typeof msg.cash === "number" ? msg.cash : 0);
         return;
       case "stacks":
         if (Array.isArray(msg.rows)) this.onStacks(msg.rows);
@@ -430,7 +418,7 @@ export class ExchangeNet {
         if (typeof msg.id === "string") this.onPlace(msg);
         return;
       case "found":
-        if (typeof msg.place === "string") this.onFound(msg.place, typeof msg.paid === "number" ? msg.paid : 0);
+        if (typeof msg.place === "string") this.onFound(msg.place);
         return;
       case "bought":
         if (isItem(msg.item)) this.onBought(msg.item);

@@ -1,18 +1,18 @@
 /**
  * The Bands Exchange room (game-server/src/core.ts), on fakes: no Cloudflare, no network, a hand-wound clock and a
- * seeded random. Joining and generated names, the room cap and the keyless-hello bucket, move rate limits / disc clamp /
- * the speed budget, batched moves, the emote and phrase allow-lists, and the server-streamed round: a band laid only on
- * board pools, ticks sent in order as the server clock reaches them, a practice close settling at the last tick sent
- * (a simulate() replay, never the client's claim), a staked round committed at the lay (its stake, rake and hold fixed
- * there; a close, a leave or the expiry all settle it at the hold), practice recording nothing, one round at a time,
- * and never a seed on the wire. Rounds on a pool's real history: a hidden stretch replayed, named only with the score,
- * the simulated fallback, and the expected value of a staked round over every stretch. Then the best-per-name top 20,
- * the stack (accounts written once and only when changed), malformed input, the board and history sources and origins.
- * Then the town (24 Sep): moves pulled back onto town.ts's walkable ground, the rope a line crossed only at a street's
- * mouth, doors entered only within reach (a position 4 m off is refused), discoveries paid once, the errand chain in
- * order with the tower's hour and the cigar's purchase (or the cigar worn already), the four ends in any order, the
- * rules from the Guard House to the desk, the daily run's draw and roll, the shops' refusals and the kit told to
- * everyone, the Coffee House's talk, and owed rewards (the run's too) collected with the pay.
+ * seeded random. Joining and generated names, the room cap and the keyless-hello bucket, move rate limits / the
+ * town's ground / the speed budget, batched moves, the emote and phrase allow-lists, and the server-streamed round: a
+ * band laid only on board pools, ticks sent in order as the server clock reaches them, a close settling at the last
+ * tick sent (a simulate() replay, never the client's claim), one round at a time, never a seed on the wire, and every
+ * settled round on the Best rounds board (the stalls are practice: a stake is refused, no stack moves). Rounds on a
+ * pool's real history: a hidden stretch replayed, named only with the score, the simulated fallback. Then the
+ * best-per-name top 20, the accounts (written once and only when changed), malformed input, the board and history
+ * sources and origins. Then the town: moves pulled back onto town.ts's walkable ground, the rope a line crossed only
+ * at a street's mouth, doors entered only within reach (a position 4 m off is refused), discoveries recorded once, the
+ * shops' refusals and the kit told to everyone, the Coffee House's talk, the tower's hour, the street ends. Then the
+ * coins (24 Sep, the simple town): every zone filled on the heartbeat at its own pace, coinSpot's ground, a pick into
+ * the pockets and not the stack, the cash-in at the desk, the daily cap rolling with the UTC day, the Mint spill on
+ * the hour from the clock alone, and old account rows cleaned to the new shape.
  *   npm run test:game-room
  */
 import assert from "node:assert/strict";
@@ -25,14 +25,17 @@ import {
   BUDGET_CAP_M,
   cleanAccount,
   cleanTalk,
+  COIN_EVERY_MS,
+  COINS_ON_GROUND,
   dayOf,
   DOOR_GAP_MS,
   doorOf,
   hourOf,
+  HOUR_MS,
   IP_WINDOW_MS,
+  MARK_EVERY_MS,
   MIN_LIVE_HOURS,
   NEW_ACCOUNTS_PER_IP,
-  clampToDisc,
   cleanBoard,
   CLOSE_FULL,
   CLOSE_NO_ACCOUNT,
@@ -42,12 +45,6 @@ import {
   KEYLESS_HELLO_BURST,
   KEYLESS_HELLO_RATE,
   memoryAccounts,
-  PAY_GAP_MS,
-  NOTE_EVERY_MS,
-  NOTE_MIN,
-  NOTE_SPOTS,
-  NOTE_SPREAD,
-  NOTES_ON_GROUND,
   ERROR_GAP_MS,
   HELLO_TIMEOUT_MS,
   LAY_GAP_MS,
@@ -72,49 +69,59 @@ import {
   SPAWN_ARC,
   SPAWN_INNER,
   SPAWN_RADIUS,
+  SPILL_COINS,
+  SPILL_GAP_M,
+  SPILL_GRACE_MS,
+  SPILL_MS,
   wrapAngle,
 } from "../../game-server/src/core";
-import type { Account, AccountStore, RoomDeps } from "../../game-server/src/core";
+import type { Account, AccountStore, Coin, RoomDeps } from "../../game-server/src/core";
 import {
   BAND,
-  DAILY_PLACES,
-  DAILY_REWARD,
+  COINS_PER_DAY,
   DEFAULT_KIT,
   DESK_SPOT,
   DOOR_REACH_M,
   EMOTES,
-  END_IDS,
-  ERRANDS,
-  FOUND_PAY,
-  GUARD_SPOT,
-  HOLDS,
-  JOBS,
   MAX_SPEED,
-  MAX_STAKE,
-  MIN_STAKE,
   MOVE_HZ,
   NOTE_REACH,
-  NOTES_PER_DAY,
   PHRASES,
   PLACE_IDS,
-  RAKE_PCT,
-  RANKS,
   ROOM_CAP,
   ROUND_TICK_MS,
-  ROUNDS_PER_DAY,
   shopOf,
   START_STACK,
   STOCK,
   STRAPS,
   TALK_ROWS,
-  titleOf,
-  WAGE,
   WORLD_RADIUS,
 } from "../../web/src/game/protocol";
-import type { ErrandId, S2C, ScoreRow } from "../../web/src/game/protocol";
-import { crossesRope, inMouth, KERB_OUT, nearestWalkable, PLACES, ROPE_BAND_M, routeTo, STREET_ANGLES, STREET_HALF_WIDTH_M, TOWN_RADIUS, walkable } from "../../web/src/game/town";
-import { FEES_CAP_PCT, hourlySeries, MARKET_HOURS, marketWindow, simulate, TICKS } from "../../web/src/game/lpGame";
-import type { Choice, PoolParams, SimResult } from "../../web/src/game/lpGame";
+import type { Me, S2C, ScoreRow } from "../../web/src/game/protocol";
+import {
+  COIN_DOOR_M,
+  COIN_GAP_M,
+  COIN_ZONES,
+  coinSpot,
+  crossesRope,
+  FOUNTAIN_R,
+  inMouth,
+  KERB_OUT,
+  MARK_COIN_T,
+  nearestWalkable,
+  PLACES,
+  PLAZA_FIXTURES,
+  ROPE_BAND_M,
+  routeTo,
+  STREET_ANGLES,
+  STREET_HALF_WIDTH_M,
+  STREET_NAMES,
+  TOWN_RADIUS,
+  walkable,
+} from "../../web/src/game/town";
+import type { CoinZone } from "../../web/src/game/town";
+import { hourlySeries, MARKET_HOURS, marketWindow, simulate, TICKS } from "../../web/src/game/lpGame";
+import type { Choice, PoolParams } from "../../web/src/game/lpGame";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -151,8 +158,6 @@ const HOT = {
 };
 const POOLS = parseBoard(HOT);
 const CARDS = POOLS[0];
-/** the stall's cut of a stake, as the room takes it */
-const rakeOf = (stake: number) => Math.ceil((stake * RAKE_PCT) / 100);
 /** a store that counts its writes (put), for the tests that assert nothing was written */
 function countingAccounts() {
   const store = memoryAccounts();
@@ -179,7 +184,7 @@ function seeded(seed: number): () => number {
 type Of<T extends S2C["t"]> = Extract<S2C, { t: T }>;
 const ofType = <T extends S2C["t"]>(msgs: S2C[], t: T): Of<T>[] => msgs.filter((m): m is Of<T> => m.t === t);
 
-/** a room on fakes: per-socket inboxes, a hand-wound clock */
+/** a room on fakes: per-socket inboxes, a hand-wound clock (noon UTC, 24 Sep 2026) */
 function world(
   opts: {
     pools?: PoolParams[];
@@ -188,12 +193,15 @@ function world(
     leaderboard?: unknown;
     seed?: number;
     accounts?: AccountStore;
-    notes?: boolean;
+    /** drop coins about the town (off unless a test is about them) */
+    coins?: boolean;
     /** stored Coffee House talk to bring the room up on */
     talk?: unknown;
+    /** the clock's start (ms), default noon */
+    at?: number;
   } = {},
 ) {
-  let t = Date.parse("2026-09-24T12:00:00Z");
+  let t = opts.at ?? Date.parse("2026-09-24T12:00:00Z");
   const inbox = new Map<string, S2C[]>();
   /** every frame that went to any socket, as it went */
   const wire: string[] = [];
@@ -218,7 +226,7 @@ function world(
     board: opts.board ?? (async () => opts.pools ?? POOLS),
     ...(opts.history ? { history: opts.history } : {}),
     ...(opts.accounts ? { accounts: opts.accounts } : {}),
-    notes: opts.notes ?? false,
+    coins: opts.coins ?? false,
     saveBoard: (rows) => saved.push(rows),
     saveTalk: (rows) => savedTalk.push(rows),
     close: (id, code, reason) => closed.push({ id, code, reason }),
@@ -239,7 +247,7 @@ function world(
       t += ms;
     },
     inbox: (id: string) => inbox.get(id) ?? [],
-    /** read and empty one inbox, leaving out the account updates ("me": the stack tests read them with takeAll) */
+    /** read and empty one inbox, leaving out the account updates ("me": the account tests read them with takeAll) */
     take(id: string): S2C[] {
       const box = inbox.get(id) ?? [];
       inbox.set(id, []);
@@ -304,22 +312,18 @@ function world(
       await w.send(id, { t: "close", roundId, ...extra });
       return w.take(id);
     },
-    /**
-     * lay (with a stake and a hold when given), let ticks 1..k go out in one late heartbeat, close: the scored message.
-     * A practice round settles at k (or at TICKS by itself); a staked one at its hold, whatever k
-     */
-    async playTo(id: string, k: number, band: Choice = CHOICE, stake = 0, hold: number = TICKS) {
-      const { laid, view } = await w.lay(id, CARDS.label, stake > 0 ? { ...band, stake, hold } : band);
-      const end = stake > 0 ? hold : TICKS;
-      const sent = Math.min(k, end);
+    /** lay, let ticks 1..k go out in one late heartbeat, close: the scored message (a round settles at TICKS by itself) */
+    async playTo(id: string, k: number, band: Choice = CHOICE) {
+      const { laid, view } = await w.lay(id, CARDS.label, band);
+      const sent = Math.min(k, TICKS);
       w.advance(k * ROUND_TICK_MS);
       core.tick();
       const heard = w.take(id);
       assert.deepEqual(ofType(heard, "tick").map((m) => m.i), Array.from({ length: sent }, (_, j) => j + 1));
       // at the end the round settles on that heartbeat; before it, the close settles it
-      const scored = ofType(sent >= end ? heard : await w.close(id, laid.roundId), "scored");
+      const scored = ofType(sent >= TICKS ? heard : await w.close(id, laid.roundId), "scored");
       assert.equal(scored.length, 1, "scored");
-      assert.equal(scored[0].at, stake > 0 ? hold : sent, "settled where it should");
+      assert.equal(scored[0].at, sent, "settled where it should");
       return { scored: scored[0], view };
     },
     /** no frame to anyone ever carried a dealt seed, or a "seed" or "path" key */
@@ -336,10 +340,32 @@ function world(
 
 const CHOICE: Choice = { widthBins: 20, offsetBins: 0 };
 
+/** the wire's account: what "me" says, and only that */
+const ME_KEYS = ["coins", "coinsToday", "day", "found", "kit", "stack"];
+
+/** where a coin's zone puts it: the ground it is on, by the shape town.ts walks */
+function groundOf(x: number, z: number): { ground: string; t: number } {
+  const r = Math.hypot(x, z);
+  if (r < WORLD_RADIUS) return { ground: "plaza", t: r };
+  for (let i = 0; i < STREET_ANGLES.length; i++) {
+    const a = STREET_ANGLES[i];
+    const t = x * Math.sin(a) + z * Math.cos(a);
+    const s = x * Math.cos(a) - z * Math.sin(a);
+    if (t > KERB_OUT && Math.abs(s) <= STREET_HALF_WIDTH_M) return { ground: STREET_NAMES[i], t };
+  }
+  return { ground: "ring", t: r };
+}
+
+/** a keeper's spot as World.ts stands them: 1.5 m along the front (facing + a quarter turn) and 0.5 m back from the door */
+const KEEPERS = PLACES.map((p) => {
+  const along = p.facing + Math.PI / 2;
+  return { id: p.id, x: p.x + Math.sin(along) * 1.5 - Math.sin(p.facing) * 0.5, z: p.z + Math.cos(along) * 1.5 - Math.cos(p.facing) * 0.5 };
+});
+
 async function main() {
   console.log("game room");
 
-  /* ---------- a pool's history, for the rounds that replay real hours (and the stakes that ride them) ---------- */
+  /* ---------- a pool's history, for the rounds that replay real hours ---------- */
   const HR = 3600;
   const T0 = Date.parse("2026-09-16T00:00:00Z") / 1000;
   /** a pool's last 100 hours as GeckoTerminal sends them (newest first): a wavy price, a volume that cycles */
@@ -362,6 +388,7 @@ async function main() {
     assert.deepEqual(welA[0].players.map((p) => p.id), [a]);
     assert.equal(welA[0].players[0].strap, 2);
     assert.deepEqual(welA[0].board, []);
+    assert.deepEqual(welA[0].notes, [], "no coins in a room that drops none");
 
     const b = await w.join({ strap: 4 });
     const welB = ofType(w.take(b), "welcome")[0];
@@ -421,6 +448,7 @@ async function main() {
     await w.send(lurker, { t: "emote", e: "wave" });
     await w.send(lurker, { t: "move", x: 1, z: 1, ry: 0, moving: true });
     await w.send(lurker, { t: "lay", pool: CARDS.label, ...CHOICE });
+    await w.send(lurker, { t: "cashin" });
     assert.equal(w.all().length, 0, "nothing heard, nothing laid");
     assert.equal(w.core.size, 1);
     await w.send(a, { t: "hello", strap: 3 });
@@ -504,9 +532,6 @@ async function main() {
     // the boulevard is ground right back to the rope's band
     await w.walk(a, WORLD_RADIUS + 3, 0);
     assert.ok(Math.abs(w.pos(a).x - (WORLD_RADIUS + 3)) < 0.01, "on the boulevard, 3 m past the rope");
-    // the plaza disc alone (spawns, notes) keeps its own clamp
-    const [cx, cz] = clampToDisc(30, 40);
-    assert.ok(Math.abs(cx - 25.2) < 1e-9 && Math.abs(cz - 33.6) < 1e-9);
   });
 
   await test("a jump past the distance budget is refused and the player snapped back; a step within it lands", async () => {
@@ -658,7 +683,7 @@ async function main() {
     const [a, b, c] = [await w.join(), await w.join(), await w.join()];
     w.clear();
     const { laid, view } = await w.lay(a, "cards / usdc");
-    assert.deepEqual(Object.keys(laid).sort(), ["lower", "pool", "real", "roundId", "t", "tickMs", "upper"]);
+    assert.deepEqual(Object.keys(laid).sort(), ["lower", "pool", "real", "roundId", "t", "tickMs", "upper"], "nothing of a stake on the wire");
     assert.equal(laid.real, false, "no history to read: simulated");
     assert.deepEqual(laid.pool, CARDS);
     const sim = simulate(CARDS, view.seed, CHOICE);
@@ -734,7 +759,7 @@ async function main() {
       for (const m of w.take(a)) {
         if (m.t === "tick") seen.push({ m, at: w.now });
         else if (m.t === "scored") scored.push({ m, at: w.now, after: seen.length });
-        else assert.ok(m.t === "board" || m.t === "me", `unexpected ${m.t}`);
+        else assert.ok(m.t === "board", `unexpected ${m.t}`);
       }
     }
     assert.deepEqual(seen.map((s) => s.m.i), Array.from({ length: TICKS }, (_, j) => j + 1), "1..TICKS, in order, once each");
@@ -757,7 +782,7 @@ async function main() {
     assert.equal(scored[0].m.pct, simulate(CARDS, view.seed, { ...CHOICE, closeAt: TICKS }).scorePct);
     assert.equal(w.core.roundOf(a), null, "settled");
     assert.equal(scored[0].m.at, TICKS);
-    assert.deepEqual(w.take(b), [], "nobody else hears of it: a practice round goes on no board");
+    assert.deepEqual(w.take(b).map((m) => m.t), ["board"], "the room hears of it only through the board: the round is on it");
     w.run(5000);
     assert.equal(w.take(a).length, 0, "nothing after");
 
@@ -771,7 +796,7 @@ async function main() {
     w.assertNoSeed();
   });
 
-  await test("a practice close settles at the last tick already sent: simulate() with that closeAt; a claimed score or closeAt is ignored; no ticks after", async () => {
+  await test("a close settles at the last tick already sent: simulate() with that closeAt; a claimed score or closeAt is ignored; no ticks after", async () => {
     const w = world();
     const a = await w.join();
     w.take(a);
@@ -781,14 +806,15 @@ async function main() {
     w.take(a);
     w.advance(start + 11 * ROUND_TICK_MS - w.now); // tick 11 is due, but no heartbeat has sent it
     const out = await w.close(a, laid.roundId, { pct: 999, closeAt: 40, scorePct: 999 });
-    assert.deepEqual(out.map((m) => m.t), ["scored"], "settled at once, tick 11 never sent, no board (practice)");
+    assert.deepEqual(out.map((m) => m.t), ["scored", "board"], "settled at once, tick 11 never sent, the board told");
     const scored = ofType(out, "scored")[0];
     assert.equal(scored.roundId, laid.roundId);
     assert.equal(scored.at, 10);
     assert.equal(scored.pct, simulate(CARDS, view.seed, { ...CHOICE, closeAt: 10 }).scorePct, "the replay at tick 10");
     assert.notEqual(scored.pct, 999);
-    assert.equal(scored.rank, null);
-    assert.deepEqual(w.core.leaderboard(), [], "a practice round is not recorded");
+    assert.equal(scored.rank, 1, "the first round of the name: its best");
+    assert.deepEqual(Object.keys(scored).sort(), ["at", "pct", "rank", "roundId", "t"], "nothing of a stake");
+    assert.equal(w.core.leaderboard().length, 1, "recorded");
     w.run(TICKS * ROUND_TICK_MS);
     assert.equal(w.take(a).length, 0, "no ticks after the close");
     w.advance(ERROR_GAP_MS);
@@ -802,66 +828,39 @@ async function main() {
     w.take(a);
     const { laid, view } = await w.lay(a);
     const out = await w.close(a, laid.roundId);
-    assert.deepEqual(out.map((m) => m.t), ["tick", "scored"]);
+    assert.deepEqual(out.map((m) => m.t), ["tick", "scored", "board"]);
     assert.equal(ofType(out, "tick")[0].i, 1);
     assert.equal(ofType(out, "scored")[0].at, 1);
     assert.equal(ofType(out, "scored")[0].pct, simulate(CARDS, view.seed, { ...CHOICE, closeAt: 1 }).scorePct);
     w.assertNoSeed();
   });
 
-  await test("a staked round settles at its hold and not before: a close skips to the end (the ticks left arrive at once, scored.at = hold)", async () => {
-    const w = world();
+  await test("the stalls are practice only: a stake sent with a lay is refused 'practice only' and nothing is dealt; a hold sent is not read; no stack ever moves", async () => {
+    const store = countingAccounts();
+    const w = world({ accounts: store });
     const a = await w.join();
     w.take(a);
-    for (const hold of HOLDS) {
-      const { laid, view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: MIN_STAKE, hold });
-      assert.equal(laid.hold, hold);
-      assert.equal(laid.stake, MIN_STAKE);
-      assert.equal(laid.rake, rakeOf(MIN_STAKE));
-      assert.equal(view.hold, hold);
-      // the heartbeat: ticks up to the hold, then the settle on the hold's own heartbeat, never before
-      const seen: number[] = [];
-      let scored: Of<"scored"> | null = null;
-      while (!scored && seen.length < TICKS + 1) {
-        w.run(ROOM_TICK_MS);
-        for (const m of w.take(a)) {
-          if (m.t === "tick") seen.push(m.i);
-          else if (m.t === "scored") scored = m;
-        }
-        if (seen.length < hold) assert.equal(scored, null, `hold ${hold}: not settled at hour ${seen.length}`);
-      }
-      assert.deepEqual(seen, Array.from({ length: hold }, (_, j) => j + 1), `hold ${hold}: ticks 1..hold only`);
-      assert.equal(scored!.at, hold);
-      assert.equal(scored!.pct, simulate(CARDS, view.seed, { ...CHOICE, closeAt: hold }).scorePct);
-      w.run(TICKS * ROUND_TICK_MS);
-      assert.equal(w.take(a).length, 0, "nothing after the hold");
-    }
-    // a close: the rest of the ticks at once, then the score at the hold (a claimed closeAt is not read)
-    const { laid, view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: 200, hold: 24 });
-    w.run(5 * ROUND_TICK_MS);
-    assert.deepEqual(ofType(w.take(a), "tick").map((m) => m.i), [1, 2, 3, 4, 5]);
-    const out = await w.close(a, laid.roundId, { closeAt: 5 });
-    assert.deepEqual(ofType(out, "tick").map((m) => m.i), Array.from({ length: 19 }, (_, j) => j + 6), "ticks 6..24 at once");
-    const [scored] = ofType(out, "scored");
-    assert.equal(scored.at, 24);
-    assert.equal(scored.pct, simulate(CARDS, view.seed, { ...CHOICE, closeAt: 24 }).scorePct, "scored at the hold, not the close");
-    assert.equal(scored.stake, 200);
-    const at24 = simulate(CARDS, view.seed, { ...CHOICE, closeAt: 24 });
-    assert.equal(scored.back, Math.round((200 * (100 + at24.valuePct[24] + at24.feesPct[24] - at24.holdPct[24])) / 100));
-    assert.equal(w.core.roundOf(a), null);
-    // a hold off the list, or on a practice round, is refused / ignored
-    w.advance(ERROR_GAP_MS + LAY_GAP_MS);
-    for (const hold of [6, 47, 0, "24", null]) {
-      await w.send(a, { t: "lay", pool: CARDS.label, ...CHOICE, stake: MIN_STAKE, hold });
-      assert.deepEqual(ofType(w.take(a), "error").map((e) => e.why), ["bad choice"], `hold ${String(hold)}`);
-      assert.equal(w.core.roundOf(a), null);
+    const puts = store.puts;
+    for (const stake of [100, 1000, 0.5, 1e9]) {
       w.advance(ERROR_GAP_MS + LAY_GAP_MS);
+      await w.send(a, { t: "lay", pool: CARDS.label, ...CHOICE, stake, hold: 12 });
+      assert.deepEqual(w.take(a), [{ t: "error", why: "practice only" }], `stake ${stake}`);
+      assert.equal(w.core.roundOf(a), null, "nothing dealt");
     }
-    const practice = await w.lay(a, CARDS.label, { ...CHOICE, hold: 12 });
-    assert.equal(practice.laid.hold, undefined);
-    assert.equal(practice.view.hold, TICKS, "practice rides to TICKS, whatever hold it sent");
+    assert.equal(w.core.meOf(a)!.stack, START_STACK, "nothing taken");
+    // a hold sent with a practice round changes nothing: the round rides to TICKS unless closed
+    const { laid, view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: 0, hold: 12 });
+    assert.ok(!("hold" in laid) && !("stake" in laid) && !("rake" in laid));
     w.run(13 * ROUND_TICK_MS);
     assert.ok(w.core.roundOf(a), "still open past hour 12");
+    w.run((TICKS - 13) * ROUND_TICK_MS + ROOM_TICK_MS);
+    const [scored] = ofType(w.take(a), "scored");
+    assert.equal(scored.at, TICKS);
+    assert.equal(scored.pct, simulate(CARDS, view.seed, { ...CHOICE, closeAt: TICKS }).scorePct);
+    assert.ok(!("back" in scored) && !("stake" in scored), "nothing of money in the score");
+    assert.equal(w.core.meOf(a)!.stack, START_STACK, "however it went, the stack is as it was");
+    assert.equal(store.puts, puts, "a round writes nothing to the account");
+    assert.equal(w.core.leaderboard()[0].pct, scored.pct, "and goes on the board");
     w.assertNoSeed();
   });
 
@@ -907,41 +906,27 @@ async function main() {
     assert.equal(ofType(w.take(a), "laid").length, 1);
   });
 
-  await test("leaving settles a staked round at its hold: the score recorded, the stake's worth there paid back; a lay in flight dropped", async () => {
+  await test("leaving settles an open round quietly at the last hour sent: on the board, nothing to the stack; a lay in flight dropped", async () => {
     const store = memoryAccounts();
     const w = world({ accounts: store });
     const [a, b] = [await w.join(), await w.join()];
     w.clear();
-    const { view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: 500, hold: 24 });
+    const { view } = await w.lay(a);
     w.run(5 * ROUND_TICK_MS);
     w.core.leave(a);
     w.run(TICKS * ROUND_TICK_MS + 1000);
-    const heard = w.take(b);
-    assert.deepEqual(heard.map((m) => m.t), ["stack", "stacks", "stack", "stacks", "board", "leave"], "the stake out, the stake back (each moving the stacks board), the score, the leave");
-    const res = simulate(CARDS, view.seed, { ...CHOICE, closeAt: 24 });
-    const name = w.core.leaderboard()[0].name;
-    assert.equal(w.core.leaderboard()[0].pct, res.scorePct, "scored at the hold, not at hour 5");
-    const back = Math.round((500 * (100 + res.valuePct[24] + res.feesPct[24] - res.holdPct[24])) / 100);
-    const acct = store.all().find((x) => x.name === name)!;
-    assert.equal(acct.stack, START_STACK - 500 - rakeOf(500) + back);
-    assert.equal(acct.staked, 0);
-    assert.equal(ofType(heard, "stack").at(-1)!.stack, acct.stack);
-    // a practice round left open settles quietly and records nothing
-    const learner = await w.join();
-    w.clear();
-    await w.lay(learner, CARDS.label);
-    w.run(5 * ROUND_TICK_MS);
-    const rows = w.core.leaderboard();
-    w.core.leave(learner);
-    assert.deepEqual(w.take(b).map((m) => m.t), ["leave"]);
-    assert.deepEqual(w.core.leaderboard(), rows);
+    assert.deepEqual(w.take(b).map((m) => m.t), ["board", "leave"], "the score on the board, then the leave");
+    const res = simulate(CARDS, view.seed, { ...CHOICE, closeAt: 5 });
+    assert.equal(w.core.leaderboard()[0].pct, res.scorePct, "scored at hour 5, the last sent");
+    const acct = store.all().find((x) => x.name === w.core.leaderboard()[0].name)!;
+    assert.equal(acct.stack, START_STACK);
 
     let release: (p: PoolParams[]) => void = () => {};
     const v = world({ board: () => new Promise<PoolParams[]>((r) => (release = r)) });
     const c = await v.join();
     v.take(c);
     v.advance(1000);
-    const pending = v.send(c, { t: "lay", pool: CARDS.label, ...CHOICE, stake: 300 });
+    const pending = v.send(c, { t: "lay", pool: CARDS.label, ...CHOICE });
     v.core.leave(c);
     release(POOLS);
     await pending;
@@ -949,40 +934,30 @@ async function main() {
     assert.equal(v.core.connections, 0);
   });
 
-  await test("a round whose heartbeat stalls past TICKS * ROUND_TICK_MS + 30 s settles: a staked one at its hold, practice at the last hour sent", async () => {
+  await test("a round whose heartbeat stalls past TICKS * ROUND_TICK_MS + 30 s settles at the last hour sent (tick 1 if none)", async () => {
     const w = world();
     const a = await w.join();
     w.take(a);
-    const { laid, view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: 400, hold: 12 });
+    const { laid, view } = await w.lay(a);
     w.advance(ROUND_TTL_MS - 500);
     assert.deepEqual(await w.close(a, "r-made-up"), [{ t: "error", why: "no such round" }], "an error just before");
     w.advance(501); // the heartbeat stalled all this while
     w.core.tick();
     const heard = w.take(a);
-    assert.deepEqual(ofType(heard, "tick").map((m) => m.i), Array.from({ length: 12 }, (_, j) => j + 1), "the hours up to the hold, at once");
+    assert.deepEqual(ofType(heard, "tick").map((m) => m.i), [1], "tick 1, then the score");
     const [scored] = ofType(heard, "scored");
-    const res = simulate(CARDS, view.seed, { ...CHOICE, closeAt: 12 });
-    assert.equal(scored.at, 12);
-    assert.equal(scored.pct, res.scorePct);
-    assert.equal(scored.stake, 400);
-    assert.equal(scored.back, Math.round((400 * (100 + res.valuePct[12] + res.feesPct[12] - res.holdPct[12])) / 100));
+    assert.equal(scored.at, 1);
+    assert.equal(scored.pct, simulate(CARDS, view.seed, { ...CHOICE, closeAt: 1 }).scorePct);
     assert.equal(w.core.roundOf(a), null);
-    assert.equal(w.core.meOf(a)!.staked, 0, "the stake is never stranded");
-    assert.equal(w.core.meOf(a)!.stack, START_STACK - 400 - rakeOf(400) + scored.back!);
     w.advance(ERROR_GAP_MS);
     assert.deepEqual(await w.close(a, laid.roundId), [{ t: "error", why: "no such round" }]);
     const again = await w.lay(a);
     assert.ok(again.laid.roundId !== laid.roundId, "free to lay again");
-    w.advance(ROUND_TTL_MS + 1);
-    w.core.tick();
-    const [practice] = ofType(w.take(a), "scored");
-    assert.equal(practice.at, 1, "practice: the last hour sent (tick 1)");
-    assert.equal(practice.pct, simulate(CARDS, again.view.seed, { ...CHOICE, closeAt: 1 }).scorePct);
   });
 
   // ---------------------------------------------------------------- the leaderboard
 
-  await test("leaderboard: each name's best staked round, top 20 best first, rank of the score on the board (or null)", async () => {
+  await test("leaderboard: each name's best round, top 20 best first, rank of the score on the board (or null)", async () => {
     const w = world({ seed: 11 });
     const players: string[] = [];
     for (let i = 0; i < BOARD_ROWS + 6; i++) players.push(await w.join());
@@ -993,15 +968,13 @@ async function main() {
     let improvements = 0;
     let setbacks = 0;
     const bands: Choice[] = [CHOICE, { widthBins: 4, offsetBins: 1 }, { widthBins: 60, offsetBins: -20 }];
-    const holds = [12, 24, TICKS, 24];
     const closes = [3, 17, TICKS, 30];
     for (let round = 0; round < 3; round++) {
       for (const [n, id] of players.entries()) {
         const band = bands[(round + n) % bands.length];
-        const hold = holds[(round * 5 + n) % holds.length];
         const k = closes[(round * 7 + n) % closes.length];
-        const { scored, view } = await w.playTo(id, k, band, MIN_STAKE, hold);
-        const pct = simulate(CARDS, view.seed, { ...band, closeAt: hold }).scorePct;
+        const { scored, view } = await w.playTo(id, k, band);
+        const pct = simulate(CARDS, view.seed, { ...band, closeAt: k }).scorePct;
         assert.equal(scored.pct, pct, "the server's replay");
         const name = nameOf.get(id)!;
         const before = best.get(name);
@@ -1036,18 +1009,18 @@ async function main() {
     const w = world({ seed: 5 });
     const [a, b] = [await w.join(), await w.join()];
     w.clear();
-    const first = await w.lay(a, CARDS.label, { ...CHOICE, stake: MIN_STAKE, hold: 12 });
-    const out = (await w.close(a, first.laid.roundId)).filter((m) => m.t !== "stack" && m.t !== "stacks");
-    assert.deepEqual(out.map((m) => m.t), [...Array.from({ length: 12 }, () => "tick"), "scored", "board"], "the hours to the hold, scored, then the board");
+    const first = await w.lay(a);
+    const out = await w.close(a, first.laid.roundId);
+    assert.deepEqual(out.map((m) => m.t), ["tick", "scored", "board"], "tick 1, scored, then the board");
     const boards = ofType(w.take(b), "board");
     assert.equal(boards.length, 1, "the first score changes the board");
     assert.equal(boards[0].rows[0].pct, ofType(out, "scored")[0].pct);
     assert.equal(w.saved.length, 1);
     let worse = false;
     let better = false;
-    for (let i = 0; i < ROUNDS_PER_DAY - 1 && !(worse && better); i++) {
+    for (let i = 0; i < 23 && !(worse && better); i++) {
       const top = w.core.leaderboard()[0].pct;
-      const { scored } = await w.playTo(a, 1 + ((i * 5) % 12), CHOICE, MIN_STAKE, 12);
+      const { scored } = await w.playTo(a, 1 + ((i * 5) % 12));
       const heard = ofType(w.take(b), "board");
       if (scored.pct <= top) {
         worse = true;
@@ -1098,17 +1071,26 @@ async function main() {
     assert.equal(w.core.connections, 0);
   });
 
-  await test("malformed frames are ignored: not JSON, not an object, no type, unknown type, binary, oversize, a flood", async () => {
+  await test("malformed frames are ignored: not JSON, not an object, no type, unknown or retired type, binary, oversize, a flood", async () => {
     const w = world();
     const [a, b] = [await w.join(), await w.join()];
     w.clear();
-    const retired = ['{"t":"round","pool":"CARDS / USDC"}', '{"t":"result","roundId":"r1","choice":{"widthBins":20,"offsetBins":0}}'];
+    // the retired messages: the old rounds, and the wage, errands and the tower's question that went with them
+    const retired = [
+      '{"t":"round","pool":"CARDS / USDC"}',
+      '{"t":"result","roundId":"r1","choice":{"widthBins":20,"offsetBins":0}}',
+      '{"t":"pay"}',
+      '{"t":"errand","take":true}',
+      '{"t":"answer","hour":12}',
+      '{"t":"spill","street":1}',
+    ];
     for (const junk of ["", "{", "null", "[]", '"hi"', "42", '{"x":1}', '{"t":7}', '{"t":"shout","text":"hi"}', '{"t":"hello","strap":1}', ...retired]) {
       await w.core.message(a, junk);
     }
     await w.core.message(a, new ArrayBuffer(8));
     await w.core.message(a, JSON.stringify({ t: "emote", e: "wave", pad: "x".repeat(5000) }));
     assert.equal(w.all().length, 0, "nothing sent to anyone");
+    assert.equal(w.core.meOf(a)!.stack, START_STACK);
     // flood: past MSG_BURST frames at one instant, even a good one is dropped
     w.advance(5000);
     for (let i = 0; i < MSG_BURST + 5; i++) await w.core.message(a, "{}");
@@ -1117,13 +1099,18 @@ async function main() {
     assert.equal(ofType(w.take(a), "slow").length, 1);
   });
 
-  await test("restore after a restart: back in the room by account, without a broadcast, first move trusted, a lost round's stake refunded", async () => {
+  await test("restore after a restart: back in the room by account, without a broadcast, first move trusted; the round in play is gone, the pockets are not", async () => {
     const store = memoryAccounts();
-    const before = world({ accounts: store });
+    const before = town({ accounts: store, coins: true });
     const a = await before.join({ strap: 4 });
-    await before.lay(a, CARDS.label, { ...CHOICE, stake: 600 });
+    before.core.tick();
+    const coin = before.core.coinsOnGround()[0];
+    await before.goTo(a, coin.x, coin.z);
+    await before.send(a, { t: "pick", note: coin.id });
+    await before.lay(a);
     const acct = store.all()[0];
-    assert.equal(acct.staked, 600, "the stake is on the account while the round runs");
+    assert.equal(acct.coins, 1, "the pocket is written at the pick");
+    assert.equal(acct.coinCash, coin.v);
     // the object restarts: a new core on the same store, the socket still open (its own seed: ids come from the random)
     const w = world({ accounts: store, seed: 99 });
     const b = await w.join();
@@ -1132,8 +1119,9 @@ async function main() {
     assert.equal(w.all().length, 0, "no join broadcast");
     assert.equal(w.pos("zz0001").name, acct.name);
     assert.equal(w.pos("zz0001").strap, 4);
-    assert.equal(w.core.meOf("zz0001")!.stack, START_STACK - rakeOf(600), "the lost round's stake came back; the rake did not");
-    assert.equal(w.core.meOf("zz0001")!.staked, 0);
+    assert.equal(w.core.meOf("zz0001")!.stack, START_STACK, "the round in play left no mark on the stack");
+    assert.equal(w.core.meOf("zz0001")!.coins, 1, "the coin picked is still in the pocket");
+    assert.equal(w.core.roundOf("zz0001"), null, "the round is gone");
     assert.equal(w.core.restore("zz0003", acct.id), false, "one session per account: a second socket naming it is refused");
     assert.equal(w.core.player("zz0003"), null);
     assert.equal(w.core.restore("zz0001", acct.id), true, "the one already back stays");
@@ -1148,17 +1136,16 @@ async function main() {
     void b;
   });
 
-  // ---------------------------------------------------------------- the stack
+  // ---------------------------------------------------------------- the account
 
-  await test("accounts: a new visitor gets a key and a $1,000 stack; the key opens the same account again; a bad key starts afresh", async () => {
+  await test("accounts: a new visitor gets a key, a $1,000 stack and empty pockets; the key opens the same account again; a bad key starts afresh", async () => {
     const store = memoryAccounts();
     const w = world({ accounts: store });
     const a = await w.join({ strap: 2 });
     const [wel] = ofType(w.take(a), "welcome");
     assert.ok(wel.key && /^[A-Za-z0-9_-]{32}$/.test(wel.key), "a key for the browser to keep");
-    assert.equal(wel.me.stack, START_STACK);
-    assert.equal(wel.me.day, "2026-09-24");
-    assert.deepEqual(wel.me.jobs.map((j) => j.id), JOBS.map((j) => j.id));
+    assert.deepEqual(wel.me, { stack: START_STACK, coins: 0, day: "2026-09-24", coinsToday: 0, kit: DEFAULT_KIT, found: [] } satisfies Me);
+    assert.deepEqual(Object.keys(wel.me).sort(), ME_KEYS, "the account as the page sees it: the count of coins, never their cash");
     assert.equal(wel.players.find((p) => p.id === a)!.stack, START_STACK, "stacks ride on the players");
     assert.equal(store.all().length, 1);
     assert.ok(!JSON.stringify(store.all()).includes(wel.key!), "the key itself is not stored");
@@ -1181,303 +1168,36 @@ async function main() {
     const w = world();
     const a = await w.join();
     const key = ofType(w.take(a), "welcome")[0].key!;
-    await w.lay(a, CARDS.label, { ...CHOICE, stake: 200 });
+    await w.lay(a);
     w.run(3 * ROUND_TICK_MS);
     const b = await w.join({ key });
     assert.ok(w.inbox(a).some((m) => m.t === "elsewhere"));
     assert.deepEqual(w.closed.at(-1), { id: a, code: CLOSE_ELSEWHERE, reason: "elsewhere" });
     assert.equal(w.core.player(a), null);
     const [wel] = ofType(w.take(b), "welcome");
-    assert.equal(wel.me.staked, 0, "the round was settled, not stranded");
-    assert.notEqual(wel.me.stack, START_STACK - 200, "the stake's worth came back");
+    assert.equal(wel.me.stack, START_STACK);
+    assert.equal(wel.board.length, 1, "the round was settled onto the board, not stranded");
+    assert.equal(w.core.roundOf(b), null);
   });
 
-  await test("stakes: MIN_STAKE..MAX_STAKE whole dollars with the rake in the stack; taken at the lay, paid back at the hold as value + fees", async () => {
-    const w = world();
-    const a = await w.join();
-    w.take(a);
-    assert.equal(MAX_STAKE, BAND);
-    assert.equal(rakeOf(MIN_STAKE), 2);
-    assert.equal(rakeOf(150), 3, "the rake rounds up");
-    for (const stake of [MIN_STAKE - 1, MAX_STAKE + 1, 150.5, -100, "500", null, START_STACK]) {
-      w.advance(ERROR_GAP_MS + LAY_GAP_MS);
-      await w.send(a, { t: "lay", pool: CARDS.label, ...CHOICE, stake });
-      assert.deepEqual(ofType(w.take(a), "error").map((e) => e.why), ["bad stake"], `stake ${String(stake)}`);
-    }
-    assert.equal(w.core.roundOf(a), null);
-    const { laid, view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: 400 });
-    assert.equal(view.stake, 400);
-    assert.equal(view.rake, 8);
-    assert.equal(view.hold, TICKS, "no hold sent: the whole round");
-    assert.deepEqual([laid.stake, laid.rake, laid.hold], [400, 8, TICKS]);
-    assert.equal(w.core.meOf(a)!.stack, START_STACK - 408, "the stake and the rake, taken at the lay");
-    assert.equal(w.core.meOf(a)!.staked, 400, "only the stake is in play");
-    assert.equal(w.core.meOf(a)!.rounds, 1);
-    w.advance(7 * ROUND_TICK_MS);
-    w.core.tick();
-    w.take(a);
-    const [scored] = ofType(await w.close(a, laid.roundId), "scored");
-    const res = simulate(CARDS, view.seed, { ...CHOICE, closeAt: TICKS });
-    const back = Math.round((400 * (100 + res.valuePct[TICKS] + res.feesPct[TICKS] - res.holdPct[TICKS])) / 100);
-    assert.equal(scored.at, TICKS, "a close on a staked round skips to its hold");
-    assert.equal(scored.stake, 400);
-    assert.equal(scored.back, back);
-    assert.equal(w.core.meOf(a)!.stack, START_STACK - 408 + back);
-    assert.equal(w.core.meOf(a)!.staked, 0);
-    // a practice round leaves the stack alone and is not counted
-    const before = w.core.meOf(a)!.stack;
-    await w.playTo(a, TICKS);
-    assert.equal(w.core.meOf(a)!.stack, before);
-    assert.equal(w.core.meOf(a)!.rounds, 1);
-  });
-
-  await test("stake + rake must fit the stack; a stake past MAX_STAKE is refused even when the stack holds it", async () => {
-    const w = world();
-    const a = await w.join();
-    w.take(a);
-    // $1,000 in hand: all of it is one band, but a band's rake ($20) does not fit; $980 does (rake 20, exactly the stack)
-    w.advance(ERROR_GAP_MS + LAY_GAP_MS);
-    await w.send(a, { t: "lay", pool: CARDS.label, ...CHOICE, stake: 1000 });
-    assert.deepEqual(ofType(w.take(a), "error").map((e) => e.why), ["bad stake"]);
-    const { laid, view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: 980, hold: 12 });
-    assert.equal(view.rake, 20);
-    assert.equal(w.core.meOf(a)!.stack, 0);
-    await w.close(a, laid.roundId);
-    // paid up to more than a band: a band stakes, a dollar more does not
-    await w.walk(a, DESK_SPOT.x, DESK_SPOT.z);
-    await w.send(a, { t: "pay" });
-    w.take(a);
-    let stack = w.core.meOf(a)!.stack;
-    while (stack < MAX_STAKE + 1 + rakeOf(MAX_STAKE + 1)) {
-      w.advance(24 * 3_600_000);
-      await w.send(a, { t: "pay" });
-      w.take(a);
-      stack = w.core.meOf(a)!.stack;
-    }
-    w.advance(ERROR_GAP_MS + LAY_GAP_MS);
-    await w.send(a, { t: "lay", pool: CARDS.label, ...CHOICE, stake: MAX_STAKE + 1, hold: 12 });
-    assert.deepEqual(ofType(w.take(a), "error").map((e) => e.why), ["bad stake"], "over MAX_STAKE");
-    assert.equal(w.core.roundOf(a), null);
-    const band = await w.lay(a, CARDS.label, { ...CHOICE, stake: MAX_STAKE, hold: 12 });
-    assert.equal(band.view.stake, MAX_STAKE);
-    assert.equal(w.core.meOf(a)!.stack, stack - MAX_STAKE - rakeOf(MAX_STAKE));
-  });
-
-  await test("the rake is taken at the lay and never returned: a break-even round leaves the stack a rake short", async () => {
-    // a flat stretch with a dollar of volume an hour (live enough to deal, fees too small to show): the position is
-    // worth exactly what was staked at every hour, and holding the same
-    const flat = Array.from({ length: 60 }, (_, k) => [T0 + k * HR, 2, 2, 2, 2, 1]).reverse();
-    const store = countingAccounts();
-    const w = world({ pools: [LIVE], history: async () => flat, accounts: store });
-    const a = await w.join();
-    w.take(a);
-    const { laid, view } = await w.lay(a, LIVE.label, { ...CHOICE, stake: 500, hold: 12 });
-    assert.equal(laid.real, true);
-    assert.equal(w.core.meOf(a)!.stack, START_STACK - 510);
-    const [scored] = ofType(await w.close(a, laid.roundId), "scored");
-    assert.equal(scored.back, 500, "worth 100% of the stake: the stake comes back");
-    assert.equal(scored.pct, 0);
-    assert.equal(w.core.meOf(a)!.stack, START_STACK - rakeOf(500), "the rake stays with the stall");
-    assert.equal(store.byId(w.joined[0].account)!.stack, START_STACK - 10, "and so it is stored");
-    // a restart between the lay and the settle refunds the stake, not the rake
-    await w.lay(a, LIVE.label, { ...CHOICE, stake: 300, hold: 12 });
-    const v = world({ accounts: store, pools: [LIVE], history: async () => flat, seed: 3 });
-    assert.equal(v.core.restore("s1", w.joined[0].account), true);
-    assert.equal(v.core.meOf("s1")!.stack, START_STACK - 10 - 6);
-    void view;
-  });
-
-  await test("ROUNDS_PER_DAY staked rounds a day, practice unlimited; a new UTC day starts the count again", async () => {
-    const w = world();
-    const a = await w.join();
-    w.take(a);
-    for (let i = 0; i < ROUNDS_PER_DAY; i++) {
-      const { laid } = await w.lay(a, CARDS.label, { widthBins: 120, offsetBins: 0, stake: MIN_STAKE, hold: 12 });
-      w.advance(ROUND_TICK_MS);
-      w.core.tick();
-      await w.close(a, laid.roundId);
-      if (w.core.meOf(a)!.stack < MIN_STAKE + rakeOf(MIN_STAKE)) break;
-    }
-    assert.equal(w.core.meOf(a)!.rounds, ROUNDS_PER_DAY);
-    w.advance(ERROR_GAP_MS + LAY_GAP_MS);
-    await w.send(a, { t: "lay", pool: CARDS.label, ...CHOICE, stake: MIN_STAKE });
-    assert.deepEqual(ofType(w.take(a), "error").map((e) => e.why), ["no rounds left"]);
-    await w.lay(a, CARDS.label, CHOICE); // practice still plays
-    w.run(TICKS * ROUND_TICK_MS + ROOM_TICK_MS);
-    w.take(a);
-    w.advance(24 * 3_600_000);
-    const { view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: MIN_STAKE });
-    assert.equal(view.stake, MIN_STAKE, "a new day, new rounds");
-    assert.equal(w.core.meOf(a)!.rounds, 1);
-  });
-
-  await test("Mr Bands pays at his desk: the wage once a day and each finished job once; not from across the plaza", async () => {
-    const w = world();
-    const a = await w.join();
-    const b = await w.join();
-    w.take(a);
-    w.advance(ERROR_GAP_MS);
-    await w.send(a, { t: "pay" });
-    assert.deepEqual(ofType(w.take(a), "error").map((e) => e.why), ["not at the desk"]);
-    // the wave job: b stands near
-    await w.walk(b, DESK_SPOT.x + 2, DESK_SPOT.z);
-    await w.walk(a, DESK_SPOT.x, DESK_SPOT.z);
-    w.advance(SOCIAL_GAP_MS);
-    await w.send(a, { t: "emote", e: "wave" });
-    assert.equal(w.core.meOf(a)!.jobs.find((j) => j.id === "wave")!.have, 1);
-    await w.send(a, { t: "pay" });
-    const [paid] = ofType(w.take(a), "paid");
-    const wave = JOBS.find((j) => j.id === "wave")!.reward;
-    assert.equal(paid.amount, WAGE + wave);
-    assert.equal(w.core.meOf(a)!.stack, START_STACK + WAGE + wave);
-    w.advance(PAY_GAP_MS);
-    await w.send(a, { t: "pay" });
-    assert.equal(ofType(w.take(a), "paid")[0].amount, 0, "nothing twice");
-    w.advance(24 * 3_600_000);
-    await w.send(a, { t: "pay" });
-    assert.equal(ofType(w.take(a), "paid")[0].amount, WAGE, "a new day, a new wage (the jobs start again)");
-    assert.equal(w.core.meOf(a)!.jobs.find((j) => j.id === "wave")!.have, 0);
-  });
-
-  await test("jobs: a wave with nobody near does not count; a staked round's hours in range and a round ahead of holding do; a practice round moves nothing", async () => {
-    const w = world();
-    const a = await w.join();
-    w.take(a);
-    await w.send(a, { t: "emote", e: "wave" });
-    assert.equal(w.core.meOf(a)!.jobs.find((j) => j.id === "wave")!.have, 0, "nobody near");
-    // practice first: however it went, the jobs stay at 0
-    for (let i = 0; i < 3; i++) await w.playTo(a, TICKS, { widthBins: 120, offsetBins: 0 });
-    assert.deepEqual(w.core.meOf(a)!.jobs.map((j) => j.have), [0, 0, 0, 0], "practice moves no job");
-    let me = w.core.meOf(a)!;
-    for (let i = 0; i < 6 && !me.jobs.every((j) => j.id === "notes" || j.id === "wave" || j.have > 0); i++) {
-      const { scored, view } = await w.playTo(a, TICKS, { widthBins: 120, offsetBins: 0 }, MIN_STAKE, TICKS);
-      const res = simulate(CARDS, view.seed, { widthBins: 120, offsetBins: 0 });
-      const hours = res.inRange.slice(1).filter(Boolean).length;
-      const before = me;
-      me = w.core.meOf(a)!;
-      assert.equal(me.jobs.find((j) => j.id === "range")!.have, Math.max(before.jobs.find((j) => j.id === "range")!.have, Math.min(24, hours)));
-      assert.equal(me.jobs.find((j) => j.id === "beat")!.have, scored.pct > 0 || before.jobs.find((j) => j.id === "beat")!.have ? 1 : 0);
-    }
-    assert.ok(me.jobs.find((j) => j.id === "range")!.have > 0, "a wide band on CARDS keeps some hours in range");
-  });
-
-  await test("loose notes: dropped on the heartbeat on open ground, NOTES_ON_GROUND at most; picked only within reach; NOTES_PER_DAY a day", async () => {
-    const w = world({ notes: true });
-    const a = await w.join();
-    const b = await w.join();
-    w.clear();
-    for (let i = 0; i < 12; i++) {
-      w.advance(NOTE_EVERY_MS);
-      w.core.tick();
-    }
-    const ground = w.core.notesOnGround();
-    assert.equal(ground.length, NOTES_ON_GROUND);
-    for (const n of ground) {
-      assert.ok(NOTE_SPOTS.some(([x, z]) => Math.hypot(n.x - x, n.z - z) <= Math.SQRT2 + 1e-9), "on an open spot");
-      assert.ok(n.v >= NOTE_MIN && n.v <= NOTE_MIN + NOTE_SPREAD);
-    }
-    assert.equal(ofType(w.take(b), "notes").length, NOTES_ON_GROUND, "everyone sees them drop");
-    const n = ground[0];
-    await w.send(a, { t: "pick", note: n.id });
-    assert.equal(w.core.notesOnGround().length, NOTES_ON_GROUND, "too far: still there");
-    await w.walk(a, n.x + NOTE_REACH * 0.7, n.z);
-    await w.send(a, { t: "pick", note: n.id });
-    assert.equal(w.core.meOf(a)!.stack, START_STACK + n.v);
-    assert.equal(w.core.meOf(a)!.notes, 1);
-    assert.equal(w.core.meOf(a)!.jobs.find((j) => j.id === "notes")!.have, 1);
-    assert.deepEqual(ofType(w.take(b), "picked"), [{ t: "picked", id: a, note: n.id, v: n.v }]);
-    await w.send(a, { t: "pick", note: n.id });
-    assert.equal(w.core.meOf(a)!.notes, 1, "gone is gone");
-    for (const [x, z] of NOTE_SPOTS) {
-      assert.ok(Math.hypot(x, z) < WORLD_RADIUS - 3, "inside the rope");
-      assert.ok(Math.hypot(x, z) > 6, "clear of the fountain");
-    }
-    assert.ok(NOTE_SPOTS.length >= 20, `${NOTE_SPOTS.length} spots`);
-    void NOTES_PER_DAY;
-  });
-
-  await test("the biggest stacks: biggest first, told to the room when the top changes", async () => {
-    const store = memoryAccounts();
-    const w = world({ accounts: store });
-    const a = await w.join();
-    const b = await w.join();
-    w.clear();
-    await w.walk(a, DESK_SPOT.x, DESK_SPOT.z);
-    await w.send(a, { t: "pay" });
-    const heard = w.take(b);
-    const rows = ofType(heard, "stacks").at(-1)!.rows;
-    assert.equal(rows[0].name, w.pos(a).name);
-    assert.equal(rows[0].stack, START_STACK + WAGE);
-    assert.equal(rows[1].stack, START_STACK);
-    assert.deepEqual(w.core.stacks(), rows);
-    assert.deepEqual(ofType(heard, "stack"), [{ t: "stack", id: a, stack: START_STACK + WAGE }], "the room sees the new stack (name tags)");
-    assert.equal(w.core.player(a)!.stack, START_STACK + WAGE);
-    assert.equal(BAND, 1000);
-  });
-
-  await test("a practice round records nothing: no board row, no job, no write; a staked one writes the lay and the settle", async () => {
+  await test("a round writes nothing to the account and sends no 'me'; the day's count is only ever written with a pick", async () => {
     const store = countingAccounts();
     const w = world({ accounts: store });
     const a = await w.join();
     w.take(a);
     assert.equal(store.puts, 1, "the hello: one insert");
     const me = w.core.meOf(a)!;
-    for (let i = 0; i < 4; i++) {
-      const { scored } = await w.playTo(a, 1 + i * 9, { widthBins: 120, offsetBins: 0 });
-      assert.equal(scored.rank, null);
-    }
-    assert.equal(store.puts, 1, "four practice rounds: nothing written");
-    assert.deepEqual(w.core.leaderboard(), []);
+    for (let i = 0; i < 4; i++) await w.playTo(a, 1 + i * 9, { widthBins: 120, offsetBins: 0 });
+    assert.equal(store.puts, 1, "four rounds: nothing written");
     assert.deepEqual(w.core.meOf(a), me, "the account is as it was");
-    assert.equal(w.saved.length, 0, "no board to persist");
-    const { scored } = await w.playTo(a, 3, { widthBins: 120, offsetBins: 0 }, MIN_STAKE, 12);
-    assert.equal(store.puts, 3, "a staked round: the lay and the settle");
-    assert.equal(scored.rank, 1);
-    assert.equal(w.core.leaderboard().length, 1);
-    // a new day rolls the counts in memory at the lay; a practice round still writes nothing (a roll is re-derived
-    // from the clock whenever the row is next loaded, so an unwritten one loses nothing)
+    assert.equal(w.core.leaderboard().length, 1, "the name's best is on the board");
+    assert.equal(w.saved.length >= 1, true, "the board is persisted, not the account");
     w.advance(24 * 3_600_000);
-    await w.playTo(a, 2);
-    assert.equal(store.puts, 3);
-    assert.equal(w.core.meOf(a)!.day, "2026-09-25");
-    assert.equal(store.byId(w.joined[0].account)!.day, "2026-09-24", "the row is as it was");
-    await w.playTo(a, 2, CHOICE, MIN_STAKE, 12);
-    assert.equal(store.puts, 5, "the next staked round writes it");
-    assert.equal(store.byId(w.joined[0].account)!.day, "2026-09-25");
-  });
-
-  await test("pay: one per PAY_GAP_MS, and a pay that collects nothing writes nothing and sends no account", async () => {
-    const store = countingAccounts();
-    const w = world({ accounts: store });
-    const a = await w.join();
-    await w.walk(a, DESK_SPOT.x, DESK_SPOT.z);
     w.takeAll(a);
-    const puts = store.puts;
-    await w.send(a, { t: "pay" });
-    let heard = w.takeAll(a);
-    assert.equal(ofType(heard, "paid")[0].amount, WAGE);
-    assert.equal(ofType(heard, "me").length, 1);
-    assert.equal(store.puts, puts + 1, "the wage: one write");
-    // inside the gap: dropped (told slow), nothing else
-    await w.send(a, { t: "pay" });
-    heard = w.takeAll(a);
-    assert.deepEqual(heard.map((m) => m.t), ["slow"]);
-    // after it: a paid 0, no write, no me
-    for (let i = 0; i < 5; i++) {
-      w.advance(PAY_GAP_MS);
-      await w.send(a, { t: "pay" });
-      heard = w.takeAll(a);
-      assert.deepEqual(heard, [{ t: "paid", amount: 0 }], `pay ${i}`);
-    }
-    assert.equal(store.puts, puts + 1, "nothing to collect, nothing written");
-    // the gap applies before the desk check too
-    w.advance(PAY_GAP_MS);
-    await w.walk(a, 0, 20);
-    await w.send(a, { t: "pay" });
-    assert.deepEqual(w.takeAll(a).map((m) => m.t), ["error"]);
-    await w.send(a, { t: "pay" });
-    assert.deepEqual(w.takeAll(a).map((m) => m.t), ["slow"]);
-    assert.equal(store.puts, puts + 1);
+    await w.playTo(a, 2);
+    assert.equal(ofType(w.takeAll(a), "me").length, 0, "a new day says nothing at a lay");
+    assert.equal(store.puts, 1);
+    assert.equal(store.byId(w.joined[0].account)!.day, "2026-09-24", "the row is as it was");
   });
 
   await test("keyless hellos draw from one bucket for the room: past the burst they are answered full and closed; a known key is not metered", async () => {
@@ -1570,7 +1290,7 @@ async function main() {
         board: async () => POOLS,
         accounts: store,
         hashKey: (k) => (slow ? new Promise<string>((r) => (release = r)) : Promise.resolve(`plain:${k}`)),
-        notes: false,
+        coins: false,
       },
       [],
     );
@@ -1852,68 +1572,6 @@ async function main() {
     assert.equal(loads.length, n + 1, "a recent one is still held");
   });
 
-  await test("expected value: a band pays the stake plus its result against holding, so a known rise pays nothing, fees pay at most the cap, and nothing compounds", async () => {
-    // the room's own pipeline over every dealable stretch: what settle() pays for a $1,000 band at the full hold
-    const stake = MAX_STAKE;
-    const rake = rakeOf(stake);
-    const payout = (r: SimResult, at: number) => Math.max(0, Math.round((stake * (100 + r.valuePct[at] + r.feesPct[at] - r.holdPct[at])) / 100));
-    const over = (candles: unknown[], pool: PoolParams, widthBins: number, offsetBins: number) => {
-      const series = hourlySeries(candles);
-      const backs: number[] = [];
-      for (let s = 0; s + MARKET_HOURS <= series.length; s++) {
-        const m = marketWindow(series, s, pool)!;
-        const r = simulate(pool, 0, { widthBins, offsetBins, closeAt: TICKS }, m);
-        assert.ok(r.feesPct[TICKS] <= FEES_CAP_PCT + 1e-9);
-        backs.push(payout(r, TICKS));
-      }
-      return { n: backs.length, max: Math.max(...backs), mean: backs.reduce((x, y) => x + y, 0) / backs.length };
-    };
-    // a pool that rose 15x over its history, as the board's pools do (they are on it because they surged), with
-    // hardly any volume: the raw worth of an all-token band below the price was a long on the rise (measured 24 Sep:
-    // a mean 169% of the stake); against holding it can only lose to holding, so no stretch pays more than the stake
-    const rising = Array.from({ length: 100 }, (_, k) => {
-      const c = 0.01 * Math.exp(k * 0.0275) * (1 + 0.03 * Math.sin(k / 2));
-      return [T0 + k * HR, c, c, c, c, 40];
-    }).reverse();
-    for (const [widthBins, offsetBins] of [[120, 60], [120, 0], [120, -60], [40, 20], [12, 0]] as const) {
-      const r = over(rising, LIVE, widthBins, offsetBins);
-      assert.equal(r.n, 52);
-      assert.ok(r.max <= stake + 1, `${widthBins}/${offsetBins}: a known rise pays nothing: max ${r.max}`);
-      // (an all-quote band above the rise sits out of range and matches holding exactly: the stake back, less the rake)
-      assert.ok(r.mean <= stake, `${widthBins}/${offsetBins}: mean ${r.mean} (at best the stake back, and the rake gone)`);
-    }
-    // the wavy fixture (fees a few cents, price wobbling): about the stake back, less the rake
-    const wavy = over(CANDLES, LIVE, 120, 0);
-    assert.equal(wavy.n, 52);
-    assert.ok(wavy.max <= stake + 2, `max ${wavy.max}`);
-    assert.ok(wavy.mean <= stake, `mean ${wavy.mean}`);
-    // a pool whose every hour pays the fee clamp (5% of its liquidity), price wobbling 2% either way: the fees cap
-    // binds on every stretch, and that cap is the most a round can add. Linear: a band a round, never the stack
-    const hot = Array.from({ length: 100 }, (_, k) => {
-      const c = 2 * (1 + 0.02 * Math.sin(k / 3));
-      return [T0 + k * HR, c, c, c, c, 1e9];
-    }).reverse();
-    for (const widthBins of [120, 20, 3]) {
-      const h = over(hot, LIVE, widthBins, 0);
-      assert.equal(h.n, 52);
-      assert.ok(h.max <= stake * (1 + FEES_CAP_PCT / 100) + 1e-6, `width ${widthBins}: max ${h.max}`);
-      assert.ok(h.mean > stake * 1.2, `width ${widthBins}: the cap, not less, is what binds (${h.mean})`);
-    }
-    // and the room pays exactly that: a dealt round's back is the formula at its hold, the rake gone
-    const w = world({ pools: [LIVE], history: async () => hot, seed: 21 });
-    const a = await w.join();
-    w.take(a);
-    const { laid, view } = await w.lay(a, LIVE.label, { widthBins: 120, offsetBins: 0, stake: 500, hold: 48 });
-    const [scored] = ofType(await w.close(a, laid.roundId), "scored");
-    const series = hourlySeries(hot);
-    const m = marketWindow(series, (view.from! - HR - series[0].ts) / HR, LIVE)!;
-    const r = simulate(LIVE, view.seed, { widthBins: 120, offsetBins: 0, closeAt: 48 }, m);
-    assert.equal(r.feesPct[48], FEES_CAP_PCT);
-    assert.equal(scored.back, Math.round((500 * (100 + r.valuePct[48] + r.feesPct[48] - r.holdPct[48])) / 100));
-    assert.ok(scored.back! <= 500 * 1.3);
-    assert.equal(w.core.meOf(a)!.stack, START_STACK - 500 - rakeOf(500) + scored.back!);
-  });
-
   await test("a dealt stretch needs MIN_LIVE_HOURS hours with volume: a thin, gap-filled history plays simulated", async () => {
     // 16 real hours, a 12-hour silence filled flat, 16 more, a silence, 16 more: 100 hours of which 48 are live, and no
     // 48-hour stretch holds 36 live ones
@@ -1924,51 +1582,20 @@ async function main() {
     const w = world({ pools: [LIVE], history: async () => thin.slice().reverse() });
     const a = await w.join();
     w.take(a);
-    w.advance(LAY_GAP_MS);
-    await w.send(a, { t: "lay", pool: LIVE.label, ...CHOICE, stake: MIN_STAKE, hold: 12 });
-    assert.deepEqual(ofType(w.take(a), "error").map((e) => e.why), ["practice only"], "no stretch live enough: no stake");
-    w.advance(ERROR_GAP_MS);
     const { laid, view } = await w.lay(a, LIVE.label, CHOICE);
-    assert.equal(laid.real, false, "practice plays the simulated path");
+    assert.equal(laid.real, false, "no stretch live enough: the simulated path");
     assert.equal(view.from, null);
     // the same history with the silences traded through: real
     const full = Array.from({ length: 100 }, (_, k) => [T0 + k * HR, 1, 1, 1, 1 + k * 0.001, 500]).reverse();
     const v = world({ pools: [LIVE], history: async () => full });
     const b = await v.join();
     v.take(b);
-    assert.equal((await v.lay(b, LIVE.label, { ...CHOICE, stake: MIN_STAKE, hold: 12 })).laid.real, true);
+    assert.equal((await v.lay(b, LIVE.label, CHOICE)).laid.real, true);
     assert.ok(MIN_LIVE_HOURS >= 24 && MIN_LIVE_HOURS <= TICKS);
   });
 
-  await test("money rides on real hours only: a stake on a pool with no history is refused 'practice only'; practice plays; a room with no history service still stakes", async () => {
-    const w = world({ pools: [LIVE], history: async () => null });
-    const a = await w.join();
-    w.take(a);
-    w.advance(LAY_GAP_MS);
-    await w.send(a, { t: "lay", pool: LIVE.label, ...CHOICE, stake: MIN_STAKE, hold: 12 });
-    assert.deepEqual(w.take(a).map((m) => m.t), ["error"]);
-    assert.equal(w.core.roundOf(a), null);
-    assert.equal(w.core.meOf(a)!.stack, START_STACK, "nothing taken");
-    assert.equal(w.core.meOf(a)!.rounds, 0, "nothing counted");
-    w.advance(ERROR_GAP_MS);
-    const { laid } = await w.lay(a, LIVE.label, CHOICE);
-    assert.equal(laid.real, false, "practice on the simulated path is fine");
-    // the same on a history that is there but too short or too quiet: refused too
-    const v = world({ pools: [LIVE], history: async () => CANDLES.slice(0, 30) });
-    const b = await v.join();
-    v.take(b);
-    v.advance(LAY_GAP_MS);
-    await v.send(b, { t: "lay", pool: LIVE.label, ...CHOICE, stake: MIN_STAKE, hold: 12 });
-    assert.deepEqual(ofType(v.take(b), "error").map((e) => e.why), ["practice only"]);
-    // no history service at all (this harness's default): stakes ride the seeded simulation, as every staked test above does
-    const u = world();
-    const c = await u.join();
-    u.take(c);
-    assert.equal((await u.lay(c, CARDS.label, { ...CHOICE, stake: MIN_STAKE, hold: 12 })).view.stake, MIN_STAKE);
-  });
-
   await test("new accounts per address: NEW_ACCOUNTS_PER_IP an hour, then full; a known key is not counted; another address is not", async () => {
-    const w = world({ notes: false });
+    const w = world();
     const keys: string[] = [];
     for (let i = 0; i < NEW_ACCOUNTS_PER_IP; i++) {
       const id = w.core.open("203.0.113.7")!;
@@ -2019,26 +1646,28 @@ async function main() {
     }
   });
 
-  await test("a pick of a note that is gone answers { notes, gone } so the walker stops asking; a lay on a new day sends the fresh account first", async () => {
-    const w = world();
+  await test("a spill under way is told to a visitor who joins during it, and a spill the room slept through is over when its time is, not resumed", async () => {
+    const w = world({ coins: true });
     const a = await w.join();
-    w.take(a);
-    await w.send(a, { t: "pick", note: "n0000000" });
-    assert.deepEqual(w.take(a), [{ t: "notes", add: [], gone: ["n0000000"] }]);
-    await w.send(a, { t: "pick", note: "x".repeat(40) });
-    assert.deepEqual(w.take(a), [], "an id that could never be a note gets no answer");
-    // a practice round laid after midnight: the page hears the new day at the lay (a practice settle says nothing)
-    await w.playTo(a, 3, CHOICE, MIN_STAKE, 12);
-    assert.equal(w.core.meOf(a)!.rounds, 1);
-    w.advance(24 * 3_600_000);
-    w.takeAll(a);
-    w.advance(1000);
-    await w.send(a, { t: "lay", pool: CARDS.label, ...CHOICE });
-    const heard = w.takeAll(a);
-    assert.deepEqual(heard.map((m) => m.t), ["me", "laid"], "the fresh account, then the band");
-    const me = ofType(heard, "me");
-    assert.equal(me[0].me.rounds, 0, "a new day");
-    assert.equal(me[0].me.day, dayOf(w.now));
+    const hour = Math.ceil(w.now / HOUR_MS) * HOUR_MS;
+    w.advance(hour - w.now + 1000);
+    w.core.tick();
+    const [told] = ofType(w.take(a), "spill");
+    assert.ok(told, "the hour struck: a spill");
+    const b = await w.join();
+    const [wel] = ofType(w.take(b), "welcome");
+    assert.deepEqual(wel.spill, { street: told.street, until: told.until }, "the newcomer is told the spill");
+    w.core.leave(a);
+    w.core.leave(b);
+    // the room empties for a while: no heartbeats; ten minutes on, someone comes back
+    w.advance(SPILL_MS + 10 * 60_000);
+    const before = w.core.coinsOnGround().filter((c) => c.zone === "spill").length;
+    const c = await w.join();
+    w.take(c);
+    for (let i = 0; i < 20; i++) w.core.tick();
+    assert.equal(w.core.coinsOnGround().filter((x) => x.zone === "spill").length, before, "no burst of the coins it never dropped");
+    assert.equal(w.core.spillNow(), null, "the spill is over");
+    assert.equal(ofType(w.take(c), "spill").length, 0);
   });
 
   await test("originAllowed: exact origins from the list only", () => {
@@ -2054,7 +1683,6 @@ async function main() {
     assert.equal(originAllowed("https://bands.finance", ""), false);
   });
 
-
   // ---------------------------------------------------------------- the town
 
   /** the town's fakes: a walker routed along the plaza and the ring to any door, and the door messages paced */
@@ -2066,7 +1694,7 @@ async function main() {
       get now() {
         return w.now;
       },
-      /** a door's position as the server holds it (PLACES, or the plaza's own two), and the ground nearest it */
+      /** a door's position as the server holds it (PLACES, or the desk), and the ground nearest it */
       door(id: string) {
         const d = doorOf(id);
         assert.ok(d, `the door ${id} is known`);
@@ -2143,43 +1771,20 @@ async function main() {
       async enter(id: string, place: string) {
         return t.knock(id, { t: "enter", place });
       },
-      /** take the next errand at the desk */
-      async takeErrand(id: string) {
-        await t.goTo(id, DESK_SPOT.x, DESK_SPOT.z);
-        const heard = await t.knock(id, { t: "errand", take: true });
-        return ofType(heard, "me")[0]?.me ?? null;
-      },
-      /** collect at the desk: the paid amount */
-      async collect(id: string) {
-        await t.goTo(id, DESK_SPOT.x, DESK_SPOT.z);
-        w.advance(PAY_GAP_MS);
+      /** walk onto a coin and pick it up: everything the room answered the picker */
+      async pick(id: string, coin: Coin) {
+        await t.goTo(id, coin.x, coin.z);
         w.takeAll(id);
-        await w.send(id, { t: "pay" });
-        const heard = w.takeAll(id);
-        return ofType(heard, "paid")[0]?.amount ?? -1;
+        await w.send(id, { t: "pick", note: coin.id });
+        return w.takeAll(id);
       },
-      /** play the chain up to and including errand `upTo` (its id), the shortest way */
-      async chainTo(id: string, upTo: ErrandId) {
-        for (const e of ERRANDS) {
-          const me = await t.takeErrand(id);
-          assert.equal(me?.errand?.id, e.id, `took ${e.id}`);
-          if (e.id === "clock") {
-            await t.at(id, PLACE_IDS.clockTower);
-            await t.knock(id, { t: "climb" });
-            await t.knock(id, { t: "answer", hour: hourOf(w.now) });
-          } else if (e.id === "cigars") {
-            await t.at(id, PLACE_IDS.cigars);
-            await t.knock(id, { t: "buy", item: "cigar" });
-          } else {
-            for (const step of e.steps) {
-              await t.at(id, step);
-              await t.enter(id, step);
-            }
-          }
-          assert.equal(w.core.meOf(id)!.errand, null, `${e.id} done`);
-          if (e.id === upTo) return;
-        }
+      /** walk to the desk and cash in: everything the room answered */
+      async cashin(id: string) {
+        await t.goTo(id, DESK_SPOT.x, DESK_SPOT.z);
+        return t.knock(id, { t: "cashin" });
       },
+      /** the coins down in a zone (its id, or "spill") */
+      inZone: (zone: string) => w.core.coinsOnGround().filter((c) => c.zone === zone),
     };
     return t;
   }
@@ -2235,10 +1840,12 @@ async function main() {
     const q = w.pos(a);
     const off = Math.abs((q.x - on[0]) * side[0] + (q.z - on[1]) * side[1]);
     assert.ok(off <= STREET_HALF_WIDTH_M + 0.01, `held at the corridor's edge (${off})`);
-    // the plaza's own doors are known; a made-up one is not
-    assert.ok(doorOf(PLACE_IDS.guardHouse) && doorOf(PLACE_IDS.desk) && doorOf(PLACE_IDS.hatter));
+    // the desk and every place are doors; the Guard House is scenery now; a made-up door is not
+    assert.ok(doorOf(PLACE_IDS.desk) && doorOf(PLACE_IDS.hatter));
+    assert.equal(doorOf(PLACE_IDS.desk)!.r, DESK_SPOT.r, "the desk's wider reach");
+    assert.equal(doorOf(PLACE_IDS.guardHouse), null);
     assert.equal(doorOf("the-moon"), null);
-    for (const id of Object.values(PLACE_IDS)) assert.ok(doorOf(id), `the door ${id} the errands name exists`);
+    for (const pl of PLACES) assert.equal(doorOf(pl.id)!.r, DOOR_REACH_M, pl.id);
   });
 
   await test("town: the rope is a line: a step across it off a mouth is refused, a walk out through a mouth lands", async () => {
@@ -2338,31 +1945,20 @@ async function main() {
     assert.equal(across.length, 2, "one bend round the fountain");
   });
 
-  await test("town: a new account wears the default kit, everyone sees it, and the title is the stack's", async () => {
+  await test("town: a new account wears the default kit and everyone sees it", async () => {
     const w = town();
     const a = await w.join();
     const wel = ofType(w.takeAll(a), "welcome")[0];
     assert.deepEqual(wel.me.kit, DEFAULT_KIT);
     assert.deepEqual(wel.players.find((p) => p.id === a)!.kit, DEFAULT_KIT);
     assert.deepEqual(wel.me.found, []);
-    assert.equal(wel.me.errand, null);
-    assert.deepEqual(wel.me.errandsDone, []);
-    assert.equal(wel.me.daily, null);
-    assert.equal(wel.me.owed, 0);
-    assert.equal(wel.me.title, "Clerk");
-    assert.equal(titleOf(START_STACK), "Clerk");
-    assert.equal(titleOf(2 * BAND), "Teller");
-    assert.equal(titleOf(5 * BAND - 1), "Teller");
-    assert.equal(titleOf(10 * BAND), "Partner");
-    assert.equal(titleOf(25 * BAND), "Magnate");
-    assert.equal(RANKS.length, 5);
     const b = await w.join();
     const join = ofType(w.take(a), "join")[0];
     assert.deepEqual(join.p.kit, DEFAULT_KIT);
     assert.ok(b);
   });
 
-  await test("town: enter at a door pays the discovery once, and 4 m off it is 'not there'", async () => {
+  await test("town: enter at a door records the discovery once (nothing paid), and 4 m off it is 'not there'", async () => {
     const store = countingAccounts();
     const w = town({ accounts: store });
     const a = await w.join();
@@ -2375,13 +1971,14 @@ async function main() {
     assert.ok(Math.hypot(p.x - d.x, p.z - d.z) > DOOR_REACH_M, "standing out of reach");
     assert.deepEqual(await w.enter(a, PLACE_IDS.hatter), [{ t: "error", why: "not there" }]);
     assert.equal(store.puts, puts, "nothing written");
-    // a door that does not exist
+    // a door that does not exist, and the Guard House, which is none
     assert.deepEqual(await w.enter(a, "the-moon"), [{ t: "error", why: "not there" }]);
-    // at the door: found, paid FOUND_PAY, the shop's stock; the account written once
+    assert.deepEqual(await w.enter(a, PLACE_IDS.guardHouse), [{ t: "error", why: "not there" }]);
+    // at the door: found, the shop's stock; the account written once; the stack untouched
     await w.at(a, PLACE_IDS.hatter);
     const heard = await w.enter(a, PLACE_IDS.hatter);
-    assert.deepEqual(heard.filter((m) => m.t !== "stacks").map((m) => m.t), ["found", "place", "me", "stack"]);
-    assert.deepEqual(heard[0], { t: "found", place: PLACE_IDS.hatter, paid: FOUND_PAY });
+    assert.deepEqual(heard.map((m) => m.t), ["found", "place", "me"]);
+    assert.deepEqual(heard[0], { t: "found", place: PLACE_IDS.hatter });
     const place = ofType(heard, "place")[0];
     assert.equal(place.id, PLACE_IDS.hatter);
     assert.deepEqual(
@@ -2389,72 +1986,28 @@ async function main() {
       STOCK.filter((s) => s.shop === "hatter").map((s) => ({ item: s.item, price: s.price, owned: false })),
     );
     const me = ofType(heard, "me")[0].me;
-    assert.equal(me.stack, START_STACK + FOUND_PAY);
+    assert.equal(me.stack, START_STACK, "a discovery pays nothing");
     assert.deepEqual(me.found, [PLACE_IDS.hatter]);
     assert.equal(store.puts, puts + 1, "one write");
-    // again: the interior, nothing paid, nothing written
+    // again: the interior, nothing written
     const again = await w.enter(a, PLACE_IDS.hatter);
     assert.deepEqual(again.map((m) => m.t), ["place"]);
     assert.equal(store.puts, puts + 1, "a second visit writes nothing");
-    assert.equal(w.core.meOf(a)!.stack, START_STACK + FOUND_PAY);
-    // the plaza's own doors are not discoveries
+    // the desk is a door but not a discovery
     await w.goTo(a, DESK_SPOT.x, DESK_SPOT.z);
-    assert.deepEqual((await w.enter(a, PLACE_IDS.desk)).map((m) => m.t), ["place"]);
+    assert.deepEqual(await w.enter(a, PLACE_IDS.desk), [{ t: "place", id: PLACE_IDS.desk }]);
     assert.equal(store.puts, puts + 1);
+    assert.deepEqual(w.core.meOf(a)!.found, [PLACE_IDS.hatter]);
     // the door gap: two knocks inside DOOR_GAP_MS, the second dropped with "slow"
     await w.at(a, PLACE_IDS.cigars);
     await w.enter(a, PLACE_IDS.cigars);
     w.advance(DOOR_GAP_MS - 1);
     await w.send(a, { t: "enter", place: PLACE_IDS.cigars });
     assert.deepEqual(w.takeAll(a), [{ t: "slow" }]);
-  });
-
-  await test("town: the errands come in order, one at a time, from the desk or Bands & Co., and pay at the desk", async () => {
-    const w = town();
-    const a = await w.join();
-    w.takeAll(a);
-    // nowhere near the desk: refused
-    assert.deepEqual(await w.knock(a, { t: "errand", take: true }), [{ t: "error", why: "not there" }]);
-    // the bank before the ledger errand: a discovery, no errand progress
-    await w.at(a, PLACE_IDS.merchantsBank);
-    await w.enter(a, PLACE_IDS.merchantsBank);
-    assert.equal(w.core.meOf(a)!.errand, null);
-    // errand 1 at the desk
-    const me1 = await w.takeErrand(a);
-    assert.deepEqual(me1?.errand, { id: "hatter", step: 0, done: [] });
-    assert.equal(ERRANDS[0].line, "Find the Hatter. East street, first corner.");
-    // taking again while one is in hand: the account as it is, nothing new
-    const same = await w.takeErrand(a);
-    assert.deepEqual(same?.errand, { id: "hatter", step: 0, done: [] });
-    // the bank is not the step: no progress
-    await w.at(a, PLACE_IDS.merchantsBank);
-    await w.enter(a, PLACE_IDS.merchantsBank);
-    assert.deepEqual(w.core.meOf(a)!.errand, { id: "hatter", step: 0, done: [] });
-    // the Hatter is: done, the reward owed, not in the stack yet
-    await w.at(a, PLACE_IDS.hatter);
-    const heard = await w.enter(a, PLACE_IDS.hatter);
-    const me = ofType(heard, "me")[0].me;
-    assert.equal(me.errand, null);
-    assert.deepEqual(me.errandsDone, ["hatter"]);
-    assert.equal(me.owed, 50);
-    assert.equal(me.stack, START_STACK + 2 * FOUND_PAY, "the two discoveries, not the reward");
-    // errand 2, taken at Bands & Co. this time
-    await w.at(a, PLACE_IDS.bandsCo);
-    const took = ofType(await w.knock(a, { t: "errand", take: true }), "me")[0].me;
-    assert.deepEqual(took.errand, { id: "ledger", step: 0, done: [] });
-    await w.at(a, PLACE_IDS.merchantsBank);
-    await w.enter(a, PLACE_IDS.merchantsBank);
-    assert.equal(w.core.meOf(a)!.owed, 150);
-    assert.deepEqual(w.core.meOf(a)!.errandsDone, ["hatter", "ledger"]);
-    // pay collects the wage and what is owed, and owed is cleared
-    const paid = await w.collect(a);
-    assert.equal(paid, WAGE + 150);
-    const after = w.core.meOf(a)!;
-    assert.equal(after.owed, 0);
-    assert.equal(after.stack, START_STACK + 2 * FOUND_PAY + WAGE + 150);
-    assert.equal(after.title, "Clerk");
-    // a second pay collects nothing and writes nothing
-    assert.equal(await w.collect(a), 0);
+    // the discoveries come back with the account
+    const key = ofType(w.inbox(a), "welcome")[0]?.key ?? null;
+    void key;
+    assert.deepEqual(store.byId(w.joined[0].account)!.found, [PLACE_IDS.hatter, PLACE_IDS.cigars]);
   });
 
   await test("town: the Coffee House repeats the plaza's last phrases, newest first, minutes ago", async () => {
@@ -2486,65 +2039,27 @@ async function main() {
     const w2 = town({ talk: [...w.savedTalk[w.savedTalk.length - 1], { name: "x", phrase: "Hello", at: 1 }, { name: nameA, phrase: "typed", at: 1 }] });
     assert.equal(w2.core.talk().length, TALK_ROWS);
     assert.deepEqual(cleanTalk("nonsense"), []);
-    // errand 3: hearing the Coffee House
-    await w.chainTo(a, "ledger");
-    const me3 = await w.takeErrand(a);
-    assert.equal(me3?.errand?.id, "coffee");
-    await w.at(a, PLACE_IDS.coffeeEast);
-    await w.enter(a, PLACE_IDS.coffeeEast);
-    assert.equal(w.core.meOf(a)!.owed, 225);
   });
 
-  await test("town: the tower's hour is the room's UTC hour; the errand needs the climb, the right hour, and the tower", async () => {
+  await test("town: the tower shows the room's UTC hour at the climb and inside; a climb anywhere else is 'not there'", async () => {
     const w = town();
     const a = await w.join();
     w.takeAll(a);
-    // a climb anywhere else is "not there"; an answer with no errand is "no errand"
     assert.deepEqual(await w.knock(a, { t: "climb" }), [{ t: "error", why: "not there" }]);
+    await w.near(a, PLACE_IDS.clockTower);
+    assert.deepEqual(await w.knock(a, { t: "climb" }), [{ t: "error", why: "not there" }], "4 m off");
     await w.at(a, PLACE_IDS.clockTower);
     const climbed = ofType(await w.knock(a, { t: "climb" }), "place")[0];
     assert.deepEqual(climbed, { t: "place", id: PLACE_IDS.clockTower, hour: hourOf(w.now) });
     assert.equal(new Date(w.now).getUTCHours(), climbed.hour);
     const entered = ofType(await w.enter(a, PLACE_IDS.clockTower), "place")[0];
     assert.equal(entered.hour, hourOf(w.now), "the interior shows the hour too");
-    assert.deepEqual(await w.knock(a, { t: "answer", hour: climbed.hour }), [{ t: "error", why: "no errand" }]);
-    await w.chainTo(a, "coffee");
-    const me = await w.takeErrand(a);
-    assert.equal(me?.errand?.id, "clock");
-    // entering the tower is not the errand: the climb and the answer are
-    await w.at(a, PLACE_IDS.clockTower);
-    await w.enter(a, PLACE_IDS.clockTower);
-    assert.deepEqual(w.core.meOf(a)!.errand, { id: "clock", step: 0, done: [] });
-    await w.knock(a, { t: "climb" });
-    // the wrong hour, a malformed hour, then the right one; from 4 m off, "not there"
-    const wrong = (hourOf(w.now) + 5) % 24;
-    assert.deepEqual(await w.knock(a, { t: "answer", hour: wrong }), [{ t: "error", why: "wrong hour" }]);
-    assert.deepEqual(await w.knock(a, { t: "answer", hour: 7.5 }), []);
-    assert.deepEqual(await w.knock(a, { t: "answer", hour: "12" }), []);
-    await w.near(a, PLACE_IDS.clockTower);
-    assert.deepEqual(await w.knock(a, { t: "answer", hour: hourOf(w.now) }), [{ t: "error", why: "not there" }]);
-    await w.at(a, PLACE_IDS.clockTower);
-    const heard = await w.knock(a, { t: "answer", hour: hourOf(w.now) });
-    const done = ofType(heard, "me")[0].me;
-    assert.equal(done.errand, null);
-    assert.deepEqual(done.errandsDone, ["hatter", "ledger", "coffee", "clock"]);
-    assert.equal(done.owed, 50 + 100 + 75 + 150);
-    // an answer before any climb this session is "no errand" (the room forgets a climb with the socket); the hour
-    // rolled between the climb and the answer: the hour shown still counts
-    const w2 = town();
-    const b = await w2.join();
-    await w2.chainTo(b, "coffee");
-    await w2.takeErrand(b);
-    await w2.at(b, PLACE_IDS.clockTower);
-    assert.deepEqual(await w2.knock(b, { t: "answer", hour: hourOf(w2.now) }), [{ t: "error", why: "no errand" }]);
-    const shown = ofType(await w2.knock(b, { t: "climb" }), "place")[0].hour!;
-    w2.advance(3_600_000);
-    assert.notEqual(hourOf(w2.now), shown);
-    const late = await w2.knock(b, { t: "answer", hour: shown });
-    assert.equal(ofType(late, "me")[0].me.errand, null, "the hour shown at the climb is still right");
+    w.advance(3_600_000);
+    assert.equal(ofType(await w.knock(a, { t: "climb" }), "place")[0].hour, (climbed.hour + 1) % 24, "an hour on, the next hour");
+    assert.deepEqual(await w.knock(a, { t: "answer", hour: climbed.hour }), [], "there is no question");
   });
 
-  await test("town: the shops sell one of each for the stack, at the right door, and the kit goes to everyone", async () => {
+  await test("town: the shops sell one of each from the stack, at the right door, and the kit goes to everyone", async () => {
     const store = countingAccounts();
     const w = town({ accounts: store });
     const a = await w.join();
@@ -2559,7 +2074,7 @@ async function main() {
     // 4 m off the Hatter: refused
     await w.near(a, PLACE_IDS.hatter);
     assert.deepEqual(await w.knock(a, { t: "buy", item: "boater" }), [{ t: "error", why: "not there" }]);
-    // at the Hatter: a crown is more than the stack; a boater is bought, worn, and told to everyone
+    // at the Hatter: a crown is more than the stack; a boater is bought from the stack, worn, and told to everyone
     await w.at(a, PLACE_IDS.hatter);
     w.takeAll(b);
     assert.deepEqual(await w.knock(a, { t: "buy", item: "crown" }), [{ t: "error", why: "no stack" }]);
@@ -2587,7 +2102,7 @@ async function main() {
     assert.deepEqual(await w.knock(a, { t: "buy", item: "coat-ink" }), [{ t: "error", why: "have one" }]);
     await w.knock(a, { t: "buy", item: "coat-cloth" });
     assert.equal(w.core.meOf(a)!.kit.coat, "Cloth");
-    assert.equal(w.core.meOf(a)!.stack, START_STACK - 400 - 250 - 200 + FOUND_PAY, "one discovery: the Hatter's door");
+    assert.equal(w.core.meOf(a)!.stack, START_STACK - 400 - 250 - 200, "every purchase from the stack, nothing else moved it");
     // a cane is more than what is left; the other player buys one: either Glover sells it, and the other says "have one"
     const glovers = PLACES.filter((q) => shopOf(q.id) === "glover");
     assert.equal(glovers.length, 2, "a Glover on the ring and one in the Crescent");
@@ -2609,181 +2124,454 @@ async function main() {
     assert.deepEqual(ofType(w.takeAll(b), "join")[0].p.kit, wel.me.kit);
   });
 
-  await test("town: the cigar errand needs the purchase; a cigar bought before it does not count", async () => {
+  await test("town: the four street ends are doors at the end of the walkable street, found once each in any order", async () => {
     const w = town();
     const a = await w.join();
     w.takeAll(a);
-    await w.chainTo(a, "clock");
-    const me = await w.takeErrand(a);
-    assert.equal(me?.errand?.id, "cigars");
-    await w.at(a, PLACE_IDS.cigars);
-    await w.enter(a, PLACE_IDS.cigars);
-    assert.deepEqual(w.core.meOf(a)!.errand, { id: "cigars", step: 0, done: [] }, "reaching the shop is not the errand");
-    const before = w.core.meOf(a)!;
-    const heard = await w.knock(a, { t: "buy", item: "cigar" });
-    const after = ofType(heard, "me")[0].me;
-    assert.equal(after.kit.cigar, true);
-    assert.equal(after.stack, before.stack - 150);
-    assert.equal(after.errand, null);
-    assert.equal(after.owed, before.owed + 250, "the errand pays for the cigar and a hundred over");
-    // a player who wears one already: a second is still refused ("one to a customer"), and entering the shop with
-    // the errand in hand hands over his box: the errand is done, the stack touched only by the door's discovery
-    const w2 = town();
-    const b = await w2.join();
-    w2.takeAll(b);
-    await w2.at(b, PLACE_IDS.cigars);
-    await w2.knock(b, { t: "buy", item: "cigar" });
-    await w2.chainTo(b, "clock");
-    await w2.takeErrand(b);
-    await w2.at(b, PLACE_IDS.cigars);
-    assert.deepEqual(await w2.knock(b, { t: "buy", item: "cigar" }), [{ t: "error", why: "have one" }]);
-    assert.equal(w2.core.meOf(b)!.errand!.id, "cigars");
-    const had = w2.core.meOf(b)!;
-    const got = ofType(await w2.enter(b, PLACE_IDS.cigars), "me")[0].me;
-    assert.equal(got.errand, null, "the box is his on entering");
-    assert.ok(got.errandsDone.includes("cigars"));
-    assert.equal(got.owed, had.owed + 250);
-    assert.equal(got.stack, had.stack + FOUND_PAY, "the door's discovery; no cigar bought");
-    assert.equal(got.kit.cigar, true, "the player keeps theirs");
-  });
-
-  await test("town: the ends in any order, then the rules from the Guard House to the desk", async () => {
-    const w = town();
-    const a = await w.join();
-    w.takeAll(a);
-    await w.chainTo(a, "note");
-    const me = await w.takeErrand(a);
-    assert.equal(me?.errand?.id, "ends");
-    // the ends, west first; each is a discovery paid once; a second visit counts nothing
     const order = [PLACE_IDS.westEnd, PLACE_IDS.southEnd, PLACE_IDS.southEnd, PLACE_IDS.eastEnd, PLACE_IDS.northEnd];
     for (const [i, end] of order.entries()) {
       await w.at(a, end);
       const p = w.pos(a);
       assert.ok(Math.hypot(p.x, p.z) > 100, `stood at the ${end} (r ${Math.hypot(p.x, p.z).toFixed(1)})`);
       const heard = await w.enter(a, end);
-      const found = ofType(heard, "found");
-      assert.equal(found.length, i === 2 ? 0 : 1, `${end} found ${i === 2 ? "before" : "once"}`);
-      if (i < order.length - 1) assert.equal(w.core.meOf(a)!.errand?.step, [1, 2, 2, 3][i]);
+      assert.equal(ofType(heard, "found").length, i === 2 ? 0 : 1, `${end} found ${i === 2 ? "before" : "once"}`);
+      assert.deepEqual(ofType(heard, "place"), [{ t: "place", id: end }], "nothing to enter: the id alone");
     }
-    const done = w.core.meOf(a)!;
-    assert.equal(done.errand, null);
-    assert.ok(done.errandsDone.includes("ends"));
-    assert.equal(END_IDS.every((id) => done.found.includes(id)), true);
-    // the rules: the desk first does nothing; the Guard House then the desk
-    const rules = await w.takeErrand(a);
-    assert.equal(rules?.errand?.id, "rules");
-    assert.equal(ERRANDS.find((e) => e.id === "rules")!.line, "Bring me the town's rules.");
-    await w.goTo(a, DESK_SPOT.x, DESK_SPOT.z);
-    await w.enter(a, PLACE_IDS.desk);
-    assert.equal(w.core.meOf(a)!.errand?.step, 0, "the desk comes after the Guard House");
-    await w.goTo(a, GUARD_SPOT.x, GUARD_SPOT.z);
-    await w.enter(a, PLACE_IDS.guardHouse);
-    assert.deepEqual(w.core.meOf(a)!.errand, { id: "rules", step: 1, done: [PLACE_IDS.guardHouse] });
-    // 4 m off the desk's reach: "not there"
-    await w.goTo(a, DESK_SPOT.x, DESK_SPOT.z + DESK_SPOT.r + 1);
-    assert.deepEqual(await w.enter(a, PLACE_IDS.desk), [{ t: "error", why: "not there" }]);
-    await w.goTo(a, DESK_SPOT.x, DESK_SPOT.z);
-    await w.enter(a, PLACE_IDS.desk);
-    const end = w.core.meOf(a)!;
-    assert.equal(end.errand, null);
-    assert.deepEqual(end.errandsDone, ERRANDS.map((e) => e.id), "the whole chain");
-    assert.equal(end.owed, ERRANDS.reduce((s, e) => s + e.reward, 0));
-    assert.equal(await w.collect(a), WAGE + end.owed);
+    assert.deepEqual(w.core.meOf(a)!.found, [PLACE_IDS.westEnd, PLACE_IDS.southEnd, PLACE_IDS.eastEnd, PLACE_IDS.northEnd]);
+    assert.equal(w.core.meOf(a)!.stack, START_STACK);
   });
 
-  await test("town: the daily run draws three doors, never an end, once a day, and its reward waits at the desk", async () => {
-    const w = town();
+  // ---------------------------------------------------------------- the coins
+
+  await test("coins: COIN_ZONES is the plaza, the ring, each street and a mark at each end, ~50 coins worth more the farther out", () => {
+    assert.equal(COIN_ZONES.length, 2 + 2 * STREET_NAMES.length);
+    assert.equal(COINS_ON_GROUND, 6 + 10 + 4 * 8 + 4);
+    const byId = new Map(COIN_ZONES.map((z) => [z.id, z]));
+    assert.deepEqual(byId.get("plaza"), { id: "plaza", ground: "plaza", kind: "coin", count: 6, min: 5, max: 25 });
+    assert.deepEqual(byId.get("ring"), { id: "ring", ground: "ring", kind: "coin", count: 10, min: 10, max: 40 });
+    for (const s of STREET_NAMES) {
+      assert.deepEqual(byId.get(s), { id: s, ground: s, kind: "coin", count: 8, min: 20, max: 80 });
+      assert.deepEqual(byId.get(`${s}-mark`), { id: `${s}-mark`, ground: s, kind: "mark", count: 1, min: 100, max: 100 });
+    }
+    assert.equal(COINS_PER_DAY, 150);
+    // the balance the brief sets out: an active hour on the streets lands about a band; a whole day's cap is a few
+    const streetMean = (20 + 80) / 2;
+    assert.equal(4 * 8 * streetMean, 1600, "on the streets at once, refilling");
+    assert.ok(COINS_PER_DAY * 45 < 7 * BAND, "a full day of gathering is under seven bands");
+  });
+
+  await test("coins: coinSpot lands every zone's coins on walkable ground in its zone, clear of the doors and keepers, the fountain, the furniture and the rope; 500 draws each; the gap between coins holds", () => {
+    const rng = seeded(31);
+    const inZone = (zone: CoinZone, x: number, z: number) => {
+      const g = groundOf(x, z);
+      assert.equal(g.ground, zone.ground, `${zone.id}: (${x}, ${z}) is on the ${g.ground}`);
+      if (zone.kind === "mark") assert.ok(g.t >= MARK_COIN_T[0] - 1e-9 && g.t <= MARK_COIN_T[1] + 1e-9, `${zone.id}: a mark near the end (t ${g.t.toFixed(1)})`);
+      if (zone.ground === "plaza") assert.ok(g.t < WORLD_RADIUS - ROPE_BAND_M - 1, `${zone.id}: inside the rope`);
+      if (zone.ground === "ring") assert.ok(g.t > WORLD_RADIUS + ROPE_BAND_M && g.t <= KERB_OUT, `${zone.id}: on the boulevard, off the rope's band`);
+    };
+    for (const zone of COIN_ZONES) {
+      let n = 0;
+      for (let i = 0; i < 500; i++) {
+        const spot = coinSpot(zone, rng, []);
+        assert.ok(spot, `${zone.id}: a spot on an empty ground`);
+        const [x, z] = spot;
+        n++;
+        assert.ok(walkable(x, z), `${zone.id}: walkable (${x}, ${z})`);
+        inZone(zone, x, z);
+        assert.ok(Math.hypot(x, z) > FOUNTAIN_R + 2, "clear of the fountain");
+        for (const p of PLACES) assert.ok(Math.hypot(x - p.x, z - p.z) >= COIN_DOOR_M, `${zone.id}: ${COIN_DOOR_M} m from the ${p.id}'s door`);
+        for (const k of KEEPERS) assert.ok(Math.hypot(x - k.x, z - k.z) >= 1.5, `${zone.id}: clear of the ${k.id}'s keeper`);
+        if (zone.ground === "plaza") for (const [fx, fz, fr] of PLAZA_FIXTURES) assert.ok(Math.hypot(x - fx, z - fz) >= fr, "clear of the plaza's furniture");
+        assert.equal(x, Math.round(x * 100) / 100, "centimetres");
+      }
+      assert.equal(n, 500);
+      // a zone filling up: each new coin COIN_GAP_M from the ones down (a spill's, SPILL_GAP_M); an end holds its
+      // mark and a spill's
+      const room = zone.kind === "mark" ? 2 : zone.count + 2;
+      for (const gap of [COIN_GAP_M, SPILL_GAP_M]) {
+        const down: { x: number; z: number }[] = [];
+        for (let i = 0; i < room; i++) {
+          const spot = coinSpot(zone, rng, down, gap);
+          assert.ok(spot, `${zone.id}: room for ${room} at ${gap} m`);
+          for (const c of down) assert.ok(Math.hypot(spot[0] - c.x, spot[1] - c.z) >= gap, `${zone.id}: ${gap} m apart`);
+          down.push({ x: spot[0], z: spot[1] });
+        }
+      }
+    }
+    // a ground packed solid answers null rather than a spot on top of another
+    const plaza = COIN_ZONES[0];
+    const packed: { x: number; z: number }[] = [];
+    for (let i = 0; i < 400; i++) {
+      const spot = coinSpot(plaza, rng, packed, 12);
+      if (!spot) break;
+      packed.push({ x: spot[0], z: spot[1] });
+    }
+    assert.ok(packed.length >= 3 && packed.length < 400, `packed with ${packed.length} at 12 m: then none`);
+    assert.equal(coinSpot(plaza, rng, packed, 12), null);
+  });
+
+  await test("coins: every zone fills on the heartbeat, one of its own every COIN_EVERY_MS (a mark every MARK_EVERY_MS), to its count; the ground is told a coin and its kind, never its worth", async () => {
+    const w = town({ coins: true });
     const a = await w.join();
     w.takeAll(a);
-    await w.chainTo(a, "rules");
-    const me = await w.takeErrand(a);
-    assert.deepEqual(me?.errand, { id: "daily", step: 0, done: [] });
-    const daily = me!.daily!;
-    assert.equal(daily.places.length, DAILY_PLACES);
-    assert.equal(new Set(daily.places).size, DAILY_PLACES, "never two the same");
-    for (const id of daily.places) {
-      assert.ok(!END_IDS.includes(id), "none of the ends");
-      assert.ok(PLACES.some((q) => q.id === id), `${id} is a place`);
+    w.core.tick();
+    assert.equal(w.core.coinsOnGround().length, COIN_ZONES.length, "the first heartbeat: one from each zone");
+    for (const zone of COIN_ZONES) assert.equal(w.inZone(zone.id).length, 1, zone.id);
+    w.run(COIN_EVERY_MS - ROOM_TICK_MS);
+    assert.equal(w.core.coinsOnGround().length, COIN_ZONES.length, "nothing more inside the pace");
+    w.run(2 * ROOM_TICK_MS);
+    assert.equal(w.core.coinsOnGround().length, COIN_ZONES.length + 6, "COIN_EVERY_MS on: one more from each zone short of its count (the marks are full)");
+    w.run(8 * COIN_EVERY_MS);
+    const ground = w.core.coinsOnGround();
+    assert.equal(ground.length, COINS_ON_GROUND, "every zone full");
+    for (const zone of COIN_ZONES) {
+      const mine = w.inZone(zone.id);
+      assert.equal(mine.length, zone.count, zone.id);
+      for (const c of mine) {
+        assert.equal(c.kind, zone.kind);
+        assert.ok(Number.isInteger(c.v) && c.v >= zone.min && c.v <= zone.max, `${zone.id}: worth $${c.v}`);
+        assert.equal(groundOf(c.x, c.z).ground, zone.ground, `${zone.id}: on its ground`);
+        assert.ok(walkable(c.x, c.z));
+      }
+      assert.ok(mine.every((c) => mine.every((d) => c === d || Math.hypot(c.x - d.x, c.z - d.z) >= COIN_GAP_M)), `${zone.id}: spaced`);
     }
-    assert.deepEqual(daily.found, []);
-    assert.equal(daily.paid, false);
-    // a second take with the run in hand: the account as it is, the same run
-    assert.deepEqual(ofType(await w.knock(a, { t: "errand", take: true }), "me")[0].me.daily, daily);
-    // the doors, in any order; pay before the last one collects the wage alone
-    const [d1, d2, d3] = daily.places;
-    await w.at(a, d3);
-    await w.enter(a, d3);
-    assert.deepEqual(w.core.meOf(a)!.daily!.found, [d3]);
-    const owed = w.core.meOf(a)!.owed;
-    assert.equal(owed, ERRANDS.reduce((s, e) => s + e.reward, 0), "the chain's rewards still waiting");
-    assert.equal(await w.collect(a), WAGE + owed, "the wage and the chain, not the run yet");
-    await w.at(a, d1);
-    await w.enter(a, d1);
-    await w.at(a, d2);
-    await w.enter(a, d2);
-    const done = w.core.meOf(a)!;
-    assert.equal(done.errand, null);
-    assert.deepEqual(done.daily, { places: daily.places, found: [d3, d1, d2], paid: true }, "the run is done, and the board says so");
-    // the wage is taken already: the run's reward is owed like the chain's, so Collect still has it to show
-    assert.equal(done.owed, DAILY_REWARD);
-    assert.equal(await w.collect(a), DAILY_REWARD);
-    assert.equal(w.core.meOf(a)!.owed, 0);
-    assert.equal(await w.collect(a), 0, "once");
-    // another take today, the run done: "no errand" until tomorrow
-    assert.deepEqual(await w.knock(a, { t: "errand", take: true }), [{ t: "error", why: "no errand" }]);
-    // a new day: the run rolls, a new draw; a run left half done rolls too
-    w.advance(24 * 3_600_000);
-    const next = await w.takeErrand(a);
-    assert.equal(next!.daily!.paid, false);
-    assert.deepEqual(next!.daily!.found, []);
-    assert.deepEqual(next!.errand, { id: "daily", step: 0, done: [] });
-    w.advance(24 * 3_600_000);
-    await w.at(a, PLACE_IDS.hatter);
-    const rolled = ofType(await w.enter(a, PLACE_IDS.hatter), "me")[0].me;
-    assert.equal(rolled.daily, null);
-    assert.equal(rolled.errand, null, "yesterday's run is over");
+    // the wire: each landing told as { id, x, z, kind }, and no frame ever carried a coin's worth
+    const told = ofType(w.takeAll(a), "notes");
+    assert.equal(told.length, COINS_ON_GROUND, "one message per coin");
+    for (const m of told) {
+      assert.equal(m.add.length, 1);
+      assert.deepEqual(m.gone, []);
+      assert.deepEqual(Object.keys(m.add[0]).sort(), ["id", "kind", "x", "z"]);
+    }
+    for (const json of w.wire) assert.ok(!json.includes('"v"') && !json.includes('"zone"'), `a coin's worth on the wire: ${json}`);
+    w.run(10 * COIN_EVERY_MS);
+    assert.equal(w.core.coinsOnGround().length, COINS_ON_GROUND, "full stays full");
+    // a newcomer is told the ground in welcome, the same way
+    const b = await w.join();
+    const wel = ofType(w.takeAll(b), "welcome")[0];
+    assert.equal(wel.notes.length, COINS_ON_GROUND);
+    assert.deepEqual(Object.keys(wel.notes[0]).sort(), ["id", "kind", "x", "z"]);
+    assert.equal(wel.notes.filter((n) => n.kind === "mark").length, 4, "the four marks stand out");
+    // a mark taken comes back after MARK_EVERY_MS, not COIN_EVERY_MS; a street's coin after COIN_EVERY_MS
+    const mark = w.inZone("east-mark")[0];
+    await w.pick(a, mark);
+    assert.equal(w.inZone("east-mark").length, 0);
+    w.run(COIN_EVERY_MS * 2);
+    assert.equal(w.inZone("east-mark").length, 0, "no mark yet");
+    w.run(MARK_EVERY_MS - COIN_EVERY_MS * 2 + ROOM_TICK_MS);
+    assert.equal(w.inZone("east-mark").length, 1, "the mark is back");
+    assert.equal(w.inZone("east-mark")[0].v, 100);
+    const east = w.inZone("east")[0];
+    await w.pick(a, east);
+    assert.equal(w.inZone("east").length, 7);
+    w.run(COIN_EVERY_MS + ROOM_TICK_MS);
+    assert.equal(w.inZone("east").length, 8, "the street's coin is back");
+    // an empty room drops nothing; the room is told nothing it did not ask for
+    w.core.leave(a);
+    w.core.leave(b);
+    w.takeAll(a);
+    const before = w.core.coinsOnGround().length;
+    w.run(5 * COIN_EVERY_MS);
+    assert.equal(w.core.coinsOnGround().length, before, "nobody in: nothing dropped");
   });
 
-  await test("town: a stored account with the old shape, or a bad one, is put right", () => {
+  await test("coins: a pick within reach puts the coin in the pockets, not the stack; everyone sees a bubble with its worth; 'me' says the count only; a coin gone stays gone", async () => {
+    const store = countingAccounts();
+    const w = town({ coins: true, accounts: store });
+    const a = await w.join();
+    const b = await w.join();
+    w.core.tick();
+    w.clear();
+    const coin = w.inZone("plaza")[0];
+    const puts = store.puts;
+    // from afar: nothing
+    await w.send(a, { t: "pick", note: coin.id });
+    assert.equal(w.core.coinsOnGround().length, COIN_ZONES.length, "too far: still there");
+    assert.equal(w.takeAll(a).length, 0);
+    // within NOTE_REACH: into the pockets
+    await w.goTo(a, coin.x + NOTE_REACH * 0.7, coin.z);
+    w.takeAll(a);
+    w.takeAll(b);
+    await w.send(a, { t: "pick", note: coin.id });
+    const heard = w.takeAll(a);
+    assert.deepEqual(heard.map((m) => m.t), ["picked", "me"], "the bubble (to the picker too), then the account; no stack message");
+    assert.deepEqual(heard[0], { t: "picked", id: a, note: coin.id, v: coin.v });
+    const me = ofType(heard, "me")[0].me;
+    assert.equal(me.stack, START_STACK, "nothing to the stack");
+    assert.equal(me.coins, 1);
+    assert.equal(me.coinsToday, 1);
+    assert.deepEqual(Object.keys(me).sort(), ME_KEYS, "no cash in the account the page sees");
+    assert.deepEqual(w.takeAll(b), [{ t: "picked", id: a, note: coin.id, v: coin.v }], "everyone sees what it was worth");
+    assert.equal(store.puts, puts + 1, "one write");
+    const row = store.byId(w.joined[0].account)!;
+    assert.equal(row.coins, 1);
+    assert.equal(row.coinCash, coin.v, "the worth is the store's");
+    assert.equal(row.stack, START_STACK);
+    assert.equal(w.core.player(a)!.stack, START_STACK, "the name tag's stack stands");
+    // gone is gone: the same id again, or one that never was, answers { notes, gone } so the walker stops asking
+    await w.send(a, { t: "pick", note: coin.id });
+    assert.deepEqual(w.takeAll(a), [{ t: "notes", add: [], gone: [coin.id] }]);
+    assert.equal(w.core.meOf(a)!.coins, 1);
+    await w.send(a, { t: "pick", note: "n0000000" });
+    assert.deepEqual(w.takeAll(a), [{ t: "notes", add: [], gone: ["n0000000"] }]);
+    await w.send(a, { t: "pick", note: "x".repeat(40) });
+    assert.deepEqual(w.takeAll(a), [], "an id that could never be a coin gets no answer");
+    assert.equal(store.puts, puts + 1, "nothing more written");
+    // a second coin: the pockets add up, and only the server knows to what
+    const next = w.inZone("ring")[0];
+    const heard2 = await w.pick(a, next);
+    assert.equal(ofType(heard2, "me")[0].me.coins, 2);
+    assert.equal(store.byId(w.joined[0].account)!.coinCash, coin.v + next.v);
+    for (const json of w.wire) assert.ok(!json.includes("coinCash"), `the cash leaked: ${json}`);
+  });
+
+  await test("coins: cashin at the desk moves the pockets into the stack (cashed then me, the stack to the room); 4 m off it is 'not there'; nothing carried is 0 and 0 and no write", async () => {
+    const store = countingAccounts();
+    const w = town({ coins: true, accounts: store });
+    const a = await w.join();
+    const b = await w.join();
+    w.run(COIN_EVERY_MS + ROOM_TICK_MS);
+    const [c1, c2] = w.inZone("plaza");
+    await w.pick(a, c1);
+    await w.pick(a, c2);
+    assert.equal(w.core.meOf(a)!.coins, 2);
+    const puts = store.puts;
+    // 4 m outside the desk's reach: refused, nothing moved, nothing written
+    await w.goTo(a, DESK_SPOT.x, DESK_SPOT.z + DESK_SPOT.r + 4);
+    assert.deepEqual(await w.knock(a, { t: "cashin" }), [{ t: "error", why: "not there" }]);
+    assert.equal(w.core.meOf(a)!.coins, 2);
+    assert.equal(store.puts, puts);
+    // at the desk
+    w.takeAll(b);
+    const heard = await w.cashin(a);
+    assert.deepEqual(heard.filter((m) => m.t !== "stacks").map((m) => m.t), ["cashed", "me", "stack"]);
+    assert.deepEqual(heard[0], { t: "cashed", coins: 2, cash: c1.v + c2.v });
+    const me = ofType(heard, "me")[0].me;
+    assert.equal(me.stack, START_STACK + c1.v + c2.v);
+    assert.equal(me.coins, 0);
+    assert.equal(me.coinsToday, 2, "the day's count is not the pockets");
+    assert.deepEqual(ofType(heard, "stack"), [{ t: "stack", id: a, stack: START_STACK + c1.v + c2.v }]);
+    const told = w.takeAll(b);
+    assert.deepEqual(ofType(told, "stack"), [{ t: "stack", id: a, stack: START_STACK + c1.v + c2.v }], "the room sees the new stack (name tags)");
+    assert.equal(ofType(told, "stacks").at(-1)!.rows[0].stack, START_STACK + c1.v + c2.v, "the biggest stacks moved");
+    assert.equal(store.puts, puts + 1, "one write");
+    const row = store.byId(w.joined[0].account)!;
+    assert.deepEqual([row.stack, row.coins, row.coinCash], [START_STACK + c1.v + c2.v, 0, 0]);
+    assert.equal(w.core.player(a)!.stack, row.stack);
+    // nothing carried: 0 and 0, nothing written, nobody told
+    assert.deepEqual(await w.knock(a, { t: "cashin" }), [{ t: "cashed", coins: 0, cash: 0 }]);
+    assert.equal(store.puts, puts + 1);
+    assert.equal(w.takeAll(b).length, 0);
+    // the desk's pace: two inside DOOR_GAP_MS, the second dropped with "slow"
+    await w.send(a, { t: "cashin" });
+    assert.deepEqual(w.takeAll(a), [{ t: "slow" }]);
+    assert.equal(BAND, 1000);
+  });
+
+  await test("coins: COINS_PER_DAY a day, 'notes done' past it (the coin stays), and the count rolls with the UTC day", async () => {
+    // an account a coin short of the cap, opened by its key
+    const store = countingAccounts();
+    const key = "K".repeat(32);
+    const full: Account = {
+      id: "acap",
+      name: "Steady Otter 44",
+      strap: 1,
+      stack: 2500,
+      coins: 3,
+      coinCash: 90,
+      day: "2026-09-24",
+      coinsToday: COINS_PER_DAY - 1,
+      created: 1,
+      seen: 1,
+      kit: { ...DEFAULT_KIT },
+      found: [],
+    };
+    store.put(full, `plain:${key}`);
+    const w = town({ coins: true, accounts: store });
+    const a = await w.join({ strap: 1, key });
+    assert.equal(ofType(w.takeAll(a), "welcome")[0].me.coinsToday, COINS_PER_DAY - 1);
+    w.core.tick();
+    const [c1, c2] = [w.inZone("plaza")[0], w.inZone("ring")[0]];
+    const heard = await w.pick(a, c1);
+    assert.equal(ofType(heard, "me")[0].me.coinsToday, COINS_PER_DAY, "the last of the day");
+    assert.equal(w.core.meOf(a)!.coins, 4);
+    const puts = store.puts;
+    const refused = await w.pick(a, c2);
+    assert.deepEqual(refused, [{ t: "error", why: "notes done" }]);
+    assert.ok(w.core.coinsOnGround().some((c) => c.id === c2.id), "the coin stays for someone else");
+    assert.equal(w.core.meOf(a)!.coins, 4);
+    assert.equal(store.puts, puts, "nothing written");
+    // the next UTC day: the count starts again, the pockets do not
+    w.advance(24 * HOUR_MS);
+    w.takeAll(a);
+    await w.send(a, { t: "pick", note: c2.id });
+    const me = ofType(w.takeAll(a), "me")[0].me;
+    assert.equal(me.day, "2026-09-25");
+    assert.equal(me.coinsToday, 1);
+    assert.equal(me.coins, 5);
+    assert.equal(store.byId("acap")!.coinCash, 90 + c1.v + c2.v);
+    assert.equal(store.byId("acap")!.day, "2026-09-25", "the roll is written with the pick");
+  });
+
+  await test("coins: the Mint spills on the hour from the clock alone: one street, SPILL_COINS over SPILL_MS then a mark at its end, told to everyone, counting against the cap, nothing persisted; no message triggers it; a room woken past the hour skips it", async () => {
+    const store = countingAccounts();
+    const w = town({ coins: true, accounts: store });
+    const a = await w.join();
+    const b = await w.join();
+    w.run(9 * COIN_EVERY_MS + 2 * ROOM_TICK_MS); // the ring's tenth coin lands on the heartbeat after 180 s
+    assert.equal(w.core.coinsOnGround().length, COINS_ON_GROUND);
+    w.clear();
+    const puts = store.puts;
+    const saves = w.saved.length + w.savedTalk.length;
+    // up to a hair before 13:00: nothing; a message that names a spill: nothing
+    const hour = Math.ceil(w.now / HOUR_MS) * HOUR_MS;
+    await w.send(a, { t: "spill", street: 2, until: hour });
+    w.advance(hour - w.now - ROOM_TICK_MS);
+    w.core.tick();
+    assert.equal(w.core.spillNow(), null, "not yet");
+    assert.equal(ofType(w.all(), "spill").length, 0);
+    // the first heartbeat of the hour
+    w.run(ROOM_TICK_MS);
+    const s = w.core.spillNow();
+    assert.ok(s, "the spill is on");
+    assert.ok(s!.street >= 0 && s!.street < STREET_NAMES.length && Number.isInteger(s!.street));
+    assert.equal(s!.until, w.now + SPILL_MS);
+    assert.deepEqual(ofType(w.takeAll(a), "spill"), [{ t: "spill", street: s!.street, until: s!.until }], "told to a");
+    assert.deepEqual(ofType(w.takeAll(b), "spill"), [{ t: "spill", street: s!.street, until: s!.until }], "and to b");
+    assert.equal(w.inZone("spill").length, 1, "the first coin lands at once");
+    // one every SPILL_MS / SPILL_COINS, on the street, worth the street's range
+    const every = SPILL_MS / SPILL_COINS;
+    w.run(every * 10);
+    const after10 = w.inZone("spill").length;
+    assert.ok(after10 >= 10 && after10 <= 12, `ten spills in: ${after10} coins`);
+    w.run(SPILL_MS - every * 10 + ROOM_TICK_MS);
+    const spilled = w.inZone("spill");
+    assert.equal(spilled.length, SPILL_COINS + 1, "SPILL_COINS, then the mark");
+    assert.equal(w.core.spillNow(), null, "over");
+    const street = STREET_NAMES[s!.street];
+    const zone = COIN_ZONES.find((z) => z.id === street)!;
+    for (const c of spilled) {
+      assert.equal(groundOf(c.x, c.z).ground, street, "on the spill's street");
+      assert.ok(walkable(c.x, c.z));
+      if (c.kind === "mark") assert.equal(c.v, 100);
+      else assert.ok(c.v >= zone.min && c.v <= zone.max, `worth $${c.v}`);
+    }
+    assert.equal(spilled.filter((c) => c.kind === "mark").length, 1, "one mark, at the end");
+    assert.ok(groundOf(spilled.find((c) => c.kind === "mark")!.x, spilled.find((c) => c.kind === "mark")!.z).t >= MARK_COIN_T[0] - 1e-9);
+    assert.equal(w.inZone(street).length, zone.count, "the street's own coins are not the spill's, and stay");
+    assert.equal(w.core.coinsOnGround().length, COINS_ON_GROUND + SPILL_COINS + 1);
+    // nothing persisted: no account written, no board or talk saved
+    assert.equal(store.puts, puts);
+    assert.equal(w.saved.length + w.savedTalk.length, saves);
+    // a spilled coin is a coin: picked into the pockets, counted against the day
+    const one = spilled.find((c) => c.kind === "coin")!;
+    const me = ofType(await w.pick(a, one), "me")[0].me;
+    assert.equal(me.coins, 1);
+    assert.equal(me.coinsToday, 1);
+    assert.equal(store.byId(w.joined[0].account)!.coinCash, one.v);
+    // the next hour spills again, on a street of the clock's draw; meanwhile nothing a client sends brings one on
+    w.takeAll(a);
+    for (const msg of [{ t: "spill" }, { t: "spill", street: 1 }, { t: "mint" }, { t: "tick" }]) await w.send(a, msg);
+    w.run(1000);
+    assert.equal(w.core.spillNow(), null);
+    assert.equal(ofType(w.takeAll(a), "spill").length, 0);
+    w.advance(hour + HOUR_MS - w.now - ROOM_TICK_MS);
+    w.run(2 * ROOM_TICK_MS);
+    assert.ok(w.core.spillNow(), "the next hour's spill");
+    // a room woken past the hour (it hibernated empty) skips that hour's spill: the clock alone, and only on the hour
+    const late = town({ coins: true, at: Date.parse("2026-09-24T14:10:00Z") });
+    const c = await late.join();
+    late.run(1000);
+    assert.equal(late.core.spillNow(), null, "ten past: no spill");
+    late.advance(Date.parse("2026-09-24T15:00:00Z") - late.now - ROOM_TICK_MS);
+    late.run(2 * ROOM_TICK_MS);
+    assert.ok(late.core.spillNow(), "15:00: a spill");
+    assert.ok(SPILL_GRACE_MS < 10 * 60_000);
+    void c;
+  });
+
+  await test("coins: a stored account with the old shape (jobs, errands, a wage, a stake) is cleaned to the new one; bad values put right", () => {
     const old = {
       id: "a1",
       name: "Amber Badger 12",
-      strap: 0,
+      strap: 2,
       stack: 1500,
-      staked: 0,
-      day: "2026-09-24",
-      wagePaid: false,
-      jobs: {},
-      rounds: 0,
-      notes: 0,
+      staked: 300,
+      day: "2026-09-23",
+      wagePaid: true,
+      jobs: { range: { have: 3, paid: false } },
+      rounds: 4,
+      notes: 7,
       created: 1,
-      seen: 1,
+      seen: 2,
+      kit: { ...DEFAULT_KIT, hat: "boater" },
+      found: ["hatter", "east-end"],
+      errand: { id: "clock", step: 0, done: [] },
+      errandsDone: ["hatter", "ledger"],
+      daily: null,
+      owed: 150,
     } as unknown as Account;
-    const a = cleanAccount(old);
-    assert.deepEqual(a.kit, DEFAULT_KIT);
-    assert.deepEqual(a.found, []);
-    assert.equal(a.errand, null);
-    assert.deepEqual(a.errandsDone, []);
-    assert.equal(a.daily, null);
-    assert.equal(a.owed, 0);
+    assert.deepEqual(cleanAccount(old), {
+      id: "a1",
+      name: "Amber Badger 12",
+      strap: 2,
+      stack: 1800,
+      coins: 0,
+      coinCash: 0,
+      day: "2026-09-23",
+      coinsToday: 0,
+      created: 1,
+      seen: 2,
+      kit: { ...DEFAULT_KIT, hat: "boater" },
+      found: ["hatter", "east-end"],
+    } satisfies Account, "the stack (a lost round's stake back in it), kit and doors kept; the rest gone; the pockets empty");
     const bad = cleanAccount({
-      ...old,
+      id: "a2",
+      name: "Quiet Owl 17",
+      strap: 9,
+      stack: -5,
+      coins: 2.7,
+      coinCash: "40",
+      coinsToday: 999,
       kit: { hat: "fez", coat: "Cloth", cane: "yes", glasses: true },
       found: ["hatter", 3, "hatter"],
-      errand: { id: "daily", step: 2 },
-      errandsDone: ["hatter", "nope", "hatter"],
-      daily: { places: ["a", "b"], found: [], paid: false },
-      owed: -20,
     } as unknown as Account);
-    assert.deepEqual(bad.kit, { hat: "top", coat: "Cloth", cane: false, glasses: true, cigar: false });
-    assert.deepEqual(bad.found, ["hatter"]);
-    assert.equal(bad.errand, null, "a daily errand with no run");
-    assert.deepEqual(bad.errandsDone, ["hatter"]);
-    assert.equal(bad.daily, null, "a run of the wrong size");
-    assert.equal(bad.owed, 0);
-    const half = cleanAccount({ ...old, errand: { id: "ends", step: 1, done: ["east-end"] }, owed: 40.9 } as unknown as Account);
-    assert.deepEqual(half.errand, { id: "ends", step: 1, done: ["east-end"] });
-    assert.equal(half.owed, 40);
+    assert.deepEqual(bad, {
+      id: "a2",
+      name: "Quiet Owl 17",
+      strap: STRAPS.length - 1,
+      stack: 0,
+      coins: 2,
+      coinCash: 0,
+      day: "",
+      coinsToday: COINS_PER_DAY,
+      created: 0,
+      seen: 0,
+      kit: { hat: "top", coat: "Cloth", cane: false, glasses: true, cigar: false },
+      found: ["hatter"],
+    } satisfies Account);
+    const fresh = cleanAccount({ id: "a3", name: "Bold Fox 21" } as unknown as Account);
+    assert.equal(fresh.stack, START_STACK, "no stack: a new one");
+    assert.equal(fresh.coins, 0);
+    // a stored row from before the coins, opened by its key: the room writes it back in the new shape
+    const store = memoryAccounts();
+    const key = "O".repeat(32);
+    store.put(old, `plain:${key}`);
+    const w = world({ accounts: store });
+    const a = w.core.open()!;
+    w.advance(1000);
+    void w.send(a, { t: "hello", strap: 0, key });
+    return new Promise<void>((resolve) =>
+      setImmediate(() => {
+        const wel = ofType(w.takeAll(a), "welcome")[0];
+        assert.equal(wel.me.stack, 1800);
+        assert.deepEqual(Object.keys(wel.me).sort(), ME_KEYS);
+        const row = store.byId("a1") as unknown as Record<string, unknown>;
+        assert.deepEqual(Object.keys(row).sort(), ["coinCash", "coins", "coinsToday", "created", "day", "found", "id", "kit", "name", "seen", "stack", "strap"], "the old fields are gone from the row");
+        assert.equal(row.day, dayOf(w.now), "rolled to today");
+        resolve();
+      }),
+    );
   });
 
   console.log(`\ngame room: ${passed} passed`);
