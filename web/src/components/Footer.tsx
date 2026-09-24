@@ -8,8 +8,7 @@ import "./Footer.css";
  * works on and around. Text chips only: no partner artwork to host or break.
  */
 const LINKS: { label: string; href: string; title?: string; external?: boolean }[] = [
-  { label: "Journal", href: "/api/feed.md", title: "Every decision, as Markdown" },
-  { label: "API", href: "/api/journal", title: "The journal as JSON" },
+  { label: "Data", href: "/journal.json", title: "His decision journal as JSON" },
   { label: "GitHub", href: "https://github.com/Bands-Finance/mr-bands", external: true },
   { label: "Meteora", href: "https://app.meteora.ag", external: true },
 ];

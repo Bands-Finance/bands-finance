@@ -10,6 +10,14 @@ const env = import.meta.env as Record<string, string | undefined>;
 const base = env.VITE_API_URL?.trim().replace(/\/$/, "") ?? "";
 /** Where the API lives: VITE_API_URL without its trailing slash, or "" for same-origin. */
 export const API_BASE = base;
+/**
+ * The static hosts (bands.finance, mrbands.finance, their Vercel previews) serve no /api: the same-origin API is
+ * skipped there, straight to the snapshot files. Until 24 Sep every visit asked /api/journal, /api/equity,
+ * /api/limits, /api/screen and /api/hot first and logged a 404 for each.
+ */
+export const STATIC_HOST = !base && typeof location !== "undefined" && /(^|\.)(mrbands\.finance|bands\.finance|vercel\.app)$/.test(location.hostname);
+/** The same-origin API path, or null on a static host. */
+const api = (path: string): string | null => (STATIC_HOST ? null : `${base}${path}`);
 
 /**
  * Journal sources, in order. The first one that answers is remembered.
@@ -87,7 +95,7 @@ export async function loadJournal(limit = 600): Promise<JournalEntry[]> {
     stamp = { source: "live", generatedAt: Date.parse(live.generatedAt) };
     return live.entries;
   }
-  const candidates = journalSource ? [journalSource] : [env.VITE_JOURNAL_URL, `${base}/api/journal?limit=${limit}`, `${base}/journal.json`].filter((u): u is string => Boolean(u));
+  const candidates = journalSource ? [journalSource] : [env.VITE_JOURNAL_URL, api(`/api/journal?limit=${limit}`), `${base}/journal.json`].filter((u): u is string => Boolean(u));
   let lastErr: Error | null = null;
   for (const url of candidates) {
     try {
@@ -115,7 +123,7 @@ export async function loadLimits(): Promise<RiskLimits | null> {
   const live = await loadLiveFeed();
   // a stale feed's limits are the stopped desk's: only a fresh feed speaks for the page (loadJournal's rule)
   if (live?.limits && typeof live.limits.maxPositionSol === "number" && Date.now() - Date.parse(live.generatedAt) < LIVE_MAX_AGE_MS) return live.limits;
-  const candidates = limitsSource ? [limitsSource] : [env.VITE_LIMITS_URL, `${base}/api/limits`, `${base}/limits.json`].filter((u): u is string => Boolean(u));
+  const candidates = limitsSource ? [limitsSource] : [env.VITE_LIMITS_URL, api("/api/limits"), `${base}/limits.json`].filter((u): u is string => Boolean(u));
   for (const url of candidates) {
     try {
       const json = (await fetchJson(url)) as RiskLimits;
@@ -139,7 +147,7 @@ export async function loadEquity(): Promise<EquityHistoryPoint[] | null> {
   if (window.__BANDS_DATA__?.entries) return window.__BANDS_DATA__.equity ?? null;
   const live = await loadLiveFeed();
   if (live && Array.isArray(live.points) && stamp.source === "live") return live.points.filter((p) => p && typeof p.t === "number" && typeof p.equitySol === "number" && Number.isFinite(p.equitySol));
-  const candidates = equitySource ? [equitySource] : [env.VITE_EQUITY_URL, `${base}/api/equity`, `${base}/equity.json`].filter((u): u is string => Boolean(u));
+  const candidates = equitySource ? [equitySource] : [env.VITE_EQUITY_URL, api("/api/equity"), `${base}/equity.json`].filter((u): u is string => Boolean(u));
   for (const url of candidates) {
     try {
       const json = (await fetchJson(url)) as { points?: EquityHistoryPoint[] };
@@ -160,7 +168,7 @@ export const isDemoJournal = (entries: JournalEntry[]) => entries.length > 0 && 
 let screenSource: string | null = null;
 export async function loadScreen(): Promise<ScreenResult | null> {
   if (window.__BANDS_DATA__?.entries) return window.__BANDS_DATA__.screen ?? null;
-  const candidates = screenSource ? [screenSource] : [env.VITE_SCREEN_URL, `${base}/api/screen`, `${base}/screen.json`].filter((u): u is string => Boolean(u));
+  const candidates = screenSource ? [screenSource] : [env.VITE_SCREEN_URL, api("/api/screen"), `${base}/screen.json`].filter((u): u is string => Boolean(u));
   for (const url of candidates) {
     try {
       const json = (await fetchJson(url)) as ScreenResult;
@@ -181,7 +189,7 @@ export async function loadScreen(): Promise<ScreenResult | null> {
  */
 let hotSource: string | null = null;
 export async function loadHot(): Promise<HotFile | null> {
-  const candidates = hotSource ? [hotSource] : [env.VITE_HOT_URL, `${base}/api/hot`, `${base}/hot.json`].filter((u): u is string => Boolean(u));
+  const candidates = hotSource ? [hotSource] : [env.VITE_HOT_URL, api("/api/hot"), `${base}/hot.json`].filter((u): u is string => Boolean(u));
   for (const url of candidates) {
     try {
       const json = (await fetchJson(url)) as HotFile;

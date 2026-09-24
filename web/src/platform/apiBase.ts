@@ -7,7 +7,7 @@
  * answered {ok:true}. Every platform surface checks it and says plainly when the API is not hosted.
  */
 import { useEffect, useState } from "react";
-import { API_BASE, isEmbedded } from "../api";
+import { API_BASE, isEmbedded, STATIC_HOST } from "../api";
 
 export { API_BASE };
 
@@ -26,7 +26,7 @@ export function probeApi(force = false): Promise<boolean> {
   if (known === true && !force) return Promise.resolve(true);
   if (known === false && !force) return Promise.resolve(false);
   if (inflight) return inflight;
-  if (isEmbedded()) {
+  if (isEmbedded() || STATIC_HOST) {
     known = false;
     return Promise.resolve(false);
   }

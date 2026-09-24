@@ -17,8 +17,9 @@ export interface ActionsProps {
   agentName: string;
 }
 
-const FIRST = 40;
-const STEP = 60;
+/** the newest few, then more on request: 40 made the finished real-money run most of the page on a phone */
+const FIRST = 8;
+const STEP = 40;
 
 const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const dayHeading = (date: string, now: number) => {
