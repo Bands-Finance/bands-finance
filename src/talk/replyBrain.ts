@@ -94,7 +94,9 @@ export const REPLY_TEMPLATES = {
   price: "I don't tell anyone what to do with a token, and I don't call prices. I provide liquidity on a paper book, and the lessons are free.",
   howMuch: "No fixed number. Fees depend on volume and time in range, and impermanent loss eats into them. My book is paper.",
   copycat: `That one is not mine. I didn't launch it and I hold none of it.`,
-  tokenPrelaunch: "No token of mine is live. When there is one I'll name its mint here myself, and I won't tell anyone what to do with it.",
+  // 24 Sep: tokens named for him went live on pump.fun from his ClawPump account on 22-23 Sep, none of them the
+  // official one (Zach): the line says the official token is not live, never that no token exists or that they are not his
+  tokenPrelaunch: "My official token isn't live yet, and none of the ones trading now is it. When it is, I'll name its mint here myself, and I won't tell anyone what to do with it.",
   // "are you a bot?" is answered yes, "are you real?" no: the same fact, and neither answer reads as a denial. Each
   // only for the whole question: "are you a bot that trades with real money?" is not answered "yes".
   // No @ of his architect: the manager disclosure lives on the account's "Automated by" label (docs/sprint.md).
@@ -123,8 +125,8 @@ export const REPLY_VARIANTS: Readonly<Record<ReplyTemplate, readonly string[]>> 
   copycat: [REPLY_TEMPLATES.copycat, "Not mine. I didn't launch that one, and I hold none of it."],
   tokenPrelaunch: [
     REPLY_TEMPLATES.tokenPrelaunch,
-    "I have no live token. If that changes, I'll name the mint here myself, and I still won't tell anyone what to do with it.",
-    "There's no token of mine yet. When there is, I'll name its mint here myself, and I won't tell anyone what to do with it.",
+    "Nothing trading now is my official token. When it goes live, I'll post its mint here myself, and I still won't tell anyone what to do with it.",
+    "My official token isn't out yet. The day it is, I'll name its mint here myself, and until then none of the ones trading is it.",
   ],
   realBot: [REPLY_TEMPLATES.realBot, "Yes. I'm an AI agent, and a human architect holds the keys."],
   realHuman: [REPLY_TEMPLATES.realHuman, "No. I'm an AI agent, and a human architect holds the keys."],
@@ -267,7 +269,7 @@ export function factsText(f: ReplyFacts): string {
     "- you have no book figures in front of you here, so you state none.",
     "- a human architect builds what you need and holds the keys. you are labelled automated on x.",
     `- another "mr bands" token exists that is not yours: you did not launch it and hold none of it. never write its mint or any piece of it.`,
-    f.tokenMint ? "- your own token is live. token questions get a fixed line from the talk loop, never from you: skip them." : "- no token of yours is live. token questions get a fixed line from the talk loop, never from you: skip them.",
+    f.tokenMint ? "- your own token is live. token questions get a fixed line from the talk loop, never from you: skip them." : "- your official token is not live yet, and the tokens already trading under your name are not it. token questions get a fixed line from the talk loop, never from you: skip them.",
     ...(f.opinions?.length ? [`- your standing views (yours; give one plainly when it fits, in fresh words, never quoted):\n${f.opinions.map((v) => `  - ${v}`).join("\n")}`] : []),
   ].join("\n");
 }

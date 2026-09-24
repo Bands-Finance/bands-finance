@@ -236,7 +236,7 @@ async function main(): Promise<void> {
     assert.ok(p.includes('"mention":"2099911112222333444"'));
     assert.ok(!p.includes(COPYCAT.slice(0, 5)) && !p.includes(COPYCAT.slice(-5)) && /not yours/.test(p), "another token as not his, and never its mint");
     assert.match(p, /paper/);
-    assert.match(p, /no token of yours is live/);
+    assert.match(p, /your official token is not live yet/);
     // no book figures: outside the mention id, the prompt holds no number
     const stripped = p.replace(/2099911112222333444/g, "").replace(/\\u003c/g, "<");
     assert.deepEqual(stripped.match(/\d+(\.\d+)?/g) ?? [], []);
