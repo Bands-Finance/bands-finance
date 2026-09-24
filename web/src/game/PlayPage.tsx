@@ -21,7 +21,7 @@ import { ExchangeNet, gameWsUrl, type PlaceMsg } from "./net";
 import { bandsAndCash, bandsWord, usd } from "./money";
 import { isLayRefusal, newRoutes, offlineSource, onlineSource, type Frame } from "./rounds";
 import { Interior, placeName, type BuildNote } from "./places";
-import { TownMap, type MapPose } from "./TownMap";
+import { MiniMap, TownMap, type MapCoin, type MapPose } from "./TownMap";
 import { PLACES, STREET_NAMES } from "./town";
 import "./PlayPage.css";
 
@@ -126,6 +126,8 @@ export default function PlayPage() {
   const [spill, setSpill] = useState<{ street: number; until: number } | null>(null);
   /** where the walker is, for the map (the world writes it every frame; no render follows) */
   const pose = useRef<MapPose>({ x: 0, z: 20, ry: 0 });
+  /** the coins on the ground, by the wire's id, for the mini-map (kept from the room's word, as the world's are) */
+  const ground = useRef<Map<string, MapCoin>>(new Map());
   const [boardRows, setBoardRows] = useState<BoardRow[]>([]);
   const notify = useCallback((text: string) => {
     setToast(text);
@@ -155,8 +157,12 @@ export default function PlayPage() {
       },
     });
     world.current = w;
-    // #/play?debug: the world on window, for tracing (nothing else changes)
-    if (window.location.hash.includes("debug")) (window as unknown as { __world: ExchangeWorld }).__world = w;
+    // #/play?debug: the world and the mini-map's coins on window, for tracing (nothing else changes)
+    if (window.location.hash.includes("debug")) {
+      const dbg = window as unknown as { __world: ExchangeWorld; __coins: Map<string, MapCoin> };
+      dbg.__world = w;
+      dbg.__coins = ground.current;
+    }
     w.loadDesk()
       .catch(() => undefined)
       .finally(() => setLoading(false));
@@ -232,7 +238,11 @@ export default function PlayPage() {
         names.current.clear();
         // start where the room put you (it spreads arrivals round the centre), so the first step is not a jump
         const mine = m.players.find((p) => p.id === m.you);
-        if (mine) world.current?.setMyPosition(mine.x, mine.z, mine.ry, true);
+        if (mine) {
+          world.current?.setMyPosition(mine.x, mine.z, mine.ry, true);
+          // the maps show where the room put you before the first step (the world says a pose only as you walk)
+          pose.current = { x: mine.x, z: mine.z, ry: mine.ry };
+        }
         for (const p of m.players) {
           if (p.id === m.you) continue;
           names.current.set(p.id, p.name);
@@ -243,7 +253,10 @@ export default function PlayPage() {
         setLeaders(m.board);
         if (m.me) setMeState(m.me);
         if (Array.isArray(m.stacks)) setStacks(m.stacks);
-        world.current?.setLooseNotes(Array.isArray(m.notes) ? m.notes : []);
+        const notes = Array.isArray(m.notes) ? m.notes : [];
+        world.current?.setLooseNotes(notes);
+        ground.current.clear();
+        for (const c of notes) ground.current.set(c.id, { x: c.x, z: c.z });
       };
       n.onJoin = (p) => {
         names.current.set(p.id, p.name);
@@ -270,11 +283,18 @@ export default function PlayPage() {
       n.onStack = (id, stack) => world.current?.setStack(id, stack);
       n.onStacks = (rows) => setStacks(rows);
       n.onNotes = (add, gone) => {
-        for (const note of add) world.current?.addLooseNote(note);
-        for (const id of gone) world.current?.removeLooseNote(id);
+        for (const note of add) {
+          world.current?.addLooseNote(note);
+          ground.current.set(note.id, { x: note.x, z: note.z });
+        }
+        for (const id of gone) {
+          world.current?.removeLooseNote(id);
+          ground.current.delete(id);
+        }
       };
       n.onPicked = (id, note, v) => {
         world.current?.removeLooseNote(note);
+        ground.current.delete(note);
         world.current?.bubble(id === n.you ? "me" : id, `+${usd(v)}`);
       };
       n.onSpill = (street, until) => {
@@ -491,9 +511,7 @@ export default function PlayPage() {
             </div>
           )}
           <div className="play__hud play__hud--tr">
-            <button type="button" className="play-btn play-btn--sm" onClick={() => setPanel({ kind: "map" })}>
-              Map
-            </button>
+            <MiniMap pose={pose} coins={ground} found={me?.found ?? NONE_FOUND} spill={spill ? spill.street : null} onOpen={() => setPanel((p) => p ?? { kind: "map" })} />
             <button type="button" className="play-btn play-btn--sm" onClick={() => setPanel({ kind: "board" })}>
               Leaderboard
             </button>

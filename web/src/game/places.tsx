@@ -4,7 +4,9 @@
  * the plaza's boards), the keeper's one line, and the place's one action. The kinds: a shop sells kit for the stack,
  * a bank shows your stack and the biggest ones, the Exchange its board, the tower a climb, Bands & Co. two lines
  * about him, and a room has its own small thing (the Coffee House repeats the plaza's talk, the Bookseller keeps the
- * learn pages, Ledgers and the Printer his build notes); the rest are a line and the door.
+ * learn pages, Ledgers and the Printer his build notes); the rest are a line and the door. The town alive adds the
+ * ring road's trades (a line each; they sell nothing a figure can wear) and the four quarters (the Park, the Canal,
+ * the Market Square, the Station: a discovery at the entrance, a line about the place, and the door back out).
  *
  * Every rule is the room server's: the stock, what is owned, the tower's hour and the talk come in the "place"
  * answer and in `me`; this file only shows them and asks. Offline the interiors still open, with their lines and
@@ -61,6 +63,18 @@ const KEEPER: Record<string, string> = {
   "tea-room": "Tea is off. The quiet is included.",
   printer: "Hot off the press: what he built, set in type.",
   barber: "Whatever is under the hat stays under the hat.",
+  // the ring road's shops (the town alive)
+  ironmonger: "Nails by the pound, locks by the pair. His own keys he cuts elsewhere.",
+  chandler: "Rope, tallow and lamp oil. Every lamp on the ring burns ours.",
+  baker: "Out of the oven at five, gone by seven. The sweeper gets the crusts.",
+  apothecary: "Something for the nerves, on the wide days. He has never bought any.",
+  gazette: "Tomorrow's paper, set tonight. The board is on the front page again.",
+  "grand-hotel": "Forty rooms, all taken by people who came to watch the board.",
+  // the four quarters: nobody keeps them; the line is the place's own
+  park: "Lawns, a pond, a bandstand with no band. There are coins in the grass, if you look.",
+  canal: "Barges at the lock, waiting for a keeper who has gone to lunch. Mind the edge.",
+  market: "Twelve stalls and a well. Everything priced in play money, nothing priced twice.",
+  station: "One engine, two carriages, no timetable. This town is the only stop.",
 };
 /** the same trade's line when a place id is not in the table (a keeper is known by the sign, then) */
 const KEEPER_BY_SIGN: Record<string, string> = {
@@ -68,8 +82,20 @@ const KEEPER_BY_SIGN: Record<string, string> = {
   STATIONER: KEEPER["stationer-east"],
   BOOKSELLER: KEEPER["bookseller-west"],
   GLOVER: KEEPER["glover-west"],
+  IRONMONGER: KEEPER.ironmonger,
+  CHANDLER: KEEPER.chandler,
+  BAKER: KEEPER.baker,
+  APOTHECARY: KEEPER.apothecary,
+  GAZETTE: KEEPER.gazette,
+  "GRAND HOTEL": KEEPER["grand-hotel"],
+  "THE PARK": KEEPER.park,
+  "THE CANAL": KEEPER.canal,
+  "MARKET SQUARE": KEEPER.market,
+  "THE STATION": KEEPER.station,
 };
-const keeperLine = (place: Place): string => KEEPER[place.id] ?? KEEPER_BY_SIGN[place.sign] ?? "Come in.";
+/** a sign's lettering may carry a "THE " the table's key does not, or the other way about */
+const bySign = (sign: string): string | undefined => KEEPER_BY_SIGN[sign] ?? KEEPER_BY_SIGN[sign.replace(/^THE /, "")] ?? KEEPER_BY_SIGN[`THE ${sign}`];
+const keeperLine = (place: Place): string => KEEPER[place.id] ?? bySign(place.sign) ?? "Come in.";
 /** a street's end: nobody keeps it; the fog does */
 const END_LINE = "The fog begins here and the street does not. Everything in this town is behind you.";
 
@@ -155,7 +181,10 @@ export function Interior(props: InteriorProps) {
   );
 }
 
-/** a shop: STOCK with prices in play money, what is worn already greyed; the room server holds the till */
+/**
+ * a shop: STOCK with prices in play money, what is worn already greyed; the room server holds the till. A shop with
+ * nothing in STOCK (the ring road's trades sell nothing a figure can wear) is its keeper's line and the door.
+ */
 function Shop({ place, info, online, me, onBuy }: InteriorProps) {
   const shop = shopOf(place.id);
   // the room's word on the stock when it has come; the table with what `me` wears until then
@@ -163,6 +192,7 @@ function Shop({ place, info, online, me, onBuy }: InteriorProps) {
     if (info?.stock) return info.stock.map((s) => ({ ...s, label: STOCK.find((x) => x.item === s.item)?.label ?? s.item }));
     return STOCK.filter((s) => s.shop === shop).map((s) => ({ item: s.item, price: s.price, label: s.label, owned: me ? owns(me.kit, s.item) : false }));
   }, [info, shop, me]);
+  if (!rows.length) return null;
   return (
     <>
       <ul className="play__stock" aria-label="For sale">
@@ -178,7 +208,6 @@ function Shop({ place, info, online, me, onBuy }: InteriorProps) {
             </button>
           </li>
         ))}
-        {!rows.length && <li>Nothing on the shelves today.</li>}
       </ul>
       <p className="lp__fine">{online ? "Prices in play money, from your stack." : "The till opens when the Exchange is online."}</p>
     </>

@@ -36,7 +36,10 @@ kbd { display: inline-block; min-width: 1.6em; padding: 1px 6px; border: 1px sol
 /* the HUD */
 .play__hud { position: absolute; z-index: 3; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .play__hud--tl { top: 14px; left: 14px; flex-direction: column; align-items: flex-start; gap: 4px; }
-.play__hud--tr { top: 14px; right: 14px; }
+.play__hud--tr { top: 14px; right: 14px; flex-direction: column; align-items: flex-end; gap: 8px; }
+/* the mini-map (the town alive): a round window on the plan, you in the middle, the way you face up; a tap opens the whole map */
+.play__minimap { display: block; width: 150px; height: 150px; padding: 0; border: 0; border-radius: 50%; background: rgba(249, 244, 233, 0.92); box-shadow: 0 0 0 3px rgba(249, 244, 233, 0.92), 0 0 0 4px rgba(22, 18, 15, 0.35); cursor: pointer; }
+.play__minimap canvas { display: block; width: 100%; height: 100%; border-radius: 50%; }
 .play__hud--bl { bottom: 16px; left: 14px; right: 14px; }
 .play__me { font-family: var(--font-engrave); font-weight: 700; font-size: 12.5px; letter-spacing: 0.16em; text-transform: uppercase; padding: 3px 8px 2px; background: rgba(249, 244, 233, 0.92); border: 1px solid var(--rule-strong); color: var(--ink-2); }
 .play__me small { font-size: 10.5px; color: var(--ink-3); margin-left: 8px; }
@@ -99,6 +102,7 @@ kbd { display: inline-block; min-width: 1.6em; padding: 1px 6px; border: 1px sol
   .play__intro { padding: 22px 20px; }
   .play__hud--bl { left: 160px; bottom: 18px; }
   .play__prompt { bottom: 210px; }
+  .play__minimap { width: 110px; height: 110px; }
   .play__panel { padding: 22px 18px 18px; }
   .play__desk { grid-template-columns: minmax(0, 1fr); }
   .play__desk img { width: 72px; height: 72px; }
@@ -152,8 +156,10 @@ kbd { display: inline-block; min-width: 1.6em; padding: 1px 6px; border: 1px sol
 .play__broadsheet p { break-inside: avoid; margin: 0 0 10px; font-family: var(--font-serif); font-size: 14.5px; line-height: 1.45; color: var(--ink); }
 .play__broadsheet p::first-letter { font-size: 1.6em; font-weight: 600; float: left; line-height: 1; margin: 2px 4px 0 0; }
 /* the map: a plan of the town on paper, drawn to a canvas from the same geometry the world walks */
-.play__map { width: min(560px, 100%); }
-.play__map canvas { display: block; width: 100%; height: auto; border: 1px solid var(--ink); background: var(--paper-card); }
+.play__map { width: 100%; }
+/* the plan is square: as wide as the panel allows, or as tall as the window leaves for it, whichever is less */
+.play__map canvas { display: block; width: min(100%, calc(100svh - 240px)); aspect-ratio: 1; height: auto; margin: 0 auto; border: 1px solid var(--ink); background: var(--paper-card); }
+.play__panel:has(.play__map) { width: min(860px, 100%); }
 .play__map-key { margin: 10px 0 0; font-family: var(--font-serif); font-size: 14px; color: var(--ink-3); }
 @media (max-width: 640px) {
   .play__broadsheet { columns: 1; }

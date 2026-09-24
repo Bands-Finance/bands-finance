@@ -3,7 +3,9 @@
 // &dist= (4.5..18), &pitch= (0.08..1.1); &kit=crown,cane,cigar,glasses,Cloth dresses the nearer visitor (a hat, the
 // coat's cloth, the things worn); &marker=hatter hangs the page's signpost at that door; &spill=0..3 hangs the Mint's at
 // that street's mouth (town.ts's order: east, north, west, south); &climb=1 takes the tower's view. A few coins and a
-// mint mark lie about where you stand, dropped here (no room: nothing picks them up)
+// mint mark lie about where you stand, dropped here (no room: nothing picks them up). &hour=22 prints the town at
+// that hour (light.ts's day cycle; 0..24 with a fraction; left out, the real UTC hour runs)
+import type * as THREE from "three";
 import { ExchangeWorld } from "./World";
 import { COATS, HATS, type Kit } from "./protocol";
 import { PLACES } from "./town";
@@ -12,6 +14,8 @@ const canvas = document.getElementById("c") as HTMLCanvasElement;
 const w = new ExchangeWorld(canvas, { onNear: () => undefined, onMove: () => undefined, onInteract: () => undefined, onFps: (f) => (document.title = `fps ${f.toFixed(1)}`) });
 (window as unknown as { world: ExchangeWorld }).world = w;
 const q = new URLSearchParams(location.search);
+// the hour: World mounts the day cycle itself and reads ?hour= from this page's query (light.ts)
+(window as unknown as { light: unknown }).light = w.light;
 w.setMe("You", 0);
 w.setBoard([
   { label: "CARDS / USDC", feePct: 0.696, venue: "meteora" },

@@ -19,15 +19,49 @@
  * call update(t, now) each frame (the water's time and the clock's hands, nothing more). The basin itself stays inside
  * r 3.52 so the passers-by's loop, which passes 4 m from the centre, clears its lip.
  *
+ * THE LARGER TOWN (24 Sep): the streets run out to TOWN_RADIUS, a RING ROAD at RING_ROAD_R joins them, lined on both
+ * sides with blocks (townhouses, counting houses, the Grand Hotel and the new shops), and between the streets lie the
+ * four QUARTERS: the Park (lawns, a pond, a bandstand), the Canal (a channel, a bridge, a lock, barges, a wharf), the
+ * Market Square (stalls, a well, bunting) and the Station (a train shed on the ring road, platforms, a train). Every
+ * one is drawn from town.ts's tables (STREET_BLOCK_T, QUARTERS and their obstacles and fixtures) so what is drawn is
+ * what is walkable. Each street wears one of the six strap colours on its awnings, doors, flags and window boxes; the
+ * plaza keeps the orange; the market square flies all six.
+ *
+ * Far things drop their contours the way figures do: an instanced piece's contour is drawn only within FAR_FINE_M
+ * (fine lines) or FAR_BOLD_M (bold) of the camera, so the ring road's blocks cost the plaza no fill.
+ *
  * The town's shape (the street angles, the mouths' half-angle, the kerbs and the front line) is ./town.ts's, which
  * the server shares; every named front records its door there through City.doors, and town.ts's PLACES carries the
  * numbers (see its header).
  */
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { engraveMaterial, outlineRes, shared, type EngraveSpec } from "../stage/engrave";
-import { CAPS, flat, INK, mat, PAPER, SERIF } from "./engraved";
-import { FRONT, KERB_IN, KERB_OUT, STREET_ANGLES, STREET_GAP } from "./town";
+import { engraveMaterial, outlineRes, shared, SPECS, type EngraveSpec } from "../stage/engrave";
+import { CAPS, flat, hexRgb, INK, mat, PAPER, SERIF } from "./engraved";
+import { STRAPS } from "./protocol";
+import {
+  FRONT,
+  KERB_IN,
+  KERB_OUT,
+  LANE_T,
+  QUARTER_CORNER_R,
+  QUARTER_EDGE_M,
+  QUARTER_OPEN,
+  QUARTERS,
+  RING_ROAD_BLOCK_D,
+  RING_ROAD_FRONT_IN,
+  RING_ROAD_FRONT_OUT,
+  RING_ROAD_IN,
+  RING_ROAD_OUT,
+  RING_ROAD_R,
+  STREET_ANGLES,
+  STREET_BLOCK_T,
+  STREET_GAP,
+  STREET_HALF_WIDTH_M,
+  TOWN_RADIUS,
+  toWorld,
+  type Quarter,
+} from "./town";
 
 export interface Circle {
   x: number;
@@ -53,6 +87,8 @@ export interface Door {
   x: number;
   z: number;
   facing: number;
+  /** the colour the front wears (an index into STRAPS), for the shop's row in PLACES */
+  strap: number;
 }
 export interface City {
   root: THREE.Group;
@@ -65,6 +101,8 @@ export interface City {
 
 const ORANGE = "#ff7a1a";
 const TAU = Math.PI * 2;
+/** an angle brought into (-PI, PI] */
+const wrapA = (a: number): number => ((((a + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
 
 // ---------------------------------------------------------------- materials
 
@@ -82,8 +120,44 @@ const CITY_SPECS: Record<string, EngraveSpec> = {
   Leaf: { tone: 0.68, pitch: 0.9 },
   /** the carriageway: a light diagonal hatch that parts it from the pavements */
   Road: { tone: 0.8 },
+  /** the park's lawns: a lighter hatch than the road, cut a little finer, so grass reads against paving */
+  Lawn: { tone: 0.86, pitch: 1.15 },
+  /** the market's and the wharf's paving: barely off the paper */
+  Paving: { tone: 0.94 },
 };
 const cityMats = new Map<string, THREE.Material>();
+
+/**
+ * The six strap colours (protocol.ts STRAPS) as engraved accent materials: the house Strap (orange, the shared accent
+ * uniform) for the plaza, and one each for the streets and the ring road, its ink a darker shade of itself. A flag
+ * or a bunting pennant is seen from both sides.
+ */
+const accentMats = new Map<string, THREE.Material>();
+function accentMat(i: number, doubleSide = false): THREE.Material {
+  if (i === 0 && !doubleSide) return M("Strap");
+  const key = `${i}:${doubleSide}`;
+  let m = accentMats.get(key);
+  if (!m) {
+    const made = engraveMaterial({ ...SPECS.Strap, doubleSide });
+    const base = made.onBeforeCompile;
+    const col = new THREE.Vector3(...hexRgb(STRAPS[i] ?? STRAPS[0]));
+    const ink = col.clone().multiplyScalar(0.42);
+    made.onBeforeCompile = (shader, r) => {
+      base.call(made, shader, r);
+      shader.uniforms.uAccent = { value: col };
+      shader.uniforms.uAccentInk = { value: ink };
+    };
+    accentMats.set(key, made);
+    m = made;
+  }
+  return m;
+}
+/** the piece an awning, a painted door or a flag is drawn with in colour i */
+const strapPiece = (i: number) => (i === 0 ? "strap" : `strap${i}`);
+
+/** an instanced piece's contour is drawn only this near the camera: fine lines, and bold ones (the fog has them by then) */
+const FAR_FINE_M = 60;
+const FAR_BOLD_M = 140;
 
 /**
  * The camera may come to rest in a crown (it trails you by up to 18 m). A clump whose centre is near the eye dissolves
@@ -131,8 +205,12 @@ function M(name: string): THREE.Material {
   return m;
 }
 
-/** the contour (src/stage/engrave.ts outlineMaterial), but taking the fog: far façades are drawn in fainter lines */
-function fogOutline(widthPx: number, nearCut = false): THREE.ShaderMaterial {
+/**
+ * the contour (src/stage/engrave.ts outlineMaterial), but taking the fog: far façades are drawn in fainter lines; and
+ * an instanced piece whose origin is farther than farCut from the camera is not drawn at all (its vertices are put
+ * outside the clip volume), so a far block's thousand window frames cost nothing
+ */
+function fogOutline(widthPx: number, nearCut = false, farCut = FAR_BOLD_M): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     defines: nearCut ? { NEAR_CUT: "" } : {},
     side: THREE.BackSide,
@@ -144,14 +222,19 @@ function fogOutline(widthPx: number, nearCut = false): THREE.ShaderMaterial {
       uFade: shared.uFade,
       uWidth: { value: widthPx },
       uRes: outlineRes,
+      uFarCut: { value: farCut },
     },
     vertexShader: /* glsl */ `
       #include <fog_pars_vertex>
-      uniform float uWidth; uniform vec2 uRes;
+      uniform float uWidth; uniform vec2 uRes; uniform float uFarCut;
       varying float vCut;
       void main() {
         #ifdef NEAR_CUT
         ${CUT_VERT}
+        #endif
+        #ifdef USE_INSTANCING
+          vec3 farC = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+          if (length(farC - cameraPosition) > uFarCut) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
         #endif
         vec4 p = vec4(position, 1.0); vec3 n = normal;
         #ifdef USE_INSTANCING
@@ -185,7 +268,7 @@ function outline(w: number, nearCut = false): THREE.ShaderMaterial {
   const key = `${w}:${nearCut}`;
   let m = outlines.get(key);
   if (!m) {
-    m = fogOutline(w, nearCut);
+    m = fogOutline(w, nearCut, w <= FINE ? FAR_FINE_M : FAR_BOLD_M);
     outlines.set(key, m);
   }
   return m;
@@ -719,6 +802,19 @@ interface WinOpt {
 
 /** set while the far streets are drawn: their windows go without architraves and glazing bars (fog takes them anyway) */
 let plain = false;
+/** the strap colour (an index into STRAPS) the fronts being drawn wear on their awnings, painted doors, flags and window boxes */
+let accent = 0;
+
+/** a window box under a sill: a wooden trough and three blooms in the street's colour */
+function windowBox(k: Kit, x: number, y: number, w: number) {
+  k.slab("wbox", x - w / 2 - 0.1, x + w / 2 + 0.1, y - 0.7, y - 0.38, 0.3, 0.72);
+  for (const dx of [-0.3, 0, 0.3]) k.put(`bloom${accent}`, x + dx * w, y - 0.32, 0.5, 0.36, 0.22, 0.36, dx * 3);
+}
+
+/** the back of a building: a wall the other way round (every box here is open at the back), so a quarter sees a wall, not a hollow */
+function backWall(k: Kit, body: Body, W: number, D: number, H: number) {
+  k.put(body, 0, H / 2, -D + 0.25, W, H, 0.5, Math.PI);
+}
 
 function win(k: Kit, x: number, y: number, w: number, h: number, o: WinOpt = {}) {
   const framed = o.frame !== false && !plain;
@@ -743,9 +839,10 @@ function win(k: Kit, x: number, y: number, w: number, h: number, o: WinOpt = {})
   if (ped === "tri") k.put("ped", x, y + h + 0.4, 0.15, w + 0.76, w + 0.76, 0.3);
 }
 
-function door(k: Kit, x: number, w: number, h: number) {
+/** a door in its architrave, a fanlight over it; painted: its leaf in the street's colour (a shop's) instead of bare wood */
+function door(k: Kit, x: number, w: number, h: number, painted = false) {
   k.slab("trim", x - w / 2 - 0.3, x + w / 2 + 0.3, 0, h + 0.95, 0, 0.12);
-  k.slab("wood", x - w / 2, x + w / 2, 0.25, h, 0.06, 0.16);
+  k.slab(painted ? strapPiece(accent) : "wood", x - w / 2, x + w / 2, 0.25, h, 0.06, 0.16);
   k.slab("bar", x - 0.03, x + 0.03, 0.25, h, 0.16, 0.18);
   k.slab("void", x - w / 2, x + w / 2, h + 0.12, h + 0.72, 0.06, 0.16);
   k.slab("trim", x - w / 2 - 0.45, x + w / 2 + 0.45, h + 0.95, h + 1.12, 0, 0.32);
@@ -766,7 +863,7 @@ function shopfront(k: Kit, atlas: Atlas, x0: number, x1: number, sign?: string, 
   k.slab("ink", x0 - 0.2, x1 + 0.2, 3.22, 3.92, 0, 0.26);
   k.slab("trim", x0 - 0.36, x1 + 0.36, 3.92, 4.08, 0, 0.4);
   if (sign) k.geo("signs", atlas.quad(sign, Math.min(x1 - x0, 5.2)), (x0 + x1) / 2, 3.57, 0.27);
-  if (awning) k.put("strap", (x0 + x1) / 2, 2.98, 0.95, x1 - x0 + 0.2, 0.08, 1.8, 0, 0, 0.42);
+  if (awning) k.put(strapPiece(accent), (x0 + x1) / 2, 2.98, 0.95, x1 - x0 + 0.2, 0.08, 1.8, 0, 0, 0.42);
 }
 
 function cornice(k: Kit, W: number, y: number, proj: number, dentils = false) {
@@ -854,13 +951,15 @@ interface Ctx {
   hands: { hour: THREE.Object3D; minute: THREE.Object3D }[];
   doors: Door[];
   fences: Seg[];
+  /** every sheet of water, for update() to move */
+  waters: THREE.ShaderMaterial[];
 }
 
 /** a front's door, at x across the current frame and z before its face (1.5 m: on the pavement, off the kerb) */
 function doorAt(c: Ctx, sign: string, x: number, z = 1.5) {
   const at = c.k.world(x, 0, z);
   const ahead = c.k.world(x, 0, z + 1);
-  c.doors.push({ sign, x: at.x, z: at.z, facing: Math.atan2(ahead.x - at.x, ahead.z - at.z) });
+  c.doors.push({ sign, x: at.x, z: at.z, facing: Math.atan2(ahead.x - at.x, ahead.z - at.z), strap: accent });
 }
 
 /** a line of the current frame nothing walks through */
@@ -890,8 +989,8 @@ function townhouse(c: Ctx, W: number, D: number, o: HouseOpts) {
   const n = Math.max(2, Math.round(W / 3.1));
   const xs = bays(W, n);
   const pitch = W / n;
-  // the ground floor: a door in the last bay; a shop, or windows, in the rest
-  door(k, xs[n - 1], 1.3, 2.7);
+  // the ground floor: a door in the last bay (a shop's painted in the street's colour); a shop, or windows, in the rest
+  door(k, xs[n - 1], 1.3, 2.7, !!o.shop);
   if (o.shop) {
     const x0 = -W / 2 + 0.45;
     const x1 = xs[n - 1] - pitch / 2 - 0.1;
@@ -903,12 +1002,14 @@ function townhouse(c: Ctx, W: number, D: number, o: HouseOpts) {
   for (let f = 0; f < floors; f++) {
     const y = gf + 0.9 + f * 3.5;
     const first = f === 0;
-    xs.forEach((x, i) =>
+    xs.forEach((x, i) => {
       win(k, x, y, first ? 1.2 : 1.1, first ? 2.4 : 2.0, {
         ped: first ? (o.rich && i % 2 === 0 ? "tri" : "flat") : "none",
         balc: first && !!o.rich,
-      }),
-    );
+      });
+      // window boxes under the first floor's sills (a balcony has no room for one), not on the far, plain streets
+      if (first && !o.rich && !plain) windowBox(k, x, y, 1.2);
+    });
   }
   cornice(k, W, H, 0.6, !!o.rich);
   if (o.mansard) {
@@ -1006,7 +1107,7 @@ function bank(c: Ctx, W: number, D: number, o: BankOpts) {
   if (o.dome) dome(k, 0, H + 0.9, -Math.min(D * 0.5, o.dome + 4), o.dome);
   if (o.flag) {
     k.put("pole", 0, H + 1.1, -2.0, 0.6, 7.5, 0.6);
-    k.put("strap", 1.32, H + 7.8, -2.0, 2.5, 1.5, 0.05);
+    k.put(strapPiece(accent), 1.32, H + 7.8, -2.0, 2.5, 1.5, 0.05);
     k.geo("brass", new THREE.SphereGeometry(0.16, 8, 6), 0, H + 8.7, -2.0);
   }
 }
@@ -1305,9 +1406,74 @@ function exchange(c: Ctx, W: number, D: number) {
   }
 }
 
+// ---------------------------------------------------------------- water
+
+/**
+ * Still water: paper, ringed with ink ripples running out from its centre (the fountain's basin, the park's pond),
+ * a light hatch in the shade of its wall. One material per sheet; update() moves their time together
+ */
+function ringWater(rim: number, freq: number, wash = 0): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uInk: shared.uInk, uPaper: shared.uPaper, uRim: { value: rim }, uFreq: { value: freq }, uWash: { value: wash } },
+    vertexShader: /* glsl */ `
+      varying vec2 vP;
+      void main() { vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: /* glsl */ `
+      uniform float uTime; uniform vec3 uInk; uniform vec3 uPaper; uniform float uRim; uniform float uFreq; uniform float uWash;
+      varying vec2 vP;
+      void main() {
+        float r = length(vP);
+        float a = atan(vP.y, vP.x);
+        float q = r * uFreq + sin(a * 7.0 + uTime * 0.8) * 0.06 - uTime * 0.55;
+        float d = abs(fract(q) - 0.5) * 2.0;
+        float aa = fwidth(q) * 1.5;
+        float ring = smoothstep(0.86 - aa, 0.86 + aa, d);
+        // a light hatch in the shade of the wall, and (a pond) a wash of it over the whole sheet
+        float h = abs(fract(vP.y * 3.2 + vP.x * 0.9) - 0.5) * 2.0;
+        float hatch = smoothstep(0.93 - fwidth(vP.y * 3.2) * 2.0, 0.93, h) * max(0.35 * smoothstep(0.8 * uRim, uRim, r), uWash);
+        float ink = max(ring * 0.8 * smoothstep(0.63 * uRim, 0.77 * uRim, r), hatch);
+        gl_FragColor = vec4(mix(uPaper, uInk, ink), 1.0);
+      }`,
+  });
+}
+
+/** the canal: ink strands drawn along its length, drifting one way, a hatch under each bank */
+function flowWater(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uInk: shared.uInk, uPaper: shared.uPaper },
+    vertexShader: /* glsl */ `
+      varying vec2 vP;
+      void main() { vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: /* glsl */ `
+      uniform float uTime; uniform vec3 uInk; uniform vec3 uPaper;
+      varying vec2 vP;
+      void main() {
+        float q = vP.y * 1.4 + sin(vP.x * 0.35 + uTime * 0.5) * 0.18 + sin(vP.x * 1.3 - uTime * 0.9) * 0.05;
+        float d = abs(fract(q) - 0.5) * 2.0;
+        float aa = fwidth(q) * 1.5;
+        float strand = smoothstep(0.84 - aa, 0.84 + aa, d);
+        float dash = smoothstep(0.35, 0.5, fract(vP.x * 0.22 - uTime * 0.12 + vP.y * 0.3));
+        float h = abs(fract(vP.x * 2.6 + vP.y * 0.7) - 0.5) * 2.0;
+        float bank = 0.3 + 0.35 * smoothstep(2.4, 3.9, abs(vP.y));
+        float hatch = smoothstep(0.92 - fwidth(vP.x * 2.6) * 2.0, 0.92, h) * bank;
+        float ink = max(strand * dash * 0.7, hatch);
+        gl_FragColor = vec4(mix(uPaper, uInk, ink), 1.0);
+      }`,
+  });
+}
+
+/** a sheet of water: a flat mesh in the current frame at (x, y, z), turned by ry, its material kept for update() */
+function waterSheet(c: Ctx, geo: THREE.BufferGeometry, m: THREE.ShaderMaterial, x: number, y: number, z: number, ry = 0) {
+  const mesh = new THREE.Mesh(geo, m);
+  mesh.applyMatrix4(c.k.frame.clone().multiply(c.k.local(x, y, z, ry, 1, 1, 1, 0, -Math.PI / 2)));
+  mesh.name = "city:water";
+  c.extras.add(mesh);
+  c.waters.push(m);
+}
+
 // ---------------------------------------------------------------- the fountain
 
-function fountain(c: Ctx, root: THREE.Group): { update(t: number): void } {
+function fountain(c: Ctx, root: THREE.Group) {
   const { k } = c;
   k.at(new THREE.Matrix4());
   const V = (r: number, y: number) => new THREE.Vector2(r, y);
@@ -1337,33 +1503,7 @@ function fountain(c: Ctx, root: THREE.Group): { update(t: number): void } {
   }
 
   // the water surface: paper, ringed with ink ripples running out from under the tazza
-  const surfaceMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 }, uInk: shared.uInk, uPaper: shared.uPaper },
-    vertexShader: /* glsl */ `
-      varying vec2 vP;
-      void main() { vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-    fragmentShader: /* glsl */ `
-      uniform float uTime; uniform vec3 uInk; uniform vec3 uPaper;
-      varying vec2 vP;
-      void main() {
-        float r = length(vP);
-        float a = atan(vP.y, vP.x);
-        float q = r * 2.3 + sin(a * 7.0 + uTime * 0.8) * 0.06 - uTime * 0.55;
-        float d = abs(fract(q) - 0.5) * 2.0;
-        float aa = fwidth(q) * 1.5;
-        float ring = smoothstep(0.86 - aa, 0.86 + aa, d);
-        // a light hatch in the shade of the basin wall
-        float h = abs(fract(vP.y * 3.2 + vP.x * 0.9) - 0.5) * 2.0;
-        float hatch = smoothstep(0.93 - fwidth(vP.y * 3.2) * 2.0, 0.93, h) * 0.35 * smoothstep(2.4, 3.0, r);
-        float ink = max(ring * 0.8 * smoothstep(1.9, 2.3, r), hatch);
-        gl_FragColor = vec4(mix(uPaper, uInk, ink), 1.0);
-      }`,
-  });
-  const surface = new THREE.Mesh(new THREE.CircleGeometry(3.01, 56), surfaceMat);
-  surface.rotation.x = -Math.PI / 2;
-  surface.position.y = 0.55;
-  surface.name = "city:water";
-  root.add(surface);
+  waterSheet(c, new THREE.CircleGeometry(3.01, 56), ringWater(3.0, 2.3), 0, 0.55, 0);
 
   // the water that moves: jets arcing in from the spouts to the tazza, and a veil falling from its rim, drawn as ink strands
   const pos: number[] = [];
@@ -1426,13 +1566,7 @@ function fountain(c: Ctx, root: THREE.Group): { update(t: number): void } {
   water.name = "city:jets";
   water.renderOrder = 2;
   root.add(water);
-
-  return {
-    update(t: number) {
-      surfaceMat.uniforms.uTime.value = t;
-      waterMat.uniforms.uTime.value = t;
-    },
-  };
+  c.waters.push(waterMat);
 }
 
 // ---------------------------------------------------------------- trees and lamps
@@ -1475,13 +1609,392 @@ function lamp(k: Kit, x: number, z: number) {
   k.put("globe", x, 4.55, z, 1, 1, 1);
 }
 
+// ---------------------------------------------------------------- the quarters' furniture (each in the current frame, at x, z, turned ry)
+
+/** a park bench: a wooden seat and back on two iron ends, its back to -z */
+function bench(k: Kit, x: number, z: number, ry: number) {
+  k.push(k.local(x, 0, z, ry));
+  k.slab("wood", -0.9, 0.9, 0.42, 0.5, -0.25, 0.25);
+  k.slab("wood", -0.9, 0.9, 0.55, 0.95, -0.32, -0.26);
+  for (const sx of [-0.8, 0.8]) {
+    k.slab("rail", sx - 0.03, sx + 0.03, 0, 0.42, -0.24, -0.18);
+    k.slab("rail", sx - 0.03, sx + 0.03, 0, 0.42, 0.18, 0.24);
+    k.slab("rail", sx - 0.03, sx + 0.03, 0.42, 0.98, -0.34, -0.28);
+  }
+  k.pop();
+}
+
+/** a market stall: a counter on trestles, four posts, an awning in colour i pitched toward +z, goods on the counter */
+function stall(k: Kit, x: number, z: number, ry: number, colour: number) {
+  k.push(k.local(x, 0, z, ry));
+  k.slab("wood", -1.5, 1.5, 0.85, 0.98, -0.5, 0.5);
+  k.slab("wood", -1.4, 1.4, 0.1, 0.85, -0.4, 0.4);
+  for (const sx of [-1.45, 1.45]) for (const sz of [-0.9, 0.9]) k.put("pole", sx, 0, sz, 0.7, 2.4, 0.7);
+  k.put(strapPiece(colour), 0, 2.45, 0.1, 3.4, 0.06, 2.4, 0, 0, 0.28);
+  k.slab("rail", -1.7, 1.7, 2.02, 2.1, 1.2, 1.26);
+  k.slab("wood", -1.1, -0.3, 0.98, 1.4, -0.3, 0.3);
+  k.put("barrel", 0.8, 0.98, 0, 0.6, 0.5, 0.6);
+  k.pop();
+}
+
+/** the market's well: a stone drum with a coping, two posts, a windlass under a little gabled roof */
+function well(k: Kit, x: number, z: number) {
+  k.push(k.local(x, 0, z));
+  k.geo("stonework", new THREE.CylinderGeometry(1.2, 1.25, 1.0, 12, 1, true), 0, 0.5, 0);
+  k.geo("stonework", new THREE.TorusGeometry(1.2, 0.12, 6, 14), 0, 1.0, 0, 0, 1, 1, 1, 0, Math.PI / 2);
+  k.put("soil", 0, 0.97, 0, 1.05, 1, 1.05);
+  for (const sx of [-1.35, 1.35]) k.put("pole", sx, 0, 0, 0.9, 2.6, 0.9);
+  k.slab("wood", -1.5, 1.5, 2.55, 2.7, -0.12, 0.12);
+  k.put("ped", 0, 2.7, 0, 3.6, 3.6, 2.2);
+  k.put("wheel", 1.55, 2.2, 0, 0.9, 0.9, 0.9);
+  k.geo("brass", new THREE.CylinderGeometry(0.05, 0.05, 3.2, 6), 0, 2.2, 0, 0, 1, 1, 1, Math.PI / 2);
+  k.pop();
+}
+
+/** the park's bandstand: an octagonal stone platform, eight posts under a lead roof, a finial */
+function bandstand(k: Kit, x: number, z: number) {
+  k.push(k.local(x, 0, z));
+  k.geo("stonework", new THREE.CylinderGeometry(5.1, 5.2, 0.3, 8), 0, 0.15, 0, Math.PI / 8);
+  k.geo("stonework", new THREE.CylinderGeometry(4.6, 4.8, 0.5, 8), 0, 0.55, 0, Math.PI / 8);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * TAU + Math.PI / 8;
+    k.put("pole", Math.sin(a) * 4.0, 0.8, Math.cos(a) * 4.0, 1.1, 3.3, 1.1);
+  }
+  k.geo("ironwork", new THREE.TorusGeometry(4.0, 0.04, 4, 8), 0, 1.7, 0, Math.PI / 8, 1, 1, 1, 0, Math.PI / 2);
+  k.geo("stonework", new THREE.CylinderGeometry(4.3, 4.3, 0.35, 8), 0, 4.27, 0, Math.PI / 8);
+  k.geo("lead", new THREE.ConeGeometry(5.4, 2.4, 8), 0, 5.6, 0, Math.PI / 8);
+  k.geo("brass", new THREE.SphereGeometry(0.22, 8, 6), 0, 6.9, 0);
+  k.pop();
+}
+
+/** a gate's pier: a stone post with an urn, either side of a quarter's opening on the ring road */
+function pier(k: Kit, x: number, z: number) {
+  k.slab("stone", x - 0.5, x + 0.5, 0, 3.0, z - 0.5, z + 0.5);
+  k.slab("trim", x - 0.62, x + 0.62, 3.0, 3.2, z - 0.62, z + 0.62);
+  k.put("baluster", x, 3.2, z, 3.2, 1.3, 3.2);
+}
+
+/** a wooden crate, or a barrel */
+function crate(k: Kit, x: number, z: number, ry: number) {
+  k.push(k.local(x, 0, z, ry));
+  k.slab("wood", -0.5, 0.5, 0, 0.9, -0.5, 0.5);
+  k.slab("rail", -0.52, 0.52, 0.42, 0.48, -0.52, 0.52);
+  k.pop();
+}
+
+/** the station's train: the engine at the buffers and two carriages behind it, on track qc (x), from z0 toward the shed */
+function train(k: Kit, qc: number, z0: number) {
+  // the engine: a frame on three pairs of wheels, the boiler with its smokebox, chimney and dome, the cab
+  k.slab("ink", qc - 1.2, qc + 1.2, 0.7, 1.05, z0 + 0.2, z0 + 5.8);
+  for (const dz of [1.2, 3.0, 4.8]) for (const sx of [-1.1, 1.1]) k.put("wheel", qc + sx, 0.75, z0 + dz, 1.5, 1.5, 1.5);
+  k.geo("ironwork", new THREE.CylinderGeometry(0.95, 0.95, 3.8, 14), qc, 2.0, z0 + 2.4, 0, 1, 1, 1, 0, Math.PI / 2);
+  k.geo("ironwork", new THREE.CylinderGeometry(1.02, 1.02, 0.3, 14), qc, 2.0, z0 + 0.5, 0, 1, 1, 1, 0, Math.PI / 2);
+  k.geo("ironwork", new THREE.CylinderGeometry(0.22, 0.3, 1.3, 10), qc, 3.5, z0 + 1.0);
+  k.geo("brass", new THREE.SphereGeometry(0.45, 10, 8), qc, 2.95, z0 + 3.2);
+  k.slab("ink", qc - 1.1, qc + 1.1, 1.05, 3.6, z0 + 4.2, z0 + 6.0);
+  k.slab("void", qc - 1.12, qc - 1.08, 2.2, 3.2, z0 + 4.5, z0 + 5.7);
+  k.slab("void", qc + 1.08, qc + 1.12, 2.2, 3.2, z0 + 4.5, z0 + 5.7);
+  k.slab("slate", qc - 1.25, qc + 1.25, 3.6, 3.78, z0 + 4.05, z0 + 6.15);
+  // the carriages
+  for (const [c0, c1] of [
+    [z0 + 7.0, z0 + 11.6],
+    [z0 + 12.6, z0 + 17.2],
+  ]) {
+    k.slab("ink", qc - 1.2, qc + 1.2, 0.7, 1.0, c0, c1);
+    for (const dz of [1.0, c1 - c0 - 1.0]) for (const sx of [-1.1, 1.1]) k.put("wheel", qc + sx, 0.55, c0 + dz, 1.1, 1.1, 1.1);
+    k.slab("wood", qc - 1.1, qc + 1.1, 1.0, 3.3, c0, c1);
+    for (let i = 0; i < 5; i++) {
+      const wz = c0 + 0.6 + i * 0.85;
+      k.slab("void", qc - 1.12, qc - 1.08, 1.9, 2.9, wz, wz + 0.55);
+      k.slab("void", qc + 1.08, qc + 1.12, 1.9, 2.9, wz, wz + 0.55);
+    }
+    k.slab("slate", qc - 1.25, qc + 1.25, 3.3, 3.5, c0 - 0.1, c1 + 0.1);
+  }
+}
+
+/** a gable end of the train shed: a wall with a round top (the vault's profile), an arched opening cut through it */
+function gableGeo(W: number, H: number, R: number, opening: number, depth: number): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(-W / 2, 0);
+  s.lineTo(W / 2, 0);
+  s.lineTo(W / 2, H);
+  s.absarc(0, H, R, 0, Math.PI, false);
+  s.lineTo(-W / 2, 0);
+  if (opening > 0) {
+    const h = new THREE.Path();
+    h.moveTo(-opening, 0);
+    h.lineTo(-opening, 3);
+    h.absarc(0, 3, opening, Math.PI, 0, true);
+    h.lineTo(opening, 0);
+    h.closePath();
+    s.holes.push(h);
+  }
+  return new THREE.ExtrudeGeometry(s, { depth, bevelEnabled: false, curveSegments: 20 });
+}
+
+/**
+ * The station: in its quarter's frame (x across, z out from the plaza). The train shed against the ring road, its
+ * big arch toward the platforms, its back on the road with a door, the sign and a clock; two platforms under canopies,
+ * two tracks, the train at the near one; the forecourt's lamps
+ */
+function station(c: Ctx, qr: Quarter) {
+  const { k } = c;
+  const shed = qr.obstacles[0];
+  const trainBox = qr.obstacles[1];
+  if (shed.kind !== "box" || trainBox.kind !== "box") return;
+  const W = shed.q1 - shed.q0;
+  const H = 7;
+  const R = W / 2 + 0.2;
+  k.slab("brick", shed.q0, shed.q1, 0, H, shed.p0, shed.p1);
+  k.geo("lead", new THREE.CylinderGeometry(R, R, shed.p1 - shed.p0 + 0.4, 24, 1, true, Math.PI / 2, Math.PI), 0, H, (shed.p0 + shed.p1) / 2, 0, 1, 1, 1, 0, Math.PI / 2);
+  // the gables: the arch toward the platforms, dark within; the back on the ring road with its door, sign and clock
+  k.geo("stonework", gableGeo(W, H, R, 8, 0.6), 0, 0, shed.p0);
+  k.slab("void", -8.2, 8.2, 0, 11.5, shed.p0 + 1.4, shed.p0 + 1.6);
+  k.geo("stonework", gableGeo(W, H, R, 0, 0.6), 0, 0, shed.p1 - 0.6);
+  k.push(k.local(0, 0, shed.p1));
+  k.put("arch", 0, 0, 0.5, 1.1, 1.1, 1);
+  k.slab("void", -1.2, 1.2, 0, 4.9, 0.02, 0.1);
+  k.slab("wood", -1.0, 1.0, 0, 3.4, 0.1, 0.16);
+  for (const x of [-6, 6]) win(k, x, 1.3, 1.5, 3.0, { ped: "flat", key: true });
+  k.geo("signs", c.atlas.quad("STATION", 9), 0, 7.4, 0.02);
+  k.slab("trim", -W / 2 + 0.3, W / 2 - 0.3, 6.6, 6.8, 0, 0.3);
+  clockFace(c, 0, 12.5, 0.04, 0, 1.8);
+  doorAt(c, "STATION", 0);
+  k.pop();
+  // the side walls' windows
+  for (const side of [-1, 1] as const) {
+    k.push(k.local(side * (W / 2), 0, (shed.p0 + shed.p1) / 2, (side * Math.PI) / 2));
+    for (const x of bays(shed.p1 - shed.p0 - 4, 5)) win(k, x, 2.6, 1.4, 3.2, { ped: "none" });
+    k.pop();
+  }
+  for (const [x0, z0, x1, z1] of [
+    [shed.q0, shed.p0, shed.q1, shed.p0],
+    [shed.q1, shed.p0, shed.q1, shed.p1],
+    [shed.q1, shed.p1, shed.q0, shed.p1],
+    [shed.q0, shed.p1, shed.q0, shed.p0],
+  ])
+    fence(c, x0, z0, x1, z1);
+  // the platforms: paving with a kerb on the track side, a canopy on posts over each
+  const P0 = trainBox.p0 + 2;
+  const P1 = shed.p0;
+  for (const side of [-1, 1] as const) {
+    const q0 = side * 6;
+    const q1 = side * 13;
+    k.geo("paving", new THREE.PlaneGeometry(7, P1 - P0), (q0 + q1) / 2, 0.02, (P0 + P1) / 2, 0, 1, 1, 1, 0, -Math.PI / 2);
+    k.slab("trim", Math.min(q0, q0 + side * 0.25), Math.max(q0, q0 + side * 0.25), 0, 0.14, P0, P1);
+    k.slab("slate", Math.min(q0 + side * 0.3, q1 - side * 0.3), Math.max(q0 + side * 0.3, q1 - side * 0.3), 3.5, 3.62, P0, P1);
+    k.slab("ink", Math.min(q0 + side * 0.3, q0 + side * 0.4), Math.max(q0 + side * 0.3, q0 + side * 0.4), 3.1, 3.5, P0, P1);
+    for (const f of qr.fixtures) if (f.r === 0.3 && Math.abs(f.q) === 7 && Math.sign(f.q) === side) k.put("pole", f.q, 0, f.p, 0.9, 3.5, 0.9);
+  }
+  // the tracks: rails on sleepers, a buffer stop at the end of each
+  for (const qc of [-3, 3]) {
+    for (let p = trainBox.p0 - 0.6; p < P1 + 0.5; p += 0.85) k.slab("sleeper", qc - 1.3, qc + 1.3, 0, 0.1, p - 0.12, p + 0.12);
+    for (const dx of [-0.72, 0.72]) k.slab("rail", qc + dx - 0.04, qc + dx + 0.04, 0.06, 0.18, trainBox.p0 - 1.0, P1 + 0.6);
+    k.slab("ink", qc - 1.0, qc + 1.0, 0.35, 1.1, trainBox.p0 - 1.4, trainBox.p0 - 1.0);
+    for (const dx of [-0.8, 0.8]) k.slab("rail", qc + dx - 0.05, qc + dx + 0.05, 0.1, 1.0, trainBox.p0 - 2.2, trainBox.p0 - 1.4);
+  }
+  train(k, (trainBox.q0 + trainBox.q1) / 2, trainBox.p0);
+  for (const [x0, z0, x1, z1] of [
+    [trainBox.q0, trainBox.p0, trainBox.q1, trainBox.p0],
+    [trainBox.q1, trainBox.p0, trainBox.q1, trainBox.p1],
+    [trainBox.q0, trainBox.p0, trainBox.q0, trainBox.p1],
+  ])
+    fence(c, x0, z0, x1, z1);
+  // the forecourt's lamps
+  for (const f of qr.fixtures) if (f.r === 0.3 && Math.abs(f.q) === 14) lamp(k, f.q, f.p);
+}
+
+/**
+ * The canal: the channel sunk between stone banks, its water flowing; the bridge with balusters on the centre line;
+ * the lock's gates and winding gear; two barges moored by the wharf; bollards, a crane, crates; the tunnel portals the
+ * channel runs into under the ring road's blocks
+ */
+function canal(c: Ctx, qr: Quarter) {
+  const { k } = c;
+  const ch = qr.obstacles[0];
+  if (ch.kind !== "box") return;
+  // the water lies just above the ground (the world's ground plane hides anything under it), a stone coping along
+  // each bank standing over it, so the channel reads as a drop from the towpath
+  const WATER_Y = 0.03;
+  for (const p of [ch.p0, ch.p1]) {
+    const out = p === ch.p0 ? -1 : 1;
+    k.slab("stone", ch.q0, ch.q1, 0, 0.45, Math.min(p, p + out * 0.7), Math.max(p, p + out * 0.7));
+  }
+  waterSheet(c, new THREE.PlaneGeometry(ch.q1 - ch.q0, ch.p1 - ch.p0), flowWater(), 0, WATER_Y, (ch.p0 + ch.p1) / 2);
+  // the towpath and the yard on the near bank, the wharf on the far one
+  k.geo("paving", new THREE.PlaneGeometry(92, ch.p0 - 0.25 - 88), 0, 0.014, (88 + ch.p0 - 0.25) / 2, 0, 1, 1, 1, 0, -Math.PI / 2);
+  k.geo("paving", new THREE.PlaneGeometry(50, 124 - ch.p1 - 0.25), 0, 0.014, (ch.p1 + 0.25 + 124) / 2, 0, 1, 1, 1, 0, -Math.PI / 2);
+  k.geo("paving", new THREE.PlaneGeometry(ch.q1 - ch.q0, 3.5), 0, 0.014, ch.p1 + 2.0, 0, 1, 1, 1, 0, -Math.PI / 2);
+  // the bridge: a stone deck across the channel, balustrades along its edges, piers in the water
+  const deck = qr.decks[0];
+  k.slab("stone", deck.q0 - 0.4, deck.q1 + 0.4, 0, 0.08, deck.p0, deck.p1);
+  for (const q of [deck.q0 - 0.2, deck.q1 + 0.2]) {
+    k.push(k.local(q, 0, (deck.p0 + deck.p1) / 2, Math.PI / 2));
+    balustrade(k, -(deck.p1 - deck.p0) / 2, (deck.p1 - deck.p0) / 2, 0.08, 0, [-(deck.p1 - deck.p0) / 2 + 0.3, 0, (deck.p1 - deck.p0) / 2 - 0.3]);
+    k.pop();
+  }
+  // the lock: two pairs of gates meeting in a V, their balance beams on the banks
+  for (const q of [-30, -36]) {
+    for (const [p, ry] of [
+      [ch.p0 + 2.1, 0.28],
+      [ch.p1 - 2.1, -0.28],
+    ])
+      k.put("wood", q + 0.5, 0.65, p, 0.3, 1.3, 4.3, ry);
+    k.slab("wood", q - 0.15, q + 0.15, 0.5, 0.75, ch.p1 + 0.3, ch.p1 + 4.2);
+    k.slab("wood", q - 0.15, q + 0.15, 0.5, 0.75, ch.p0 - 4.2, ch.p0 - 0.3);
+  }
+  // the barges, moored along the far bank
+  for (const [q0, q1, cabin] of [
+    [12, 22, 1],
+    [26, 36, -1],
+  ]) {
+    const p = ch.p1 - 1.7;
+    const y0 = WATER_Y + 0.05;
+    k.slab("ink", q0, q1, y0 - 0.5, y0 + 0.5, p - 1.3, p + 1.3);
+    k.slab("wood", q0 - 0.1, q1 + 0.1, y0 + 0.5, y0 + 0.62, p - 1.4, p + 1.4);
+    const [c0, c1] = cabin > 0 ? [q0 + 0.6, q0 + 3.6] : [q1 - 3.6, q1 - 0.6];
+    k.slab("wood", c0, c1, y0 + 0.62, y0 + 1.9, p - 1.0, p + 1.0);
+    k.slab("slate", c0 - 0.1, c1 + 0.1, y0 + 1.9, y0 + 2.05, p - 1.1, p + 1.1);
+    k.put("pole", (c0 + c1) / 2 + 0.8, y0 + 2.0, p - 0.4, 0.9, 1.0, 0.9);
+    const [h0, h1] = cabin > 0 ? [c1 + 0.3, q1 - 0.4] : [q0 + 0.4, c0 - 0.3];
+    k.slab("ink", h0, h1, y0 + 0.62, y0 + 1.1, p - 0.9, p + 0.9);
+  }
+  // the fixtures: bollards, the crane, crates, the lock's winding gear, the gate's piers
+  for (const f of qr.fixtures) {
+    if (f.r === 0.3) k.put("pole", f.q, 0, f.p, 2.4, 0.85, 2.4);
+    else if (f.r === 1.2) {
+      k.put("pole", f.q, 0, f.p, 2.0, 6.0, 2.0);
+      k.put("wood", f.q + 0.9, 3.6, f.p - 1.4, 0.3, 0.3, 6.5, 0.4, 0, 0.7);
+      k.put("wheel", f.q, 1.6, f.p, 1.6, 1.6, 1.6);
+    } else if (f.r === 0.6) crate(k, f.q, f.p, f.q * 0.3);
+    else if (f.r === 0.5 && f.p < 100) {
+      k.put("pole", f.q, 0, f.p, 1.2, 1.1, 1.2);
+      k.put("wheel", f.q, 1.1, f.p, 1.2, 1.2, 1.2);
+    } else if (f.r === 0.5) pier(k, f.q, f.p);
+  }
+  // the portals: a wall across each end of the channel with a dark mouth, the water running on under the blocks
+  for (const o of qr.obstacles.slice(1)) {
+    if (o.kind !== "box") continue;
+    k.slab("stone", o.q0, o.q1, -2.2, 4.6, o.p0, o.p1);
+    const face = o.q0 > 0 ? o.q0 : o.q1;
+    k.slab("void", face - 0.1, face + 0.1, WATER_Y, 0.9, ch.p0 + 0.3, ch.p1 - 0.3);
+    k.slab("trim", face - 0.15, face + 0.15, 0.9, 1.3, ch.p0, ch.p1);
+    fence(c, o.q0, o.p0, o.q1, o.p0);
+    fence(c, o.q0, o.p1, o.q1, o.p1);
+  }
+}
+
+/** the park: lawns, paths along its walks, the pond in a stone rim, the bandstand, benches, trees, the gate's piers */
+function park(c: Ctx, qr: Quarter, rand: () => number) {
+  const { k } = c;
+  const pond = qr.obstacles[0];
+  const stand = qr.obstacles[1];
+  if (pond.kind !== "disc" || stand.kind !== "disc") return;
+  for (const [q, p, rx, rz] of [
+    [pond.q + 2, pond.p + 2, 17, 15],
+    [stand.q - 4, stand.p - 2, 15, 13],
+    [4, 118, 12, 7],
+  ])
+    k.geo("lawn", new THREE.CircleGeometry(1, 40), q, 0.012, p, 0, rx, rz, 1, 0, -Math.PI / 2);
+  // the paths: paving along the walks between the gate, the pond, the bandstand and the lanes
+  const walks: [number, number][][] = [
+    [[125, 0], [118, 0], [108, -6], [100, -4], [90, 0]],
+    [[100, -4], [92, -26], [88, -40]],
+    [[118, 0], [112, 18], [100, 26], [88, 18], [90, 0]],
+    [[112, 18], [88, 40]],
+    [[92, -26], [86, -34]],
+  ];
+  for (const walk of walks)
+    for (let i = 0; i + 1 < walk.length; i++) {
+      const [p0, q0] = walk[i];
+      const [p1, q1] = walk[i + 1];
+      const len = Math.hypot(p1 - p0, q1 - q0) + 2.4;
+      k.geo("paving", new THREE.PlaneGeometry(2.4, len), (q0 + q1) / 2, 0.016, (p0 + p1) / 2, Math.atan2(q1 - q0, p1 - p0), 1, 1, 1, 0, -Math.PI / 2);
+    }
+  // the pond: a low stone rim, the water just above the ground (the world's ground plane hides anything under it)
+  const V = (r: number, y: number) => new THREE.Vector2(r, y);
+  k.geo("kerb", new THREE.LatheGeometry([V(pond.r - 0.3, 0), V(pond.r - 0.3, 0.14), V(pond.r, 0.22), V(pond.r + 0.4, 0.22), V(pond.r + 0.4, 0)], 40), pond.q, 0, pond.p);
+  waterSheet(c, new THREE.CircleGeometry(pond.r - 0.3, 48), ringWater(pond.r - 0.3, 0.9, 0.3), pond.q, 0.04, pond.p);
+  bandstand(k, stand.q, stand.p);
+  for (const f of qr.fixtures) {
+    if (f.r === 0.55) tree(k, rand, f.q, f.p, { planter: false, trunk: 3.0 + rand() * 0.8, crown: 2.2 + rand() * 0.5, lumps: "mid" });
+    else if (f.r === 1) {
+      // a bench faces the pond or the bandstand, whichever is nearer
+      const toPond = Math.hypot(f.p - pond.p, f.q - pond.q) - pond.r;
+      const toStand = Math.hypot(f.p - stand.p, f.q - stand.q) - stand.r;
+      const at = toPond < toStand ? pond : stand;
+      bench(k, f.q, f.p, Math.atan2(at.q - f.q, at.p - f.p));
+    } else if (f.r === 0.5) pier(k, f.q, f.p);
+  }
+}
+
+/** the market square: paving with its joints, the stalls in two rows in all six colours, the well, crates and barrels, bunting */
+function market(c: Ctx, qr: Quarter) {
+  const { k } = c;
+  k.geo("paving", new THREE.PlaneGeometry(68, 40), 0, 0.014, 100, 0, 1, 1, 1, 0, -Math.PI / 2);
+  for (let q = -30; q <= 30; q += 6) k.geo("lines", new THREE.PlaneGeometry(0.05, 40), q, 0.02, 100, 0, 1, 1, 1, 0, -Math.PI / 2);
+  for (let p = 84; p <= 116; p += 8) k.geo("lines", new THREE.PlaneGeometry(68, 0.05), 0, 0.02, p, 0, 1, 1, 1, 0, -Math.PI / 2);
+  let i = 0;
+  let n = 0;
+  for (const f of qr.fixtures) {
+    if (f.r === 1.9) stall(k, f.q, f.p, f.q > 0 ? -Math.PI / 2 : Math.PI / 2, i++ % STRAPS.length);
+    else if (f.r === 1.8) well(k, f.q, f.p);
+    else if (f.r === 0.55) {
+      if (n++ % 2 === 0) crate(k, f.q, f.p, f.p * 0.2);
+      else k.put("barrel", f.q, 0, f.p, 1, 1, 1);
+    } else if (f.r === 0.3) k.put("pole", f.q, 0, f.p, 1.3, 5.6, 1.3);
+    else if (f.r === 0.5) pier(k, f.q, f.p);
+  }
+  // the bunting: a string between each pair of poles, sagging, pennants hung along it in the six colours in turn
+  const poles = qr.fixtures.filter((f) => f.r === 0.3);
+  const strings: [QDiscLike, QDiscLike][] = [
+    [poles[0], poles[2]],
+    [poles[1], poles[3]],
+    [poles[0], poles[1]],
+    [poles[2], poles[3]],
+  ];
+  let colour = 0;
+  for (const [a, b] of strings) {
+    const len = Math.hypot(b.p - a.p, b.q - a.q);
+    const ry = Math.atan2(b.q - a.q, b.p - a.p);
+    const segs = 8;
+    const yAt = (t: number) => 5.4 - 1.0 * 4 * t * (1 - t);
+    for (let s = 0; s < segs; s++) {
+      const t0 = s / segs;
+      const t1 = (s + 1) / segs;
+      const x0 = a.q + (b.q - a.q) * t0;
+      const z0 = a.p + (b.p - a.p) * t0;
+      const x1 = a.q + (b.q - a.q) * t1;
+      const z1 = a.p + (b.p - a.p) * t1;
+      const dy = yAt(t1) - yAt(t0);
+      const l = Math.hypot(len / segs, dy);
+      k.put("rail", (x0 + x1) / 2, (yAt(t0) + yAt(t1)) / 2, (z0 + z1) / 2, 0.04, 0.04, l, ry, 0, -Math.atan2(dy, len / segs));
+    }
+    for (let d = 1.2; d < len - 0.8; d += 1.4) {
+      const t = d / len;
+      k.put(`flag${colour++ % STRAPS.length}`, a.q + (b.q - a.q) * t, yAt(t) - 0.03, a.p + (b.p - a.p) * t, 1, 1, 1, ry);
+    }
+  }
+}
+type QDiscLike = { p: number; q: number };
+
+/** a quarter's inner wall: an arc at its ground's inner edge between its two streets' blocks, a coping on top */
+function quarterWall(k: Kit, qr: Quarter) {
+  const R = qr.rIn - 1.5;
+  const K = QUARTER_EDGE_M * Math.SQRT2;
+  const p = (K + Math.sqrt(2 * R * R - K * K)) / 2;
+  const phi = Math.atan2(p - K, p);
+  const V = (r: number, y: number) => new THREE.Vector2(r, y);
+  k.geo("stonework", new THREE.LatheGeometry([V(R, 0), V(R, 1.2), V(R - 0.1, 1.35), V(R + 0.6, 1.35), V(R + 0.5, 1.2), V(R + 0.5, 0)], 36, -phi, 2 * phi));
+}
+
 // ---------------------------------------------------------------- the city
 
-/** where a lot's front runs: a chord from angle a0 to a1, its middle r = R from the centre, facing in */
-function lotFrame(a0: number, a1: number, R: number): { m: THREE.Matrix4; W: number } {
+/** where a lot's front runs: a chord from angle a0 to a1, its middle r = R from the centre, facing in (1) or out (-1) */
+function lotFrame(a0: number, a1: number, R: number, facing: 1 | -1 = 1): { m: THREE.Matrix4; W: number } {
   const am = (a0 + a1) / 2;
   const W = 2 * R * Math.tan((a1 - a0) / 2);
-  const m = new THREE.Matrix4().makeRotationY(am + Math.PI).setPosition(Math.sin(am) * R, 0, Math.cos(am) * R);
+  const m = new THREE.Matrix4().makeRotationY(facing === 1 ? am + Math.PI : am).setPosition(Math.sin(am) * R, 0, Math.cos(am) * R);
   return { m, W };
 }
 
@@ -1499,6 +2012,35 @@ function mulberry(seed: number): () => number {
 /** the four streets, on the diagonals, and half the angle each one opens in the ring (town.ts's, shared with the server) */
 const STREETS = STREET_ANGLES;
 const GAP = STREET_GAP;
+/** a street's strap colour: STRAPS[1 + i] (the plaza keeps 0, the ring road's own is the last) */
+const streetColour = (i: number) => 1 + i;
+const RING_ROAD_COLOUR = STRAPS.length - 1;
+/** a ring road lot within this angle of a street wears the street's colour; beyond, the ring road's own */
+const STREET_COLOUR_REACH = 0.45;
+
+type LotFn = (c: Ctx, W: number, D: number) => void;
+interface Lot {
+  a0: number;
+  a1: number;
+  R?: number;
+  D?: number;
+  H: number;
+  build: LotFn;
+  /** a flank on a street: +1 the lot's +x side, -1 its -x side */
+  street?: 1 | -1;
+  /** the lot draws its own flank */
+  ownFlank?: boolean;
+  /** facing the centre (the boulevard's, the ring road's outer side) or away (the ring road's inner side) */
+  facing?: 1 | -1;
+  /** the wall at its back is this much wider than the lot (the Exchange's wings) */
+  backW?: number;
+  /** what its awnings, doors and flags wear */
+  colour?: number;
+  /** the body of its back wall */
+  body?: Body;
+  /** its fence at the foot of its steps (a portico), not at its front */
+  steps?: number;
+}
 
 export function buildCity(): City {
   const root = new THREE.Group();
@@ -1508,9 +2050,9 @@ export function buildCity(): City {
   const fences: Seg[] = [];
   const doors: Door[] = [];
 
-  const atlas = new Atlas(1024);
-  for (const s of ["MERCHANTS' BANK", "BANDS & CO.", "TRUST & SAVINGS", "THE CRESCENT", "COUNTING HOUSE"]) atlas.add(s, 1024, 68, carved(s));
-  for (const s of ["HATTER", "CIGARS", "WINE MERCHANT", "COFFEE HOUSE", "STATIONER", "TAILOR", "BOOKSELLER", "LEDGERS", "TEA ROOM", "BARBER", "PRINTER", "GLOVER"])
+  const atlas = new Atlas(2048);
+  for (const s of ["MERCHANTS' BANK", "BANDS & CO.", "TRUST & SAVINGS", "THE CRESCENT", "COUNTING HOUSE", "GRAND HOTEL", "STATION"]) atlas.add(s, 1024, 68, carved(s));
+  for (const s of ["HATTER", "CIGARS", "WINE MERCHANT", "COFFEE HOUSE", "STATIONER", "TAILOR", "BOOKSELLER", "LEDGERS", "TEA ROOM", "BARBER", "PRINTER", "GLOVER", "IRONMONGER", "CHANDLER", "BAKER", "APOTHECARY", "GAZETTE"])
     atlas.add(s, 336, 64, fascia(s));
   atlas.add("banner", 104, 300, bannerDraw);
   atlas.add("emblem", 300, 300, emblemDraw);
@@ -1521,6 +2063,13 @@ export function buildCity(): City {
   const trunkGeo = new THREE.CylinderGeometry(0.13, 0.2, 1, 7).translate(0, 0.5, 0);
   const poleGeo = new THREE.CylinderGeometry(0.09, 0.12, 1, 8).translate(0, 0.5, 0);
   const soilGeo = new THREE.CircleGeometry(1, 20).rotateX(-Math.PI / 2);
+  const wheelGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.2, 14).rotateZ(Math.PI / 2);
+  const flagGeo = (() => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute([-0.18, 0, 0, 0.18, 0, 0, 0, -0.42, 0], 3));
+    g.setAttribute("normal", new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1, 0, 0, 1], 3));
+    return g;
+  })();
   const pieces: Record<string, Piece> = {
     stone: { geo: BOX, mat: M("Paper"), line: BOLD },
     ashlar: { geo: BOX, mat: M("Ashlar"), line: BOLD },
@@ -1532,6 +2081,8 @@ export function buildCity(): City {
     groove: { geo: BOX, mat: M("Void"), line: 0 },
     rail: { geo: BOX, mat: M("Ink"), line: 0 },
     wood: { geo: BOX, mat: M("Wood"), line: FINE },
+    wbox: { geo: BOX, mat: M("Wood"), line: 0 },
+    sleeper: { geo: BOX, mat: M("Wood"), line: 0 },
     ink: { geo: BOX, mat: M("Ink"), line: FINE },
     strap: { geo: BOX, mat: M("Strap"), line: FINE },
     ped: { geo: prismGeo(), mat: M("Paper"), line: FINE },
@@ -1539,6 +2090,8 @@ export function buildCity(): City {
     shaft: { geo: new THREE.CylinderGeometry(0.43, 0.5, 1, 18, 1, true), mat: M("Paper"), line: BOLD },
     capital: { geo: new THREE.CylinderGeometry(0.5, 0.36, 1, 18), mat: M("Paper"), line: FINE },
     drum: { geo: new THREE.CylinderGeometry(0.5, 0.5, 1, 10), mat: M("Paper"), line: FINE },
+    barrel: { geo: new THREE.CylinderGeometry(0.42, 0.42, 0.9, 10).translate(0, 0.45, 0), mat: M("Wood"), line: FINE },
+    wheel: { geo: wheelGeo, mat: M("Ink"), line: FINE },
     tooth: { geo: BOX, mat: M("Paper"), line: 0 },
     baluster: { geo: balusterGeo(), mat: M("Paper"), line: FINE },
     leaf: { geo: LUMP, mat: leafMaterial(), line: BOLD, shadow: true, nearCut: true },
@@ -1551,6 +2104,11 @@ export function buildCity(): City {
     bill: { geo: new THREE.BoxGeometry(1.4, 0.26, 0.64), mat: mat("Bill", new THREE.Vector3(0.7, 0.13, 0.32)), line: FINE, shadow: true },
     band: { geo: new THREE.BoxGeometry(0.17, 0.275, 0.655), mat: M("Strap"), line: FINE, shadow: true },
   };
+  for (let i = 0; i < STRAPS.length; i++) {
+    if (i > 0) pieces[`strap${i}`] = { geo: BOX, mat: accentMat(i), line: FINE };
+    pieces[`bloom${i}`] = { geo: LUMP, mat: accentMat(i), line: 0 };
+    pieces[`flag${i}`] = { geo: flagGeo, mat: accentMat(i, true), line: 0 };
+  }
   const signMat = new THREE.MeshBasicMaterial({ map: atlasTex, alphaTest: 0.5 });
   const clockMat = new THREE.MeshBasicMaterial({ map: clockTexture() });
   const friezeMat = new THREE.MeshBasicMaterial({ map: friezeTexture() });
@@ -1558,9 +2116,12 @@ export function buildCity(): City {
     slate: { mat: M("Slate"), line: BOLD, attrs: ["position", "normal"] },
     lead: { mat: M("Lead"), line: BOLD, attrs: ["position", "normal"] },
     stonework: { mat: M("Paper"), line: BOLD, attrs: ["position", "normal"] },
+    ironwork: { mat: M("Ink"), line: BOLD, attrs: ["position", "normal"] },
     brass: { mat: M("Brass"), line: FINE, attrs: ["position", "normal"] },
     fountain: { mat: M("Paper"), line: BOLD, shadow: true, attrs: ["position", "normal"] },
     road: { mat: M("Road"), line: 0, attrs: ["position", "normal"] },
+    lawn: { mat: M("Lawn"), line: 0, attrs: ["position", "normal"] },
+    paving: { mat: M("Paving"), line: 0, attrs: ["position", "normal"] },
     kerb: { mat: M("Paper"), line: FINE, attrs: ["position", "normal"] },
     lines: { mat: flat(INK), line: 0, attrs: ["position"] },
     signs: { mat: signMat, line: 0, attrs: ["position", "uv"] },
@@ -1570,44 +2131,31 @@ export function buildCity(): City {
   const k = new Kit(pieces, mdefs);
   const extras = new THREE.Group();
   extras.name = "city:extras";
-  const c: Ctx = { k, atlas, extras, hands: [], doors, fences };
+  const c: Ctx = { k, atlas, extras, hands: [], doors, fences, waters: [] };
 
   // ---- the ring of façades
-  type LotFn = (c: Ctx, W: number, D: number) => void;
-  interface Lot {
-    a0: number;
-    a1: number;
-    R?: number;
-    D?: number;
-    H: number;
-    build: LotFn;
-    /** a flank on a street: +1 the lot's +x side (its lower angle), -1 its -x side */
-    street?: 1 | -1;
-    /** the lot draws its own flank */
-    ownFlank?: boolean;
-  }
   const S = STREETS;
   const house = (o: HouseOpts): LotFn => (cc, W, D) => townhouse(cc, W, D, o);
   const bankL = (o: BankOpts): LotFn => (cc, W, D) => bank(cc, W, D, o);
   const lots: Lot[] = [
     // east, from the south-east street to the north-east one; the Guard House stands before the Merchants' Bank
-    { a0: S[0] + GAP, a1: 1.06, H: 12.5, build: house({ H: 12.5, body: "ashlar", mansard: true, shop: "HATTER", awning: true, rich: true }), street: 1 },
+    { a0: S[0] + GAP, a1: 1.06, H: 12.5, build: house({ H: 12.5, body: "ashlar", mansard: true, shop: "HATTER", awning: true, rich: true }), street: 1, body: "ashlar" },
     { a0: 1.06, a1: 1.2, H: 14.5, build: house({ H: 14.5, body: "stone", mansard: true }) },
-    { a0: 1.2, a1: 1.32, H: 11, build: house({ H: 11, body: "brick", shop: "CIGARS", awning: true }) },
+    { a0: 1.2, a1: 1.32, H: 11, build: house({ H: 11, body: "brick", shop: "CIGARS", awning: true }), body: "brick" },
     { a0: 1.32, a1: 1.82, D: 22, H: 18, build: bankL({ H: 18, body: "stone", sign: "MERCHANTS' BANK", dome: 5.2, portico: true }) },
-    { a0: 1.82, a1: 2.03, H: 15, build: (cc, W, D) => counting(cc, W, D, { H: 15, signs: ["COFFEE HOUSE", "STATIONER"] }) },
-    { a0: 2.03, a1: S[1] - GAP, H: 13, build: house({ H: 13, body: "ashlar", mansard: true, shop: "WINE MERCHANT", rich: true }), street: -1 },
+    { a0: 1.82, a1: 2.03, H: 15, build: (cc, W, D) => counting(cc, W, D, { H: 15, signs: ["COFFEE HOUSE", "STATIONER"] }), body: "brick" },
+    { a0: 2.03, a1: S[1] - GAP, H: 13, build: house({ H: 13, body: "ashlar", mansard: true, shop: "WINE MERCHANT", rich: true }), street: -1, body: "ashlar" },
     // north: the clock tower on the corner, the Exchange, a small domed bank
-    { a0: S[1] + GAP, a1: 2.69, D: 18, H: 11.4, build: (cc, W, D) => clockTower(cc, W, D, 1), street: 1, ownFlank: true },
-    { a0: 2.69, a1: 3.59, R: 55, D: 34, H: 15.6, build: (cc, W, D) => exchange(cc, W, D) },
-    { a0: 3.59, a1: S[2] - GAP, D: 20, H: 15, build: bankL({ H: 15, body: "ashlar", sign: "TRUST & SAVINGS", dome: 3.1 }), street: -1 },
+    { a0: S[1] + GAP, a1: 2.69, D: 18, H: 11.4, build: (cc, W, D) => clockTower(cc, W, D, 1), street: 1, ownFlank: true, body: "ashlar" },
+    { a0: 2.69, a1: 3.59, R: 55, D: 34, H: 15.6, build: (cc, W, D) => exchange(cc, W, D), backW: 8, body: "ashlar" },
+    { a0: 3.59, a1: S[2] - GAP, D: 20, H: 15, build: bankL({ H: 15, body: "ashlar", sign: "TRUST & SAVINGS", dome: 3.1 }), street: -1, body: "ashlar" },
     // west, behind Mr Bands' desk: his own house
-    { a0: S[2] + GAP, a1: 4.26, H: 16, build: (cc, W, D) => counting(cc, W, D, { H: 16, signs: ["TAILOR", "BOOKSELLER"] }), street: 1 },
+    { a0: S[2] + GAP, a1: 4.26, H: 16, build: (cc, W, D) => counting(cc, W, D, { H: 16, signs: ["TAILOR", "BOOKSELLER"] }), street: 1, body: "brick" },
     { a0: 4.26, a1: 4.4, H: 13, build: house({ H: 13, body: "stone", mansard: true, rich: true }) },
-    { a0: 4.4, a1: 4.53, H: 15.5, build: house({ H: 15.5, body: "ashlar", mansard: true, shop: "LEDGERS" }) },
+    { a0: 4.4, a1: 4.53, H: 15.5, build: house({ H: 15.5, body: "ashlar", mansard: true, shop: "LEDGERS" }), body: "ashlar" },
     { a0: 4.53, a1: 5.06, D: 20, H: 17, build: bankL({ H: 17, body: "stone", sign: "BANDS & CO.", arches: true, flag: true }) },
-    { a0: 5.06, a1: 5.22, H: 12, build: house({ H: 12, body: "brick", shop: "GLOVER", awning: true }) },
-    { a0: 5.22, a1: S[3] - GAP, H: 14, build: house({ H: 14, body: "ashlar", mansard: true, shop: "TEA ROOM", awning: true, rich: true }), street: -1 },
+    { a0: 5.06, a1: 5.22, H: 12, build: house({ H: 12, body: "brick", shop: "GLOVER", awning: true }), body: "brick" },
+    { a0: 5.22, a1: S[3] - GAP, H: 14, build: house({ H: 14, body: "ashlar", mansard: true, shop: "TEA ROOM", awning: true, rich: true }), street: -1, body: "ashlar" },
   ];
   // south: the crescent, seven bay-groups on the curve, the middle one a pavilion
   const cs0 = S[3] + GAP - TAU;
@@ -1633,58 +2181,129 @@ export function buildCity(): City {
       H,
       build: (cc, W, D) => crescent(cc, W, D, { H, pavilion, end, signs: cSigns[i] }),
       street: i === 0 ? 1 : i === 6 ? -1 : undefined,
+      body: "ashlar",
+    });
+  }
+
+  // ---- the ring road's lots: three on the inner side either way from each street (the corner one's flank on the
+  // street), ten on the outer side of each quadrant, the new shops and the Grand Hotel among them
+  const rl = mulberry(19);
+  const innerCuts = [0.19, 0.33, 0.46, Math.PI / 4 - QUARTER_OPEN];
+  const outerW = [19, 16, 21, 17, 20, 18, 22, 17, 19, 25];
+  const outerNamed: Record<number, (string | null)[]> = {
+    0: ["GRAND HOTEL", null, null, null, null, "IRONMONGER", null, null, null, null],
+    1: [null, "CHANDLER", null, null, null, null, null, "BAKER", null, null],
+    2: [null, null, null, null, "APOTHECARY", null, null, null, null, null],
+    3: [null, null, null, null, "GAZETTE", null, null, null, null, null],
+  };
+  const ringLot = (a0: number, a1: number, facing: 1 | -1, flank: 1 | -1 | undefined, sign: string | null, j: number): Lot => {
+    const mid = (a0 + a1) / 2;
+    const near = S.map((s, i) => ({ i, d: Math.abs(wrapA(mid - s)) })).sort((u, v) => u.d - v.d)[0];
+    const colour = near.d < STREET_COLOUR_REACH ? streetColour(near.i) : RING_ROAD_COLOUR;
+    const H = 11 + Math.round(rl() * 5);
+    const kind = j % 4;
+    if (sign === "GRAND HOTEL")
+      return { a0, a1, R: RING_ROAD_FRONT_OUT + 4.4, D: 20, H: 17, build: bankL({ H: 17, body: "stone", sign, portico: true, flag: true }), facing, street: flank, colour, body: "stone", steps: 4.75 };
+    if (sign && (sign === "IRONMONGER" || sign === "CHANDLER" || sign === "GAZETTE")) return { a0, a1, H: 14, build: (cc, W, D) => counting(cc, W, D, { H: 14, signs: [sign] }), facing, street: flank, colour, body: "brick" };
+    if (sign) return { a0, a1, H: 12, build: house({ H: 12, body: "brick", mansard: true, shop: sign, awning: true }), facing, street: flank, colour, body: "brick" };
+    if (kind === 0) return { a0, a1, H, build: house({ H, body: "ashlar", mansard: true }), facing, street: flank, colour, body: "ashlar" };
+    if (kind === 1) return { a0, a1, H, build: (cc, W, D) => counting(cc, W, D, { H, signs: [] }), facing, street: flank, colour, body: "brick" };
+    if (kind === 2) return { a0, a1, H, build: house({ H, body: "brick" }), facing, street: flank, colour, body: "brick" };
+    return { a0, a1, H, build: house({ H, body: "stone", mansard: true, rich: rl() < 0.5 }), facing, street: flank, colour, body: "stone" };
+  };
+  const ringLots: Lot[] = [];
+  for (let si = 0; si < S.length; si++) {
+    const s0 = S[si];
+    const s1 = S[si] + TAU / 4;
+    for (let j = 0; j + 1 < innerCuts.length; j++) {
+      // out from the street at s0: the +x side of an outward-facing lot is its higher angle, so the corner flank is -x
+      ringLots.push({ ...ringLot(s0 + innerCuts[j], s0 + innerCuts[j + 1], -1, j === 0 ? -1 : undefined, null, j + si), D: RING_ROAD_BLOCK_D });
+      ringLots.push({ ...ringLot(s1 - innerCuts[j + 1], s1 - innerCuts[j], -1, j === 0 ? 1 : undefined, null, j + si + 2), D: RING_ROAD_BLOCK_D });
+    }
+    const edge = Math.asin((STREET_HALF_WIDTH_M + 2.5) / RING_ROAD_FRONT_OUT);
+    const span = TAU / 4 - 2 * edge;
+    const total = outerW.reduce((a, b) => a + b, 0);
+    let a = s0 + edge;
+    outerW.forEach((w, j) => {
+      const da = (span * w) / total;
+      // an inward-facing lot's +x side is its lower angle: the first lot's flank is +x (on the street at s0), the last's -x
+      ringLots.push(ringLot(a, a + da, 1, j === 0 ? 1 : j === outerW.length - 1 ? -1 : undefined, outerNamed[si][j], j + si));
+      a += da;
     });
   }
 
   const corners: THREE.Vector3[][] = [[], [], [], []];
-  for (const lot of lots) {
-    const R = lot.R ?? FRONT;
+  for (const lot of [...lots, ...ringLots]) {
+    const facing = lot.facing ?? 1;
+    const onRingRoad = lot.facing !== undefined;
+    const R = lot.R ?? (onRingRoad ? (facing === 1 ? RING_ROAD_FRONT_OUT : RING_ROAD_FRONT_IN) : FRONT);
     const D = lot.D ?? 16;
-    const { m, W } = lotFrame(lot.a0, lot.a1, R);
+    const { m, W } = lotFrame(lot.a0, lot.a1, R, facing);
+    accent = lot.colour ?? 0;
     k.at(m);
     lot.build(c, W, D);
     k.at(m);
-    fence(c, -W / 2, 0, W / 2, 0);
+    fence(c, -W / 2, lot.steps ?? 0, W / 2, lot.steps ?? 0);
+    backWall(k, lot.body ?? "stone", W + (lot.backW ?? 0), D, lot.H + 1.0);
+    fence(c, -W / 2, -D, W / 2, -D);
     if (lot.street) {
       fence(c, (lot.street * W) / 2, 0, (lot.street * W) / 2, -D);
       if (!lot.ownFlank) flank(c, W, D, lot.H, lot.street);
-      // remember where this corner's flank ends, to line the street up behind it
-      const back = k.world((lot.street * W) / 2, 0, -D);
-      const sAng = lot.street === 1 ? lot.a0 - GAP : lot.a1 + GAP;
-      const si = STREETS.findIndex((a) => Math.abs(((sAng - a + TAU + Math.PI) % TAU) - Math.PI) < 0.01);
-      if (si >= 0) corners[si].push(back);
+      if (!onRingRoad) {
+        // remember where this corner's flank ends, to line the street up behind it
+        const back = k.world((lot.street * W) / 2, 0, -D);
+        const sAng = lot.street === 1 ? lot.a0 - GAP : lot.a1 + GAP;
+        const si = STREETS.findIndex((a) => Math.abs(((sAng - a + TAU + Math.PI) % TAU) - Math.PI) < 0.01);
+        if (si >= 0) corners[si].push(back);
+      }
     }
   }
+  accent = 0;
 
-  // ---- the streets: blocks either side running out into the fog, and a domed front closing each vista
+  // ---- the streets: blocks either side out to the fog, broken for the lane and the ring road, and a domed front closing each vista
   const rs = mulberry(7);
-  plain = true;
   STREETS.forEach((as, si) => {
     const u = new THREE.Vector3(Math.sin(as), 0, Math.cos(as));
     const v = new THREE.Vector3(Math.cos(as), 0, -Math.sin(as));
     let F = 9.5;
     for (const p of corners[si]) F = Math.max(F, Math.abs(p.dot(v)) - 0.4);
+    accent = streetColour(si);
     for (const s of [-1, 1]) {
-      let t = 66;
-      for (let b = 0; b < 3; b++) {
-        const W = 15 + rs() * 5;
+      STREET_BLOCK_T.forEach(([t0, t1], b) => {
+        const W = t1 - t0;
+        const D = 14;
         const H = 12 + Math.round(rs() * 6);
-        const pos = u.clone().multiplyScalar(t + W / 2).addScaledVector(v, s * F);
+        plain = t0 >= RING_ROAD_OUT;
+        const pos = u.clone().multiplyScalar(t0 + W / 2).addScaledVector(v, s * F);
         const th = Math.atan2(-s * v.x, -s * v.z);
         k.at(new THREE.Matrix4().makeRotationY(th).setPosition(pos));
         fence(c, -W / 2, 0, W / 2, 0);
-        if ((b + si + (s > 0 ? 1 : 0)) % 2 === 0) townhouse(c, W, 14, { H, body: b % 2 ? "brick" : "ashlar", mansard: true });
-        else counting(c, W, 14, { H, signs: [] });
-        t += W;
-      }
+        const body: Body = b % 2 ? "brick" : "ashlar";
+        if ((b + si + (s > 0 ? 1 : 0)) % 2 === 0) townhouse(c, W, D, { H, body, mansard: true });
+        else counting(c, W, D, { H, signs: [] });
+        k.at(new THREE.Matrix4().makeRotationY(th).setPosition(pos));
+        backWall(k, body, W, D, H + 1.0);
+        fence(c, -W / 2, -D, W / 2, -D);
+        // a flank on the lane (block 0's far end, block 1's near end) and on the ring road (block 1's far end, block 2's near end)
+        const plusIsFar = k.world(1, 0, 0).sub(k.world(0, 0, 0)).dot(u) > 0;
+        const ends: (1 | -1)[] = [];
+        if (t1 === LANE_T[0] || t1 === STREET_BLOCK_T[1][1]) ends.push(plusIsFar ? 1 : -1);
+        if (t0 === LANE_T[1] || t0 === STREET_BLOCK_T[2][0]) ends.push(plusIsFar ? -1 : 1);
+        for (const side of ends) {
+          fence(c, (side * W) / 2, 0, (side * W) / 2, -D);
+          flank(c, W, D, H, side);
+        }
+      });
     }
-    const vista = lotFrame(as - 0.1, as + 0.1, 126);
+    plain = true;
+    const vista = lotFrame(as - 0.06, as + 0.06, TOWN_RADIUS + 14);
     k.at(vista.m);
     const portico = si % 2 === 0;
     fence(c, -vista.W / 2, portico ? 4.75 : 0, vista.W / 2, portico ? 4.75 : 0);
     bank(c, vista.W, 20, { H: 16, body: "stone", dome: 4.5, portico });
+    plain = false;
   });
-  plain = false;
+  accent = 0;
 
   // ---- the boulevard: the carriageway (a light hatch), kerbs, paving joints, trees and lamps
   k.at(new THREE.Matrix4());
@@ -1694,20 +2313,30 @@ export function buildCity(): City {
   kerbArc(KERB_IN, KERB_IN + 0.25, 0, TAU);
   const roadHalf = 4.2;
   const gapOut = Math.asin(roadHalf / KERB_OUT);
+  const ROAD_END = TOWN_RADIUS + 12;
   STREETS.forEach((as, i) => {
     const next = STREETS[(i + 1) % 4] + (i === 3 ? TAU : 0);
     kerbArc(KERB_OUT, KERB_OUT + 0.25, as + gapOut, next - as - 2 * gapOut);
     const u = new THREE.Vector3(Math.sin(as), 0, Math.cos(as));
-    const L = 128 - KERB_OUT;
+    const L = ROAD_END - KERB_OUT;
     const mid = u.clone().multiplyScalar(KERB_OUT - 2 + L / 2);
     k.geo("road", new THREE.PlaneGeometry(roadHalf * 2, L + 4), mid.x, 0.02, mid.z, as, 1, 1, 1, 0, -Math.PI / 2);
-    for (const s of [-1, 1]) {
-      const p = u
-        .clone()
-        .multiplyScalar(KERB_OUT + L / 2)
-        .add(new THREE.Vector3(Math.cos(as), 0, -Math.sin(as)).multiplyScalar(s * (roadHalf + 0.12)));
-      k.put("trim", p.x, 0.08, p.z, 0.25, 0.16, L, as);
-    }
+    // the street's kerbs, in two runs broken by the ring road's carriageway
+    for (const s of [-1, 1])
+      for (const [t0, t1] of [
+        [KERB_OUT, RING_ROAD_R - roadHalf - 0.3],
+        [RING_ROAD_R + roadHalf + 0.3, ROAD_END],
+      ]) {
+        const p = u
+          .clone()
+          .multiplyScalar((t0 + t1) / 2)
+          .add(new THREE.Vector3(Math.cos(as), 0, -Math.sin(as)).multiplyScalar(s * (roadHalf + 0.12)));
+        k.put("trim", p.x, 0.08, p.z, 0.25, 0.16, t1 - t0, as);
+      }
+    // the lanes into the quarters, paved across the pavements and the blocks' line
+    k.at(new THREE.Matrix4().makeRotationY(as));
+    for (const s of [-1, 1]) k.geo("road", new THREE.PlaneGeometry(QUARTER_EDGE_M + 1 - STREET_HALF_WIDTH_M + 2, LANE_T[1] - LANE_T[0]), s * ((STREET_HALF_WIDTH_M - 2 + QUARTER_EDGE_M + 1) / 2), 0.02, (LANE_T[0] + LANE_T[1]) / 2, 0, 1, 1, 1, 0, -Math.PI / 2);
+    k.at(new THREE.Matrix4());
   });
   // paving joints on the pavement before the fronts, and a line round the promenade
   const line = (x0: number, z0: number, x1: number, z1: number, w: number) => {
@@ -1726,23 +2355,78 @@ export function buildCity(): City {
   }
   k.geo("lines", new THREE.RingGeometry(43.93, 44.0, 180, 1), 0, 0.03, 0, 0, 1, 1, 1, 0, -Math.PI / 2);
 
+  // ---- the ring road: its carriageway and kerbs, broken at the four crossings
+  k.geo("road", new THREE.RingGeometry(RING_ROAD_R - roadHalf, RING_ROAD_R + roadHalf, 360, 1), 0, 0.025, 0, 0, 1, 1, 1, 0, -Math.PI / 2);
+  for (const r0 of [RING_ROAD_R - roadHalf - 0.25, RING_ROAD_R + roadHalf]) {
+    const gap = Math.asin((roadHalf + 0.3) / r0);
+    STREETS.forEach((as, i) => {
+      const next = STREETS[(i + 1) % 4] + (i === 3 ? TAU : 0);
+      kerbArc(r0, r0 + 0.25, as + gap, next - as - 2 * gap);
+    });
+  }
+
   const rt = mulberry(11);
   // (none on the clock tower's side of the north-east street, where it would stand before the tower's door)
   const bTrees = [S[0] - 0.17, S[0] + 0.17, S[1] - 0.17, S[2] - 0.17, S[2] + 0.17, S[3] - 0.17, S[3] + 0.17, 0.4, -0.4, 1.25, 1.95, 4.35, 5.15];
   for (const a of bTrees) tree(k, rt, Math.sin(a) * 44.4, Math.cos(a) * 44.4, { planter: false, trunk: 3.6, crown: 2.5, lumps: "mid" });
   // lamps between the trees, none straight behind a landmark (Mr Bands' desk is at 4.8, the Guard House at 1.49)
   for (const a of [0, 0.34, -0.34, 1.1, 1.75, 2.1, Math.PI - 0.33, Math.PI + 0.33, 4.2, 4.5, 5.25]) lamp(k, Math.sin(a) * 44.4, Math.cos(a) * 44.4);
-  // street trees down the four streets
+  // street trees and lamps down the four streets, out to their ends, none across the ring road
   STREETS.forEach((as) => {
     const u = new THREE.Vector3(Math.sin(as), 0, Math.cos(as));
     const v = new THREE.Vector3(Math.cos(as), 0, -Math.sin(as));
     for (const s of [-1, 1])
-      for (let t = 58; t < 120; t += 13) {
-        const p = u.clone().multiplyScalar(t + (s > 0 ? 6 : 0)).addScaledVector(v, s * (roadHalf + 1.4));
-        if ((t / 13) % 2 < 1) tree(k, rt, p.x, p.z, { planter: false, trunk: 3.4, crown: 2.2, lumps: "few" });
-        else lamp(k, p.x, p.z);
+      for (let t = 58; t < TOWN_RADIUS - 4; t += 13) {
+        const tt = t + (s > 0 ? 6 : 0);
+        if (tt > RING_ROAD_IN - 3 && tt < RING_ROAD_OUT + 3) continue;
+        const p = u.clone().multiplyScalar(tt).addScaledVector(v, s * (roadHalf + 1.4));
+        if ((t / 13) % 2 < 1) {
+          tree(k, rt, p.x, p.z, { planter: false, trunk: 3.4, crown: 2.2, lumps: "few" });
+          colliders.push({ x: p.x, z: p.z, r: 0.5 });
+        } else {
+          lamp(k, p.x, p.z);
+          colliders.push({ x: p.x, z: p.z, r: 0.3 });
+        }
       }
   });
+  // the ring road's lamps on its outer pavement and trees on its inner one, clear of the crossings, the doors and the gates
+  const doorAngles = doors.map((d) => Math.atan2(d.x, d.z));
+  const clearOfDoors = (a: number) => doorAngles.every((da) => Math.abs(wrapA(a - da)) > 0.05);
+  const gateAngles = QUARTERS.map((q) => q.a);
+  for (let a = 0.04; a < TAU; a += 0.16) {
+    if (nearStreet(a, 0.1)) continue;
+    if (clearOfDoors(a)) {
+      const [x, z] = [Math.sin(a) * (RING_ROAD_OUT - 0.6), Math.cos(a) * (RING_ROAD_OUT - 0.6)];
+      lamp(k, x, z);
+      colliders.push({ x, z, r: 0.3 });
+    }
+    const b = a + 0.08;
+    if (nearStreet(b, 0.12) || gateAngles.some((g) => Math.abs(wrapA(b - g)) < QUARTER_OPEN + 0.05) || !clearOfDoors(b)) continue;
+    const [x, z] = [Math.sin(b) * (RING_ROAD_IN + 0.7), Math.cos(b) * (RING_ROAD_IN + 0.7)];
+    tree(k, rt, x, z, { planter: false, trunk: 3.2, crown: 2.0, lumps: "few" });
+    colliders.push({ x, z, r: 0.5 });
+  }
+
+  // ---- the quarters, each in its own frame (x across, z out from the plaza), walled off from the ring's backs
+  const rq = mulberry(23);
+  for (const qr of QUARTERS) {
+    k.at(new THREE.Matrix4().makeRotationY(qr.a));
+    quarterWall(k, qr);
+    if (qr.id === "park") park(c, qr, rq);
+    else if (qr.id === "canal") canal(c, qr);
+    else if (qr.id === "market") market(c, qr);
+    else if (qr.id === "station") station(c, qr);
+    for (const f of qr.fixtures) {
+      const [x, z] = toWorld(qr, f.p, f.q);
+      colliders.push({ x, z, r: f.r });
+    }
+    for (const o of qr.obstacles) {
+      if (o.kind !== "disc") continue;
+      const [x, z] = toWorld(qr, o.p, o.q);
+      colliders.push({ x, z, r: o.r + 0.3 });
+    }
+  }
+  k.at(new THREE.Matrix4());
 
   // ---- inside the rope: trees in planters near the rim, clear of the lamps and the landmarks
   const inner: [number, number][] = [];
@@ -1765,7 +2449,7 @@ export function buildCity(): City {
   }
 
   // ---- the fountain at the centre
-  const f = fountain(c, root);
+  fountain(c, root);
   colliders.push({ x: 0, z: 0, r: 4 });
 
   const stats = k.build(root);
@@ -1773,6 +2457,7 @@ export function buildCity(): City {
   root.userData.stats = stats;
 
   const hands = c.hands;
+  const waters = c.waters;
   return {
     root,
     colliders,
@@ -1780,7 +2465,7 @@ export function buildCity(): City {
     fences,
     doors,
     update(t: number, now: Date) {
-      f.update(t);
+      for (const w of waters) w.uniforms.uTime.value = t;
       const h = now.getHours() % 12;
       const m = now.getMinutes();
       const s = now.getSeconds() + now.getMilliseconds() / 1000;
@@ -1793,3 +2478,4 @@ export function buildCity(): City {
     },
   };
 }
+
