@@ -10,9 +10,20 @@
  * the seed or any tick before its time, so there is nothing to search offline.
  *
  * THE STACK (24 Sep): every visitor keeps an account on the server, opened again by a key only their browser holds.
- * Its stack is in whole dollars (a band is $1,000). It grows at the stalls (a staked round pays back the position's
- * worth at the close: its value plus its fees), from Mr Bands (a daily wage and daily jobs, collected at his desk) and
- * from loose notes found about the plaza. Every change to a stack is the server's own.
+ * Its stack is in whole dollars (a band is $1,000). It grows at the stalls (a staked round pays back the stake plus
+ * what the band made AGAINST JUST HOLDING: its fees less what it lost to holding, the same measure the board scores;
+ * never the position's raw worth, which on a board of pools that just surged is a bet on a rise already known),
+ * from Mr Bands (a daily wage and daily jobs, collected at his desk) and from loose notes found about the plaza.
+ * Every change to a stack is the server's own.
+ *
+ * A STAKED ROUND IS COMMITTED AT THE LAY (24 Sep, after the review): width, centre, stake and the hours to ride
+ * (`hold`) are all fixed before the server deals the hours, and the round settles at `hold` whatever happens after:
+ * a "close" only skips to the end, a leave or a restart settles it there too. So nothing a player works out from the
+ * ticks (the real hours are public data, and a stretch of them can be matched from its first tick) can change what a
+ * staked round pays. A practice round (stake 0) may still be closed at any hour, and records nothing: no board row,
+ * no job. The stall keeps RAKE_PCT of every stake, the game's one sink; a round's stake is at most MAX_STAKE, and a
+ * round's fees at most FEES_CAP_PCT of the deposit (lpGame.ts); a band's value never beats holding, so what comes
+ * back is at most 1.3 x the stake, and a stack grows a step at a time, never compounds.
  */
 
 /** the plaza is a disc of this radius, in world units (metres); the server clamps every position into it */
@@ -58,6 +69,12 @@ export const BAND = 1000;
 export const START_STACK = 1000;
 /** the least a staked round takes (0 is a practice round: nothing staked, nothing won) */
 export const MIN_STAKE = 100;
+/** the most a staked round takes: one band, so a stack grows a step at a time */
+export const MAX_STAKE = BAND;
+/** the stall keeps this much of every stake at the lay (whole dollars, rounded up): the cost of laying, and the sink */
+export const RAKE_PCT = 2;
+/** the hours a staked round may commit to riding */
+export const HOLDS = [12, 24, 48] as const;
 /** staked rounds a day (UTC); practice rounds are unlimited */
 export const ROUNDS_PER_DAY = 24;
 /** Mr Bands' daily wage, collected at his desk */
@@ -128,15 +145,20 @@ export type C2S =
   | { t: "emote"; e: EmoteId }
   | { t: "say"; p: PhraseId }
   /**
-   * lay a band on one of the live pools (by label or address; the server looks it up in its own copy of the board)
-   * and start a round. One round open per player at a time, one lay a second.
+   * lay a band on one of the live pools (by address, or label; the server looks it up in its own copy of the board)
+   * and start a round. One round open per player at a time, one lay a second. stake: dollars from the stack (absent or
+   * 0: practice), MIN_STAKE..MAX_STAKE; hold: the hours a staked round rides, one of HOLDS (default 48; ignored for
+   * practice).
    */
-  | { t: "lay"; pool: string; widthBins: number; offsetBins: number; stake?: number }
+  | { t: "lay"; pool: string; widthBins: number; offsetBins: number; stake?: number; hold?: number }
   /** pick up a loose note (the server checks you stand within NOTE_REACH of it) */
   | { t: "pick"; note: string }
   /** collect the wage and any finished jobs (the server checks you stand at the desk) */
   | { t: "pay" }
-  /** settle the open round now, at the last tick the server has sent (tick 1 if none has gone out yet) */
+  /**
+   * a practice round: settle now, at the last tick the server has sent (tick 1 if none has gone out yet).
+   * a staked round: skip to the end (the remaining ticks come at once and it settles at its hold)
+   */
   | { t: "close"; roundId: string };
 
 // ---------------------------------------------------------------- server -> client
@@ -164,17 +186,20 @@ export type S2C =
   | { t: "emote"; id: string; e: EmoteId }
   | { t: "say"; id: string; p: PhraseId }
   /**
-   * the band is down: the pool it was laid on (public board data), its price bounds relative to p0 = 1, the pace, and
-   * whether the hours are a real stretch of the pool's history (which one is kept back until the round is scored)
+   * the band is down: the pool it was laid on (public board data), its price bounds relative to p0 = 1, the pace,
+   * whether the hours are a real stretch of the pool's history (which one is kept back until the round is scored),
+   * and for a staked round the stake taken, the stall's cut and the hour it settles at
    */
-  | { t: "laid"; roundId: string; pool: import("./lpGame").PoolParams; lower: number; upper: number; tickMs: number; real?: boolean }
+  | { t: "laid"; roundId: string; pool: import("./lpGame").PoolParams; lower: number; upper: number; tickMs: number; real?: boolean; stake?: number; rake?: number; hold?: number }
   /** tick i (1..TICKS) of the server's round, sent when the server's clock reaches it; the SimResult arrays at i */
   | { t: "tick"; roundId: string; i: number; p: number; feesPct: number; valuePct: number; holdPct: number; inRange: boolean }
   /**
-   * the round is settled (closed, or it reached TICKS): pct against holding; rank on the board, or null if not on it;
-   * for a real round, when its stretch of history began (unix seconds)
+   * the round is settled (closed, skipped, or it reached its hold): pct against holding at the hour it settled (`at`);
+   * rank on the Best rounds board (staked rounds only), or null; for a real round, when its stretch of history began
+   * (unix seconds); for a staked round, the stake and what came back to the stack (the stake plus its result against
+   * holding, never below 0)
    */
-  | { t: "scored"; roundId: string; pct: number; rank: number | null; from?: number; stake?: number; back?: number }
+  | { t: "scored"; roundId: string; pct: number; at: number; rank: number | null; from?: number; stake?: number; back?: number }
   | { t: "board"; rows: ScoreRow[] }
   | { t: "full" }
   /** the visitor is sending too much; messages are being dropped */

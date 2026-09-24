@@ -133,7 +133,11 @@ kbd { display: inline-block; min-width: 1.6em; padding: 1px 6px; border: 1px sol
 .lp__stakes .is-on { background: var(--ink); color: var(--paper-card) !important; }
 .lp__stakes small { font-weight: 400; letter-spacing: 0.04em; opacity: 0.8; }
 .lp__stacked { margin: 6px 0 0; font-family: var(--font-serif); font-size: 16px; line-height: 1.5; color: var(--ink); }
+/* a band riding on the server while its stall is closed: the chip under the stack, and the word at another stall */
+.play__ride { font-family: var(--font-engrave); font-weight: 700; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 4px 8px 3px; background: rgba(249, 244, 233, 0.94); border: 1px solid var(--strap-deep); color: var(--strap-deep); }
+.lp__riding { margin: 0; font-family: var(--font-serif); font-size: 15px; line-height: 1.5; color: var(--strap-deep); }
 @media (max-width: 640px) {
   .play__stack b { font-size: 18px; }
-  .play__toast { top: 64px; font-size: 15px; }
+  /* clear of the top-left column (the net pill, the name, the stack), which the toast used to sit on */
+  .play__toast { top: 132px; font-size: 15px; }
 }

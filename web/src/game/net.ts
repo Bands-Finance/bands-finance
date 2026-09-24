@@ -6,15 +6,18 @@
  *   - emote() / say() take only the allow-listed ids and return false when nothing was sent (offline, or inside the
  *     server's one-a-second limit); the server passes them to everyone else, not back to the sender, so the page
  *     shows its own bubble itself (when the call returned true)
- *   - a round is played on the server: lay(pool, widthBins, offsetBins) -> onLaid (the band's bounds and the pace),
- *     then onTick for ticks 1..TICKS as the server's clock reaches each (every laid.tickMs). closeRound(roundId)
- *     settles at the last tick already sent; reaching TICKS settles by itself. Either way onScored(roundId, pct,
- *     rank) follows. The seed and future ticks never reach the browser, so there is no score to send, and nothing
- *     to compute ahead. One round at a time; a lay while one is open is refused (onError "round in play")
+ *   - a round is played on the server: lay(pool, widthBins, offsetBins, stake, hold) -> onLaid (the band's bounds,
+ *     the pace, and for a staked round the stake, the stall's cut and the hold), then onTick for the round's ticks as
+ *     the server's clock reaches each (every laid.tickMs). A staked round is committed at the lay and settles at its
+ *     hold whatever happens: closeRound(roundId) only skips to the end. A practice round settles at closeRound, at the
+ *     last tick already sent, or at TICKS. Either way onScored(the whole message: pct, at, rank, stake, back) follows.
+ *     The seed and future ticks never reach the browser, so there is no score to send, and nothing to compute ahead.
+ *     One round at a time; a lay while one is open is refused (onError "round in play")
  *   - onMoves carries other players only. When the server refuses this visitor's move (a jump faster than MAX_SPEED)
  *     or pulls it back onto the plaza's disc, it says where the walker really is: onCorrect(x, z, ry), put it there
  *   - the stack: the room keeps an account for this browser, opened again by the key it sends with the first welcome
- *     (kept in localStorage). onMe carries the account's own changes, onStack everyone's stacks (name tags), onNotes
+ *     (kept in memory for the session and in localStorage for the next one, so a reconnect with site data blocked
+ *     still opens the same account). onMe carries the account's own changes, onStack everyone's stacks (name tags), onNotes
  *     and onPicked the loose notes, onPaid Mr Bands' pay, onStacks the biggest-stacks board. pick() and pay() ask.
  * A dropped connection is retried with exponential backoff (to 30 s); a reconnect is a new socket id, the same
  * account. A full room is not retried, nor a socket closed because the account was opened in another tab. With no URL (VITE_GAME_WS_URL unset) the
@@ -28,7 +31,10 @@ export type ScoredMsg = Extract<S2C, { t: "scored" }>;
 
 /** where this browser keeps its account key */
 const KEY_STORE = "bands:play:key";
+/** the key this session was given, whether or not the browser let it be stored: a reconnect reopens the same account */
+let memKey: string | undefined;
 const readKey = (): string | undefined => {
+  if (memKey) return memKey;
   try {
     const k = localStorage.getItem(KEY_STORE) ?? "";
     return /^[A-Za-z0-9_-]{24,64}$/.test(k) ? k : undefined;
@@ -37,16 +43,17 @@ const readKey = (): string | undefined => {
   }
 };
 const keepKey = (k: string) => {
+  memKey = k;
   try {
     localStorage.setItem(KEY_STORE, k);
   } catch {
-    /* a private window: the stack lasts the session */
+    /* a private window, or site data blocked: the stack lasts the session */
   }
 };
 /** the close code the room uses when the account was opened in another tab */
 const CLOSE_ELSEWHERE = 4003;
 export type WelcomeMsg = Extract<S2C, { t: "welcome" }>;
-/** { roundId, pool, lower, upper, tickMs } */
+/** { roundId, pool, lower, upper, tickMs, real?, stake?, rake?, hold? } */
 export type LaidMsg = Extract<S2C, { t: "laid" }>;
 /** { roundId, i, p, feesPct, valuePct, holdPct, inRange }: tick i of the server's round */
 export type TickMsg = Extract<S2C, { t: "tick" }>;
@@ -90,7 +97,7 @@ export class ExchangeNet {
   onLaid: (laid: LaidMsg) => void = () => {};
   /** one tick of the open round, in order, as the server's clock reaches it */
   onTick: (tick: TickMsg) => void = () => {};
-  /** rank: where this score sits on the leaderboard (or null); from: a real round's first hour; stake/back: the stack's part */
+  /** the whole message: pct and the hour it settled at (at); rank on the board (or null); from: a real round's first hour; stake/back: the stack's part */
   onScored: (scored: ScoredMsg) => void = () => {};
   /** this visitor's account changed (stack, jobs, the day's counts) */
   onMe: (me: Me) => void = () => {};
@@ -107,7 +114,7 @@ export class ExchangeNet {
   /** the server is dropping this visitor's messages (sending too fast) */
   onSlow: () => void = () => {};
   /** a request was refused: "unknown pool", "board unavailable", "round in play", "no such round", "bad choice",
-   *  "bad stake", "no rounds left", "not at the desk", "notes done" */
+   *  "bad stake", "no rounds left", "not at the desk", "notes done", "practice only" */
   onError: (why: string) => void = () => {};
 
   status: NetStatus;
@@ -173,12 +180,16 @@ export class ExchangeNet {
     return this.send({ t: "say", p });
   }
 
-  /** lay a band on a live pool, by its label ("CARDS / USDC") or address, staking dollars from the stack (0: practice) */
-  lay(pool: string, widthBins: number, offsetBins: number, stake = 0): boolean {
+  /**
+   * lay a band on a live pool, by its address or label ("CARDS / USDC"), staking dollars from the stack (0: practice)
+   * for `hold` hours (one of HOLDS; only sent with a stake, a practice round has no hold)
+   */
+  lay(pool: string, widthBins: number, offsetBins: number, stake = 0, hold?: number): boolean {
     if (typeof pool !== "string" || !pool.trim()) return false;
     if (!Number.isFinite(widthBins) || !Number.isFinite(offsetBins)) return false;
     const s = Number.isInteger(stake) && stake > 0 ? stake : 0;
-    return this.send({ t: "lay", pool: pool.trim(), widthBins, offsetBins, ...(s ? { stake: s } : {}) });
+    const h = s && Number.isInteger(hold) ? hold : undefined;
+    return this.send({ t: "lay", pool: pool.trim(), widthBins, offsetBins, ...(s ? { stake: s } : {}), ...(h ? { hold: h } : {}) });
   }
 
   /** pick up a loose note (the room checks you are near it); the answer is onPicked */
@@ -192,7 +203,7 @@ export class ExchangeNet {
     return this.send({ t: "pay" });
   }
 
-  /** settle the open round now (at the last tick the server has sent); the answer is onScored */
+  /** a practice round: settle now, at the last tick the server has sent; a staked round: skip to its end. The answer is onScored */
   closeRound(roundId: string): boolean {
     if (typeof roundId !== "string" || !roundId) return false;
     return this.send({ t: "close", roundId });

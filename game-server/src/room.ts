@@ -31,13 +31,22 @@ interface Tag {
   account?: string;
 }
 
-/** the accounts table: the whole account as JSON, with the columns it is looked up and ranked by */
+/**
+ * the accounts table: the whole account as JSON, with the columns it is looked up and ranked by. Names are unique
+ * (the board and the stacks are keyed by them): an insert whose name was taken meanwhile throws, and the core tries
+ * again with another. A table that already holds a duplicate keeps its plain name index rather than failing to open.
+ */
 function sqlAccounts(sql: SqlStorage): AccountStore {
   sql.exec(
     "CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, key_hash TEXT UNIQUE NOT NULL, name TEXT NOT NULL, stack INTEGER NOT NULL, created INTEGER NOT NULL, data TEXT NOT NULL)",
   );
   sql.exec("CREATE INDEX IF NOT EXISTS accounts_stack ON accounts (stack DESC, created ASC)");
-  sql.exec("CREATE INDEX IF NOT EXISTS accounts_name ON accounts (name)");
+  try {
+    sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS accounts_name_unique ON accounts (name)");
+    sql.exec("DROP INDEX IF EXISTS accounts_name");
+  } catch {
+    sql.exec("CREATE INDEX IF NOT EXISTS accounts_name ON accounts (name)");
+  }
   const one = (q: string, v: string): Account | null => {
     const row = sql.exec(q, v).toArray()[0];
     if (!row) return null;
@@ -139,6 +148,8 @@ export class Room extends DurableObject<Env> {
         const ws = this.sockets.get(id);
         this.sockets.delete(id);
         try {
+          // the socket no longer names the account: a restart that still finds it must not restore a second session
+          ws?.serializeAttachment({ id } satisfies Tag);
           ws?.close(code, reason);
         } catch {
           /* already closing */
@@ -158,8 +169,9 @@ export class Room extends DurableObject<Env> {
       this.core.loadBoard(await this.ctx.storage.get(BOARD_KEY));
     });
 
-    // Woken from hibernation: the sockets survived, the memory did not. Joined players are put back; a socket that
-    // had not said hello yet is closed (its client reconnects).
+    // Woken from hibernation: the sockets survived, the memory did not. Joined players are put back and sent their
+    // account (a round the restart lost had its stake refunded); a socket that had not said hello yet, or names an
+    // account already put back, is closed (its client reconnects).
     for (const ws of ctx.getWebSockets()) {
       const tag = ws.deserializeAttachment() as Tag | null;
       if (!tag?.id || typeof tag.account !== "string" || !this.core.restore(tag.id, tag.account)) {
@@ -172,6 +184,8 @@ export class Room extends DurableObject<Env> {
       }
       this.sockets.set(tag.id, ws);
       this.idOfSocket.set(ws, tag.id);
+      const me = this.core.meOf(tag.id);
+      if (me) this.sendText(tag.id, JSON.stringify({ t: "me", me } satisfies S2C));
     }
     this.ensureTimer();
   }
@@ -181,7 +195,7 @@ export class Room extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    const id = this.core.open();
+    const id = this.core.open(request.headers.get("CF-Connecting-IP") ?? "");
     if (!id) {
       // the door is shut: say so and close, without keeping the socket
       server.accept();

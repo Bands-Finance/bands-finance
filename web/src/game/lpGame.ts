@@ -9,6 +9,10 @@
  * The hours are real where they can be: a Market is a hidden 48-hour stretch of the pool's own hourly history (its
  * prices, and the fees its real volume paid each hour). A pool too new for that plays a simulated path instead.
  *
+ * A round's fees are capped at FEES_CAP_PCT of the deposit (24 Sep, after the review): fees are a pure gain on top of
+ * the position's value, so without a cap a wide band on a hot pool paid back more than it staked on every stretch it
+ * could be dealt, and a stack compounded. With it a round can still be a good one, but never a sure one.
+ *
  * Pure and deterministic by construction: the only randomness is the seeded rng below, there is no clock, no global
  * state and no import. The room server (a Cloudflare Worker) replays simulate() from the round's seed and the
  * player's choices to score the board, so the same inputs must give the same numbers in a browser and in a Worker.
@@ -67,6 +71,8 @@ export interface Choice {
 export const TICKS = 48;
 export const WIDTH_MIN = 3;
 export const WIDTH_MAX = 120;
+/** a round's fees stop accruing at this percent of the deposit (real or simulated hours alike) */
+export const FEES_CAP_PCT = 30;
 
 export interface SimResult {
   /** price per tick, TICKS+1 values, path[0] = 1 */
@@ -214,10 +220,11 @@ export function validateChoice(c: unknown): string | null {
  *
  * Fees: each tick t in 1..TICKS whose price is inside [lower, upper] (inclusive) adds
  *   DEPOSIT * feePctPerHour/100 * concentration,  concentration = clamp(CONC_REF / widthBins, CONC_MIN, CONC_MAX)
- * to a running total that is never compounded. Tick 0 earns nothing.
+ * to a running total that is never compounded and stops at FEES_CAP_PCT: once the round has earned that much, later
+ * in-range ticks add nothing. Tick 0 earns nothing.
  *
  * With a market (a real stretch of the pool's history), its path replaces the simulated one and hour t's fees are its
- * own: DEPOSIT * market.feePct[t]/100 * concentration. The seed then plays no part.
+ * own: DEPOSIT * market.feePct[t]/100 * concentration, under the same cap. The seed then plays no part.
  *
  * Closing: after closedAt the books are shut, so feesPct, valuePct and holdPct stay at their closedAt values to the end
  * of the arrays (path and inRange carry on: they are the market's, not the player's). scorePct is
@@ -269,7 +276,7 @@ export function simulate(pool: PoolParams, seed: number, choice: Choice, market?
       holdPct.push(holdPct[t - 1]);
       continue;
     }
-    if (t >= 1 && inRange[t]) fees += feeAt(t);
+    if (t >= 1 && inRange[t]) fees = Math.min(fees + feeAt(t), FEES_CAP_PCT);
     feesPct.push(fees);
     valuePct.push(valueAt(P));
     holdPct.push(token0 * P + quote0);

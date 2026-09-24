@@ -27,6 +27,8 @@ export interface Spot {
   /** how close you must stand, metres */
   r: number;
   prompt: string;
+  /** for a stall: its index on the board (stall i shows and deals the board's row i; two rows can share a label) */
+  stall?: number;
   /** for a stall: the pool's label */
   pool?: string;
 }
@@ -78,6 +80,14 @@ const NOTE_GEO = new THREE.BoxGeometry(0.86, 0.018, 0.4);
 
 /** a visitor's name tag: the name and the stack */
 const tagText = (name: string, stack?: number): string => (typeof stack === "number" ? `${name} · ${bands(stack)}` : name);
+
+/** a label sprite (labelSprite draws each on its own canvas) taken down and its texture and material freed */
+const dropSprite = (s: THREE.Sprite | null) => {
+  if (!s) return;
+  s.parent?.remove(s);
+  (s.material as THREE.SpriteMaterial).map?.dispose();
+  s.material.dispose();
+};
 
 /** figures farther than this from the camera are drawn without their contours */
 const DETAIL_M = 26;
@@ -162,6 +172,8 @@ export class ExchangeWorld {
   private disposed = false;
   /** loose notes on the ground, turning where they lie */
   private looseNotes = new Map<string, { g: THREE.Group; x: number; z: number; askedAt: number; phase: number }>();
+  /** keys and E are read only while this is on (the page turns it off while a panel is open) */
+  private inputOn = true;
   private dprCap: number;
   private ro: ResizeObserver;
   paused = false;
@@ -362,7 +374,7 @@ export class ExchangeWorld {
       this.colliders.push({ x, z, r: 1.7 });
       const fx = x + Math.sin(ry) * 1.9;
       const fz = z + Math.cos(ry) * 1.9;
-      this.spots.push({ id: `stall-${i}`, kind: "stall", x: fx, z: fz, r: 2.2, prompt: "Lay a band", pool: undefined });
+      this.spots.push({ id: `stall-${i}`, kind: "stall", x: fx, z: fz, r: 2.2, prompt: "Lay a band", stall: i, pool: undefined });
       this.pickables.push({ obj: g, spot: `stall-${i}` });
     });
   }
@@ -688,6 +700,8 @@ export class ExchangeWorld {
   // ---------------------------------------------------------------- you and the others
 
   setMe(name: string, strap: number) {
+    dropSprite(this.me.tag);
+    dropSprite(this.me.bubble);
     this.scene.remove(this.me.root);
     const pos = this.me.root.position.clone();
     this.me = makeWalker(STRAPS[strap] ?? STRAPS[0], 3);
@@ -732,9 +746,7 @@ export class ExchangeWorld {
     const tag = labelSprite(tagText(w.name, stack));
     tag.userData.base = tag.scale.clone();
     tag.position.copy(old.position);
-    w.root.remove(old);
-    (old.material as THREE.SpriteMaterial).map?.dispose();
-    old.material.dispose();
+    dropSprite(old);
     w.root.add(tag);
     w.tag = tag;
   }
@@ -754,7 +766,7 @@ export class ExchangeWorld {
     this.looseNotes.set(n.id, { g, x: n.x, z: n.z, askedAt: -Infinity, phase: (n.x * 7.3 + n.z * 3.1) % 6.28 });
   }
 
-  /** a note was picked up (by anyone) */
+  /** a note was picked up (by anyone), or is not there any more (a note shares its geometry and material: nothing to free) */
   removeLooseNote(id: string) {
     const n = this.looseNotes.get(id);
     if (!n) return;
@@ -762,18 +774,39 @@ export class ExchangeWorld {
     this.looseNotes.delete(id);
   }
 
+  /** the room's word on the loose notes: what it lists is on the ground, nothing else is (a fresh welcome after a reconnect) */
+  setLooseNotes(list: { id: string; x: number; z: number }[]) {
+    const keep = new Set(list.map((n) => n.id));
+    for (const id of [...this.looseNotes.keys()]) if (!keep.has(id)) this.removeLooseNote(id);
+    for (const n of list) this.addLooseNote(n);
+  }
+
+  /** a note the room will not give this visitor (today's notes are picked): not asked for again this session */
+  muteNote(id: string) {
+    const n = this.looseNotes.get(id);
+    if (n) n.askedAt = Infinity;
+  }
+
   removeRemote(id: string) {
     const w = this.remotes.get(id);
     if (!w) return;
+    dropSprite(w.tag);
+    dropSprite(w.bubble);
     this.scene.remove(w.root);
     this.remotes.delete(id);
+  }
+
+  /** a fresh welcome: everyone and every loose note goes, and the room lists them again (so nobody who left meanwhile lingers) */
+  resetRoom() {
+    for (const id of [...this.remotes.keys()]) this.removeRemote(id);
+    for (const id of [...this.looseNotes.keys()]) this.removeLooseNote(id);
   }
 
   /** a speech bubble over someone ("me" for you) for a few seconds */
   bubble(id: string, text: string) {
     const w = id === "me" ? this.me : this.remotes.get(id);
     if (!w) return;
-    if (w.bubble) w.root.remove(w.bubble);
+    dropSprite(w.bubble);
     w.bubble = labelSprite(text, { bubble: true });
     w.bubble.userData.base = w.bubble.scale.clone();
     w.bubble.position.y = w.fig.height + 1.1;
@@ -808,6 +841,12 @@ export class ExchangeWorld {
     this.joy.set(x, y);
   }
 
+  /** off while a panel is open: keys held then are dropped, and W A S D and E do nothing until it is on again */
+  setInputEnabled(on: boolean) {
+    this.inputOn = on;
+    if (!on) this.keys.clear();
+  }
+
   /** the action key (E, or the on-screen button) */
   interact() {
     if (this.near) this.cb.onInteract(this.near);
@@ -820,6 +859,7 @@ export class ExchangeWorld {
   }
 
   private onKey = (e: KeyboardEvent) => {
+    if (!this.inputOn) return;
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
     const k = e.key.toLowerCase();
@@ -1040,12 +1080,12 @@ export class ExchangeWorld {
       w.pace += (pace - w.pace) * Math.min(1, dt * 6);
       w.fig.animate(dt, w.moving ? Math.min(1.7, Math.max(0.35, w.pace)) : 0, secs);
       if (w.bubble && now > w.bubbleUntil) {
-        w.root.remove(w.bubble);
+        dropSprite(w.bubble);
         w.bubble = null;
       }
     }
     if (this.me.bubble && now > this.me.bubbleUntil) {
-      this.me.root.remove(this.me.bubble);
+      dropSprite(this.me.bubble);
       this.me.bubble = null;
     }
 
