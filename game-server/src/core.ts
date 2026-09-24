@@ -54,7 +54,9 @@ export const MAX_STEP_SECONDS = 2;
 export const JUMP_SLACK_M = 1;
 /** a clamp that moves the player more than this sends them a correction */
 export const CORRECTION_M = 0.5;
-export const SPAWN_RADIUS = 6;
+/** visitors arrive on a ring between these radii, clear of the fountain at the centre */
+export const SPAWN_INNER = 7;
+export const SPAWN_RADIUS = 10;
 /** the room's heartbeat (batched moves, round ticks), ms */
 export const ROOM_TICK_MS = Math.round(1000 / TICK_HZ);
 
@@ -662,7 +664,8 @@ export class RoomCore {
 
   private newPlayer(id: string, name: string, strap: number, now: number): Player {
     const a = this.deps.random() * Math.PI * 2;
-    const d = 1 + this.deps.random() * (SPAWN_RADIUS - 1);
+    // a ring round the fountain at the centre (city.ts keeps its footprint within 4 m)
+    const d = SPAWN_INNER + this.deps.random() * (SPAWN_RADIUS - SPAWN_INNER);
     const x = r2(Math.cos(a) * d);
     const z = r2(Math.sin(a) * d);
     return {

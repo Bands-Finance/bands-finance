@@ -134,7 +134,18 @@ export class ExchangeWorld {
   private yaw = 0;
   private pitch = 0.26;
   private dist = 9.5;
-  private dragging: { x: number; y: number; id: number } | null = null;
+  private dragging: { x: number; y: number; id: number; startX: number; startY: number; at: number; moved: boolean } | null = null;
+  /** click or tap to walk: where you are headed, and the spot to open on arrival */
+  private goal: { x: number; z: number; spot: Spot | null; checkAt: number; checkD: number } | null = null;
+  private lastDragAt = 0;
+  private raycaster = new THREE.Raycaster();
+  private ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  /** the landmarks you can click, each with the spot it opens */
+  private pickables: { obj: THREE.Object3D; spot: string }[] = [];
+  private marker!: THREE.Mesh;
+  private hoverAt = 0;
+  /** how fast you are actually going, as a share of a walk (for the stride) */
+  private gait = 0;
   private raf = 0;
   private last = performance.now();
   private fpsFrames = 0;
@@ -143,6 +154,8 @@ export class ExchangeWorld {
   private noticeMesh: THREE.Mesh | null = null;
   private stallSigns: THREE.Mesh[] = [];
   private npc: Walker | null = null;
+  /** passers-by: walkers on loops through the open plaza, placed by the clock so every visitor sees them in the same places */
+  private strollers: { w: Walker; path: THREE.Vector3[]; lengths: number[]; total: number; speed: number; offset: number }[] = [];
   private moved = false;
   private disposed = false;
   private dprCap: number;
@@ -175,6 +188,10 @@ export class ExchangeWorld {
     shared.uFade.value = 0;
 
     this.buildPlaza();
+    this.marker = new THREE.Mesh(new THREE.RingGeometry(0.34, 0.46, 32), new THREE.MeshBasicMaterial({ color: new THREE.Color().setRGB(...hexRgb(INK), THREE.LinearSRGBColorSpace), transparent: true, opacity: 0 }));
+    this.marker.rotation.x = -Math.PI / 2;
+    this.marker.position.y = 0.03;
+    this.scene.add(this.marker);
     this.me = makeWalker(STRAPS[0]);
     this.me.root.position.copy(SPAWN);
     this.me.root.rotation.y = this.meRy;
@@ -232,6 +249,7 @@ export class ExchangeWorld {
     this.buildNoticeBoard();
     this.buildDesk();
     this.buildDecor();
+    this.buildStrollers();
   }
 
   /** the Pools Board: a tall printed billboard of the live top pools */
@@ -336,6 +354,7 @@ export class ExchangeWorld {
       const fx = x + Math.sin(ry) * 1.9;
       const fz = z + Math.cos(ry) * 1.9;
       this.spots.push({ id: `stall-${i}`, kind: "stall", x: fx, z: fz, r: 2.2, prompt: "Lay a band", pool: undefined });
+      this.pickables.push({ obj: g, spot: `stall-${i}` });
     });
   }
 
@@ -406,6 +425,7 @@ export class ExchangeWorld {
     this.colliders.push({ x: 24, z: 2, r: 4.2 });
     const front = new THREE.Vector3(0, 0, 4.4).applyAxisAngle(new THREE.Vector3(0, 1, 0), g.rotation.y).add(g.position);
     this.spots.push({ id: "guards", kind: "guards", x: front.x, z: front.z, r: 2.6, prompt: "Read the rules" });
+    this.pickables.push({ obj: g, spot: "guards" });
   }
 
   /** the Notice Board: his build notes, pinned */
@@ -431,6 +451,7 @@ export class ExchangeWorld {
     this.colliders.push({ x: -18, z: 20, r: 2.8 });
     const front = new THREE.Vector3(0, 0, 2.4).applyAxisAngle(new THREE.Vector3(0, 1, 0), g.rotation.y).add(g.position);
     this.spots.push({ id: "notes", kind: "notes", x: front.x, z: front.z, r: 2.4, prompt: "Read what he built" });
+    this.pickables.push({ obj: g, spot: "notes" });
   }
 
   private noticeTexture(notes: string[]): THREE.CanvasTexture {
@@ -492,9 +513,9 @@ export class ExchangeWorld {
       this.scene.add(s, b);
       this.colliders.push({ x, z, r: 0.8 });
     };
-    stack(-6, 6, 0.4, 3);
-    stack(-5.2, 7.2, 1.1, 2);
-    stack(7, 9, -0.3, 4);
+    stack(-13.5, 4.5, 0.4, 3);
+    stack(-12.8, 5.8, 1.1, 2);
+    stack(13.5, 6.5, -0.3, 4);
     stack(16, -16, 0.8, 3);
     stack(-15, -15, -0.6, 5);
     const bench = (x: number, z: number, ry: number) => {
@@ -517,6 +538,52 @@ export class ExchangeWorld {
     bench(-11, 12, 0.5);
     bench(11, 13, -0.5);
     bench(28, 18, -1.0);
+  }
+
+  /** five passers-by on loops through the open plaza (clear of the stalls, benches and lamps) */
+  private buildStrollers() {
+    const pts = (xz: number[][]) => xz.map(([x, z]) => new THREE.Vector3(x, 0, z));
+    // routes checked against the map: clear of the fountain (r 4.5), the board (x ±8.5, z -21..-19), the stalls, the
+    // Guard House (24, 2) and the desk (-24, 2), the Notice Board (-18, 20), the benches, the lamps (r 31) and the stacks
+    const routes: { path: THREE.Vector3[]; speed: number; strap: number }[] = [
+      { path: pts([[0, 28], [-10, 26], [-16, 14], [-17, 4], [-8, -4], [8, -4], [18, 6], [16, 18], [6, 27]]), speed: 1.3, strap: 1 },
+      { path: pts([[-6, -24], [-12, -16], [-20, -8], [-30, -5], [-28, 10], [-20, -2]]), speed: 1.2, strap: 2 },
+      { path: pts([[11, -26], [20, -18], [30, -8], [32, 8], [20, 22], [6, -4]]), speed: 1.35, strap: 3 },
+      { path: pts([[-5, 14], [0, 19], [5, 14], [0, 12.5]]), speed: 0.9, strap: 4 },
+      { path: pts([[0, 28], [-10, 26], [-16, 14], [-17, 4], [-8, -4], [8, -4], [18, 6], [16, 18], [6, 27]]), speed: 1.1, strap: 5 },
+    ];
+    routes.forEach((r, i) => {
+      const lengths: number[] = [];
+      let total = 0;
+      for (let k = 0; k < r.path.length; k++) {
+        const l = r.path[k].distanceTo(r.path[(k + 1) % r.path.length]);
+        lengths.push(l);
+        total += l;
+      }
+      const w = makeWalker(STRAPS[r.strap % STRAPS.length]);
+      this.scene.add(w.root);
+      this.strollers.push({ w, path: r.path, lengths, total, speed: r.speed, offset: i * 37.3 });
+    });
+  }
+
+  /** where each passer-by is now: along its loop by the clock */
+  private placeStrollers(dt: number) {
+    const t = Date.now() / 1000;
+    for (const s of this.strollers) {
+      let d = (t * s.speed + s.offset) % s.total;
+      let k = 0;
+      while (d > s.lengths[k]) {
+        d -= s.lengths[k];
+        k = (k + 1) % s.path.length;
+      }
+      const a = s.path[k];
+      const b = s.path[(k + 1) % s.path.length];
+      const f = d / s.lengths[k];
+      const root = s.w.root;
+      root.position.set(a.x + (b.x - a.x) * f, 0, a.z + (b.z - a.z) * f);
+      root.rotation.y = lerpAngle(root.rotation.y, Math.atan2(b.x - a.x, b.z - a.z), Math.min(1, dt * 5));
+      animateWalker(s.w, true, dt);
+    }
   }
 
   /**
@@ -584,6 +651,7 @@ export class ExchangeWorld {
     this.colliders.push({ x: -24, z: 2, r: 2.6 });
     const front2 = new THREE.Vector3(0, 0, 3.2).applyAxisAngle(new THREE.Vector3(0, 1, 0), g.rotation.y).add(g.position);
     this.spots.push({ id: "desk", kind: "desk", x: front2.x, z: front2.z, r: 3, prompt: "Talk to Mr Bands" });
+    this.pickables.push({ obj: g, spot: "desk" });
     const sign = labelSprite("Mr Bands");
     sign.position.set(-24, 4.2, 2);
     this.scene.add(sign);
@@ -703,6 +771,12 @@ export class ExchangeWorld {
     if (this.near) this.cb.onInteract(this.near);
   }
 
+  /** walk to a spot and open it (a landmark named by the page) */
+  goToSpot(id: string) {
+    const spot = this.spots.find((s) => s.id === id);
+    if (spot) this.walkTo(spot.x, spot.z, spot);
+  }
+
   private onKey = (e: KeyboardEvent) => {
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
@@ -717,24 +791,74 @@ export class ExchangeWorld {
   private onBlur = () => this.keys.clear();
 
   private onPointerDown = (e: PointerEvent) => {
-    if (e.pointerType === "touch" && e.clientX < window.innerWidth * 0.42) return; // the left of a phone is the joystick
-    this.dragging = { x: e.clientX, y: e.clientY, id: e.pointerId };
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    this.dragging = { x: e.clientX, y: e.clientY, id: e.pointerId, startX: e.clientX, startY: e.clientY, at: performance.now(), moved: false };
     this.canvas.setPointerCapture(e.pointerId);
   };
 
   private onPointerMove = (e: PointerEvent) => {
-    if (!this.dragging || e.pointerId !== this.dragging.id) return;
+    if (!this.dragging || e.pointerId !== this.dragging.id) {
+      // hovering: a hand over anything you can click (checked a few times a second, not on every move)
+      if (e.pointerType === "mouse" && performance.now() - this.hoverAt > 120) {
+        this.hoverAt = performance.now();
+        this.canvas.style.cursor = this.pick(e.clientX, e.clientY)?.spot ? "pointer" : "";
+      }
+      return;
+    }
+    if (!this.dragging.moved && Math.hypot(e.clientX - this.dragging.startX, e.clientY - this.dragging.startY) < 7) return;
+    this.dragging.moved = true;
     const dx = e.clientX - this.dragging.x;
     const dy = e.clientY - this.dragging.y;
     this.dragging.x = e.clientX;
     this.dragging.y = e.clientY;
     this.yaw -= dx * 0.006;
     this.pitch = Math.min(1.1, Math.max(0.08, this.pitch + dy * 0.004));
+    this.lastDragAt = performance.now();
   };
 
   private onPointerUp = (e: PointerEvent) => {
-    if (this.dragging?.id === e.pointerId) this.dragging = null;
+    const d = this.dragging;
+    if (!d || d.id !== e.pointerId) return;
+    this.dragging = null;
+    // a click or a tap, not a drag: walk there (a landmark: walk to it and open it)
+    if (!d.moved && performance.now() - d.at < 450) {
+      const hit = this.pick(e.clientX, e.clientY);
+      if (hit) this.walkTo(hit.x, hit.z, hit.spot ? (this.spots.find((s) => s.id === hit.spot) ?? null) : null);
+    }
   };
+
+  /** what the pointer is over: a landmark's spot, or a point on the ground */
+  private pick(clientX: number, clientY: number): { x: number; z: number; spot: string | null } | null {
+    const r = this.canvas.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const hits = this.raycaster.intersectObjects(this.pickables.map((p) => p.obj), true);
+    if (hits.length) {
+      let o: THREE.Object3D | null = hits[0].object;
+      while (o) {
+        const obj = o;
+        const found = this.pickables.find((p) => p.obj === obj);
+        if (found) {
+          const spot = this.spots.find((s) => s.id === found.spot);
+          if (spot) return { x: spot.x, z: spot.z, spot: spot.id };
+        }
+        o = o.parent;
+      }
+    }
+    const p = new THREE.Vector3();
+    if (!this.raycaster.ray.intersectPlane(this.ground, p)) return null;
+    const rr = Math.hypot(p.x, p.z);
+    const max = WORLD_RADIUS - 1.3;
+    if (rr > max) p.multiplyScalar(max / rr);
+    return { x: p.x, z: p.z, spot: null };
+  }
+
+  /** head somewhere (a click, a tap, or a landmark named by the page) */
+  walkTo(x: number, z: number, spot: Spot | null = null) {
+    this.goal = { x, z, spot, checkAt: performance.now() + 700, checkD: Infinity };
+    this.marker.position.set(x, 0.03, z);
+    (this.marker.material as THREE.MeshBasicMaterial).opacity = 0.85;
+  }
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
@@ -805,20 +929,56 @@ export class ExchangeWorld {
     fx += this.joy.x;
     fz += this.joy.y;
     const mag = Math.min(1, Math.hypot(fx, fz));
-    const moving = mag > 0.08;
+    const steering = mag > 0.08;
     const me = this.me.root;
-    if (moving) {
-      const speed = (k.has("shift") || this.joy.length() > 0.95 ? SPRINT : WALK) * mag;
+    if (steering) this.goal = null; // your hands on the keys or the stick: a click-walk ends
+    let heading = this.meRy;
+    let speed = 0;
+    if (steering) {
+      speed = (k.has("shift") || this.joy.length() > 0.95 ? SPRINT : WALK) * mag;
       // the camera sits at (sin yaw, cos yaw) behind you: forward (W, fz = -1) is away from it
-      const heading = Math.atan2(fx, fz) + this.yaw;
-      const nx = me.position.x + Math.sin(heading) * speed * dt;
-      const nz = me.position.z + Math.cos(heading) * speed * dt;
-      const p = this.collide(nx, nz);
+      heading = Math.atan2(fx, fz) + this.yaw;
+    } else if (this.goal) {
+      const g = this.goal;
+      const dx = g.x - me.position.x;
+      const dz = g.z - me.position.z;
+      const d = Math.hypot(dx, dz);
+      const arriveAt = g.spot ? Math.min(0.9, g.spot.r * 0.4) : 0.3;
+      if (d <= arriveAt) {
+        this.arrive();
+      } else {
+        heading = Math.atan2(dx, dz);
+        speed = Math.min(WALK, d * 3 + 0.8);
+        // stuck against something: open the spot if it is already in reach, else give up
+        if (now > g.checkAt) {
+          if (g.checkD - d < 0.25) {
+            if (g.spot && d < g.spot.r) this.arrive();
+            else this.goal = null;
+          }
+          if (this.goal) {
+            g.checkAt = now + 700;
+            g.checkD = d;
+          }
+        }
+      }
+    }
+    const moving = speed > 0.05;
+    if (moving) {
+      const x0 = me.position.x;
+      const z0 = me.position.z;
+      const p = this.collide(me.position.x + Math.sin(heading) * speed * dt, me.position.z + Math.cos(heading) * speed * dt);
       me.position.x = p.x;
       me.position.z = p.z;
       this.meRy = lerpAngle(this.meRy, heading, Math.min(1, dt * 12));
       me.rotation.y = this.meRy;
-    }
+      this.gait = Math.hypot(p.x - x0, p.z - z0) / Math.max(dt, 1e-3) / WALK;
+      // the camera swings in behind you as you go: not while you look round, not when you walk backwards
+      const behind = this.meRy + Math.PI;
+      const facingAway = Math.cos(behind - this.yaw) > -0.2;
+      if (now - this.lastDragAt > 1500 && facingAway && (this.goal !== null || fz < -0.2)) this.yaw = lerpAngle(this.yaw, behind, Math.min(1, dt * 1.8));
+    } else this.gait = 0;
+    const mm = this.marker.material as THREE.MeshBasicMaterial;
+    if (!this.goal && mm.opacity > 0) mm.opacity = Math.max(0, mm.opacity - dt * 2.5);
     animateWalker(this.me, moving, dt);
     if (moving || this.moved) this.cb.onMove(me.position.x, me.position.z, me.rotation.y, moving);
     this.moved = moving;
@@ -839,6 +999,8 @@ export class ExchangeWorld {
       this.me.root.remove(this.me.bubble);
       this.me.bubble = null;
     }
+
+    this.placeStrollers(dt);
 
     // Mr Bands, idle: a slow sway, and a turn toward you when you come close
     if (this.npc) {
@@ -868,10 +1030,42 @@ export class ExchangeWorld {
       target.y + Math.sin(this.pitch) * this.dist + 0.6,
       target.z + Math.cos(this.yaw) * Math.cos(this.pitch) * this.dist,
     );
-    this.camera.position.lerp(cam, Math.min(1, dt * 8));
+    this.camera.position.lerp(this.clearView(target, cam), Math.min(1, dt * 8));
     this.camera.lookAt(target);
     this.key.position.set(me.position.x - 16, 26, me.position.z + 13);
     this.key.target.position.set(me.position.x, 0, me.position.z);
+  }
+
+  /** you reached a click-walk's end: stop, face the spot, open it */
+  private arrive() {
+    const spot = this.goal?.spot ?? null;
+    this.goal = null;
+    if (spot) this.cb.onInteract(spot);
+  }
+
+  /**
+   * The camera's place with a clear view of you: walked from you toward where it wants to be, it stops short of the
+   * first big thing in the way (a building's footprint, the board) and inside the ring of facades (r 46).
+   */
+  private clearView(target: THREE.Vector3, want: THREE.Vector3): THREE.Vector3 {
+    const steps = 14;
+    let ok = 0;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const x = target.x + (want.x - target.x) * t;
+      const z = target.z + (want.z - target.z) * t;
+      const y = target.y + (want.y - target.y) * t;
+      let blocked = Math.hypot(x, z) > 46;
+      if (!blocked && y < 11) {
+        for (const c of this.colliders) if (c.r >= 1.5 && Math.hypot(x - c.x, z - c.z) < c.r) blocked = true;
+        for (const b of this.walls) if (x > b.x0 && x < b.x1 && z > b.z0 && z < b.z1) blocked = true;
+      }
+      if (blocked) break;
+      ok = t;
+    }
+    if (ok >= 1) return want;
+    const t = Math.max(0.25, ok - 0.03);
+    return new THREE.Vector3(target.x + (want.x - target.x) * t, Math.max(1.2, target.y + (want.y - target.y) * t), target.z + (want.z - target.z) * t);
   }
 
   /** push a step out of every collider and keep it on the plaza */
