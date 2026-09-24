@@ -17,8 +17,8 @@ export interface Laid {
   lower: number;
   upper: number;
   tickMs: number;
-  /** the hours are a real stretch of the pool's history */
-  real: boolean;
+  /** the hours are a real stretch of the pool's history (undefined: a room server too old to say) */
+  real?: boolean;
 }
 
 /** one hour of a round, as it happens */

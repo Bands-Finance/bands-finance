@@ -152,7 +152,7 @@ export function LpRound({ pool, source, ranked, onClose }: LpRoundProps) {
       </div>
 
       <canvas ref={chart} className="lp__chart" aria-label="Price over 48 hours with your band" />
-      {laid && phase !== "setup" && (
+      {laid && laid.real !== undefined && phase !== "setup" && (
         <p className="lp__src">
           {laid.real ? "48 real hours from this pool's last eight days, prices and fees as they traded. Which hours is revealed at the end." : "Simulated hours: this pool hasn't traded long enough for two days of history."}
         </p>
