@@ -24,6 +24,14 @@
  * no job. The stall keeps RAKE_PCT of every stake, the game's one sink; a round's stake is at most MAX_STAKE, and a
  * round's fees at most FEES_CAP_PCT of the deposit (lpGame.ts); a band's value never beats holding, so what comes
  * back is at most 1.3 x the stake, and a stack grows a step at a time, never compounds.
+ *
+ * THE TOWN (24 Sep, the adventure slice): the walkable ground is the plaza, the boulevard ring and the four streets
+ * out to their domed ends, one shape for both sides (web/src/game/town.ts: walkable, nearestWalkable, PLACES). Every
+ * named front is a Place with a door; standing within DOOR_REACH_M of it a visitor may "enter" (the server checks the
+ * position, records the discovery, moves their errand on and answers what the interior shows), "buy" kit at a shop,
+ * "climb" the tower. Mr Bands hands out ERRANDS at his desk and at Bands & Co., one at a time in order, then a daily
+ * run of three doors; their rewards wait in `owed` and are collected with "pay" at the desk. Kit worn is in
+ * PlayerState.kit for everyone to see. Ranks are titles by stack, nothing more.
  */
 
 /** the plaza is a disc of this radius, in world units (metres); the server clamps every position into it */
@@ -59,7 +67,152 @@ export interface PlayerState {
   moving: boolean;
   /** their stack, dollars */
   stack: number;
+  /** what they wear (bought at the town's shops) */
+  kit: Kit;
 }
+
+// ---------------------------------------------------------------- the town
+
+/** how near a door you must stand to enter, buy, climb or be counted there, metres (the server's check) */
+export const DOOR_REACH_M = 3;
+/**
+ * the plaza's own two doors the errands name, beside the PLACES of town.ts: the Guard House's front step (World.ts
+ * builds it at (24, 2) turned -PI/2.4, its front 4.4 m out) and Mr Bands' desk (DESK_SPOT, a wider reach)
+ */
+export const GUARD_SPOT = { x: 19.8, z: 3.1 } as const;
+/** the place ids the server's errands and shops rely on; PLACES in town.ts must use these ids for these fronts */
+export const PLACE_IDS = {
+  hatter: "hatter",
+  cigars: "cigars",
+  merchantsBank: "merchants-bank",
+  coffeeEast: "coffee-east",
+  clockTower: "clock-tower",
+  bandsCo: "bands-co",
+  booksellerCrescent: "bookseller-crescent",
+  eastEnd: "east-end",
+  northEnd: "north-end",
+  westEnd: "west-end",
+  southEnd: "south-end",
+  /** the plaza's own (not in PLACES): the Guard House and the desk */
+  guardHouse: "guard-house",
+  desk: "desk",
+} as const;
+export const END_IDS: readonly string[] = [PLACE_IDS.eastEnd, PLACE_IDS.northEnd, PLACE_IDS.westEnd, PLACE_IDS.southEnd];
+
+// ---------------------------------------------------------------- kit and the shops
+
+export const HATS = ["top", "bowler", "boater", "cap", "crown"] as const;
+export type HatId = (typeof HATS)[number];
+export const COATS = ["Ink", "Cloth", "FigInk"] as const;
+export type CoatId = (typeof COATS)[number];
+/** what a figure wears; the strap colour is PlayerState.strap as before */
+export interface Kit {
+  hat: HatId;
+  coat: CoatId;
+  cane: boolean;
+  glasses: boolean;
+  cigar: boolean;
+}
+export const DEFAULT_KIT: Kit = { hat: "top", coat: "Ink", cane: false, glasses: false, cigar: false };
+
+/** which shop sells (a shop place's id is the shop, or the shop then "-" and where: "glover-west", "stationer-crescent") */
+export const SHOPS = ["hatter", "glover", "cigars", "stationer", "tailor"] as const;
+export type ShopId = (typeof SHOPS)[number];
+/** the shop a place id names, or null when the place is not a shop */
+export function shopOf(placeId: string): ShopId | null {
+  const head = placeId.split("-")[0];
+  return (SHOPS as readonly string[]).includes(head) ? (head as ShopId) : null;
+}
+
+export const ITEMS = ["boater", "cap", "crown", "cane", "cigar", "glasses", "coat-cloth", "coat-ink", "coat-figink"] as const;
+export type ItemId = (typeof ITEMS)[number];
+/** what the shops sell, dollars of play money each; one of each: what you wear is what you own, and a second is refused */
+export const STOCK: readonly { item: ItemId; shop: ShopId; label: string; price: number }[] = [
+  { item: "boater", shop: "hatter", label: "a boater", price: 400 },
+  { item: "cap", shop: "hatter", label: "a cap", price: 250 },
+  { item: "crown", shop: "hatter", label: "a crown", price: 5000 },
+  { item: "cane", shop: "glover", label: "a cane", price: 600 },
+  { item: "cigar", shop: "cigars", label: "a cigar", price: 150 },
+  { item: "glasses", shop: "stationer", label: "reading spectacles", price: 300 },
+  { item: "coat-cloth", shop: "tailor", label: "a coat in cloth", price: 200 },
+  { item: "coat-ink", shop: "tailor", label: "a coat in ink", price: 200 },
+  { item: "coat-figink", shop: "tailor", label: "a coat in fig ink", price: 200 },
+];
+/** the kit an item puts on: a hat or a coat replaces the one worn, the rest is a switch */
+export function wear(kit: Kit, item: ItemId): Kit {
+  switch (item) {
+    case "boater":
+    case "cap":
+    case "crown":
+      return { ...kit, hat: item };
+    case "cane":
+    case "cigar":
+    case "glasses":
+      return { ...kit, [item]: true };
+    case "coat-cloth":
+      return { ...kit, coat: "Cloth" };
+    case "coat-ink":
+      return { ...kit, coat: "Ink" };
+    case "coat-figink":
+      return { ...kit, coat: "FigInk" };
+  }
+}
+/** is the item already on (so the shop refuses a second) */
+export const owns = (kit: Kit, item: ItemId): boolean => JSON.stringify(wear(kit, item)) === JSON.stringify(kit);
+
+// ---------------------------------------------------------------- ranks
+
+/** a title by stack, in bands; no effect on play */
+export const RANKS: readonly { title: string; bands: number }[] = [
+  { title: "Clerk", bands: 0 },
+  { title: "Teller", bands: 2 },
+  { title: "Broker", bands: 5 },
+  { title: "Partner", bands: 10 },
+  { title: "Magnate", bands: 25 },
+];
+export function titleOf(stack: number): string {
+  let title = RANKS[0].title;
+  for (const r of RANKS) if (stack >= r.bands * BAND) title = r.title;
+  return title;
+}
+
+// ---------------------------------------------------------------- errands
+
+export type ErrandId = "hatter" | "ledger" | "coffee" | "clock" | "cigars" | "note" | "ends" | "rules" | "daily";
+export interface Errand {
+  id: ErrandId;
+  /** what he says handing it over (his voice) */
+  line: string;
+  /** the HUD's short form: "Errand: take the ledger to the Merchants' Bank" */
+  short: string;
+  /** the doors to reach, in this order unless `any` */
+  steps: readonly string[];
+  /** the steps may be reached in any order */
+  any?: boolean;
+  /** what the last step asks beyond reaching it: the tower's hour, or a purchase there */
+  task?: { do: "answer" } | { do: "buy"; item: ItemId };
+  /** dollars of play money, into `owed` when the errand is done, paid at the desk */
+  reward: number;
+}
+/** the chain, once per account, in this order, one at a time; `daily` is the run that follows, one a day */
+export const ERRANDS: readonly Errand[] = [
+  { id: "hatter", line: "Find the Hatter. East street, first corner.", short: "find the Hatter", steps: [PLACE_IDS.hatter], reward: 50 },
+  { id: "ledger", line: "Take this ledger to the Merchants' Bank.", short: "take the ledger to the Merchants' Bank", steps: [PLACE_IDS.merchantsBank], reward: 100 },
+  { id: "coffee", line: "Go and hear what the Coffee House is saying about me.", short: "hear the Coffee House", steps: [PLACE_IDS.coffeeEast], reward: 75 },
+  { id: "clock", line: "Climb the Clock Tower and tell me the time.", short: "climb the Clock Tower and tell him the time", steps: [PLACE_IDS.clockTower], task: { do: "answer" }, reward: 150 },
+  { id: "cigars", line: "Fetch me a box of cigars.", short: "fetch a box of cigars", steps: [PLACE_IDS.cigars], task: { do: "buy", item: "cigar" }, reward: 250 },
+  { id: "note", line: "A note for the Bookseller in the Crescent.", short: "take a note to the Bookseller in the Crescent", steps: [PLACE_IDS.booksellerCrescent], reward: 100 },
+  { id: "ends", line: "Walk every street to its end and come back.", short: "walk every street to its end", steps: END_IDS, any: true, reward: 300 },
+  { id: "rules", line: "Bring me the town's rules.", short: "bring the town's rules from the Guard House", steps: [PLACE_IDS.guardHouse, PLACE_IDS.desk], reward: 100 },
+];
+/** the daily run: DAILY_PLACES doors drawn by the server from PLACES (never an end, never two the same), DAILY_REWARD */
+export const DAILY: Errand = { id: "daily", line: "Today's run. Three doors, then back here.", short: "the daily run", steps: [], any: true, reward: 150 };
+export const DAILY_PLACES = 3;
+export const DAILY_REWARD = DAILY.reward;
+/** the first time you reach a door: this much into the stack at once */
+export const FOUND_PAY = 10;
+/** the Coffee House keeps the last this many phrases said in the plaza */
+export const TALK_ROWS = 8;
 
 // ---------------------------------------------------------------- the stack
 
@@ -112,6 +265,26 @@ export interface Me {
   rounds: number;
   /** notes picked up today */
   notes: number;
+  kit: Kit;
+  /** the place ids reached so far (the four ends included) */
+  found: string[];
+  /** the errand in hand: its id, how many steps are done, and which (the steps' place ids, for any-order errands) */
+  errand: { id: ErrandId; step: number; done: string[] } | null;
+  errandsDone: ErrandId[];
+  /** today's run, once taken: its doors, the ones reached, and whether it is done (its reward then waits in `owed`) */
+  daily: { places: string[]; found: string[]; paid: boolean } | null;
+  /** errand rewards waiting at the desk, dollars */
+  owed: number;
+  /** the rank the stack gives (RANKS) */
+  title: string;
+}
+
+/** a phrase said in the plaza, as the Coffee House repeats it */
+export interface TalkRow {
+  name: string;
+  phrase: PhraseId;
+  /** minutes ago */
+  ago: number;
 }
 
 /** a loose note on the ground, worth v dollars */
@@ -159,7 +332,20 @@ export type C2S =
    * a practice round: settle now, at the last tick the server has sent (tick 1 if none has gone out yet).
    * a staked round: skip to the end (the remaining ticks come at once and it settles at its hold)
    */
-  | { t: "close"; roundId: string };
+  | { t: "close"; roundId: string }
+  /**
+   * I stand at this door (a PLACES id, or "guard-house" / "desk"): the server checks the position (DOOR_REACH_M),
+   * records the discovery, moves the errand or the daily run on, and answers "place"
+   */
+  | { t: "enter"; place: string }
+  /** climb the Clock Tower (at its door): answers "place" for the tower with the hour it shows */
+  | { t: "climb" }
+  /** errand "clock": the hour the tower showed (0..23), asked after the climb */
+  | { t: "answer"; hour: number }
+  /** buy one of STOCK at its shop's door */
+  | { t: "buy"; item: ItemId }
+  /** at the desk or at Bands & Co.: take the next errand of the chain, or the daily run */
+  | { t: "errand"; take: true };
 
 // ---------------------------------------------------------------- server -> client
 
@@ -204,7 +390,36 @@ export type S2C =
   | { t: "full" }
   /** the visitor is sending too much; messages are being dropped */
   | { t: "slow" }
+  /**
+   * what the interior shows: the Coffee House's talk, the tower's hour (UTC, 0..23), a shop's stock with what is
+   * already worn; the rest carry the id alone
+   */
+  | { t: "place"; id: string; talk?: TalkRow[]; hour?: number; stock?: { item: ItemId; price: number; owned: boolean }[] }
+  /** the first time this player reached the door: paid dollars went into the stack */
+  | { t: "found"; place: string; paid: number }
+  /** the purchase went through (the new kit follows in "me" and "kit") */
+  | { t: "bought"; item: ItemId }
+  /** someone's kit changed (the buyer included) */
+  | { t: "kit"; id: string; kit: Kit }
+  /**
+   * fixed server strings, among them: "not there" (not at that door), "no stack" (cannot afford), "have one",
+   * "no errand" (nothing to take, or nothing this does), "wrong hour"
+   */
   | { t: "error"; why: string };
 
 export const isEmote = (v: unknown): v is EmoteId => typeof v === "string" && (EMOTES as readonly string[]).includes(v);
 export const isPhrase = (v: unknown): v is PhraseId => typeof v === "string" && (PHRASES as readonly string[]).includes(v);
+export const isItem = (v: unknown): v is ItemId => typeof v === "string" && (ITEMS as readonly string[]).includes(v);
+export const isHat = (v: unknown): v is HatId => typeof v === "string" && (HATS as readonly string[]).includes(v);
+export const isCoat = (v: unknown): v is CoatId => typeof v === "string" && (COATS as readonly string[]).includes(v);
+/** a stored or received kit put right: anything missing or malformed falls back to DEFAULT_KIT's */
+export function cleanKit(k: unknown): Kit {
+  const o = typeof k === "object" && k !== null ? (k as Record<string, unknown>) : {};
+  return {
+    hat: isHat(o.hat) ? o.hat : DEFAULT_KIT.hat,
+    coat: isCoat(o.coat) ? o.coat : DEFAULT_KIT.coat,
+    cane: o.cane === true,
+    glasses: o.glasses === true,
+    cigar: o.cigar === true,
+  };
+}

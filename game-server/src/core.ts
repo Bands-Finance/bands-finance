@@ -26,13 +26,37 @@
  *   - the hours are real where they can be: the room reads the pool's hourly history (historySource) and deals a
  *     random 48-hour stretch of it (a Market), named to the player only once the round is scored. A pool too new for
  *     that, or a history that can't be read, plays the seeded simulation as before.
+ *   - the town (24 Sep): a move is pulled back to the nearest walkable ground (town.ts, the one shape the client
+ *     collides with). A visitor standing within DOOR_REACH_M of a door may enter it: the first time pays FOUND_PAY
+ *     and is remembered in the account's `found`; an errand whose next step is that door moves on. Mr Bands' errands
+ *     (ERRANDS, then a daily run of DAILY_PLACES doors the room draws) are taken at his desk or at Bands & Co.; a
+ *     finished errand's reward waits in `owed` and is collected with the wage. The tower's hour is the room's own UTC
+ *     hour, shown at the climb and checked at the answer. Shops sell STOCK for the stack; what is bought is worn at
+ *     once and told to everyone. The Coffee House repeats the last TALK_ROWS phrases said in the plaza (room-level).
  */
 import {
+  cleanKit,
+  DAILY,
+  DAILY_PLACES,
+  DEFAULT_KIT,
   DESK_SPOT,
+  DOOR_REACH_M,
+  END_IDS,
+  ERRANDS,
+  FOUND_PAY,
+  GUARD_SPOT,
   HOLDS,
   isEmote,
+  isItem,
   isPhrase,
   JOBS,
+  owns,
+  PLACE_IDS,
+  shopOf,
+  STOCK,
+  TALK_ROWS,
+  titleOf,
+  wear,
   MAX_SPEED,
   MAX_STAKE,
   MIN_STAKE,
@@ -49,7 +73,8 @@ import {
   WAGE,
   WORLD_RADIUS,
 } from "../../web/src/game/protocol";
-import type { JobId, Me, Note, PlayerState, S2C, ScoreRow, StackRow } from "../../web/src/game/protocol";
+import type { Errand, ErrandId, ItemId, JobId, Kit, Me, Note, PhraseId, PlayerState, S2C, ScoreRow, StackRow, TalkRow } from "../../web/src/game/protocol";
+import { crossesRope, nearestWalkable, PLACES } from "../../web/src/game/town";
 import { MARKET_HOURS, marketWindow, poolParamsFromHot, seriesOf, simulate, TICKS, validateChoice } from "../../web/src/game/lpGame";
 import type { History, Market, PoolParams, SimResult } from "../../web/src/game/lpGame";
 
@@ -72,6 +97,8 @@ export const LAY_GAP_MS = 1_000;
 export const PAY_GAP_MS = 2_000;
 /** { t: "error" } replies: one per this long (a round's expiry notice is always sent) */
 export const ERROR_GAP_MS = 2_000;
+/** doors (enter, climb, answer, buy, errand): one per this long; a door answered is a write at most, never a fetch */
+export const DOOR_GAP_MS = 300;
 /** hellos with no (or no known) key open a new account each: the room lets this many through a second, this many at once */
 export const KEYLESS_HELLO_RATE = 1;
 export const KEYLESS_HELLO_BURST = 10;
@@ -186,6 +213,16 @@ export interface Account {
   notes: number;
   created: number;
   seen: number;
+  kit: Kit;
+  /** the doors reached so far (PLACES ids; the four ends among them) */
+  found: string[];
+  /** the errand in hand */
+  errand: { id: ErrandId; step: number; done: string[] } | null;
+  errandsDone: ErrandId[];
+  /** today's run, once taken */
+  daily: { places: string[]; found: string[]; paid: boolean } | null;
+  /** errand rewards waiting at the desk, dollars */
+  owed: number;
 }
 
 /** where accounts live: the Durable Object's SQLite in production, a Map in tests */
@@ -241,6 +278,9 @@ export function rollDay(a: Account, now: number): boolean {
   a.jobs = freshJobs();
   a.rounds = 0;
   a.notes = 0;
+  // yesterday's run is over, done or not; the chain's errand in hand carries over
+  a.daily = null;
+  if (a.errand?.id === "daily") a.errand = null;
   return true;
 }
 
@@ -251,6 +291,14 @@ export function cleanAccount(a: Account): Account {
     const had = a.jobs?.[j.id];
     if (had && isNum(had.have)) jobs[j.id] = { have: Math.max(0, Math.min(j.need, Math.floor(had.have))), paid: had.paid === true };
   }
+  const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length <= 40) : []);
+  const errandIds = (v: unknown): ErrandId[] => ids(v).filter((x): x is ErrandId => ERRANDS.some((e) => e.id === x));
+  const errand = isRecord(a.errand) && (ERRANDS.some((e) => e.id === a.errand?.id) || a.errand.id === "daily")
+    ? { id: a.errand.id, step: isNum(a.errand.step) ? Math.max(0, Math.floor(a.errand.step)) : 0, done: ids(a.errand.done) }
+    : null;
+  const daily = isRecord(a.daily) && Array.isArray(a.daily.places) && a.daily.places.length === DAILY_PLACES
+    ? { places: ids(a.daily.places), found: ids(a.daily.found), paid: a.daily.paid === true }
+    : null;
   return {
     ...a,
     stack: isNum(a.stack) ? Math.max(0, Math.floor(a.stack)) : START_STACK,
@@ -259,6 +307,13 @@ export function cleanAccount(a: Account): Account {
     jobs,
     rounds: isNum(a.rounds) ? a.rounds : 0,
     notes: isNum(a.notes) ? a.notes : 0,
+    kit: cleanKit(a.kit),
+    found: [...new Set(ids(a.found))],
+    // a daily errand in hand needs its run; the run needs its errand or its pay
+    errand: errand && (errand.id !== "daily" || daily) ? errand : null,
+    errandsDone: [...new Set(errandIds(a.errandsDone))],
+    daily,
+    owed: isNum(a.owed) ? Math.max(0, Math.floor(a.owed)) : 0,
   };
 }
 
@@ -271,7 +326,39 @@ export function meOf(a: Account): Me {
     jobs: JOBS.map((j) => ({ id: j.id, have: a.jobs[j.id].have, paid: a.jobs[j.id].paid })),
     rounds: a.rounds,
     notes: a.notes,
+    kit: { ...a.kit },
+    found: [...a.found],
+    errand: a.errand ? { id: a.errand.id, step: a.errand.step, done: [...a.errand.done] } : null,
+    errandsDone: [...a.errandsDone],
+    daily: a.daily ? { places: [...a.daily.places], found: [...a.daily.found], paid: a.daily.paid } : null,
+    owed: a.owed,
+    title: titleOf(a.stack),
   };
+}
+
+/** the UTC hour the tower shows, 0..23 */
+export const hourOf = (ms: number): number => new Date(ms).getUTCHours();
+
+/** a door the errands and the shops can name: a PLACES entry, or the plaza's own Guard House and desk */
+export function doorOf(id: string): { x: number; z: number; r: number } | null {
+  if (id === PLACE_IDS.desk) return { x: DESK_SPOT.x, z: DESK_SPOT.z, r: DESK_SPOT.r };
+  if (id === PLACE_IDS.guardHouse) return { x: GUARD_SPOT.x, z: GUARD_SPOT.z, r: DOOR_REACH_M };
+  const pl = PLACES.find((q) => q.id === id);
+  return pl ? { x: pl.x, z: pl.z, r: DOOR_REACH_M } : null;
+}
+
+/** the doors the daily run may draw from: every place but the four ends */
+export const DAILY_POOL: readonly string[] = PLACES.map((q) => q.id).filter((id) => !END_IDS.includes(id));
+
+/** stored talk rows -> a clean list (bad rows dropped, newest last, TALK_ROWS long) */
+export function cleanTalk(rows: unknown): { name: string; phrase: PhraseId; at: number }[] {
+  if (!Array.isArray(rows)) return [];
+  const out: { name: string; phrase: PhraseId; at: number }[] = [];
+  for (const r of rows) {
+    if (!isRecord(r) || !isRoomName(r.name) || !isPhrase(r.phrase) || !isNum(r.at)) continue;
+    out.push({ name: r.name, phrase: r.phrase, at: r.at });
+  }
+  return out.slice(-TALK_ROWS);
 }
 
 // ---------------------------------------------------------------- names
@@ -313,6 +400,8 @@ export interface RoomDeps {
   history?(pool: PoolParams): Promise<unknown>;
   /** the top rows changed; persist them */
   saveBoard?(rows: ScoreRow[]): void;
+  /** the Coffee House's talk changed; persist it (name, phrase, when in ms) */
+  saveTalk?(rows: { name: string; phrase: PhraseId; at: number }[]): void;
   /** close a socket (full room, no hello) */
   close?(id: string, code: number, reason: string): void;
   /** a player joined; the host may remember (socket id, account id) to restore them after a restart */
@@ -389,7 +478,10 @@ interface Player {
   socialAt: number;
   layAt: number;
   payAt: number;
+  doorAt: number;
   errorAt: number;
+  /** the hour the tower showed at this session's last climb, or null before one */
+  climbed: number | null;
   /** the open round, if any (one at a time) */
   round: Round | null;
   /** the account behind the player: its stack, today's jobs */
@@ -436,7 +528,7 @@ export function takeToken(b: Bucket, now: number, perSecond: number, burst: numb
   return true;
 }
 
-/** a point pulled back onto the disc of WORLD_RADIUS if it lies outside */
+/** a point pulled back onto the disc of WORLD_RADIUS if it lies outside (the plaza alone: spawns and notes; a move uses town.ts) */
 export function clampToDisc(x: number, z: number, radius = WORLD_RADIUS): [number, number] {
   const d = Math.hypot(x, z);
   if (d <= radius) return [x, z];
@@ -606,12 +698,16 @@ export class RoomCore {
   private readonly keyless: Bucket;
   /** new accounts opened per client address, this hour */
   private readonly ipAccounts = new Map<string, { count: number; since: number }>();
+  /** the last TALK_ROWS phrases said in the plaza, oldest first (what the Coffee House repeats) */
+  private talkRows: { name: string; phrase: PhraseId; at: number }[] = [];
 
   constructor(
     private readonly deps: RoomDeps,
     leaderboard?: unknown,
+    talk?: unknown,
   ) {
     if (leaderboard !== undefined) this.loadBoard(leaderboard);
+    if (talk !== undefined) this.loadTalk(talk);
     this.store = deps.accounts ?? memoryAccounts();
     this.hashKey = deps.hashKey ?? (async (k) => `plain:${k}`);
     this.stacksTop = this.store.topStacks(STACK_ROWS);
@@ -637,6 +733,17 @@ export class RoomCore {
   /** replace the leaderboard with stored rows (cleaned) */
   loadBoard(rows: unknown): void {
     this.top = cleanBoard(rows);
+  }
+
+  /** replace the Coffee House's talk with stored rows (cleaned) */
+  loadTalk(rows: unknown): void {
+    this.talkRows = cleanTalk(rows);
+  }
+
+  /** the talk of the town as the Coffee House shows it: newest first, minutes ago */
+  talk(): TalkRow[] {
+    const now = this.deps.now();
+    return [...this.talkRows].reverse().map((r) => ({ name: r.name, phrase: r.phrase, ago: Math.max(0, Math.floor((now - r.at) / 60_000)) }));
   }
 
   /** the leaderboard, best first */
@@ -756,6 +863,16 @@ export class RoomCore {
         return this.pick(p, msg, now);
       case "pay":
         return this.pay(p, now);
+      case "enter":
+        return this.enter(p, msg, now);
+      case "climb":
+        return this.climb(p, now);
+      case "answer":
+        return this.answer(p, msg, now);
+      case "buy":
+        return this.buy(p, msg, now);
+      case "errand":
+        return this.takeErrand(p, msg, now);
       default:
         return;
     }
@@ -865,6 +982,12 @@ export class RoomCore {
         notes: 0,
         created: now,
         seen: now,
+        kit: { ...DEFAULT_KIT },
+        found: [],
+        errand: null,
+        errandsDone: [],
+        daily: null,
+        owed: 0,
       };
     }
     conn.greeting = false;
@@ -919,12 +1042,18 @@ export class RoomCore {
       this.slow(p, now);
       return;
     }
-    const [cx, cz] = clampToDisc(x, z);
+    const [cx, cz] = nearestWalkable(x, z);
     // the speed check: a running distance budget, refilled at MAX_SPEED for the time since the last move (a refused
     // move still spends the time), capped so an idle spell never buys a jump
     const seconds = Math.min(MAX_STEP_SECONDS, Math.max(0, now - p.budgetAt) / 1000);
     p.budget = Math.min(BUDGET_CAP_M, p.budget + MAX_SPEED * seconds);
     p.budgetAt = now;
+    // the rope: out of the plaza or back in only through a mouth. The band round the rope keeps a walker off its
+    // line, but a budget of BUDGET_CAP_M would jump it in one move; a step whose ends straddle it is refused
+    if (crossesRope(p.x, p.z, cx, cz)) {
+      this.correct(p);
+      return;
+    }
     if (p.trustNext) {
       p.budget = BUDGET_CAP_M;
     } else {
@@ -952,6 +1081,11 @@ export class RoomCore {
     p.socialAt = now;
     // to everyone else: the sender's page shows its own bubble when it sends
     this.deps.broadcast(out, p.id);
+    if (out.t === "say") {
+      this.talkRows.push({ name: p.name, phrase: out.p, at: now });
+      if (this.talkRows.length > TALK_ROWS) this.talkRows.splice(0, this.talkRows.length - TALK_ROWS);
+      this.deps.saveTalk?.(this.talkRows.map((r) => ({ ...r })));
+    }
     if (out.t === "emote" && out.e === "wave") {
       const near = [...this.conns.values()].some((c) => c.player && c.player !== p && Math.hypot(c.player.x - p.x, c.player.z - p.z) <= WAVE_NEAR_M);
       if (near) this.job(p, "wave", 1, now);
@@ -1022,6 +1156,9 @@ export class RoomCore {
         amount += j.reward;
       }
     }
+    // the errands: what the chain and the day's run earned since the last visit
+    amount += a.owed;
+    a.owed = 0;
     // nothing to collect: nothing changed, so nothing is written or re-sent (a new day always has the wage)
     if (!amount) {
       this.deps.send(p.id, { t: "paid", amount: 0 });
@@ -1032,6 +1169,211 @@ export class RoomCore {
     this.deps.send(p.id, { t: "paid", amount });
     this.deps.send(p.id, { t: "me", me: meOf(a) });
     this.stackChanged(p);
+  }
+
+  // ---------------------------------------------------------------- the town's doors
+
+  /** the door named, when the player stands at it (its own reach for the desk); "not there" otherwise, null then */
+  private atDoor(p: Player, id: string, now: number): { x: number; z: number; r: number } | null {
+    const door = doorOf(id);
+    if (!door || Math.hypot(p.x - door.x, p.z - door.z) > door.r) {
+      this.error(p, "not there", now);
+      return null;
+    }
+    return door;
+  }
+
+  /** doors: one message per DOOR_GAP_MS (false, and "slow", when it is too soon) */
+  private doorTurn(p: Player, now: number): boolean {
+    if (now - p.doorAt < DOOR_GAP_MS) {
+      this.slow(p, now);
+      return false;
+    }
+    p.doorAt = now;
+    return true;
+  }
+
+  /** the errand in hand as a table row: the chain's, or the daily run with the doors the room drew */
+  private errandOf(a: Account): Errand | null {
+    if (!a.errand) return null;
+    if (a.errand.id === "daily") return a.daily ? { ...DAILY, steps: a.daily.places } : null;
+    return ERRANDS.find((e) => e.id === a.errand!.id) ?? null;
+  }
+
+  /**
+   * a door reached on the errand in hand: the next step in order (or any step left, for an any-order errand) is
+   * marked done, unless it is the last step and asks a task there (the task marks it). A purchase asked of someone
+   * who wears the thing already is the one task done on entering: he gets his box, the player keeps theirs (the shop
+   * sells one to a customer, so the errand would have no way through). true when the errand moved
+   */
+  private stepErrand(a: Account, place: string): boolean {
+    const e = this.errandOf(a);
+    const h = a.errand;
+    if (!e || !h) return false;
+    const last = e.steps.length - 1;
+    const i = e.any ? e.steps.indexOf(place) : e.steps[h.step] === place ? h.step : -1;
+    if (i < 0 || h.done.includes(place)) return false;
+    if (e.task && (e.any || i === last) && !(e.task.do === "buy" && owns(a.kit, e.task.item))) return false;
+    h.done.push(place);
+    h.step = h.done.length;
+    if (e.id === "daily" && a.daily && !a.daily.found.includes(place)) a.daily.found.push(place);
+    if (h.step >= e.steps.length) this.finishErrand(a, e);
+    return true;
+  }
+
+  /** the errand is done: its reward waits at the desk, the day's run's too (its row is marked, so the board says done) */
+  private finishErrand(a: Account, e: Errand): void {
+    a.errand = null;
+    a.owed += e.reward;
+    if (e.id === "daily") {
+      if (a.daily) a.daily.paid = true;
+      return;
+    }
+    if (!a.errandsDone.includes(e.id)) a.errandsDone.push(e.id);
+  }
+
+  /** what a door's interior shows beyond its id */
+  private placeExtras(id: string, now: number): Partial<Extract<S2C, { t: "place" }>> {
+    if (id.startsWith("coffee")) return { talk: this.talk() };
+    if (id === PLACE_IDS.clockTower) return { hour: hourOf(now) };
+    return {};
+  }
+
+  private stockFor(a: Account, shop: string): { item: ItemId; price: number; owned: boolean }[] {
+    return STOCK.filter((s) => s.shop === shop).map((s) => ({ item: s.item, price: s.price, owned: owns(a.kit, s.item) }));
+  }
+
+  /**
+   * enter a door: the position is checked, the discovery recorded and paid the first time (FOUND_PAY at once), the
+   * errand moved on, and the interior answered; the account is written once, and only when any of that changed
+   */
+  private enter(p: Player, msg: Record<string, unknown>, now: number): void {
+    const id = typeof msg.place === "string" && msg.place.length <= 40 ? msg.place : "";
+    if (!id || !this.doorTurn(p, now)) return;
+    if (!this.atDoor(p, id, now)) return;
+    const a = p.acct;
+    let changed = rollDay(a, now);
+    let paid = 0;
+    if (id !== PLACE_IDS.desk && id !== PLACE_IDS.guardHouse && !a.found.includes(id)) {
+      a.found.push(id);
+      a.stack += FOUND_PAY;
+      paid = FOUND_PAY;
+      changed = true;
+    }
+    if (this.stepErrand(a, id)) changed = true;
+    if (changed) this.store.put(a);
+    if (paid) this.deps.send(p.id, { t: "found", place: id, paid });
+    const shop = shopOf(id);
+    this.deps.send(p.id, { t: "place", id, ...this.placeExtras(id, now), ...(shop ? { stock: this.stockFor(a, shop) } : {}) });
+    if (changed) this.deps.send(p.id, { t: "me", me: meOf(a) });
+    if (paid) this.stackChanged(p);
+  }
+
+  /** climb the tower: the hour it shows is the room's own, kept for the errand's question; nothing is written */
+  private climb(p: Player, now: number): void {
+    if (!this.doorTurn(p, now)) return;
+    if (!this.atDoor(p, PLACE_IDS.clockTower, now)) return;
+    p.climbed = hourOf(now);
+    this.deps.send(p.id, { t: "place", id: PLACE_IDS.clockTower, hour: p.climbed });
+  }
+
+  /** errand "clock": the hour, at the tower, after a climb; the hour shown at the climb, or the hour now, is right */
+  private answer(p: Player, msg: Record<string, unknown>, now: number): void {
+    const hour = msg.hour;
+    if (!isNum(hour) || !Number.isInteger(hour) || hour < 0 || hour > 23) return;
+    if (!this.doorTurn(p, now)) return;
+    const a = p.acct;
+    const e = this.errandOf(a);
+    if (!e || e.task?.do !== "answer" || p.climbed === null) {
+      this.error(p, "no errand", now);
+      return;
+    }
+    if (!this.atDoor(p, e.steps[e.steps.length - 1], now)) return;
+    if (hour !== p.climbed && hour !== hourOf(now)) {
+      this.error(p, "wrong hour", now);
+      return;
+    }
+    a.errand!.done.push(e.steps[e.steps.length - 1]);
+    a.errand!.step = a.errand!.done.length;
+    this.finishErrand(a, e);
+    this.store.put(a);
+    this.deps.send(p.id, { t: "me", me: meOf(a) });
+  }
+
+  /** buy one of STOCK at a door of its shop: one of each, from the stack; worn at once and told to everyone */
+  private buy(p: Player, msg: Record<string, unknown>, now: number): void {
+    if (!isItem(msg.item)) return;
+    if (!this.doorTurn(p, now)) return;
+    const row = STOCK.find((s) => s.item === msg.item)!;
+    const here = PLACES.find((q) => shopOf(q.id) === row.shop && Math.hypot(p.x - q.x, p.z - q.z) <= DOOR_REACH_M);
+    if (!here) {
+      this.error(p, "not there", now);
+      return;
+    }
+    const a = p.acct;
+    if (owns(a.kit, row.item)) {
+      this.error(p, "have one", now);
+      return;
+    }
+    if (a.stack < row.price) {
+      this.error(p, "no stack", now);
+      return;
+    }
+    rollDay(a, now);
+    a.stack -= row.price;
+    a.kit = wear(a.kit, row.item);
+    const e = this.errandOf(a);
+    if (e?.task?.do === "buy" && e.task.item === row.item && e.steps[e.steps.length - 1] === here.id) {
+      a.errand!.done.push(here.id);
+      a.errand!.step = a.errand!.done.length;
+      this.finishErrand(a, e);
+    }
+    this.store.put(a);
+    this.deps.send(p.id, { t: "bought", item: row.item });
+    this.deps.send(p.id, { t: "me", me: meOf(a) });
+    this.deps.broadcast({ t: "kit", id: p.id, kit: { ...a.kit } });
+    this.stackChanged(p);
+  }
+
+  /**
+   * take an errand at the desk or at Bands & Co.: the chain's next, or once the chain is done today's run, DAILY_PLACES
+   * doors drawn from every place but the ends, once a day. One in hand already is answered with the account as it is
+   */
+  private takeErrand(p: Player, msg: Record<string, unknown>, now: number): void {
+    if (msg.take !== true) return;
+    if (!this.doorTurn(p, now)) return;
+    const desk = doorOf(PLACE_IDS.desk)!;
+    const house = doorOf(PLACE_IDS.bandsCo);
+    const atDesk = Math.hypot(p.x - desk.x, p.z - desk.z) <= desk.r;
+    const atHouse = house !== null && Math.hypot(p.x - house.x, p.z - house.z) <= house.r;
+    if (!atDesk && !atHouse) {
+      this.error(p, "not there", now);
+      return;
+    }
+    const a = p.acct;
+    const rolled = rollDay(a, now);
+    if (a.errand) {
+      if (rolled) this.store.put(a);
+      this.deps.send(p.id, { t: "me", me: meOf(a) });
+      return;
+    }
+    const next = ERRANDS.find((e) => !a.errandsDone.includes(e.id));
+    if (next) {
+      a.errand = { id: next.id, step: 0, done: [] };
+    } else {
+      if (a.daily || DAILY_POOL.length < DAILY_PLACES) {
+        if (rolled) this.store.put(a);
+        this.error(p, "no errand", now);
+        return;
+      }
+      const pool = [...DAILY_POOL];
+      const places: string[] = [];
+      while (places.length < DAILY_PLACES) places.push(pool.splice(Math.floor(this.deps.random() * pool.length) % pool.length, 1)[0]);
+      a.daily = { places, found: [], paid: false };
+      a.errand = { id: "daily", step: 0, done: [] };
+    }
+    this.store.put(a);
+    this.deps.send(p.id, { t: "me", me: meOf(a) });
   }
 
   /** a note on open ground, clear of the others */
@@ -1345,7 +1687,22 @@ export class RoomCore {
   /** errors are fixed server strings, never anything the client sent */
   private error(
     p: Player,
-    why: "unknown pool" | "board unavailable" | "round in play" | "no such round" | "bad choice" | "bad stake" | "no rounds left" | "not at the desk" | "notes done" | "practice only",
+    why:
+      | "unknown pool"
+      | "board unavailable"
+      | "round in play"
+      | "no such round"
+      | "bad choice"
+      | "bad stake"
+      | "no rounds left"
+      | "not at the desk"
+      | "notes done"
+      | "practice only"
+      | "not there"
+      | "no stack"
+      | "have one"
+      | "no errand"
+      | "wrong hour",
     now: number,
   ): void {
     if (now - p.errorAt < ERROR_GAP_MS) return;
@@ -1353,7 +1710,7 @@ export class RoomCore {
     this.deps.send(p.id, { t: "error", why });
   }
 
-  /** tell a player where the server has them (a rejected jump, or a clamp to the disc) */
+  /** tell a player where the server has them (a rejected jump, or a pull back onto walkable ground) */
   private correct(p: Player): void {
     this.deps.send(p.id, { t: "moves", m: [this.entryOf(p)] });
   }
@@ -1409,7 +1766,9 @@ export class RoomCore {
       socialAt: -Infinity,
       layAt: -Infinity,
       payAt: -Infinity,
+      doorAt: -Infinity,
       errorAt: -Infinity,
+      climbed: null,
       round: null,
       laying: false,
     };
@@ -1444,7 +1803,7 @@ export class RoomCore {
   }
 
   private stateOf(p: Player): PlayerState {
-    return { id: p.id, name: p.name, strap: p.strap, x: r2(p.x), z: r2(p.z), ry: r3(p.ry), moving: p.moving, stack: p.acct.stack };
+    return { id: p.id, name: p.name, strap: p.strap, x: r2(p.x), z: r2(p.z), ry: r3(p.ry), moving: p.moving, stack: p.acct.stack, kit: { ...p.acct.kit } };
   }
 
   private entryOf(p: Player): [string, number, number, number, 0 | 1] {

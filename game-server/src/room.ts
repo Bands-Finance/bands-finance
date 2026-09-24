@@ -6,7 +6,8 @@
  *   - webSocketMessage / webSocketClose / webSocketError feed core.message / core.leave
  *   - a setInterval at TICK_HZ runs core.tick() (the batched moves, and the ticks of every round in play) while any
  *     socket is open, and stops when the room empties, so an empty room can hibernate and costs nothing
- *   - the leaderboard is kept in the object's storage under "board" and loaded before the first event
+ *   - the leaderboard is kept in the object's storage under "board", the Coffee House's talk under "talk"; both are
+ *     loaded before the first event
  *   - accounts (the stacks) live in the object's SQLite (sqlAccounts), found by the SHA-256 of their key
  *   - pools' hourly histories come from the desk's history.json (HISTORY_URL) and are held in memory by historySource
  */
@@ -79,6 +80,7 @@ async function sha256(key: string): Promise<string> {
 }
 
 const BOARD_KEY = "board";
+const TALK_KEY = "talk";
 
 /** uniform [0, 1) from the platform's CSPRNG (seeds, ids and names come from here) */
 const cryptoRandom = (): number => crypto.getRandomValues(new Uint32Array(1))[0] / 4294967296;
@@ -144,6 +146,9 @@ export class Room extends DurableObject<Env> {
       saveBoard: (rows) => {
         this.ctx.storage.put(BOARD_KEY, rows).catch(() => {});
       },
+      saveTalk: (rows) => {
+        this.ctx.storage.put(TALK_KEY, rows).catch(() => {});
+      },
       close: (id, code, reason) => {
         const ws = this.sockets.get(id);
         this.sockets.delete(id);
@@ -166,7 +171,9 @@ export class Room extends DurableObject<Env> {
     });
 
     ctx.blockConcurrencyWhile(async () => {
-      this.core.loadBoard(await this.ctx.storage.get(BOARD_KEY));
+      const [board, talk] = await Promise.all([this.ctx.storage.get(BOARD_KEY), this.ctx.storage.get(TALK_KEY)]);
+      this.core.loadBoard(board);
+      this.core.loadTalk(talk);
     });
 
     // Woken from hibernation: the sockets survived, the memory did not. Joined players are put back and sent their

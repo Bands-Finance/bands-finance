@@ -19,12 +19,16 @@
  *     (kept in memory for the session and in localStorage for the next one, so a reconnect with site data blocked
  *     still opens the same account). onMe carries the account's own changes, onStack everyone's stacks (name tags), onNotes
  *     and onPicked the loose notes, onPaid Mr Bands' pay, onStacks the biggest-stacks board. pick() and pay() ask.
+ *   - the town: enter(place) says this walker stands at a door (the room checks the distance) and onPlace answers with
+ *     what the interior shows; climb() at the tower, answer(hour) for the tower errand, buy(item) at a shop (onBought,
+ *     then the new kit in onMe and onKit), takeErrand() at the desk or at Bands & Co. onFound is a first visit to a
+ *     door (paid at once), onKit someone's kit changed (the buyer included). A refusal comes as onError.
  * A dropped connection is retried with exponential backoff (to 30 s); a reconnect is a new socket id, the same
  * account. A full room is not retried, nor a socket closed because the account was opened in another tab. With no URL (VITE_GAME_WS_URL unset) the
  * status is "offline", nothing is sent, and the game plays single-player, dealing its rounds locally.
  */
-import { isEmote, isPhrase, MOVE_HZ } from "./protocol";
-import type { C2S, EmoteId, Me, Note, PhraseId, PlayerState, S2C, ScoreRow, StackRow } from "./protocol";
+import { cleanKit, isEmote, isItem, isPhrase, MOVE_HZ } from "./protocol";
+import type { C2S, EmoteId, ItemId, Kit, Me, Note, PhraseId, PlayerState, S2C, ScoreRow, StackRow } from "./protocol";
 
 export type NetStatus = "offline" | "connecting" | "online" | "full" | "closed" | "elsewhere";
 export type ScoredMsg = Extract<S2C, { t: "scored" }>;
@@ -59,6 +63,8 @@ export type LaidMsg = Extract<S2C, { t: "laid" }>;
 export type TickMsg = Extract<S2C, { t: "tick" }>;
 /** [id, x, z, ry, moving 0|1] */
 export type MoveEntry = Extract<S2C, { t: "moves" }>["m"][number];
+/** { id, talk?, hour?, stock? }: what the interior behind a door shows */
+export type PlaceMsg = Extract<S2C, { t: "place" }>;
 
 /** the room's WebSocket URL from the build (VITE_GAME_WS_URL, e.g. wss://bands-exchange.<subdomain>.workers.dev/ws) */
 /** the room server bands.finance talks to (game-server/, deployed 24 Sep); its ALLOWED_ORIGINS admit bands.finance only */
@@ -110,11 +116,20 @@ export class ExchangeNet {
   onPaid: (amount: number) => void = () => {};
   onStacks: (rows: StackRow[]) => void = () => {};
   onBoard: (rows: ScoreRow[]) => void = () => {};
+  /** the room's answer to enter() or climb(): what the interior shows */
+  onPlace: (place: PlaceMsg) => void = () => {};
+  /** this visitor reached a door for the first time; paid dollars went into the stack */
+  onFound: (place: string, paid: number) => void = () => {};
+  /** the purchase went through */
+  onBought: (item: ItemId) => void = () => {};
+  /** someone's kit changed (this visitor's own too, after a purchase) */
+  onKit: (id: string, kit: Kit) => void = () => {};
   onStatus: (status: NetStatus) => void = () => {};
   /** the server is dropping this visitor's messages (sending too fast) */
   onSlow: () => void = () => {};
   /** a request was refused: "unknown pool", "board unavailable", "round in play", "no such round", "bad choice",
-   *  "bad stake", "no rounds left", "not at the desk", "notes done", "practice only" */
+   *  "bad stake", "no rounds left", "not at the desk", "notes done", "practice only"; in the town "not there",
+   *  "no stack", "have one", "no errand", "wrong hour" */
   onError: (why: string) => void = () => {};
 
   status: NetStatus;
@@ -201,6 +216,34 @@ export class ExchangeNet {
   /** collect Mr Bands' pay, standing at his desk; the answer is onPaid */
   pay(): boolean {
     return this.send({ t: "pay" });
+  }
+
+  /** I stand at this door (a PLACES id, or "guard-house" / "desk"); the answer is onPlace, or onError "not there" */
+  enter(place: string): boolean {
+    if (typeof place !== "string" || !/^[a-z][a-z0-9-]{0,40}$/.test(place)) return false;
+    return this.send({ t: "enter", place });
+  }
+
+  /** climb the Clock Tower, standing at its door; the answer is onPlace with the hour it shows */
+  climb(): boolean {
+    return this.send({ t: "climb" });
+  }
+
+  /** the tower errand: the hour the clock showed (0..23) */
+  answer(hour: number): boolean {
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) return false;
+    return this.send({ t: "answer", hour });
+  }
+
+  /** buy one of STOCK, standing at its shop's door; the answer is onBought, or onError "no stack" / "have one" */
+  buy(item: ItemId): boolean {
+    if (!isItem(item)) return false;
+    return this.send({ t: "buy", item });
+  }
+
+  /** at the desk or at Bands & Co.: take the next errand, or the daily run; the answer is onMe (or onError "no errand") */
+  takeErrand(): boolean {
+    return this.send({ t: "errand", take: true });
   }
 
   /** a practice round: settle now, at the last tick the server has sent; a staked round: skip to its end. The answer is onScored */
@@ -382,6 +425,18 @@ export class ExchangeNet {
         return;
       case "slow":
         this.onSlow();
+        return;
+      case "place":
+        if (typeof msg.id === "string") this.onPlace(msg);
+        return;
+      case "found":
+        if (typeof msg.place === "string") this.onFound(msg.place, typeof msg.paid === "number" ? msg.paid : 0);
+        return;
+      case "bought":
+        if (isItem(msg.item)) this.onBought(msg.item);
+        return;
+      case "kit":
+        if (typeof msg.id === "string") this.onKit(msg.id, cleanKit(msg.kit));
         return;
       case "error":
         this.onError(typeof msg.why === "string" ? msg.why : "error");
