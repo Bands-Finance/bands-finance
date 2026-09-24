@@ -4,18 +4,36 @@
  * with a few lines, the Guard House, and a stall game per top pool (src/game/LpRound.tsx). Online, you see the other
  * visitors (src/game/net.ts, the room server in game-server/): names the server gives, emotes and preset phrases only,
  * scores the server recomputes. With no server configured (VITE_GAME_WS_URL unset) it is the same world, alone.
+ *
+ * The stack (24 Sep, Zach: "the goal is for each player to stack bands"): online, the room keeps your account. Stake
+ * part of it at the stalls, pick up loose notes, collect Mr Bands' wage and jobs at his desk, and climb the biggest
+ * stacks. Offline every round is practice.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExchangeWorld, type BoardRow, type Spot } from "./World";
 import { LpRound } from "./LpRound";
 import { poolParamsFromHot, type PoolParams } from "./lpGame";
-import { EMOTES, PHRASES, STRAPS, type EmoteId, type PhraseId, type ScoreRow } from "./protocol";
+import { EMOTES, JOBS, PHRASES, STRAPS, WAGE, type EmoteId, type JobId, type Me, type PhraseId, type ScoreRow, type StackRow } from "./protocol";
 import { ExchangeNet, gameWsUrl } from "./net";
-import { newRoutes, offlineSource, onlineSource } from "./rounds";
+import { bands, usd } from "./money";
+import { isLayRefusal, newRoutes, offlineSource, onlineSource } from "./rounds";
 import "./PlayPage.css";
 
 type Panel = { kind: "desk" } | { kind: "guards" } | { kind: "notes" } | { kind: "stall"; pool: PoolParams } | { kind: "board" } | null;
-type NetStatus = "offline" | "connecting" | "online" | "full" | "closed";
+type NetStatus = "offline" | "connecting" | "online" | "full" | "closed" | "elsewhere";
+
+/** Mr Bands' daily jobs, in his words */
+const JOB_TEXT: Record<JobId, string> = {
+  range: "Keep price inside your band for 24 hours of one round",
+  beat: "Close a band ahead of just holding",
+  notes: "Pick up 5 loose notes around the plaza",
+  wave: "Wave at someone standing near you",
+};
+/** the room's other refusals, in words */
+const ERROR_TEXT: Record<string, string> = {
+  "not at the desk": "Walk up to Mr Bands' desk to collect.",
+  "notes done": "That's all the notes you can pick up today.",
+};
 
 interface HotRow {
   name?: string;
@@ -82,6 +100,16 @@ export default function PlayPage() {
   const [line, setLine] = useState(0);
   const [phrasesOpen, setPhrasesOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [me, setMeState] = useState<Me | null>(null);
+  const [stacks, setStacks] = useState<StackRow[]>([]);
+  const [boardTab, setBoardTab] = useState<"stacks" | "rounds">("stacks");
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef(0);
+  const notify = useCallback((text: string) => {
+    setToast(text);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
+  }, []);
   const touch = useMemo(() => typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches, []);
 
   // the world
@@ -91,6 +119,7 @@ export default function PlayPage() {
       onNear: (s) => setNear(s),
       onMove: (x, z, ry, moving) => net.current?.sendMove(x, z, ry, moving),
       onInteract: (s) => openRef.current(s),
+      onNote: (id) => net.current?.pick(id),
     });
     world.current = w;
     // #/play?debug: the world on window, for tracing (nothing else changes)
@@ -105,27 +134,35 @@ export default function PlayPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // the live data: the board's pools for the stalls, his notes, his rules
+  // the live data: the board's pools for the stalls (read again every two minutes, as the room reads it, so a stall
+  // never offers a pool the room has dropped), his notes, his rules
   useEffect(() => {
     let live = true;
-    fetch("/hot.json", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j: { rows?: unknown[] } | null) => {
-        if (!live || !Array.isArray(j?.rows)) return;
-        const rows = j!.rows as HotRow[];
-        const params: PoolParams[] = [];
-        const board: BoardRow[] = [];
-        for (const r of rows) {
-          const p = poolParamsFromHot(r);
-          if (!p) continue;
-          params.push(p);
-          board.push({ label: p.label, feePct: p.feePctPerHour, venue: (r.venue ?? "").replace(/-.*$/, "") || "pool" });
-          if (params.length >= 8) break;
-        }
-        setPools(params);
-        world.current?.setBoard(board);
-      })
-      .catch(() => undefined);
+    let seen = "";
+    const readBoard = () =>
+      fetch("/hot.json", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j: { rows?: unknown[] } | null) => {
+          if (!live || !Array.isArray(j?.rows)) return;
+          const rows = j!.rows as HotRow[];
+          const params: PoolParams[] = [];
+          const board: BoardRow[] = [];
+          for (const r of rows) {
+            const p = poolParamsFromHot(r);
+            if (!p) continue;
+            params.push(p);
+            board.push({ label: p.label, feePct: p.feePctPerHour, venue: (r.venue ?? "").replace(/-.*$/, "") || "pool" });
+            if (params.length >= 8) break;
+          }
+          const sig = JSON.stringify(board);
+          if (sig === seen) return;
+          seen = sig;
+          setPools(params);
+          world.current?.setBoard(board);
+        })
+        .catch(() => undefined);
+    readBoard();
+    const boardTimer = window.setInterval(readBoard, 2 * 60_000);
     fetch("/build.json", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((j: { notes?: BuildNote[] } | null) => {
@@ -140,6 +177,7 @@ export default function PlayPage() {
       .catch(() => undefined);
     return () => {
       live = false;
+      window.clearInterval(boardTimer);
     };
   }, []);
 
@@ -159,15 +197,34 @@ export default function PlayPage() {
         for (const p of m.players) {
           if (p.id === m.you) continue;
           names.current.set(p.id, p.name);
-          world.current?.addRemote(p.id, p.name, p.strap, p.x, p.z, p.ry);
+          world.current?.addRemote(p.id, p.name, p.strap, p.x, p.z, p.ry, p.stack);
         }
         setOthers(m.players.filter((p) => p.id !== m.you).length);
         setLeaders(m.board);
+        if (m.me) setMeState(m.me);
+        if (Array.isArray(m.stacks)) setStacks(m.stacks);
+        for (const note of m.notes ?? []) world.current?.addLooseNote(note);
       };
       n.onJoin = (p) => {
         names.current.set(p.id, p.name);
-        world.current?.addRemote(p.id, p.name, p.strap, p.x, p.z, p.ry);
+        world.current?.addRemote(p.id, p.name, p.strap, p.x, p.z, p.ry, p.stack);
         setOthers(names.current.size);
+      };
+      n.onMe = (m) => setMeState(m);
+      n.onStack = (id, stack) => world.current?.setStack(id, stack);
+      n.onStacks = (rows) => setStacks(rows);
+      n.onNotes = (add, gone) => {
+        for (const note of add) world.current?.addLooseNote(note);
+        for (const id of gone) world.current?.removeLooseNote(id);
+      };
+      n.onPicked = (id, note, v) => {
+        world.current?.removeLooseNote(note);
+        world.current?.bubble(id === n.you ? "me" : id, `+${usd(v)}`);
+      };
+      n.onPaid = (amount) => notify(amount > 0 ? `Mr Bands paid you ${usd(amount)}.` : "Nothing to collect yet. Finish a job and come back.");
+      n.onError = (why) => {
+        if (isLayRefusal(why) && routes.current.refused) routes.current.refused(why);
+        else if (ERROR_TEXT[why]) notify(ERROR_TEXT[why]);
       };
       n.onLeave = (id) => {
         names.current.delete(id);
@@ -189,12 +246,19 @@ export default function PlayPage() {
         resolve?.({ roundId: m.roundId, lower: m.lower, upper: m.upper, tickMs: m.tickMs, real: typeof m.real === "boolean" ? m.real : undefined });
       };
       n.onTick = (m) => routes.current.frames.get(m.roundId)?.({ i: m.i, p: m.p, feesPct: m.feesPct, valuePct: m.valuePct, holdPct: m.holdPct, inRange: m.inRange });
-      n.onScored = (roundId, pct, rank, from) => routes.current.scores.get(roundId)?.({ pct, rank, from });
+      n.onScored = (m) =>
+        routes.current.scores.get(m.roundId)?.({
+          pct: m.pct,
+          rank: m.rank ?? null,
+          from: typeof m.from === "number" && Number.isFinite(m.from) ? m.from : undefined,
+          stake: m.stake,
+          back: m.back,
+        });
       n.onCorrect = (x, z, ry) => world.current?.setMyPosition(x, z, ry);
       n.onBoard = (rows) => setLeaders(rows);
       n.connect(strapIx);
     },
-    [],
+    [notify],
   );
 
   useEffect(() => () => net.current?.close(), []);
@@ -249,7 +313,7 @@ export default function PlayPage() {
           <div className="play-card play__intro">
             <p className="play-eyebrow">bands.finance · play</p>
             <h1 className="play__title">The Bands Exchange</h1>
-            <p className="play__lede">Walk the plaza, meet Mr Bands at his desk, and lay a band at a stall on one of the pools paying the most fees this hour. Play money only.</p>
+            <p className="play__lede">Stack bands. Lay them at the stalls on the pools paying the most fees this hour, pick up loose notes, and collect your pay from Mr Bands at his desk. Your stack is kept for you on this browser. Play money only.</p>
             <div className="play__straps" role="radiogroup" aria-label="Your hat strap">
               <span>Your hat strap</span>
               {STRAPS.map((c, i) => (
@@ -287,10 +351,28 @@ export default function PlayPage() {
           <div className="play__hud play__hud--tl">
             <span className="play__where">The Bands Exchange</span>
             <span className={`play__net play__net--${status}`}>
-              {status === "online" ? `Online · ${others + 1} here` : status === "connecting" ? "Connecting…" : status === "full" ? "The plaza is full · alone for now" : "Single player"}
+              {status === "online"
+                ? `Online · ${others + 1} here`
+                : status === "connecting"
+                  ? "Connecting…"
+                  : status === "full"
+                    ? "The plaza is full · alone for now"
+                    : status === "elsewhere"
+                      ? "Open in another tab · playing there"
+                      : "Single player"}
             </span>
             <span className="play__me">{myName}</span>
+            {online && me && (
+              <span className="play__stack" title={usd(me.stack)}>
+                <b>{usd(me.stack)}</b> <small>{bands(me.stack)}</small>
+              </span>
+            )}
           </div>
+          {toast && (
+            <div className="play__toast" role="status">
+              {toast}
+            </div>
+          )}
           <div className="play__hud play__hud--tr">
             <button type="button" className="play-btn play-btn--sm" onClick={() => setPanel({ kind: "board" })}>
               Leaderboard
@@ -351,6 +433,7 @@ export default function PlayPage() {
                 <div>
                   <p className="play-eyebrow">Mr Bands, at his desk</p>
                   <p className="play__line">{DESK_LINES[line]}</p>
+                  {online && me && <Pay me={me} onCollect={() => net.current?.pay()} />}
                   <div className="lp__row">
                     {line < DESK_LINES.length - 1 ? (
                       <button type="button" className="play-btn play-btn--ink" onClick={() => setLine((l) => l + 1)}>
@@ -404,8 +487,37 @@ export default function PlayPage() {
             {panel.kind === "board" && (
               <div>
                 <p className="play-eyebrow">The leaderboard</p>
-                <h2 className="lp__title">Best bands against holding.</h2>
-                {online ? (
+                <div className="play__tabs" role="tablist">
+                  <button type="button" role="tab" aria-selected={boardTab === "stacks"} className={boardTab === "stacks" ? "is-on" : ""} onClick={() => setBoardTab("stacks")}>
+                    Biggest stacks
+                  </button>
+                  <button type="button" role="tab" aria-selected={boardTab === "rounds"} className={boardTab === "rounds" ? "is-on" : ""} onClick={() => setBoardTab("rounds")}>
+                    Best rounds
+                  </button>
+                </div>
+                {boardTab === "stacks" ? (
+                  <>
+                    <h2 className="lp__title">Who's stacked the most.</h2>
+                    {online ? (
+                      <ol className="play__leaders">
+                        {stacks.map((r, i) => (
+                          <li key={`${r.name}-${i}`} className={r.name === myName ? "is-me" : ""}>
+                            <span className="play__rank">{i + 1}</span>
+                            <span className="play__who">{r.name}</span>
+                            <span className="play__pool">{bands(r.stack)}</span>
+                            <b>{usd(r.stack)}</b>
+                          </li>
+                        ))}
+                        {!stacks.length && <li className="play__empty">Nobody has stacked yet.</li>}
+                      </ol>
+                    ) : (
+                      <p className="lp__sub">Stacks are kept when the Exchange is online.</p>
+                    )}
+                  </>
+                ) : (
+                  <h2 className="lp__title">Best bands against holding.</h2>
+                )}
+                {boardTab === "rounds" && online ? (
                   <ol className="play__leaders">
                     {leaders.map((r, i) => (
                       <li key={`${r.name}-${i}`}>
@@ -420,16 +532,58 @@ export default function PlayPage() {
                     ))}
                     {!leaders.length && <li className="play__empty">No scores yet. Be the first at a stall.</li>}
                   </ol>
-                ) : (
+                ) : boardTab === "rounds" ? (
                   <p className="lp__sub">Scores go on the board when the Exchange is online. Your rounds still count for you.</p>
-                )}
+                ) : null}
               </div>
             )}
-            {panel.kind === "stall" && <LpRound pool={panel.pool} source={source} ranked={online} onClose={() => setPanel(null)} />}
+            {panel.kind === "stall" && <LpRound pool={panel.pool} source={source} ranked={online} me={online ? me : null} onClose={() => setPanel(null)} />}
           </div>
         </div>
       )}
     </main>
+  );
+}
+
+/** today's pay at the desk: the wage, each job and how far along it is, and what can be collected now */
+function Pay({ me, onCollect }: { me: Me; onCollect(): void }) {
+  const due =
+    (me.wagePaid ? 0 : WAGE) +
+    JOBS.reduce((t, j) => {
+      const s = me.jobs.find((x) => x.id === j.id);
+      return t + (s && !s.paid && s.have >= j.need ? j.reward : 0);
+    }, 0);
+  return (
+    <div className="play__pay">
+      <p className="play-eyebrow">Today's pay</p>
+      <ul>
+        <li className={me.wagePaid ? "is-paid" : "is-done"}>
+          <span>Your daily wage</span>
+          <b>{me.wagePaid ? "paid" : usd(WAGE)}</b>
+        </li>
+        {JOBS.map((j) => {
+          const s = me.jobs.find((x) => x.id === j.id);
+          const done = (s?.have ?? 0) >= j.need;
+          return (
+            <li key={j.id} className={s?.paid ? "is-paid" : done ? "is-done" : ""}>
+              <span>
+                {JOB_TEXT[j.id]}
+                {!done && j.need > 1 ? (
+                  <small>
+                    {" "}
+                    {s?.have ?? 0} of {j.need}
+                  </small>
+                ) : null}
+              </span>
+              <b>{s?.paid ? "paid" : usd(j.reward)}</b>
+            </li>
+          );
+        })}
+      </ul>
+      <button type="button" className="play-btn play-btn--ink" disabled={!due} onClick={onCollect}>
+        {due ? `Collect ${usd(due)}` : "Nothing to collect yet"}
+      </button>
+    </div>
   );
 }
 

@@ -110,3 +110,30 @@ kbd { display: inline-block; min-width: 1.6em; padding: 1px 6px; border: 1px sol
   .play__leaders li { grid-template-columns: 26px minmax(0, 1fr) auto; }
   .play__pool { display: none; }
 }
+
+/* the stack (24 Sep): your stack in the corner, a word from the room, Mr Bands' pay, the two boards, the stake */
+.play__stack { display: inline-flex; align-items: baseline; gap: 8px; padding: 5px 10px 4px; background: rgba(249, 244, 233, 0.94); border: 1px solid var(--ink); font-family: var(--font-serif); color: var(--ink); }
+.play__stack b { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+.play__stack small { font-family: var(--font-engrave); font-weight: 700; font-size: 11.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--strap-deep); }
+.play__toast { position: absolute; z-index: 4; left: 50%; top: 16px; transform: translateX(-50%); max-width: min(92vw, 520px); padding: 10px 16px 9px; background: rgba(249, 244, 233, 0.97); border: 1px solid var(--ink); font-family: var(--font-serif); font-size: 16.5px; color: var(--ink); text-align: center; }
+.play__pay { margin: 0 0 18px; padding: 12px 0 0; border-top: 1px solid var(--ink); }
+.play__pay ul { list-style: none; margin: 8px 0 14px; padding: 0; }
+.play__pay li { display: flex; justify-content: space-between; gap: 14px; padding: 8px 0 7px; border-bottom: 1px solid var(--rule); font-family: var(--font-serif); font-size: 15.5px; line-height: 1.4; color: var(--ink-2); }
+.play__pay li small { color: var(--ink-3); font-style: italic; }
+.play__pay li b { flex: none; font-weight: 600; color: var(--ink); }
+.play__pay li.is-done b { color: var(--good); }
+.play__pay li.is-paid { color: var(--ink-3); }
+.play__pay li.is-paid b { color: var(--ink-3); font-weight: 400; font-style: italic; }
+.play__pay button:disabled { opacity: 0.5; cursor: default; }
+.play__tabs { display: flex; gap: 0; margin: 6px 0 12px; border-bottom: 1px solid var(--ink); }
+.play__tabs button { padding: 8px 14px 7px; font-family: var(--font-engrave); font-weight: 700; font-size: 12.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); border-bottom: 3px solid transparent; margin-bottom: -1px; }
+.play__tabs button.is-on { color: var(--ink); border-bottom-color: var(--strap); }
+.play__leaders li.is-me { background: rgba(255, 122, 26, 0.08); }
+.lp__stakes { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 4px; }
+.lp__stakes .is-on { background: var(--ink); color: var(--paper-card) !important; }
+.lp__stakes small { font-weight: 400; letter-spacing: 0.04em; opacity: 0.8; }
+.lp__stacked { margin: 6px 0 0; font-family: var(--font-serif); font-size: 16px; line-height: 1.5; color: var(--ink); }
+@media (max-width: 640px) {
+  .play__stack b { font-size: 18px; }
+  .play__toast { top: 64px; font-size: 15px; }
+}
