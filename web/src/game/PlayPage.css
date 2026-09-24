@@ -138,6 +138,53 @@ kbd { display: inline-block; min-width: 1.6em; padding: 1px 6px; border: 1px sol
 .lp__riding { margin: 0; font-family: var(--font-serif); font-size: 15px; line-height: 1.5; color: var(--strap-deep); }
 @media (max-width: 640px) {
   .play__stack b { font-size: 18px; }
-  /* clear of the top-left column (the net pill, the name, the stack), which the toast used to sit on */
-  .play__toast { top: 132px; font-size: 15px; }
+  /* clear of the whole top-left column (the net pill, the name, the stack, the two-line errand chip), which the toast used to sit on */
+  .play__toast { top: 184px; font-size: 15px; }
+}
+
+/* the town (24 Sep): the errand line and rank on the HUD, the interiors behind every door, the map */
+.play__rank { font-family: var(--font-engrave); font-weight: 700; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--strap-deep); margin-left: 8px; }
+.play__errand { max-width: min(78vw, 360px); padding: 5px 10px 4px; background: rgba(249, 244, 233, 0.94); border: 1px solid var(--ink); font-family: var(--font-serif); font-size: 14.5px; line-height: 1.35; color: var(--ink); }
+.play__errand small { display: block; font-family: var(--font-engrave); font-weight: 700; font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--strap-deep); }
+.play__sign { display: block; width: 100%; height: auto; margin: 0 0 14px; }
+.play__keeper { margin: 0 0 16px; font-family: var(--font-serif); font-size: 19px; line-height: 1.45; color: var(--ink); }
+.play__keeper + .play__keeper { margin-top: -10px; }
+.play__stock { list-style: none; margin: 0 0 16px; padding: 0; border-top: 1px solid var(--ink); }
+.play__stock li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 9px 0 8px; border-bottom: 1px solid var(--rule); font-family: var(--font-serif); font-size: 16px; color: var(--ink); }
+.play__stock li small { color: var(--ink-3); font-style: italic; margin-left: 6px; }
+.play__stock li b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.play__stock li.is-owned { color: var(--ink-3); }
+.play__stock li.is-owned b { font-weight: 400; font-style: italic; }
+.play__ledger { list-style: none; margin: 0 0 16px; padding: 0; border-top: 1px solid var(--ink); }
+.play__ledger li { display: flex; justify-content: space-between; gap: 14px; padding: 9px 0 8px; border-bottom: 1px solid var(--rule); font-family: var(--font-serif); font-size: 16px; color: var(--ink-2); }
+.play__ledger li b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.play__talk { list-style: none; margin: 0 0 16px; padding: 0; border-top: 1px solid var(--ink); }
+.play__talk li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 9px 0 8px; border-bottom: 1px solid var(--rule); font-family: var(--font-serif); font-size: 16px; color: var(--ink); }
+.play__talk li span { color: var(--ink-3); font-size: 14px; white-space: nowrap; }
+.play__talk li q { quotes: "“" "”"; }
+.play__talk li q::before, .play__talk li q::after { color: var(--ink-3); }
+.play__hour { margin: 0 0 14px; font-family: var(--font-serif); font-size: 30px; letter-spacing: -0.01em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.play__hour small { display: block; font-family: var(--font-engrave); font-weight: 700; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-3); }
+.play__choices { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.play__errands { list-style: none; margin: 8px 0 14px; padding: 0; border-top: 1px solid var(--ink); }
+.play__errands li { display: flex; justify-content: space-between; gap: 14px; padding: 8px 0 7px; border-bottom: 1px solid var(--rule); font-family: var(--font-serif); font-size: 15.5px; line-height: 1.4; color: var(--ink-2); }
+.play__errands li b { flex: none; font-weight: 600; color: var(--ink); }
+.play__errands li.is-now { color: var(--ink); }
+.play__errands li.is-now b { color: var(--strap-deep); }
+.play__errands li.is-done { color: var(--ink-3); }
+.play__errands li.is-done b { color: var(--ink-3); font-weight: 400; font-style: italic; }
+.play__learn { list-style: none; margin: 0 0 16px; padding: 0; border-top: 1px solid var(--ink); }
+.play__learn li { padding: 10px 0 9px; border-bottom: 1px solid var(--rule); font-family: var(--font-serif); font-size: 16px; }
+.play__learn li a { color: var(--ink); }
+.play__learn li small { display: block; color: var(--ink-3); font-size: 14px; }
+.play__broadsheet { columns: 2; column-gap: 24px; column-rule: 1px solid var(--rule); margin: 0 0 16px; padding: 12px 0 0; border-top: 3px double var(--ink); }
+.play__broadsheet p { break-inside: avoid; margin: 0 0 10px; font-family: var(--font-serif); font-size: 14.5px; line-height: 1.45; color: var(--ink); }
+.play__broadsheet p::first-letter { font-size: 1.6em; font-weight: 600; float: left; line-height: 1; margin: 2px 4px 0 0; }
+/* the map: a plan of the town on paper, drawn to a canvas from the same geometry the world walks */
+.play__map { width: min(560px, 100%); }
+.play__map canvas { display: block; width: 100%; height: auto; border: 1px solid var(--ink); background: var(--paper-card); }
+.play__map-key { margin: 10px 0 0; font-family: var(--font-serif); font-size: 14px; color: var(--ink-3); }
+@media (max-width: 640px) {
+  .play__broadsheet { columns: 1; }
+  .play__errand { font-size: 13.5px; }
 }

@@ -7,7 +7,14 @@
  * colour. A matching bow tie at the throat.
  *
  * Cheap enough for a crowd: every geometry is built once for all figures, a visitor is 36 or 37 draws with the
- * contours (Mr Bands 46), the contours go on the big forms only, and animate() allocates nothing.
+ * contours (Mr Bands 46; a visitor in every piece of kit 42), the contours go on the big forms only, and animate()
+ * allocates nothing.
+ *
+ * KIT (24 Sep): what a visitor wears is protocol.ts's Kit, bought in the town's shops: a hat (his top hat, a bowler, a
+ * boater, a flat cap or a coronet with the strap as its velvet), the coat's cloth, and a cane, spectacles and a cigar,
+ * which were his alone before. FigureOpts.kit dresses a new figure; setKit(kit) swaps the pieces on a standing one
+ * without rebuilding it (what comes off shares its geometry and material with every figure, so there is nothing to
+ * free). Without a kit, the seed dresses the visitor as before.
  *
  * The walk is sampled from eight key poses per cycle (thigh swing, knee flexion and the foot's pitch), the run from
  * eight more, and the two are blended by speed, which eases like a critically damped spring. Standing, the body is
@@ -17,12 +24,15 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { flat, INK, mat, part } from "./engraved";
+import type { HatId, Kit } from "./protocol";
 
 export type Gesture = "wave" | "tip-hat" | "cheer" | "shrug";
 export interface FigureOpts {
   strap: string;
   kind?: "visitor" | "mrbands";
   seed?: number;
+  /** what a visitor wears; what is left out, the seed chooses (the hat and the coat; Mr Bands' own kit is fixed) */
+  kit?: Partial<Kit>;
 }
 export interface Figure {
   /** feet at y = 0, facing +z; the caller moves and turns it */
@@ -31,8 +41,12 @@ export interface Figure {
   animate(dt: number, speed: number, t: number): void;
   /** plays once over ~1.5 s, over the walk or the idle */
   gesture(g: Gesture): void;
-  /** the top of the hat, metres */
+  /** change what is worn: only the pieces that differ are swapped */
+  setKit(kit: Kit): void;
+  /** the top of the hat, metres (it changes with the hat) */
   readonly height: number;
+  /** what is worn now */
+  readonly kit: Kit;
 }
 
 const TAU = Math.PI * 2;
@@ -58,6 +72,10 @@ const FORE = 0.26;
 const HEAD_ABS = HIP_Y + WAIST + NECK_Y + HEAD_Y; // 1.715: the top of the head is 0.154 above
 const TOP_HAT = 0.45; // the crown's top above the head's centre
 const BOWLER = 0.3;
+const BOATER = 0.154;
+const CAP = 0.124;
+const CROWN = 0.17; // the coronet's points
+const HAT_TOP: Record<HatId, number> = { top: TOP_HAT, bowler: BOWLER, boater: BOATER, cap: CAP, crown: CROWN };
 /** the hat sits this far above where its lathe is drawn, so the brim clears the brows */
 const HAT_Y = 0.02;
 const REST_REACH = THIGH + SHIN + ANKLE;
@@ -275,6 +293,39 @@ function buildGeos() {
   const bowlerStrap = new THREE.CylinderGeometry(0.1285, 0.1295, 0.042, 20, 1, true);
   bowlerStrap.scale(1, 1, 1.08);
   bowlerStrap.translate(0, 0.093, 0);
+  // a boater: a low flat crown on a wide flat brim, the band in the strap colour
+  const boater = lathe([[0.112, 0.05], [0.21, 0.048], [0.216, 0.06], [0.132, 0.064], [0.128, BOATER - 0.008], [0.12, BOATER - 0.001], [0.001, BOATER]], 20, 1, 1.08);
+  const boaterStrap = new THREE.CylinderGeometry(0.131, 0.133, 0.042, 20, 1, true);
+  boaterStrap.scale(1, 1, 1.08);
+  boaterStrap.translate(0, 0.088, 0);
+  // a flat cap: a low soft crown, wider than the head and deeper than it is wide, falling to a short peak at the front;
+  // the strap its band
+  const capCrown = lathe([[0.118, 0.05], [0.152, 0.058], [0.162, 0.082], [0.146, 0.104], [0.1, 0.118], [0.001, CAP]], 16, 1, 1.15);
+  const cap = merge([capCrown, ellip(0.105, 0.007, 0.07, 0, 0.055, 0.165, -0.16, 0, 0, 10)]);
+  const capStrap = new THREE.CylinderGeometry(0.128, 0.13, 0.022, 16, 1, true);
+  capStrap.scale(1, 1, 1.15);
+  capStrap.translate(0, 0.061, 0);
+  // a coronet: a brass circlet on a rim, eight points, and the strap's colour as the velvet within
+  const circlet = new THREE.CylinderGeometry(0.12, 0.124, 0.07, 16, 1, true);
+  circlet.translate(0, 0.086, 0);
+  const rim = new THREE.TorusGeometry(0.123, 0.01, 6, 20);
+  rim.rotateX(Math.PI / 2);
+  rim.translate(0, 0.053, 0);
+  const points: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * TAU;
+    const p = new THREE.ConeGeometry(0.018, 0.05, 4);
+    p.translate(Math.sin(a) * 0.118, CROWN - 0.025, Math.cos(a) * 0.118);
+    points.push(p);
+  }
+  const crown = merge([circlet, rim, ...points]);
+  crown.scale(1, 1, 1.08);
+  const velvet = new THREE.SphereGeometry(0.114, 16, 8, 0, TAU, 0, Math.PI / 2);
+  velvet.scale(1, 0.6, 1.08);
+  velvet.translate(0, 0.075, 0);
+  // reading spectacles: two round rims, a bridge and the arms back to the ears; no lens, so the eyes show through
+  const rimOf = (sx: number) => new THREE.TorusGeometry(0.03, 0.004, 6, 16).translate(sx * 0.04, 0.02, 0.112);
+  const spectacles = merge([rimOf(1), rimOf(-1), box(0.02, 0.005, 0.005, 0, 0.026, 0.114), box(0.005, 0.005, 0.1, 0.098, 0.03, 0.06), box(0.005, 0.005, 0.1, -0.098, 0.03, 0.06)]);
   // ---- the front: collar, shirt, waistcoat, bow tie
   const collar = new THREE.CylinderGeometry(0.064, 0.074, 0.065, 14, 1, true);
   collar.scale(1, 1, 0.92);
@@ -303,10 +354,11 @@ function buildGeos() {
   const cane = new THREE.CylinderGeometry(0.017, 0.013, 1, 8);
   const knob = new THREE.SphereGeometry(0.036, 10, 8);
   // everything drawn about the head's centre is drawn a size up
-  for (const g of [head, faceInk, faceInkMo, faceInkBrows, glasses, handlebar]) g.scale(HS, HS, HS);
+  for (const g of [head, faceInk, faceInkMo, faceInkBrows, glasses, spectacles, handlebar]) g.scale(HS, HS, HS);
   return {
     torso, skirtF, skirtB, thigh, shin, shoe, upper, fore, hand, head, faceInk, faceInkMo, faceInkBrows,
-    topHat, topStrap, bowler, bowlerStrap, shirtNarrow, shirtWide, waistcoat, bow, glasses, handlebar, cigar, ember, cane, knob,
+    topHat, topStrap, bowler, bowlerStrap, boater, boaterStrap, cap, capStrap, crown, velvet,
+    shirtNarrow, shirtWide, waistcoat, bow, glasses, spectacles, handlebar, cigar, ember, cane, knob,
   };
 }
 
@@ -344,13 +396,13 @@ const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _qI = new THREE.Quaternion();
 const _v = new THREE.Vector3();
+const _v2 = new THREE.Vector3();
 
 // arm channels: shoulder pitch, twist, abduction; elbow bend, elbow sweep; hand twist
 const SX = 0, SY = 1, SZ = 2, EX = 3, EZ = 4, HY = 5;
 
 class Person implements Figure {
   root = new THREE.Group();
-  readonly height: number;
 
   private body = new THREE.Group();
   private hips = new THREE.Group();
@@ -369,6 +421,14 @@ class Person implements Figure {
   private hat = new THREE.Group();
   private cane: THREE.Group | null = null;
   private ember: THREE.Mesh | null = null;
+  private cigar: THREE.Mesh | null = null;
+  private glasses: THREE.Mesh | null = null;
+  /** the coat's pieces (the body, the skirt's halves, the sleeves): their cloth is swapped with the kit */
+  private coatParts: THREE.Mesh[] = [];
+  private strap: THREE.Material;
+  private tall: number;
+  kit!: Kit;
+  height = 0;
 
   private mr: boolean;
   private chestSX: number;
@@ -416,6 +476,8 @@ class Person implements Figure {
     const skin = mat("Ivory");
     const strap = flatC(o.strap);
     const ink = flatC(INK);
+    this.strap = strap;
+    this.tall = tall;
 
     this.body.name = "body";
     this.hips.name = "hips";
@@ -461,13 +523,16 @@ class Person implements Figure {
     this.skirtF.scale.set(this.chestSX, 1, mr ? 1.2 : girth);
     this.skirtB.scale.copy(this.skirtF.scale);
     this.hips.add(this.skirtF, this.skirtB);
+    this.coatParts.push(this.skirtF, this.skirtB);
 
     // the upper body
     this.spine.position.y = WAIST;
     this.hips.add(this.spine);
     this.spine.add(this.chest);
     this.chest.scale.set(this.chestSX, 1, this.chestSZ);
-    this.chest.add(part(G.torso, coat, true));
+    const torso = part(G.torso, coat, true);
+    this.chest.add(torso);
+    this.coatParts.push(torso);
     if (vest) this.chest.add(bit(G.waistcoat, mat(mr ? "Wood" : vestName)));
     this.chest.add(bit(vest ? G.shirtNarrow : G.shirtWide, mat("Paper")));
     this.chest.add(bit(G.bow, strap));
@@ -478,11 +543,14 @@ class Person implements Figure {
       sh.name = s === 0 ? "shoulderL" : "shoulderR";
       sh.position.set(sx * SHOULDER_X * (mr ? 1.1 : girth), SHOULDER_Y, 0);
       sh.rotation.order = "XZY";
-      sh.add(part(G.upper, coat, true));
+      const upperArm = part(G.upper, coat, true);
+      sh.add(upperArm);
       const el = new THREE.Group();
       el.name = s === 0 ? "elbowL" : "elbowR";
       el.position.y = -UPPER;
-      el.add(part(G.fore, coat, true));
+      const foreArm = part(G.fore, coat, true);
+      el.add(foreArm);
+      this.coatParts.push(upperArm, foreArm);
       const wr = new THREE.Group();
       wr.name = s === 0 ? "wristL" : "wristR";
       wr.position.y = -FORE;
@@ -507,42 +575,98 @@ class Person implements Figure {
     this.head.add(part(G.head, skin, true));
     this.head.add(bit(mr ? G.faceInkBrows : moustache ? G.faceInkMo : G.faceInk, ink));
     this.head.add(this.hat);
-    this.hat.add(part(bowlerHat ? G.bowler : G.topHat, mat("Hat"), true));
-    this.hat.add(bit(bowlerHat ? G.bowlerStrap : G.topStrap, strap));
     this.hat.rotation.x = this.hatTilt;
+    // the white moustache is his alone
+    if (mr) this.head.add(part(G.handlebar, mat("Paper"), true));
 
-    if (mr) {
-      // dark glasses, the white moustache, a cigar with its ember, and the cane in his right hand
-      this.head.add(bit(G.glasses, ink));
-      this.head.add(part(G.handlebar, mat("Paper"), true));
-      const cig = part(G.cigar, mat("Wood"), true);
-      const dir = new THREE.Vector3(-0.3, -0.28, 1).normalize();
-      cig.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-      cig.position.set(-0.026 * HS, -0.074 * HS, 0.098 * HS).addScaledVector(dir, 0.075);
-      this.ember = bit(G.ember, flatC("#ff7a1a"));
-      this.ember.position.y = 0.083;
-      cig.add(this.ember);
-      this.head.add(cig);
-      const cane = new THREE.Group();
-      cane.position.set(0, -0.068, 0.022);
-      const shaft = part(G.cane, mat("Ink"), true);
-      cane.add(shaft);
-      const knob = bit(G.knob, mat("Brass"));
-      knob.position.y = 0.03;
-      cane.add(knob);
-      this.wrist[1].add(cane);
-      this.cane = cane;
-      // the shaft reaches the ground from where his hand rests
-      this.animate(0, 0, 0);
-      this.root.updateMatrixWorld(true);
-      cane.getWorldPosition(_v);
-      const len = _v.y / tall;
-      shaft.scale.y = len;
-      shaft.position.y = -len / 2;
-    }
-
-    this.height = (HEAD_ABS + (HAT_Y + (bowlerHat ? BOWLER : TOP_HAT) * (mr ? 0.84 : 1)) * (mr ? 1.14 : 1)) * tall;
+    // his own kit: the top hat, dark glasses, a cigar and the cane; a visitor's is the kit given, or the seed's
     this.first = true;
+    this.dress(
+      mr
+        ? { hat: "top", coat: "FigInk", cane: true, glasses: true, cigar: true }
+        : { hat: bowlerHat ? "bowler" : "top", coat: coatName, cane: false, glasses: false, cigar: false, ...o.kit },
+    );
+  }
+
+  setKit(kit: Kit) {
+    if (this.mr) return;
+    this.dress(kit);
+  }
+
+  /** put the kit on: only what differs from what is worn is swapped; the parts that come off are shared, nothing to free */
+  private dress(kit: Kit) {
+    const G = geos();
+    const mr = this.mr;
+    const was = this.kit as Kit | undefined;
+    this.kit = kit;
+    if (!was || was.hat !== kit.hat) {
+      this.hat.clear();
+      // the hat's form, and its band (a coronet's velvet) in the strap's colour
+      const [shape, band] =
+        kit.hat === "bowler" ? [G.bowler, G.bowlerStrap]
+        : kit.hat === "boater" ? [G.boater, G.boaterStrap]
+        : kit.hat === "cap" ? [G.cap, G.capStrap]
+        : kit.hat === "crown" ? [G.crown, G.velvet]
+        : [G.topHat, G.topStrap];
+      this.hat.add(part(shape, mat(kit.hat === "crown" ? "Brass" : "Hat"), true));
+      this.hat.add(bit(band, this.strap));
+      this.height = (HEAD_ABS + (HAT_Y + HAT_TOP[kit.hat] * (mr ? 0.84 : 1)) * (mr ? 1.14 : 1)) * this.tall;
+    }
+    if (!was || was.coat !== kit.coat) {
+      const cloth = mat(kit.coat);
+      for (const p of this.coatParts) p.material = cloth;
+    }
+    if (kit.glasses !== (this.glasses !== null)) {
+      if (this.glasses) this.head.remove(this.glasses);
+      // his are dark; a visitor's are reading spectacles from the Stationer
+      this.glasses = kit.glasses ? bit(mr ? G.glasses : G.spectacles, flatC(INK)) : null;
+      if (this.glasses) this.head.add(this.glasses);
+    }
+    if (kit.cigar !== (this.cigar !== null)) {
+      if (this.cigar) this.head.remove(this.cigar);
+      this.cigar = null;
+      this.ember = null;
+      if (kit.cigar) {
+        const cig = mr ? part(G.cigar, mat("Wood"), true) : bit(G.cigar, mat("Wood"));
+        const dir = new THREE.Vector3(-0.3, -0.28, 1).normalize();
+        cig.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+        cig.position.set(-0.026 * HS, -0.074 * HS, 0.098 * HS).addScaledVector(dir, 0.075);
+        this.ember = bit(G.ember, flatC("#ff7a1a"));
+        this.ember.position.y = 0.083;
+        cig.add(this.ember);
+        this.head.add(cig);
+        this.cigar = cig;
+      }
+    }
+    if (kit.cane !== (this.cane !== null)) {
+      if (this.cane) this.wrist[1].remove(this.cane);
+      this.cane = null;
+      if (kit.cane) {
+        const cane = new THREE.Group();
+        cane.position.set(0, -0.068, 0.022);
+        const shaft = mr ? part(G.cane, mat("Ink"), true) : bit(G.cane, mat("Ink"));
+        cane.add(shaft);
+        const knob = bit(G.knob, mat("Brass"));
+        knob.position.y = 0.03;
+        cane.add(knob);
+        this.wrist[1].add(cane);
+        this.cane = cane;
+        // the shaft reaches the ground from where the hand rests: measured in the standing pose, whatever the figure
+        // is doing now (its motion is put back afterwards, so a walk or a gesture goes on where it was)
+        const sp = this.sp, spV = this.spV, phase = this.phase, first = this.first;
+        this.first = true;
+        this.animate(0, 0, 0);
+        this.root.updateMatrixWorld(true);
+        cane.getWorldPosition(_v);
+        const len = (_v.y - this.root.getWorldPosition(_v2).y) / this.tall;
+        shaft.scale.y = len;
+        shaft.position.y = -len / 2;
+        this.sp = sp;
+        this.spV = spV;
+        this.phase = phase;
+        this.first = first;
+      }
+    }
   }
 
   gesture(g: Gesture) {
@@ -558,8 +682,8 @@ class Person implements Figure {
   /** bend one arm's channels toward a gesture's pose for that arm, by k */
   private pose(a: Float32Array, g: Gesture, gt: number, k: number, s: number) {
     const sd = s === 0 ? 1 : -1;
-    // the waving side: his right hand holds the cane, so he waves and tips his hat with the left
-    const side = this.mr ? 0 : 1;
+    // the waving side: the right hand holds a cane, so whoever carries one waves and tips their hat with the left
+    const side = this.cane ? 0 : 1;
     if (g === "wave" && s === side) {
       const osc = Math.sin(gt * TAU * 2.3) * smooth(0.22, 0.45, gt);
       // (a raised arm: a positive pitch carries it forward of the body)
@@ -611,7 +735,7 @@ class Person implements Figure {
       c[4] += 0.05 * e;
       c[2] -= 0.05 * e;
     } else if (g === "wave") {
-      c[3] -= 0.08 * e * (this.mr ? -1 : 1);
+      c[3] -= 0.08 * e * (this.cane ? -1 : 1);
     }
   }
 
@@ -726,7 +850,8 @@ class Person implements Figure {
     for (let s = 0; s < 2; s++) {
       const sd = s === 0 ? 1 : -1;
       const a = this.arm[s];
-      const swing = -sd * Math.cos(ph - 0.2) * armAmp * (mr && s === 1 ? 0.45 : 1) - 0.12 * run * w;
+      const caned = this.cane !== null && s === 1;
+      const swing = -sd * Math.cos(ph - 0.2) * armAmp * (caned ? 0.45 : 1) - 0.12 * run * w;
       a[SX] = -swing - 0.02 * breath * still;
       a[SY] = 0;
       a[SZ] = sd * (this.abduct + 0.1 * run + 0.012 * breath * still);
@@ -734,7 +859,7 @@ class Person implements Figure {
       a[EX] = -mix(mix(0.14, 0.22 + 0.4 * Math.max(0, swing), w), 1.4 + 0.32 * swing, run);
       a[EZ] = 0;
       a[HY] = sd * 0.12;
-      if (mr && s === 1) {
+      if (caned) {
         // resting on the cane, a little ahead and out
         a[SX] = mix(-0.3, a[SX] - 0.15, w);
         a[SZ] = sd * mix(0.24, this.abduct, w);

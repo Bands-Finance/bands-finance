@@ -14,14 +14,20 @@
  * dozen draw calls. Outlines here take the fog, so the far streets fade the way an engraver lightens a distance.
  *
  * To mount: scene.add(city.root), push city.colliders into the world's colliders (the fountain, r 4 at the centre, and
- * the planters, r 1.45, small enough that the camera's clear-view check passes them), and call update(t, now) each
- * frame (the water's time and the clock's hands, nothing more). Everything outside the rope needs no collider. The
- * basin itself stays inside r 3.52 so the passers-by's loop, which passes 4 m from the centre, clears its lip.
+ * the planters, r 1.45, small enough that the camera's clear-view check passes them), city.fences into its fences
+ * (every façade's front and the corner lots' flanks, as lines on the ground a walker and the camera stay off), and
+ * call update(t, now) each frame (the water's time and the clock's hands, nothing more). The basin itself stays inside
+ * r 3.52 so the passers-by's loop, which passes 4 m from the centre, clears its lip.
+ *
+ * The town's shape (the street angles, the mouths' half-angle, the kerbs and the front line) is ./town.ts's, which
+ * the server shares; every named front records its door there through City.doors, and town.ts's PLACES carries the
+ * numbers (see its header).
  */
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { engraveMaterial, outlineRes, shared, type EngraveSpec } from "../stage/engrave";
 import { CAPS, flat, INK, mat, PAPER, SERIF } from "./engraved";
+import { FRONT, KERB_IN, KERB_OUT, STREET_ANGLES, STREET_GAP } from "./town";
 
 export interface Circle {
   x: number;
@@ -34,10 +40,26 @@ export interface Box {
   x1: number;
   z1: number;
 }
+/** a line on the ground nothing walks through: a façade's front, a corner lot's flank */
+export interface Seg {
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+}
+/** where a named front's door is: the middle of its sign's bay, stepped toward the plaza, and the way it faces */
+export interface Door {
+  sign: string;
+  x: number;
+  z: number;
+  facing: number;
+}
 export interface City {
   root: THREE.Group;
   colliders: Circle[];
   walls: Box[];
+  fences: Seg[];
+  doors: Door[];
   update(t: number, now: Date): void;
 }
 
@@ -830,6 +852,22 @@ interface Ctx {
   atlas: Atlas;
   extras: THREE.Group;
   hands: { hour: THREE.Object3D; minute: THREE.Object3D }[];
+  doors: Door[];
+  fences: Seg[];
+}
+
+/** a front's door, at x across the current frame and z before its face (1.5 m: on the pavement, off the kerb) */
+function doorAt(c: Ctx, sign: string, x: number, z = 1.5) {
+  const at = c.k.world(x, 0, z);
+  const ahead = c.k.world(x, 0, z + 1);
+  c.doors.push({ sign, x: at.x, z: at.z, facing: Math.atan2(ahead.x - at.x, ahead.z - at.z) });
+}
+
+/** a line of the current frame nothing walks through */
+function fence(c: Ctx, x0: number, z0: number, x1: number, z1: number) {
+  const a = c.k.world(x0, 0, z0);
+  const b = c.k.world(x1, 0, z1);
+  c.fences.push({ x0: a.x, z0: a.z, x1: b.x, z1: b.z });
 }
 
 interface HouseOpts {
@@ -854,8 +892,12 @@ function townhouse(c: Ctx, W: number, D: number, o: HouseOpts) {
   const pitch = W / n;
   // the ground floor: a door in the last bay; a shop, or windows, in the rest
   door(k, xs[n - 1], 1.3, 2.7);
-  if (o.shop) shopfront(k, c.atlas, -W / 2 + 0.45, xs[n - 1] - pitch / 2 - 0.1, o.shop, o.awning);
-  else for (const x of xs.slice(0, -1)) win(k, x, 0.95, 1.25, 2.5, { frame: false, key: true });
+  if (o.shop) {
+    const x0 = -W / 2 + 0.45;
+    const x1 = xs[n - 1] - pitch / 2 - 0.1;
+    shopfront(k, c.atlas, x0, x1, o.shop, o.awning);
+    doorAt(c, o.shop, (x0 + x1) / 2);
+  } else for (const x of xs.slice(0, -1)) win(k, x, 0.95, 1.25, 2.5, { frame: false, key: true });
   k.slab("trim", -hw, hw, gf - 0.12, gf + 0.18, -0.3, 0.22);
   const floors = Math.max(1, Math.floor((H - gf - 1.1) / 3.5));
   for (let f = 0; f < floors; f++) {
@@ -934,6 +976,8 @@ function bank(c: Ctx, W: number, D: number, o: BankOpts) {
     if (upper) win(k, x, pn + 4.5, 1.3, Math.min(2.0, top - pn - 5.4), { ped: "none" });
   });
   k.slab("trim", -hw, hw, top, top + 0.45, -0.3, 0.3);
+  // the door is in the middle bay; a portico's steps run 4.75 m out, so its door is at their foot
+  if (o.sign) doorAt(c, o.sign, 0, o.portico ? 5.9 : 1.5);
   if (o.sign && !o.portico) k.geo("signs", c.atlas.quad(o.sign, Math.min(W * 0.62, 15)), 0, (top + 0.45 + H - 0.8) / 2, 0.02);
   cornice(k, W, H - 0.35, 0.95, true);
   const piers = Array.from({ length: n + 1 }, (_, i) => -W / 2 + pitch * i);
@@ -978,6 +1022,7 @@ function counting(c: Ctx, W: number, D: number, o: { H: number; signs: string[] 
     const x0 = -W / 2 + 0.5 + ((W - 1.0) * i) / shops;
     const x1 = -W / 2 + 0.5 + ((W - 1.0) * (i + 1)) / shops;
     shopfront(k, c.atlas, x0 + 0.3, x1 - 0.3, o.signs[i], i % 2 === 0);
+    if (o.signs[i]) doorAt(c, o.signs[i], (x0 + x1) / 2);
   }
   k.slab("trim", -hw, hw, 4.2, 4.55, -0.3, 0.3);
   quoins(k, W, 4.55, H - 0.6);
@@ -1008,7 +1053,10 @@ function crescent(c: Ctx, W: number, D: number, o: { H: number; pavilion?: boole
     k.put("arch", x, 0, 0, s, 1, 1);
     k.slab("trim", x - 0.22, x + 0.22, 4.1, 4.75, -0.05, 0.12);
     const sign = o.signs?.[i];
-    if (sign) k.geo("signs", c.atlas.quad(sign, 1.9 * s), x, 3.2, -3.08);
+    if (sign) {
+      k.geo("signs", c.atlas.quad(sign, 1.9 * s), x, 3.2, -3.08);
+      doorAt(c, sign, x);
+    }
   });
   k.slab("void", -hw, hw, 0, gf, -3.3, -3.1);
   k.slab("void", -hw, hw, 0, 0.03, -3.2, -0.5);
@@ -1067,6 +1115,7 @@ function clockTower(c: Ctx, W: number, D: number, streetSide: 1 | -1) {
   k.put("arch", 0, 0, 0.5, 0.95, 0.95, 1);
   k.slab("void", -1.1, 1.1, 0, 4.25, 0.02, 0.1);
   k.slab("wood", -0.9, 0.9, 0, 3.1, 0.1, 0.16);
+  doorAt(c, "CLOCK TOWER", 0);
   k.slab("trim", -T0 / 2 + 0.01, T0 / 2 - 0.01, 5.1, 5.4, -0.3, 0.26);
   win(k, 0, 6.1, 1.3, 2.2, { ped: "tri", balc: true });
   cornice(k, T0, B, 0.55, true);
@@ -1157,9 +1206,11 @@ function exchange(c: Ctx, W: number, D: number) {
   const y0 = 1.5;
   const zc = -1.2;
   const half = 18.2;
-  // podium and steps
+  // podium and steps; the door is at the steps' foot (3 m before the column line, r 52), the fence with it
   k.slab("stone", -half, half, 0, y0, -7, -0.2);
   for (let s = 0; s < 5; s++) k.slab("stone", -half + 0.6, half - 0.6, 0, y0 - s * 0.3, -0.2, 0.25 + 0.55 * (s + 1));
+  doorAt(c, "THE EXCHANGE", 0, 4.5);
+  fence(c, -half - 1.2, 3.0, half + 1.2, 3.0);
   for (const sx of [-1, 1]) {
     k.slab("stone", Math.min(sx * half, sx * (half - 1.2)), Math.max(sx * half, sx * (half - 1.2)), 0, y0 + 0.9, -0.2, 3.0);
     k.geo("stonework", new THREE.CylinderGeometry(0.55, 0.6, 1.0, 12), sx * (half - 0.6), y0 + 1.4, 2.4);
@@ -1445,18 +1496,17 @@ function mulberry(seed: number): () => number {
   };
 }
 
-/** the four streets, on the diagonals, and half the angle each one opens in the ring */
-const STREETS = [Math.PI / 4, (3 * Math.PI) / 4, (5 * Math.PI) / 4, (7 * Math.PI) / 4];
-const GAP = 0.125;
-const FRONT = 51;
-const KERB_IN = 45.6;
-const KERB_OUT = 49.25;
+/** the four streets, on the diagonals, and half the angle each one opens in the ring (town.ts's, shared with the server) */
+const STREETS = STREET_ANGLES;
+const GAP = STREET_GAP;
 
 export function buildCity(): City {
   const root = new THREE.Group();
   root.name = "city";
   const colliders: Circle[] = [];
   const walls: Box[] = [];
+  const fences: Seg[] = [];
+  const doors: Door[] = [];
 
   const atlas = new Atlas(1024);
   for (const s of ["MERCHANTS' BANK", "BANDS & CO.", "TRUST & SAVINGS", "THE CRESCENT", "COUNTING HOUSE"]) atlas.add(s, 1024, 68, carved(s));
@@ -1520,7 +1570,7 @@ export function buildCity(): City {
   const k = new Kit(pieces, mdefs);
   const extras = new THREE.Group();
   extras.name = "city:extras";
-  const c: Ctx = { k, atlas, extras, hands: [] };
+  const c: Ctx = { k, atlas, extras, hands: [], doors, fences };
 
   // ---- the ring of façades
   type LotFn = (c: Ctx, W: number, D: number) => void;
@@ -1593,8 +1643,10 @@ export function buildCity(): City {
     const { m, W } = lotFrame(lot.a0, lot.a1, R);
     k.at(m);
     lot.build(c, W, D);
+    k.at(m);
+    fence(c, -W / 2, 0, W / 2, 0);
     if (lot.street) {
-      k.at(m);
+      fence(c, (lot.street * W) / 2, 0, (lot.street * W) / 2, -D);
       if (!lot.ownFlank) flank(c, W, D, lot.H, lot.street);
       // remember where this corner's flank ends, to line the street up behind it
       const back = k.world((lot.street * W) / 2, 0, -D);
@@ -1620,6 +1672,7 @@ export function buildCity(): City {
         const pos = u.clone().multiplyScalar(t + W / 2).addScaledVector(v, s * F);
         const th = Math.atan2(-s * v.x, -s * v.z);
         k.at(new THREE.Matrix4().makeRotationY(th).setPosition(pos));
+        fence(c, -W / 2, 0, W / 2, 0);
         if ((b + si + (s > 0 ? 1 : 0)) % 2 === 0) townhouse(c, W, 14, { H, body: b % 2 ? "brick" : "ashlar", mansard: true });
         else counting(c, W, 14, { H, signs: [] });
         t += W;
@@ -1627,7 +1680,9 @@ export function buildCity(): City {
     }
     const vista = lotFrame(as - 0.1, as + 0.1, 126);
     k.at(vista.m);
-    bank(c, vista.W, 20, { H: 16, body: "stone", dome: 4.5, portico: si % 2 === 0 });
+    const portico = si % 2 === 0;
+    fence(c, -vista.W / 2, portico ? 4.75 : 0, vista.W / 2, portico ? 4.75 : 0);
+    bank(c, vista.W, 20, { H: 16, body: "stone", dome: 4.5, portico });
   });
   plain = false;
 
@@ -1722,6 +1777,8 @@ export function buildCity(): City {
     root,
     colliders,
     walls,
+    fences,
+    doors,
     update(t: number, now: Date) {
       f.update(t);
       const h = now.getHours() % 12;

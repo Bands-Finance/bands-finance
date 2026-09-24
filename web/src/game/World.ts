@@ -5,6 +5,13 @@
  * and the Notice Board (his build notes). Round it, the city (./city.ts): the Exchange, the clock tower, the banks and
  * the streets; at its centre, the fountain.
  *
+ * THE TOWN (24 Sep): the ground you can walk is ./town.ts's (the plaza, the whole boulevard ring, the four streets out
+ * to their domed ends), which the server shares; the rope is cut at the four street mouths and is a line you cannot
+ * cross elsewhere (its spans fence the walker, as the server's rule does), and every named front is a Place from
+ * town.ts's PLACES with a Spot at its door, a keeper standing beside it with a name tag, and an errand marker the page
+ * can hang there (setMarker). The Clock Tower's climb is viewFrom(): the camera goes up for a while.
+ * What a visitor wears (protocol.ts's Kit) goes on their figure with setKit.
+ *
  * This file is the engine only: scene, avatars, input, camera, collisions and the spots you can use. It knows nothing
  * of React, the network or the mini-game; it reports where you are (onMove) and what you stand near (onNear), and the
  * page (src/components/PlayPage.tsx) opens the panels. Remote visitors are driven through addRemote/moveRemote.
@@ -12,12 +19,13 @@
 import * as THREE from "three";
 import { outlineRes, shared, SPECS } from "../stage/engrave";
 import { CAPS, fitText, flat, hexRgb, INK, labelSprite, mat, OUTLINE, OUTLINE_FINE, PAPER, part, SERIF, signTexture } from "./engraved";
-import { buildCity, type City } from "./city";
+import { buildCity, type City, type Seg } from "./city";
 import { makeFigure, type Figure, type Gesture } from "./figure";
 import { bands } from "./money";
-import { STRAPS, WORLD_RADIUS } from "./protocol";
+import { DESK_SPOT, DOOR_REACH_M, GUARD_SPOT, PLACE_IDS, STRAPS, WORLD_RADIUS, type Kit } from "./protocol";
+import { nearestWalkable, PLACES, ROPE_POSTS, ropeCut, routeTo, type Place } from "./town";
 
-export type SpotKind = "desk" | "stall" | "guards" | "notes";
+export type SpotKind = "desk" | "stall" | "guards" | "notes" | "place";
 
 export interface Spot {
   id: string;
@@ -31,6 +39,8 @@ export interface Spot {
   stall?: number;
   /** for a stall: the pool's label */
   pool?: string;
+  /** for a place: its row in town.ts's PLACES (the id is the place's id) */
+  place?: Place;
 }
 
 export interface BoardRow {
@@ -73,6 +83,8 @@ interface Walker {
 const SPAWN = new THREE.Vector3(0, 0, 20);
 const WALK = 4.4;
 const SPRINT = 7.2;
+/** a click-walk's waypoint on the way is passed once you are this near it (the last, the target, keeps the spot's own reach) */
+const WAYPOINT_M = 1.0;
 /** a loose note is asked for when you come this near it (the room allows a little more) */
 const NOTE_PICK_M = 1.3;
 /** a loose note: two banknotes, one a little across the other, drawn once for every note */
@@ -80,6 +92,37 @@ const NOTE_GEO = new THREE.BoxGeometry(0.86, 0.018, 0.4);
 
 /** a visitor's name tag: the name and the stack */
 const tagText = (name: string, stack?: number): string => (typeof stack === "number" ? `${name} · ${bands(stack)}` : name);
+
+/** "Enter the Hatter": a place's name in a prompt */
+const inPrompt = (name: string): string => name.replace(/^The /, "the ");
+
+/** what a place's keeper wears: their trade on them; the rest of the town dresses by its seed */
+const KEEPER_KIT: Record<string, Partial<Kit>> = {
+  hatter: { hat: "boater" },
+  cigars: { cigar: true },
+  "glover-west": { cane: true },
+  "glover-crescent": { cane: true },
+  "stationer-east": { glasses: true },
+  "stationer-crescent": { glasses: true },
+  tailor: { coat: "Cloth" },
+  "bookseller-west": { glasses: true, hat: "cap" },
+  "bookseller-crescent": { glasses: true },
+  ledgers: { glasses: true },
+  printer: { hat: "cap" },
+  barber: { hat: "cap" },
+  "bands-co": { hat: "top", coat: "FigInk", glasses: true },
+};
+/** a keeper stands this far from the door, along the front */
+const KEEPER_ASIDE_M = 1.5;
+/** and this far back from it: a door is on the pavement's edge, 0.25 m past the kerb, and a keeper on the kerb is in the way */
+const KEEPER_BACK_M = 0.5;
+/** the errand signpost's post, a thing on open ground the walker goes round */
+const SIGNPOST_R = 0.3;
+/** a keeper is drawn (and animated) only within this far of the camera: a figure that far is a speck under the fog's edge, and the ring holds twenty-one of them */
+const KEEPER_SHOW_M = 60;
+/** the errand marker stands this far the other way, and this far forward of the door, clear of a shop's awning */
+const MARKER_ASIDE_M = 1.7;
+const MARKER_FORWARD_M = 1.3;
 
 /** a label sprite (labelSprite draws each on its own canvas) taken down and its texture and material freed */
 const dropSprite = (s: THREE.Sprite | null) => {
@@ -116,14 +159,27 @@ interface Box {
 // ---------------------------------------------------------------- the walker
 
 /** a visitor (./figure.ts): a jointed figure in a frock coat and a hat, the strap and bow tie in their colour */
-function makeWalker(strapHex: string, seed?: number, kind: "visitor" | "mrbands" = "visitor"): Walker {
-  const fig = makeFigure({ strap: strapHex, kind, seed });
-  const lines: THREE.Object3D[] = [];
-  fig.root.traverse((o) => {
+function makeWalker(strapHex: string, seed?: number, kind: "visitor" | "mrbands" = "visitor", kit?: Partial<Kit>): Walker {
+  const fig = makeFigure({ strap: strapHex, kind, seed, kit });
+  const w: Walker = { fig, root: fig.root, lines: [], near: true, tag: null, bubble: null, bubbleUntil: 0, target: new THREE.Vector3(), targetRy: 0, moving: false, pace: 0 };
+  relines(w);
+  return w;
+}
+
+/** find the figure's contours again (new kit brings new ones) and show or hide them as the walker's distance says */
+function relines(w: Walker) {
+  w.lines = [];
+  w.root.traverse((o) => {
     const m = (o as THREE.Mesh).material;
-    if (m === OUTLINE || m === OUTLINE_FINE) lines.push(o);
+    if (m === OUTLINE || m === OUTLINE_FINE) w.lines.push(o);
   });
-  return { fig, root: fig.root, lines, near: true, tag: null, bubble: null, bubbleUntil: 0, target: new THREE.Vector3(), targetRy: 0, moving: false, pace: 0 };
+  for (const l of w.lines) l.visible = w.near;
+}
+
+/** a name tag or a bubble sits over the hat: put it back there after the hat changed */
+function retop(w: Walker) {
+  if (w.tag) w.tag.position.y = w.fig.height + 0.3;
+  if (w.bubble) w.bubble.position.y = w.fig.height + 1.1;
 }
 
 // ---------------------------------------------------------------- the world
@@ -138,7 +194,22 @@ export class ExchangeWorld {
   private remotes = new Map<string, Walker>();
   private colliders: Circle[] = [];
   private walls: Box[] = [];
+  /** the façades' fronts and flanks, lines a walker and the camera stay off */
+  private fences: Seg[] = [];
+  /** the rope's spans between its posts: lines a walker stays off but the camera looks over (a rope is a metre high) */
+  private ropes: Seg[] = [];
   private spots: Spot[] = [];
+  /** the keeper at each door, idle, with a name tag */
+  private keepers: Walker[] = [];
+  /**
+   * the errand's marker: a signpost with a hanging board, moved to the target door (built the first time it is asked
+   * for), and its post's collider, in the list while the signpost stands
+   */
+  private signpost: { g: THREE.Group; board: THREE.Group; hit: Circle } | null = null;
+  /** the tower's climb: where the camera is held, and until when */
+  private view: { pos: THREE.Vector3; until: number } | null = null;
+  /** what you wear, kept through setMe's rebuild */
+  private myKit: Kit | undefined;
   private near: Spot | null = null;
   private keys = new Set<string>();
   private joy = new THREE.Vector2();
@@ -146,8 +217,11 @@ export class ExchangeWorld {
   private pitch = 0.26;
   private dist = 9.5;
   private dragging: { x: number; y: number; id: number; startX: number; startY: number; at: number; moved: boolean } | null = null;
-  /** click or tap to walk: where you are headed, and the spot to open on arrival */
-  private goal: { x: number; z: number; spot: Spot | null; checkAt: number; checkD: number } | null = null;
+  /**
+   * click or tap to walk: the way there (town.ts's routeTo: through a mouth, round the ring, along a street), the
+   * waypoint you are headed for, the spot to open on arrival, and the stuck check on the current waypoint
+   */
+  private goal: { path: [number, number][]; i: number; spot: Spot | null; checkAt: number; checkD: number } | null = null;
   private lastDragAt = 0;
   private raycaster = new THREE.Raycaster();
   private ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -238,17 +312,18 @@ export class ExchangeWorld {
       ring.position.y = 0.012;
       this.scene.add(ring);
     }
-    // the rope and posts round the edge
-    const posts = 44;
+    // the rope and posts round the edge, the rope cut at the four street mouths (town.ts's ropeCut: the two posts
+    // there stand as gateposts); every span strung is a line the walker stays off, the same line the server refuses
     const postGeo = new THREE.CylinderGeometry(0.16, 0.22, 1.1, 10);
     const ropeGeo = new THREE.CylinderGeometry(0.035, 0.035, 1, 6);
-    for (let i = 0; i < posts; i++) {
-      const a = (i / posts) * Math.PI * 2;
+    for (let i = 0; i < ROPE_POSTS; i++) {
+      const a = (i / ROPE_POSTS) * Math.PI * 2;
       const r = WORLD_RADIUS;
       const p = part(postGeo, mat("Brass"));
       p.position.set(Math.sin(a) * r, 0.55, Math.cos(a) * r);
       this.scene.add(p);
-      const a2 = ((i + 1) / posts) * Math.PI * 2;
+      if (ropeCut(i)) continue;
+      const a2 = ((i + 1) / ROPE_POSTS) * Math.PI * 2;
       const x1 = Math.sin(a) * r, z1 = Math.cos(a) * r, x2 = Math.sin(a2) * r, z2 = Math.cos(a2) * r;
       const len = Math.hypot(x2 - x1, z2 - z1);
       const rope = new THREE.Mesh(ropeGeo, mat("Ink"));
@@ -257,6 +332,7 @@ export class ExchangeWorld {
       // the cylinder stands on y: turn y onto the span between the two posts
       rope.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(x2 - x1, 0, z2 - z1).normalize());
       this.scene.add(rope);
+      this.ropes.push({ x0: x1, z0: z1, x1: x2, z1: z2 });
     }
 
     this.buildBoard();
@@ -271,6 +347,113 @@ export class ExchangeWorld {
     this.scene.add(this.city.root);
     this.colliders.push(...this.city.colliders);
     this.walls.push(...this.city.walls);
+    this.fences.push(...this.city.fences);
+    this.buildPlaces();
+  }
+
+  /** every door in the town (town.ts's PLACES): a spot to use, and a keeper beside it, idle, named by the sign */
+  private buildPlaces() {
+    for (const p of PLACES) {
+      const prompt = p.kind === "end" ? `See ${inPrompt(p.name)}` : p.kind === "climb" ? `Climb ${inPrompt(p.name)}` : `Enter ${inPrompt(p.name)}`;
+      this.spots.push({ id: p.id, kind: "place", x: p.x, z: p.z, r: DOOR_REACH_M, prompt, place: p });
+      if (p.kind === "end") continue;
+      const seed = seedOf(p.id);
+      const w = makeWalker(STRAPS[seed % STRAPS.length], seed, "visitor", KEEPER_KIT[p.id]);
+      // beside the door, along the front (the door faces the plaza; its right hand is a quarter turn round), and a
+      // step back from it, off the kerb
+      const along = p.facing + Math.PI / 2;
+      w.root.position.set(
+        p.x + Math.sin(along) * KEEPER_ASIDE_M - Math.sin(p.facing) * KEEPER_BACK_M,
+        0,
+        p.z + Math.cos(along) * KEEPER_ASIDE_M - Math.cos(p.facing) * KEEPER_BACK_M,
+      );
+      w.root.rotation.y = p.facing;
+      w.name = p.name;
+      w.tag = labelSprite(p.name);
+      w.tag.userData.base = w.tag.scale.clone();
+      w.tag.position.y = w.fig.height + 0.3;
+      w.root.add(w.tag);
+      this.scene.add(w.root);
+      this.keepers.push(w);
+      this.pickables.push({ obj: w.root, spot: p.id });
+    }
+  }
+
+  /**
+   * the errand's marker: an engraved signpost with a board hanging from its arm, at the target door (a PLACES door,
+   * or the plaza's own Guard House and desk the rules errand names); null takes it down, its post's collider with it
+   */
+  setMarker(placeId: string | null) {
+    const p = placeId ? markerAt(placeId) : null;
+    if (!p) {
+      if (this.signpost) {
+        this.signpost.g.visible = false;
+        const i = this.colliders.indexOf(this.signpost.hit);
+        if (i >= 0) this.colliders.splice(i, 1);
+      }
+      return;
+    }
+    if (!this.signpost) {
+      const g = new THREE.Group();
+      const pole = part(new THREE.CylinderGeometry(0.06, 0.08, 3.6, 8), mat("Ink"));
+      pole.position.y = 1.8;
+      const arm = part(new THREE.BoxGeometry(1.3, 0.09, 0.09), mat("Ink"));
+      arm.position.set(0.55, 3.5, 0);
+      const finial = part(new THREE.SphereGeometry(0.09, 8, 6), mat("Brass"));
+      finial.position.y = 3.66;
+      const board = new THREE.Group();
+      board.position.set(0.75, 3.46, 0);
+      for (const x of [-0.32, 0.32]) {
+        const chain = part(new THREE.CylinderGeometry(0.012, 0.012, 0.34, 5), mat("Ink"));
+        chain.position.set(x, -0.17, 0);
+        board.add(chain);
+      }
+      const back = part(new THREE.BoxGeometry(0.94, 0.66, 0.04), mat("Wood"));
+      back.position.y = -0.67;
+      const face = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.9, 0.62),
+        new THREE.MeshBasicMaterial({
+          map: signTexture(360, 248, (c, w, h) => {
+            c.fillStyle = "#c9560a";
+            c.font = `700 40px ${CAPS}`;
+            c.textAlign = "center";
+            c.fillText("THIS WAY", w / 2, 78);
+            // a pointing hand would need a face; an ink arrow, cut as the rest of the town is
+            c.fillStyle = INK;
+            c.beginPath();
+            c.moveTo(w / 2 - 22, 96);
+            c.lineTo(w / 2 + 22, 96);
+            c.lineTo(w / 2 + 22, 150);
+            c.lineTo(w / 2 + 56, 150);
+            c.lineTo(w / 2, h - 34);
+            c.lineTo(w / 2 - 56, 150);
+            c.lineTo(w / 2 - 22, 150);
+            c.closePath();
+            c.fill();
+          }),
+        }),
+      );
+      face.position.set(0, -0.67, 0.025);
+      board.add(back, face);
+      g.add(pole, arm, finial, board);
+      this.scene.add(g);
+      this.signpost = { g, board, hit: { x: 0, z: 0, r: SIGNPOST_R } };
+    }
+    // the other side of the door from the keeper and a step toward the plaza, the arm reaching over the door
+    const along = p.facing + Math.PI / 2;
+    const x = p.x - Math.sin(along) * MARKER_ASIDE_M + Math.sin(p.facing) * MARKER_FORWARD_M;
+    const z = p.z - Math.cos(along) * MARKER_ASIDE_M + Math.cos(p.facing) * MARKER_FORWARD_M;
+    this.signpost.g.position.set(x, 0, z);
+    this.signpost.g.rotation.y = p.facing;
+    this.signpost.g.visible = true;
+    this.signpost.hit.x = x;
+    this.signpost.hit.z = z;
+    if (!this.colliders.includes(this.signpost.hit)) this.colliders.push(this.signpost.hit);
+  }
+
+  /** the camera goes to (x, y, z) and looks over the town from there for ms, then comes back behind you */
+  viewFrom(x: number, y: number, z: number, ms: number) {
+    this.view = { pos: new THREE.Vector3(x, y, z), until: performance.now() + ms };
   }
 
   /** the Pools Board: a tall printed billboard of the live top pools */
@@ -699,12 +882,13 @@ export class ExchangeWorld {
 
   // ---------------------------------------------------------------- you and the others
 
-  setMe(name: string, strap: number) {
+  setMe(name: string, strap: number, kit?: Kit) {
     dropSprite(this.me.tag);
     dropSprite(this.me.bubble);
     this.scene.remove(this.me.root);
     const pos = this.me.root.position.clone();
-    this.me = makeWalker(STRAPS[strap] ?? STRAPS[0], 3);
+    if (kit) this.myKit = kit;
+    this.me = makeWalker(STRAPS[strap] ?? STRAPS[0], 3, "visitor", this.myKit);
     this.me.root.position.copy(pos);
     this.me.root.rotation.y = this.meRy;
     // no tag over your own head: your name is in the corner, and the tag would sit in your line of sight
@@ -712,9 +896,19 @@ export class ExchangeWorld {
     this.scene.add(this.me.root);
   }
 
-  addRemote(id: string, name: string, strap: number, x: number, z: number, ry: number, stack?: number) {
+  /** someone's kit changed ("me" for you): the figure swaps the pieces that differ */
+  setKit(id: string, kit: Kit) {
+    const w = id === "me" ? this.me : this.remotes.get(id);
+    if (!w) return;
+    if (id === "me") this.myKit = kit;
+    w.fig.setKit(kit);
+    relines(w);
+    retop(w);
+  }
+
+  addRemote(id: string, name: string, strap: number, x: number, z: number, ry: number, stack?: number, kit?: Kit) {
     if (this.remotes.has(id)) return;
-    const w = makeWalker(STRAPS[strap] ?? STRAPS[0], seedOf(id));
+    const w = makeWalker(STRAPS[strap] ?? STRAPS[0], seedOf(id), "visitor", kit);
     w.root.position.set(x, 0, z);
     w.root.rotation.y = ry;
     w.target.set(x, 0, z);
@@ -929,16 +1123,21 @@ export class ExchangeWorld {
     }
     const p = new THREE.Vector3();
     if (!this.raycaster.ray.intersectPlane(this.ground, p)) return null;
-    const rr = Math.hypot(p.x, p.z);
-    const max = WORLD_RADIUS - 1.3;
-    if (rr > max) p.multiplyScalar(max / rr);
-    return { x: p.x, z: p.z, spot: null };
+    // a click on a roof or beyond the town walks you to the nearest ground you can stand on
+    const [x, z] = nearestWalkable(p.x, p.z);
+    return { x, z, spot: null };
   }
 
-  /** head somewhere (a click, a tap, or a landmark named by the page) */
+  /**
+   * head somewhere (a click, a tap, or a landmark named by the page): the way there is routed through the town's
+   * shape from where you stand, and the marker ring is set down at the end of it
+   */
   walkTo(x: number, z: number, spot: Spot | null = null) {
-    this.goal = { x, z, spot, checkAt: performance.now() + 700, checkD: Infinity };
-    this.marker.position.set(x, 0.03, z);
+    const me = this.me.root.position;
+    const path = routeTo(me.x, me.z, x, z);
+    this.goal = { path, i: 0, spot, checkAt: performance.now() + 700, checkD: Infinity };
+    const [ex, ez] = path[path.length - 1];
+    this.marker.position.set(ex, 0.03, ez);
     (this.marker.material as THREE.MeshBasicMaterial).opacity = 0.85;
   }
 
@@ -1025,22 +1224,32 @@ export class ExchangeWorld {
       heading = Math.atan2(fx, fz) + this.yaw;
     } else if (this.goal) {
       const g = this.goal;
-      const dx = g.x - me.position.x;
-      const dz = g.z - me.position.z;
+      const next = () => {
+        g.i++;
+        g.checkAt = now + 700;
+        g.checkD = Infinity;
+      };
+      // a waypoint on the way is passed when you come within WAYPOINT_M of it; the last is the target itself
+      while (g.i < g.path.length - 1 && Math.hypot(g.path[g.i][0] - me.position.x, g.path[g.i][1] - me.position.z) <= WAYPOINT_M) next();
+      const last = g.i === g.path.length - 1;
+      const [gx, gz] = g.path[g.i];
+      const dx = gx - me.position.x;
+      const dz = gz - me.position.z;
       const d = Math.hypot(dx, dz);
       const arriveAt = g.spot ? Math.min(0.9, g.spot.r * 0.4) : 0.3;
-      if (d <= arriveAt) {
+      if (last && d <= arriveAt) {
         this.arrive();
       } else {
         heading = Math.atan2(dx, dz);
-        speed = Math.min(WALK, d * 3 + 0.8);
-        // stuck against something: open the spot if it is already in reach, else give up
+        speed = last ? Math.min(WALK, d * 3 + 0.8) : WALK;
+        // stuck against something: on to the next waypoint; at the last, open the spot if it is already in reach,
+        // else give up
         if (now > g.checkAt) {
           if (g.checkD - d < 0.25) {
-            if (g.spot && d < g.spot.r) this.arrive();
+            if (!last) next();
+            else if (g.spot && d < g.spot.r) this.arrive();
             else this.goal = null;
-          }
-          if (this.goal) {
+          } else {
             g.checkAt = now + 700;
             g.checkD = d;
           }
@@ -1051,7 +1260,7 @@ export class ExchangeWorld {
     if (moving) {
       const x0 = me.position.x;
       const z0 = me.position.z;
-      const p = this.collide(me.position.x + Math.sin(heading) * speed * dt, me.position.z + Math.cos(heading) * speed * dt);
+      const p = this.collide(me.position.x + Math.sin(heading) * speed * dt, me.position.z + Math.cos(heading) * speed * dt, x0, z0);
       me.position.x = p.x;
       me.position.z = p.z;
       this.meRy = lerpAngle(this.meRy, heading, Math.min(1, dt * 12));
@@ -1103,8 +1312,17 @@ export class ExchangeWorld {
     for (const w of this.remotes.values()) this.detail(w);
     for (const s of this.strollers) this.detail(s.w);
 
-    // Mr Bands, standing at his desk (his idle: breath, weight, a look round)
+    // Mr Bands, standing at his desk (his idle: breath, weight, a look round); the keepers at their doors likewise
     this.npc?.fig.animate(dt, 0, secs);
+    for (const w of this.keepers) {
+      const show = this.camera.position.distanceTo(w.root.position) < KEEPER_SHOW_M;
+      w.root.visible = show;
+      if (!show) continue;
+      w.fig.animate(dt, 0, secs);
+      this.detail(w);
+    }
+    // the errand's board swings a little on its chains
+    if (this.signpost?.g.visible) this.signpost.board.rotation.x = Math.sin(secs * 1.7) * 0.05;
 
     // what you stand near
     let best: Spot | null = null;
@@ -1121,15 +1339,22 @@ export class ExchangeWorld {
       this.cb.onNear(best);
     }
 
-    // the camera: behind and above, eased; the key light's shadow box follows you
+    // the camera: behind and above, eased; the key light's shadow box follows you. On a climb it is held high over
+    // the town, looking at the fountain, until its time is up
     const target = new THREE.Vector3(me.position.x, EYE, me.position.z);
-    const cam = new THREE.Vector3(
-      target.x + Math.sin(this.yaw) * Math.cos(this.pitch) * this.dist,
-      target.y + Math.sin(this.pitch) * this.dist + 0.6,
-      target.z + Math.cos(this.yaw) * Math.cos(this.pitch) * this.dist,
-    );
-    this.camera.position.lerp(this.clearView(target, cam), Math.min(1, dt * 8));
-    this.camera.lookAt(target);
+    if (this.view && now > this.view.until) this.view = null;
+    if (this.view) {
+      this.camera.position.lerp(this.view.pos, Math.min(1, dt * 2));
+      this.camera.lookAt(0, 4, 0);
+    } else {
+      const cam = new THREE.Vector3(
+        target.x + Math.sin(this.yaw) * Math.cos(this.pitch) * this.dist,
+        target.y + Math.sin(this.pitch) * this.dist + 0.6,
+        target.z + Math.cos(this.yaw) * Math.cos(this.pitch) * this.dist,
+      );
+      this.camera.position.lerp(this.clearView(target, cam), Math.min(1, dt * 8));
+      this.camera.lookAt(target);
+    }
     this.key.position.set(me.position.x - 16, 26, me.position.z + 13);
     this.key.target.position.set(me.position.x, 0, me.position.z);
   }
@@ -1169,7 +1394,8 @@ export class ExchangeWorld {
 
   /**
    * The camera's place with a clear view of you: walked from you toward where it wants to be, it stops short of the
-   * first big thing in the way (a building's footprint, the board) and inside the ring of facades (r 46).
+   * first big thing in the way (a building's footprint, the board) and of every façade (the fences: a building is
+   * taller than the camera ever goes, so those block at any height).
    */
   private clearView(target: THREE.Vector3, want: THREE.Vector3): THREE.Vector3 {
     const steps = 14;
@@ -1179,7 +1405,8 @@ export class ExchangeWorld {
       const x = target.x + (want.x - target.x) * t;
       const z = target.z + (want.z - target.z) * t;
       const y = target.y + (want.y - target.y) * t;
-      let blocked = Math.hypot(x, z) > 46;
+      let blocked = false;
+      for (const f of this.fences) if (segDist(f, x, z) < 0.8) blocked = true;
       if (!blocked && y < 11) {
         for (const c of this.colliders) if (c.r >= 1.5 && Math.hypot(x - c.x, z - c.z) < c.r) blocked = true;
         for (const b of this.walls) if (x > b.x0 && x < b.x1 && z > b.z0 && z < b.z1) blocked = true;
@@ -1192,9 +1419,14 @@ export class ExchangeWorld {
     return new THREE.Vector3(target.x + (want.x - target.x) * t, Math.max(1.2, target.y + (want.y - target.y) * t), target.z + (want.z - target.z) * t);
   }
 
-  /** push a step out of every collider and keep it on the plaza */
-  private collide(x: number, z: number): { x: number; z: number } {
+  /**
+   * Push a step out of every collider, off every façade's line and the rope's (to the side it came from, so a fast
+   * step never slips through), and onto ground you can walk (town.ts's rule, the server's too: the last word)
+   */
+  private collide(x: number, z: number, fromX: number, fromZ: number): { x: number; z: number } {
     const R = 0.45;
+    for (const f of this.fences) [x, z] = offLine(f, x, z, fromX, fromZ, R);
+    for (const f of this.ropes) [x, z] = offLine(f, x, z, fromX, fromZ, R);
     for (const b of this.walls) {
       // inside the wall grown by the walker's radius: out along the shortest way
       if (x > b.x0 - R && x < b.x1 + R && z > b.z0 - R && z < b.z1 + R) {
@@ -1218,13 +1450,8 @@ export class ExchangeWorld {
         z = c.z + (dz / d) * min;
       }
     }
-    const r = Math.hypot(x, z);
-    const max = WORLD_RADIUS - 1.2;
-    if (r > max) {
-      x = (x / r) * max;
-      z = (z / r) * max;
-    }
-    return { x, z };
+    const [wx, wz] = nearestWalkable(x, z);
+    return { x: wx, z: wz };
   }
 
   dispose() {
@@ -1244,6 +1471,41 @@ function seedOf(id: string): number {
   let h = 2166136261;
   for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
   return h >>> 0;
+}
+
+/** where an errand's marker stands: a PLACES door, or the plaza's own two the errands name, facing the fountain */
+function markerAt(id: string): { x: number; z: number; facing: number } | null {
+  const p = PLACES.find((q) => q.id === id);
+  if (p) return p;
+  const spot = id === PLACE_IDS.guardHouse ? GUARD_SPOT : id === PLACE_IDS.desk ? DESK_SPOT : null;
+  return spot ? { x: spot.x, z: spot.z, facing: Math.atan2(-spot.x, -spot.z) } : null;
+}
+
+/** a point within r of a line on the ground, put r off it on the side the step came from; any other point as it is */
+function offLine(f: Seg, x: number, z: number, fromX: number, fromZ: number, r: number): [number, number] {
+  const dx = f.x1 - f.x0;
+  const dz = f.z1 - f.z0;
+  const len2 = dx * dx + dz * dz;
+  const t = Math.min(1, Math.max(0, ((x - f.x0) * dx + (z - f.z0) * dz) / len2));
+  const px = f.x0 + dx * t;
+  const pz = f.z0 + dz * t;
+  if (Math.hypot(x - px, z - pz) >= r) return [x, z];
+  // the line's normal, turned to the side the step came from
+  let nx = -dz / Math.sqrt(len2);
+  let nz = dx / Math.sqrt(len2);
+  if ((fromX - f.x0) * nx + (fromZ - f.z0) * nz < 0) {
+    nx = -nx;
+    nz = -nz;
+  }
+  return [px + nx * r, pz + nz * r];
+}
+
+/** how far a point on the ground is from a fence */
+function segDist(f: Seg, x: number, z: number): number {
+  const dx = f.x1 - f.x0;
+  const dz = f.z1 - f.z0;
+  const t = Math.min(1, Math.max(0, ((x - f.x0) * dx + (z - f.z0) * dz) / (dx * dx + dz * dz)));
+  return Math.hypot(x - (f.x0 + dx * t), z - (f.z0 + dz * t));
 }
 
 function lerpAngle(a: number, b: number, t: number): number {

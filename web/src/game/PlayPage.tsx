@@ -13,18 +13,29 @@
  * happens), so the page keeps the riding round itself (`live`): its frames go on arriving after the panel closes, a
  * chip on the HUD says where it is, the stall opened again takes it up, another stall lays nothing meanwhile, and a
  * round scored with no panel open is told in a toast. A practice round is closed when you walk away from its stall.
+ *
+ * The town (24 Sep, Zach: "an adventure game where users are actually exploring the town"): the streets are open and
+ * every named front has a door. Behind it is an interior panel (src/game/places.tsx), the room server's answer to
+ * "enter" filling it in; Mr Bands hands out errands at his desk and at Bands & Co. (the errand line on the HUD, the
+ * target door marked in the world and ringed on the map); the shops sell kit the whole room sees; a first visit to a
+ * door is a discovery. The map (src/game/TownMap.tsx) opens on M or its button.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExchangeWorld, type BoardRow, type Spot } from "./World";
 import { LpRound } from "./LpRound";
 import { poolParamsFromHot, TICKS, type PoolParams } from "./lpGame";
-import { EMOTES, JOBS, NOTES_PER_DAY, PHRASES, STRAPS, WAGE, type EmoteId, type JobId, type Me, type PhraseId, type ScoreRow, type StackRow } from "./protocol";
-import { ExchangeNet, gameWsUrl } from "./net";
+import { DAILY, EMOTES, ERRANDS, JOBS, NOTES_PER_DAY, PHRASES, PLACE_IDS, STOCK, STRAPS, WAGE, type EmoteId, type JobId, type Me, type PhraseId, type ScoreRow, type StackRow } from "./protocol";
+import { ExchangeNet, gameWsUrl, type PlaceMsg } from "./net";
 import { bandsWord, usd } from "./money";
 import { isLayRefusal, newRoutes, offlineSource, onlineSource, type Frame, type LiveRound } from "./rounds";
+import { ErrandBoard, Interior, placeName, type BuildNote, type PaperBook } from "./places";
+import { TownMap, type MapPose } from "./TownMap";
+import { PLACES } from "./town";
+import { loadLiveFeed } from "../api";
+import { bookOf, recordOf } from "../model";
 import "./PlayPage.css";
 
-type Panel = { kind: "desk" } | { kind: "guards" } | { kind: "notes" } | { kind: "stall"; pool: PoolParams } | { kind: "board" } | null;
+type Panel = { kind: "desk" } | { kind: "guards" } | { kind: "notes" } | { kind: "stall"; pool: PoolParams } | { kind: "board" } | { kind: "place"; id: string } | { kind: "map" } | null;
 type NetStatus = "offline" | "connecting" | "online" | "full" | "closed" | "elsewhere";
 
 /** Mr Bands' daily jobs, in his words */
@@ -38,17 +49,20 @@ const JOB_TEXT: Record<JobId, string> = {
 const ERROR_TEXT: Record<string, string> = {
   "not at the desk": "Walk up to Mr Bands' desk to collect.",
   "notes done": "That's all the notes you can pick up today.",
+  "not there": "Walk up to the door first.",
+  "no stack": "Your stack won't cover it.",
+  "have one": "You have one already.",
+  "no errand": "Nothing to take here yet.",
+  "wrong hour": "That's not what the tower showed. Climb again and look.",
 };
+/** the tower's top, for the climb's view: above the clock, looking over the town, and for how long */
+const TOWER_VIEW_HEIGHT = 34;
+const TOWER_VIEW_MS = 6000;
 
 interface HotRow {
   name?: string;
   venue?: string;
   feeToTvl1hPct?: number;
-}
-interface BuildNote {
-  id: string;
-  at: string;
-  text: string;
 }
 interface Limits {
   maxPositionSol?: number;
@@ -76,6 +90,38 @@ const ROUND_QUIET_MS = 60_000;
 /** today, the way the server names a day ("2026-09-24") */
 const utcDay = () => new Date().toISOString().slice(0, 10);
 const sign = (n: number) => `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(2)}%`;
+
+/** a place's name inside a sentence: "the Hatter", "Cigars" */
+const theName = (id: string) => placeName(id).replace(/^The /, "the ");
+/** no doors found yet: one array, so the map's redraw timer is not reset by every render */
+const NONE_FOUND: string[] = [];
+
+/**
+ * the doors the errand in hand still wants: the next step of an ordered errand (its last one again while a task is
+ * left there), every step not yet done of an any-order one, the run's doors not yet reached; none without an errand
+ */
+function errandTargets(me: Me | null): string[] {
+  const e = me?.errand;
+  if (!me || !e) return [];
+  if (e.id === "daily") return me.daily ? me.daily.places.filter((p) => !me.daily!.found.includes(p)) : [];
+  const def = ERRANDS.find((x) => x.id === e.id);
+  if (!def) return [];
+  if (def.any) return def.steps.filter((p) => !e.done.includes(p));
+  return [def.steps[Math.min(e.step, def.steps.length - 1)]];
+}
+/** the errand line under the stack: his short form, and how far along an errand of several doors is */
+function errandLine(me: Me): string | null {
+  const e = me.errand;
+  if (!e) return null;
+  if (e.id === "daily") {
+    const d = me.daily;
+    return d ? `${DAILY.short}: ${d.places.map(theName).join(", ")} · ${d.found.length} of ${d.places.length}` : DAILY.short;
+  }
+  const def = ERRANDS.find((x) => x.id === e.id);
+  if (!def) return null;
+  const many = def.steps.length > 1 ? ` · ${def.any ? e.done.length : e.step} of ${def.steps.length}` : "";
+  return `${def.short}${many}`;
+}
 
 const STRAP_KEY = "bands:play:strap";
 const readStrap = (): number => {
@@ -126,6 +172,14 @@ export default function PlayPage() {
   const [boardTab, setBoardTab] = useState<"stacks" | "rounds">("stacks");
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef(0);
+  /** the room's answer for the open interior (the tower's hour, a shop's stock, the talk) */
+  const [placeInfo, setPlaceInfo] = useState<PlaceMsg | null>(null);
+  /** Mr Bands' paper book for the Exchange's wall, read once from the site's live feed when the floor first opens */
+  const [paper, setPaper] = useState<PaperBook | null>(null);
+  const paperAsked = useRef(false);
+  /** where the walker is, for the map (the world writes it every frame; no render follows) */
+  const pose = useRef<MapPose>({ x: 0, z: 20, ry: 0 });
+  const [boardRows, setBoardRows] = useState<BoardRow[]>([]);
   const notify = useCallback((text: string) => {
     setToast(text);
     window.clearTimeout(toastTimer.current);
@@ -147,7 +201,10 @@ export default function PlayPage() {
     if (!canvas.current) return;
     const w = new ExchangeWorld(canvas.current, {
       onNear: (s) => setNear(s),
-      onMove: (x, z, ry, moving) => net.current?.sendMove(x, z, ry, moving),
+      onMove: (x, z, ry, moving) => {
+        pose.current = { x, z, ry };
+        net.current?.sendMove(x, z, ry, moving);
+      },
       onInteract: (s) => openRef.current(s),
       onNote: (id) => {
         // today's notes picked: the room would only say so, and its one error a moment is better kept for a lay
@@ -194,6 +251,7 @@ export default function PlayPage() {
           if (sig === seen) return;
           seen = sig;
           setPools(params);
+          setBoardRows(board);
           world.current?.setBoard(board);
         })
         .catch(() => undefined);
@@ -238,8 +296,9 @@ export default function PlayPage() {
         for (const p of m.players) {
           if (p.id === m.you) continue;
           names.current.set(p.id, p.name);
-          world.current?.addRemote(p.id, p.name, p.strap, p.x, p.z, p.ry, p.stack);
+          world.current?.addRemote(p.id, p.name, p.strap, p.x, p.z, p.ry, p.stack, p.kit);
         }
+        if (m.me?.kit) world.current?.setKit("me", m.me.kit);
         setOthers(m.players.filter((p) => p.id !== m.you).length);
         setLeaders(m.board);
         if (m.me) setMeState(m.me);
@@ -248,10 +307,14 @@ export default function PlayPage() {
       };
       n.onJoin = (p) => {
         names.current.set(p.id, p.name);
-        world.current?.addRemote(p.id, p.name, p.strap, p.x, p.z, p.ry, p.stack);
+        world.current?.addRemote(p.id, p.name, p.strap, p.x, p.z, p.ry, p.stack, p.kit);
         setOthers(names.current.size);
       };
       n.onMe = (m) => setMeState(m);
+      n.onKit = (id, kit) => world.current?.setKit(id === n.you ? "me" : id, kit);
+      n.onPlace = (m) => setPlaceInfo(m);
+      n.onFound = (place, paid) => notify(paid > 0 ? `You found ${theName(place)}. +${usd(paid)}` : `You found ${theName(place)}.`);
+      n.onBought = (item) => notify(`${(STOCK.find((s) => s.item === item)?.label ?? item).replace(/^./, (c) => c.toUpperCase())}, yours. It's on you now.`);
       n.onStack = (id, stack) => world.current?.setStack(id, stack);
       n.onStacks = (rows) => setStacks(rows);
       n.onNotes = (add, gone) => {
@@ -353,6 +416,45 @@ export default function PlayPage() {
     if (panel) panelEl.current?.focus();
   }, [panel]);
 
+  // M: the map, open or shut (over the plaza, or over the map itself; never over another panel)
+  useEffect(() => {
+    if (!entered) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "m" && e.key !== "M") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const p = panelRef.current;
+      if (p && p.kind !== "map") return;
+      e.preventDefault();
+      setPanel(p ? null : { kind: "map" });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [entered]);
+
+  // the errand's door, marked in the world as the account changes
+  const targets = useMemo(() => errandTargets(me), [me]);
+  useEffect(() => {
+    world.current?.setMarker(targets[0] ?? null);
+  }, [targets]);
+
+  // the Exchange's wall: his paper book, from the live feed the site already reads (three lines; none if it serves none)
+  useEffect(() => {
+    if (panel?.kind !== "place" || panel.id !== "exchange" || paperAsked.current) return;
+    paperAsked.current = true;
+    let live = true;
+    loadLiveFeed()
+      .then((f) => {
+        if (!live || !f) return;
+        const record = recordOf(f.entries);
+        if (!record) return;
+        setPaper({ equity: record.equityNow, open: bookOf(f.entries).bands.length, fees: record.feesRealized });
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [panel]);
+
   function enter() {
     try {
       localStorage.setItem(STRAP_KEY, String(strap));
@@ -368,12 +470,23 @@ export default function PlayPage() {
   openRef.current = openSpot;
   function openSpot(s: Spot) {
     if (panelRef.current) return;
+    // the rules errand ends at the Guard House and then the desk: the room counts each door as you use it
+    const onRules = meRef.current?.errand?.id === "rules";
     if (s.kind === "desk") {
       setLine(0);
       setPanel({ kind: "desk" });
-    } else if (s.kind === "guards") setPanel({ kind: "guards" });
-    else if (s.kind === "notes") setPanel({ kind: "notes" });
-    else if (s.kind === "stall") {
+      if (onRules) net.current?.enter(PLACE_IDS.desk);
+    } else if (s.kind === "guards") {
+      setPanel({ kind: "guards" });
+      if (onRules) net.current?.enter(PLACE_IDS.guardHouse);
+    } else if (s.kind === "notes") setPanel({ kind: "notes" });
+    else if (s.kind === "place") {
+      const id = s.place?.id ?? s.id;
+      if (!PLACES.some((p) => p.id === id)) return;
+      setPlaceInfo(null);
+      setPanel({ kind: "place", id });
+      net.current?.enter(id);
+    } else if (s.kind === "stall") {
       // by the stall's place on the board, not the label on its sign: two rows can share a label
       const pool = s.stall !== undefined ? pools[s.stall] : undefined;
       if (pool) setPanel({ kind: "stall", pool });
@@ -403,6 +516,12 @@ export default function PlayPage() {
     net.current?.say(p);
     setPhrasesOpen(false);
   }
+  /** the tower's climb: the camera goes up over the town for a moment, and the room says the hour the clock shows */
+  function climb(id: string) {
+    const tower = PLACES.find((p) => p.id === id);
+    if (tower) world.current?.viewFrom(tower.x, TOWER_VIEW_HEIGHT, tower.z, TOWER_VIEW_MS);
+    net.current?.climb();
+  }
 
   return (
     <main className="play" aria-label="The Bands Exchange">
@@ -427,7 +546,7 @@ export default function PlayPage() {
                 <>
                   <li>Left thumb: walk</li>
                   <li>Right thumb: look around</li>
-                  <li>Tap the button that appears to use a stall, the desk or a sign</li>
+                  <li>Tap the button that appears to use a stall, the desk, a sign or a door</li>
                 </>
               ) : (
                 <>
@@ -436,7 +555,10 @@ export default function PlayPage() {
                   </li>
                   <li>Drag to look around, scroll to zoom</li>
                   <li>
-                    <kbd>E</kbd> use a stall, the desk or a sign
+                    <kbd>E</kbd> use a stall, the desk, a sign or a door
+                  </li>
+                  <li>
+                    <kbd>M</kbd> the map
                   </li>
                 </>
               )}
@@ -463,11 +585,20 @@ export default function PlayPage() {
                       ? "Open in another tab · playing there"
                       : "Single player"}
             </span>
-            <span className="play__me">{myName}</span>
+            <span className="play__me">
+              {myName}
+              {online && me?.title && <span className="play__rank">{me.title}</span>}
+            </span>
             {online && me && (
               <span className="play__stack" title={usd(me.stack)}>
                 <b>{usd(me.stack)}</b>
                 {bandsWord(me.stack) && <small>{bandsWord(me.stack)}</small>}
+              </span>
+            )}
+            {online && me && errandLine(me) && (
+              <span className="play__errand" role="status">
+                <small>Errand</small>
+                {errandLine(me)}
               </span>
             )}
             {online && live && (
@@ -482,6 +613,9 @@ export default function PlayPage() {
             </div>
           )}
           <div className="play__hud play__hud--tr">
+            <button type="button" className="play-btn play-btn--sm" onClick={() => setPanel({ kind: "map" })}>
+              Map
+            </button>
             <button type="button" className="play-btn play-btn--sm" onClick={() => setPanel({ kind: "board" })}>
               Leaderboard
             </button>
@@ -542,6 +676,7 @@ export default function PlayPage() {
                   <p className="play-eyebrow">Mr Bands, at his desk</p>
                   <p className="play__line">{DESK_LINES[line]}</p>
                   {online && me && <Pay me={me} onCollect={() => net.current?.pay()} />}
+                  {online && me && <ErrandBoard me={me} onTake={() => net.current?.takeErrand()} />}
                   <div className="lp__row">
                     {line < DESK_LINES.length - 1 ? (
                       <button type="button" className="play-btn play-btn--ink" onClick={() => setLine((l) => l + 1)}>
@@ -646,6 +781,27 @@ export default function PlayPage() {
               </div>
             )}
             {panel.kind === "stall" && <LpRound key={panel.pool.address} pool={panel.pool} source={source} ranked={online} me={online ? me : null} live={online ? live : null} onClose={closePanel} />}
+            {panel.kind === "map" && <TownMap pose={pose} found={me?.found ?? NONE_FOUND} targets={targets} />}
+            {panel.kind === "place" && (
+              <Interior
+                key={panel.id}
+                place={PLACES.find((p) => p.id === panel.id)!}
+                info={placeInfo?.id === panel.id ? placeInfo : null}
+                online={online}
+                me={online ? me : null}
+                myName={myName}
+                stacks={stacks}
+                board={boardRows}
+                paper={paper}
+                notes={notes}
+                onBuy={(item) => net.current?.buy(item)}
+                onClimb={() => climb(panel.id)}
+                onAnswer={(hour) => net.current?.answer(hour)}
+                onTake={() => net.current?.takeErrand()}
+                onClose={closePanel}
+                notify={notify}
+              />
+            )}
           </div>
         </div>
       )}
@@ -653,13 +809,14 @@ export default function PlayPage() {
   );
 }
 
-/** today's pay at the desk: the wage, each job and how far along it is, and what can be collected now */
+/** today's pay at the desk: the wage, each job and how far along it is, the errands owed, and what can be collected now */
 function Pay({ me: known, onCollect }: { me: Me; onCollect(): void }) {
   // the account is as the server last said; past midnight UTC the day is fresh (the wage due, the jobs at nought)
   // and the server would say so on collecting, so the desk says so first
   const me: Me = known.day === utcDay() ? known : { ...known, wagePaid: false, jobs: known.jobs.map((j) => ({ ...j, have: 0, paid: false })) };
   const due =
     (me.wagePaid ? 0 : WAGE) +
+    me.owed +
     JOBS.reduce((t, j) => {
       const s = me.jobs.find((x) => x.id === j.id);
       return t + (s && !s.paid && s.have >= j.need ? j.reward : 0);
@@ -690,6 +847,12 @@ function Pay({ me: known, onCollect }: { me: Me; onCollect(): void }) {
             </li>
           );
         })}
+        {me.owed > 0 && (
+          <li className="is-done">
+            <span>Errands run</span>
+            <b>{usd(me.owed)}</b>
+          </li>
+        )}
       </ul>
       <button type="button" className="play-btn play-btn--ink" disabled={!due} onClick={onCollect}>
         {due ? `Collect ${usd(due)}` : "Nothing to collect yet"}
