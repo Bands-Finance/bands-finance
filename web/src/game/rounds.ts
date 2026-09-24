@@ -36,11 +36,14 @@ export interface Score {
   rank: number | null;
   /** a real round: when its stretch of history began (unix seconds) */
   from?: number;
+  /** a staked round: the dollars staked, and what came back to the stack */
+  stake?: number;
+  back?: number;
 }
 
 export interface RoundSource {
-  /** lay a band; frames and the score arrive through the callbacks */
-  start(pool: PoolParams, widthBins: number, offsetBins: number, onFrame: (f: Frame) => void, onScore: (s: Score) => void): Promise<Laid>;
+  /** lay a band, staking dollars from the stack (0: practice; offline rounds are always practice); frames and the score arrive through the callbacks */
+  start(pool: PoolParams, widthBins: number, offsetBins: number, stake: number, onFrame: (f: Frame) => void, onScore: (s: Score) => void): Promise<Laid>;
   close(roundId: string): void;
   /** stop listening (the panel closed) */
   stop(): void;
@@ -83,7 +86,7 @@ export function offlineSource(): RoundSource {
   let timer = 0;
   let closeFn: (() => void) | null = null;
   return {
-    async start(pool, widthBins, offsetBins, onFrame, onScore) {
+    async start(pool, widthBins, offsetBins, _stake, onFrame, onScore) {
       const a = new Uint32Array(1);
       crypto.getRandomValues(a);
       const seed = a[0];
@@ -120,14 +123,23 @@ export function offlineSource(): RoundSource {
 export function onlineSource(net: ExchangeNet, route: RoundRoutes): RoundSource {
   let current: string | null = null;
   return {
-    start(pool, widthBins, offsetBins, onFrame, onScore) {
+    start(pool, widthBins, offsetBins, stake, onFrame, onScore) {
       return new Promise<Laid>((resolve, reject) => {
         const timer = window.setTimeout(() => {
           route.laid.delete(pool.label);
+          route.refused = null;
           reject(new Error("The Exchange didn't answer. Try again in a moment."));
         }, 10_000);
+        // a refusal (a bad stake, no rounds left, an unknown pool) ends the wait at once
+        route.refused = (why) => {
+          window.clearTimeout(timer);
+          route.laid.delete(pool.label);
+          route.refused = null;
+          reject(new Error(REFUSALS[why] ?? "The Exchange refused that band. Try again."));
+        };
         route.laid.set(pool.label, (laid) => {
           window.clearTimeout(timer);
+          route.refused = null;
           current = laid.roundId;
           route.frames.set(laid.roundId, onFrame);
           route.scores.set(laid.roundId, (s) => {
@@ -138,7 +150,7 @@ export function onlineSource(net: ExchangeNet, route: RoundRoutes): RoundSource 
           });
           resolve(laid);
         });
-        net.lay(pool.label, widthBins, offsetBins);
+        net.lay(pool.label, widthBins, offsetBins, stake);
       });
     },
     close(roundId) {
@@ -158,6 +170,21 @@ export interface RoundRoutes {
   laid: Map<string, (l: Laid) => void>;
   frames: Map<string, (f: Frame) => void>;
   scores: Map<string, (s: Score) => void>;
+  /** a lay waiting on the room: told when the room refuses it */
+  refused: ((why: string) => void) | null;
 }
 
-export const newRoutes = (): RoundRoutes => ({ laid: new Map(), frames: new Map(), scores: new Map() });
+export const newRoutes = (): RoundRoutes => ({ laid: new Map(), frames: new Map(), scores: new Map(), refused: null });
+
+/** the room's refusals of a lay, in words */
+export const REFUSALS: Record<string, string> = {
+  "bad stake": "That stake doesn't fit your stack. Stake at least $100 and no more than you hold.",
+  "no rounds left": "That's all 24 staked rounds for today. Practice rounds are still open, and the count starts again at midnight UTC.",
+  "round in play": "You already have a band down. Close it first.",
+  "unknown pool": "That pool just left the board. Pick another stall.",
+  "board unavailable": "The Exchange can't read the board right now. Try again in a moment.",
+  "bad choice": "That band can't be laid. Try another width or centre.",
+};
+
+/** errors that belong to a lay (the rest are the page's) */
+export const isLayRefusal = (why: string): boolean => why in REFUSALS;

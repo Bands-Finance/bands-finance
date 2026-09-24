@@ -13,14 +13,38 @@
  *     to compute ahead. One round at a time; a lay while one is open is refused (onError "round in play")
  *   - onMoves carries other players only. When the server refuses this visitor's move (a jump faster than MAX_SPEED)
  *     or pulls it back onto the plaza's disc, it says where the walker really is: onCorrect(x, z, ry), put it there
- * A dropped connection is retried with exponential backoff (to 30 s); every reconnect is a new visitor with a new
- * id and name, announced by a fresh onWelcome. A full room is not retried. With no URL (VITE_GAME_WS_URL unset) the
+ *   - the stack: the room keeps an account for this browser, opened again by the key it sends with the first welcome
+ *     (kept in localStorage). onMe carries the account's own changes, onStack everyone's stacks (name tags), onNotes
+ *     and onPicked the loose notes, onPaid Mr Bands' pay, onStacks the biggest-stacks board. pick() and pay() ask.
+ * A dropped connection is retried with exponential backoff (to 30 s); a reconnect is a new socket id, the same
+ * account. A full room is not retried, nor a socket closed because the account was opened in another tab. With no URL (VITE_GAME_WS_URL unset) the
  * status is "offline", nothing is sent, and the game plays single-player, dealing its rounds locally.
  */
 import { isEmote, isPhrase, MOVE_HZ } from "./protocol";
-import type { C2S, EmoteId, PhraseId, PlayerState, S2C, ScoreRow } from "./protocol";
+import type { C2S, EmoteId, Me, Note, PhraseId, PlayerState, S2C, ScoreRow, StackRow } from "./protocol";
 
-export type NetStatus = "offline" | "connecting" | "online" | "full" | "closed";
+export type NetStatus = "offline" | "connecting" | "online" | "full" | "closed" | "elsewhere";
+export type ScoredMsg = Extract<S2C, { t: "scored" }>;
+
+/** where this browser keeps its account key */
+const KEY_STORE = "bands:play:key";
+const readKey = (): string | undefined => {
+  try {
+    const k = localStorage.getItem(KEY_STORE) ?? "";
+    return /^[A-Za-z0-9_-]{24,64}$/.test(k) ? k : undefined;
+  } catch {
+    return undefined;
+  }
+};
+const keepKey = (k: string) => {
+  try {
+    localStorage.setItem(KEY_STORE, k);
+  } catch {
+    /* a private window: the stack lasts the session */
+  }
+};
+/** the close code the room uses when the account was opened in another tab */
+const CLOSE_ELSEWHERE = 4003;
 export type WelcomeMsg = Extract<S2C, { t: "welcome" }>;
 /** { roundId, pool, lower, upper, tickMs } */
 export type LaidMsg = Extract<S2C, { t: "laid" }>;
@@ -66,14 +90,24 @@ export class ExchangeNet {
   onLaid: (laid: LaidMsg) => void = () => {};
   /** one tick of the open round, in order, as the server's clock reaches it */
   onTick: (tick: TickMsg) => void = () => {};
-  /** rank: where this score sits on the leaderboard, or null when it is not on it; from: a real round's first hour */
-  onScored: (roundId: string, pct: number, rank: number | null, from?: number) => void = () => {};
+  /** rank: where this score sits on the leaderboard (or null); from: a real round's first hour; stake/back: the stack's part */
+  onScored: (scored: ScoredMsg) => void = () => {};
+  /** this visitor's account changed (stack, jobs, the day's counts) */
+  onMe: (me: Me) => void = () => {};
+  /** someone's stack changed */
+  onStack: (id: string, stack: number) => void = () => {};
+  onNotes: (add: Note[], gone: string[]) => void = () => {};
+  /** someone (maybe this visitor) picked up a note worth v */
+  onPicked: (id: string, note: string, v: number) => void = () => {};
+  /** Mr Bands paid this visitor (0: nothing to collect) */
+  onPaid: (amount: number) => void = () => {};
+  onStacks: (rows: StackRow[]) => void = () => {};
   onBoard: (rows: ScoreRow[]) => void = () => {};
   onStatus: (status: NetStatus) => void = () => {};
   /** the server is dropping this visitor's messages (sending too fast) */
   onSlow: () => void = () => {};
-  /** a request was refused, or a round lapsed: "unknown pool", "board unavailable", "round in play", "no such round",
-   *  "bad choice", "round expired" */
+  /** a request was refused: "unknown pool", "board unavailable", "round in play", "no such round", "bad choice",
+   *  "bad stake", "no rounds left", "not at the desk", "notes done" */
   onError: (why: string) => void = () => {};
 
   status: NetStatus;
@@ -139,11 +173,23 @@ export class ExchangeNet {
     return this.send({ t: "say", p });
   }
 
-  /** lay a band on a live pool, by its label ("CARDS / USDC") or address, and start a round; the answer is onLaid */
-  lay(pool: string, widthBins: number, offsetBins: number): boolean {
+  /** lay a band on a live pool, by its label ("CARDS / USDC") or address, staking dollars from the stack (0: practice) */
+  lay(pool: string, widthBins: number, offsetBins: number, stake = 0): boolean {
     if (typeof pool !== "string" || !pool.trim()) return false;
     if (!Number.isFinite(widthBins) || !Number.isFinite(offsetBins)) return false;
-    return this.send({ t: "lay", pool: pool.trim(), widthBins, offsetBins });
+    const s = Number.isInteger(stake) && stake > 0 ? stake : 0;
+    return this.send({ t: "lay", pool: pool.trim(), widthBins, offsetBins, ...(s ? { stake: s } : {}) });
+  }
+
+  /** pick up a loose note (the room checks you are near it); the answer is onPicked */
+  pick(note: string): boolean {
+    if (typeof note !== "string" || !note) return false;
+    return this.send({ t: "pick", note });
+  }
+
+  /** collect Mr Bands' pay, standing at his desk; the answer is onPaid */
+  pay(): boolean {
+    return this.send({ t: "pay" });
   }
 
   /** settle the open round now (at the last tick the server has sent); the answer is onScored */
@@ -200,7 +246,8 @@ export class ExchangeNet {
     }
     this.ws = ws;
     ws.onopen = () => {
-      if (this.ws === ws) this.send({ t: "hello", strap: this.strap }, true);
+      const key = readKey();
+      if (this.ws === ws) this.send({ t: "hello", strap: this.strap, ...(key ? { key } : {}) }, true);
     };
     ws.onmessage = (ev: MessageEvent) => {
       if (this.ws === ws && typeof ev.data === "string") this.receive(ev.data);
@@ -208,12 +255,15 @@ export class ExchangeNet {
     ws.onerror = () => {
       /* onclose follows */
     };
-    ws.onclose = () => {
+    ws.onclose = (ev: CloseEvent) => {
       if (this.ws !== ws) return;
       this.ws = null;
       this.you = null;
       this.name = null;
-      if (this.full) {
+      if (ev.code === CLOSE_ELSEWHERE || this.status === "elsewhere") {
+        this.wanted = false;
+        this.setStatus("elsewhere");
+      } else if (this.full) {
         this.wanted = false;
         this.setStatus("full");
       } else if (this.wanted) this.retry();
@@ -246,6 +296,7 @@ export class ExchangeNet {
         this.you = msg.you;
         this.name = msg.name;
         this.attempt = 0;
+        if (typeof msg.key === "string") keepKey(msg.key);
         this.onWelcome(msg);
         this.setStatus("online");
         return;
@@ -279,7 +330,30 @@ export class ExchangeNet {
         this.onTick(msg);
         return;
       case "scored":
-        this.onScored(msg.roundId, msg.pct, msg.rank ?? null, typeof msg.from === "number" && Number.isFinite(msg.from) ? msg.from : undefined);
+        this.onScored(msg);
+        return;
+      case "me":
+        if (msg.me && typeof msg.me === "object") this.onMe(msg.me);
+        return;
+      case "stack":
+        if (typeof msg.stack === "number") this.onStack(msg.id, msg.stack);
+        return;
+      case "notes":
+        this.onNotes(Array.isArray(msg.add) ? msg.add : [], Array.isArray(msg.gone) ? msg.gone : []);
+        return;
+      case "picked":
+        this.onPicked(msg.id, msg.note, msg.v);
+        return;
+      case "paid":
+        this.onPaid(typeof msg.amount === "number" ? msg.amount : 0);
+        return;
+      case "stacks":
+        if (Array.isArray(msg.rows)) this.onStacks(msg.rows);
+        return;
+      case "elsewhere":
+        this.wanted = false;
+        this.clearTimers();
+        this.setStatus("elsewhere");
         return;
       case "board":
         if (Array.isArray(msg.rows)) this.onBoard(msg.rows);

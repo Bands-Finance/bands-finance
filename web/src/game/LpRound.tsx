@@ -1,12 +1,15 @@
 /**
- * The stall's game (bands.finance Play): lay a band on a live pool with play money, watch 48 hours of price go
- * through it, close it when you like, and score against just holding. The hours are a hidden stretch of the pool's
+ * The stall's game (bands.finance Play): lay a band on a live pool, staking part of your stack (or nothing, to
+ * practise), watch 48 hours of price go through it, close it when you like, and score against just holding. What the
+ * stake comes back as is the position's worth at the close: its value plus its fees. The hours are a hidden stretch of the pool's
  * real history where it has one, named when the round is scored. The hours come from a RoundSource
  * (src/game/rounds.ts): the room server's stream online, the local simulation offline; this panel only draws them.
  * It teaches the trade-off his desk lives on: narrow bands take more of the fees and leave the price sooner.
  */
 import { useEffect, useRef, useState } from "react";
 import { TICKS, WIDTH_MAX, WIDTH_MIN, type PoolParams } from "./lpGame";
+import { usd } from "./money";
+import { MIN_STAKE, ROUNDS_PER_DAY, type Me } from "./protocol";
 import type { Frame, Laid, RoundSource, Score } from "./rounds";
 
 export interface LpRoundProps {
@@ -14,7 +17,24 @@ export interface LpRoundProps {
   source: RoundSource;
   /** true when the round is dealt and scored by the room server (a leaderboard round) */
   ranked: boolean;
+  /** your account, online: the stake comes out of its stack */
+  me: Me | null;
   onClose(): void;
+}
+
+/** the stakes offered: nothing, the least, a quarter, a half, everything (whole dollars, the least at least) */
+function stakeChoices(me: Me | null): { label: string; v: number }[] {
+  const out = [{ label: "Practice", v: 0 }];
+  if (!me || me.stack < MIN_STAKE || me.rounds >= ROUNDS_PER_DAY) return out;
+  const add = (label: string, v: number) => {
+    const d = Math.max(MIN_STAKE, Math.min(me.stack, Math.floor(v)));
+    if (!out.some((o) => o.v === d)) out.push({ label, v: d });
+  };
+  add("The least", MIN_STAKE);
+  add("A quarter", me.stack / 4);
+  add("Half", me.stack / 2);
+  add("All in", me.stack);
+  return out;
 }
 
 type Phase = "setup" | "laying" | "running" | "done";
@@ -27,9 +47,12 @@ const when = (unix: number) => {
   return `${d.getUTCDate()} ${mon}, ${String(d.getUTCHours()).padStart(2, "0")}:00`;
 };
 
-export function LpRound({ pool, source, ranked, onClose }: LpRoundProps) {
+export function LpRound({ pool, source, ranked, me, onClose }: LpRoundProps) {
   const [width, setWidth] = useState(16);
   const [offset, setOffset] = useState(0);
+  const choices = stakeChoices(ranked ? me : null);
+  const [stakeIx, setStakeIx] = useState(() => (choices.length > 1 ? 1 : 0));
+  const stake = choices[Math.min(stakeIx, choices.length - 1)]?.v ?? 0;
   const [phase, setPhase] = useState<Phase>("setup");
   const [laid, setLaid] = useState<Laid | null>(null);
   const [frames, setFrames] = useState<Frame[]>([]);
@@ -51,6 +74,7 @@ export function LpRound({ pool, source, ranked, onClose }: LpRoundProps) {
         pool,
         width,
         offset,
+        stake,
         (f) => setFrames((fs) => [...fs, f]),
         (s) => {
           setScore(s);
@@ -173,6 +197,28 @@ export function LpRound({ pool, source, ranked, onClose }: LpRoundProps) {
             </span>
             <input type="range" min={-half} max={half} value={offset} onChange={(e) => setOffset(Number(e.target.value))} />
           </label>
+          <div className="lp__field">
+            <span>
+              Stake <b>{stake ? usd(stake) : "nothing, a practice round"}</b>
+            </span>
+            <div className="lp__stakes" role="radiogroup" aria-label="Stake">
+              {choices.map((c, i) => (
+                <button key={c.label} type="button" role="radio" aria-checked={i === stakeIx} className={`play-btn play-btn--sm${i === stakeIx ? " is-on" : ""}`} onClick={() => setStakeIx(i)}>
+                  {c.label}
+                  {c.v ? <small> {usd(c.v)}</small> : null}
+                </button>
+              ))}
+            </div>
+            <small>
+              {!ranked
+                ? "Offline, every round is practice. Your stack is kept by the Exchange when it's online."
+                : me && me.rounds >= ROUNDS_PER_DAY
+                  ? "That's all 24 staked rounds for today. Practice is still open."
+                  : me && me.stack < MIN_STAKE
+                    ? `Your stack is under ${usd(MIN_STAKE)}. Mr Bands pays a wage at his desk every day.`
+                    : `Your stack: ${usd(me?.stack ?? 0)}. ${ROUNDS_PER_DAY - (me?.rounds ?? 0)} staked rounds left today. What comes back is the band's value plus its fees.`}
+            </small>
+          </div>
           <div className="lp__row">
             <button type="button" className="play-btn play-btn--ink" onClick={start} disabled={phase === "laying"}>
               {phase === "laying" ? "Laying…" : "Lay the band"}
@@ -223,6 +269,16 @@ export function LpRound({ pool, source, ranked, onClose }: LpRoundProps) {
                 You finished <b className={(score?.pct ?? 0) >= 0 ? "lp__good" : "lp__bad"}>{sign(score?.pct ?? net)}</b> against just holding
                 {score?.rank ? <>, number {score.rank} on the board</> : null}. Price stayed in your band {inRangeHours} of {hours} hours.
               </p>
+              {score?.stake ? (
+                <p className="lp__stacked">
+                  You staked {usd(score.stake)} and {usd(score.back ?? 0)} came back to your stack:{" "}
+                  <b className={(score.back ?? 0) >= score.stake ? "lp__good" : "lp__bad"}>
+                    {(score.back ?? 0) >= score.stake ? "+" : "−"}
+                    {usd(Math.abs((score.back ?? 0) - score.stake)).replace("−", "")}
+                  </b>
+                  .
+                </p>
+              ) : null}
               {score?.from !== undefined && (
                 <p className="lp__reveal">
                   Those were {pool.label}'s real hours from {when(score.from)} to {when(score.from + TICKS * 3600)} UTC.

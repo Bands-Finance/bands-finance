@@ -14,6 +14,7 @@ import { outlineRes, shared, SPECS } from "../stage/engrave";
 import { CAPS, fitText, flat, hexRgb, INK, labelSprite, mat, OUTLINE, OUTLINE_FINE, PAPER, part, SERIF, signTexture } from "./engraved";
 import { buildCity, type City } from "./city";
 import { makeFigure, type Figure, type Gesture } from "./figure";
+import { bands } from "./money";
 import { STRAPS, WORLD_RADIUS } from "./protocol";
 
 export type SpotKind = "desk" | "stall" | "guards" | "notes";
@@ -43,11 +44,16 @@ export interface WorldCallbacks {
   onInteract(spot: Spot): void;
   /** frames per second, sampled about once a second (for the quality step-down) */
   onFps?(fps: number): void;
+  /** you walked onto a loose note: ask the room for it */
+  onNote?(id: string): void;
 }
 
 interface Walker {
   fig: Figure;
   root: THREE.Group;
+  /** a remote visitor's name and stack, for the name tag */
+  name?: string;
+  stack?: number;
   /** the figure's contours: drawn near, dropped far (half a figure's draws, and too fine to see at that size) */
   lines: THREE.Object3D[];
   near: boolean;
@@ -65,6 +71,14 @@ interface Walker {
 const SPAWN = new THREE.Vector3(0, 0, 20);
 const WALK = 4.4;
 const SPRINT = 7.2;
+/** a loose note is asked for when you come this near it (the room allows a little more) */
+const NOTE_PICK_M = 1.3;
+/** a loose note: two banknotes, one a little across the other, drawn once for every note */
+const NOTE_GEO = new THREE.BoxGeometry(0.86, 0.018, 0.4);
+
+/** a visitor's name tag: the name and the stack */
+const tagText = (name: string, stack?: number): string => (typeof stack === "number" ? `${name} · ${bands(stack)}` : name);
+
 /** figures farther than this from the camera are drawn without their contours */
 const DETAIL_M = 26;
 /** a label nearer the camera than this is shrunk to keep its size on screen */
@@ -146,6 +160,8 @@ export class ExchangeWorld {
   private strollers: { w: Walker; path: THREE.Vector3[]; lengths: number[]; total: number; speed: number; offset: number }[] = [];
   private moved = false;
   private disposed = false;
+  /** loose notes on the ground, turning where they lie */
+  private looseNotes = new Map<string, { g: THREE.Group; x: number; z: number; askedAt: number; phase: number }>();
   private dprCap: number;
   private ro: ResizeObserver;
   paused = false;
@@ -682,14 +698,16 @@ export class ExchangeWorld {
     this.scene.add(this.me.root);
   }
 
-  addRemote(id: string, name: string, strap: number, x: number, z: number, ry: number) {
+  addRemote(id: string, name: string, strap: number, x: number, z: number, ry: number, stack?: number) {
     if (this.remotes.has(id)) return;
     const w = makeWalker(STRAPS[strap] ?? STRAPS[0], seedOf(id));
     w.root.position.set(x, 0, z);
     w.root.rotation.y = ry;
     w.target.set(x, 0, z);
     w.targetRy = ry;
-    w.tag = labelSprite(name);
+    w.name = name;
+    w.stack = stack;
+    w.tag = labelSprite(tagText(name, stack));
     w.tag.userData.base = w.tag.scale.clone();
     w.tag.position.y = w.fig.height + 0.3;
     w.root.add(w.tag);
@@ -703,6 +721,45 @@ export class ExchangeWorld {
     w.target.set(x, 0, z);
     w.targetRy = ry;
     w.moving = moving;
+  }
+
+  /** a visitor's stack changed: their name tag says so */
+  setStack(id: string, stack: number) {
+    const w = this.remotes.get(id);
+    if (!w || !w.tag || w.name === undefined || w.stack === stack) return;
+    w.stack = stack;
+    const old = w.tag;
+    const tag = labelSprite(tagText(w.name, stack));
+    tag.userData.base = tag.scale.clone();
+    tag.position.copy(old.position);
+    w.root.remove(old);
+    (old.material as THREE.SpriteMaterial).map?.dispose();
+    old.material.dispose();
+    w.root.add(tag);
+    w.tag = tag;
+  }
+
+  /** a loose note on the ground */
+  addLooseNote(n: { id: string; x: number; z: number }) {
+    if (this.looseNotes.has(n.id)) return;
+    const g = new THREE.Group();
+    const a = part(NOTE_GEO, mat("Bill"), true);
+    const b = part(NOTE_GEO, mat("Bill"), true);
+    b.position.set(0.05, 0.022, 0.03);
+    b.rotation.y = 0.5;
+    g.add(a, b);
+    g.position.set(n.x, 0.45, n.z);
+    g.rotation.x = 0.35;
+    this.scene.add(g);
+    this.looseNotes.set(n.id, { g, x: n.x, z: n.z, askedAt: -Infinity, phase: (n.x * 7.3 + n.z * 3.1) % 6.28 });
+  }
+
+  /** a note was picked up (by anyone) */
+  removeLooseNote(id: string) {
+    const n = this.looseNotes.get(id);
+    if (!n) return;
+    this.scene.remove(n.g);
+    this.looseNotes.delete(id);
   }
 
   removeRemote(id: string) {
@@ -994,6 +1051,15 @@ export class ExchangeWorld {
 
     this.placeStrollers(dt, secs);
     this.city.update(secs, new Date());
+    // loose notes turn and bob; one you walk onto is asked for (again after a moment, if the room has not answered)
+    for (const [id, n] of this.looseNotes) {
+      n.g.rotation.y = secs * 1.1 + n.phase;
+      n.g.position.y = 0.45 + Math.sin(secs * 2.2 + n.phase) * 0.07;
+      if (now - n.askedAt > 1500 && Math.hypot(n.x - me.position.x, n.z - me.position.z) <= NOTE_PICK_M) {
+        n.askedAt = now;
+        this.cb.onNote?.(id);
+      }
+    }
     for (const w of this.remotes.values()) this.detail(w);
     for (const s of this.strollers) this.detail(s.w);
 

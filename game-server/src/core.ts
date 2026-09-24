@@ -12,12 +12,35 @@
  *     server deals a seed it never sends, runs simulate() once and streams the result one tick at a time as its
  *     clock reaches each tick (tick()). A close settles at the last tick already sent; TICKS settles by itself. The
  *     score is simulate() re-run with that closeAt, so the browser never holds the seed or a tick ahead of time.
+ *   - the stack: a visitor's account (name, strap, stack, today's jobs) is kept in an AccountStore, opened again by a
+ *     key only their browser holds (its hash is what is stored). A staked round takes the stake from the stack at the
+ *     lay and pays back the position's worth at the close (value + fees, from the same simulate() the score comes
+ *     from); a round cut short by a leave settles at the last hour sent, and a stake left open by a restart is
+ *     refunded. Mr Bands pays a daily wage and daily jobs at his desk, and loose notes turn up about the plaza.
  *   - the hours are real where they can be: the room reads the pool's hourly history (historySource) and deals a
  *     random 48-hour stretch of it (a Market), named to the player only once the round is scored. A pool too new for
  *     that, or a history that can't be read, plays the seeded simulation as before.
  */
-import { isEmote, isPhrase, MAX_SPEED, MOVE_HZ, ROOM_CAP, ROUND_TICK_MS, STRAPS, TICK_HZ, WORLD_RADIUS } from "../../web/src/game/protocol";
-import type { PlayerState, S2C, ScoreRow } from "../../web/src/game/protocol";
+import {
+  DESK_SPOT,
+  isEmote,
+  isPhrase,
+  JOBS,
+  MAX_SPEED,
+  MIN_STAKE,
+  MOVE_HZ,
+  NOTE_REACH,
+  NOTES_PER_DAY,
+  ROOM_CAP,
+  ROUND_TICK_MS,
+  ROUNDS_PER_DAY,
+  START_STACK,
+  STRAPS,
+  TICK_HZ,
+  WAGE,
+  WORLD_RADIUS,
+} from "../../web/src/game/protocol";
+import type { JobId, Me, Note, PlayerState, S2C, ScoreRow, StackRow } from "../../web/src/game/protocol";
 import { MARKET_HOURS, marketWindow, poolParamsFromHot, seriesOf, simulate, TICKS, validateChoice } from "../../web/src/game/lpGame";
 import type { History, Market, PoolParams, SimResult } from "../../web/src/game/lpGame";
 
@@ -77,6 +100,153 @@ export const ROOM_TICK_MS = Math.round(1000 / TICK_HZ);
 /** WebSocket close codes the room uses (4000-4999 are the application's) */
 export const CLOSE_FULL = 4001;
 export const CLOSE_NO_HELLO = 4002;
+/** the account was opened in another tab */
+export const CLOSE_ELSEWHERE = 4003;
+
+/** the biggest stacks board, this many rows */
+export const STACK_ROWS = 20;
+/** loose notes on the ground at once, one more every NOTE_EVERY_MS while anyone is in */
+export const NOTES_ON_GROUND = 6;
+export const NOTE_EVERY_MS = 20_000;
+/** a note is worth this many dollars, NOTE_MIN .. NOTE_MIN + NOTE_SPREAD */
+export const NOTE_MIN = 5;
+export const NOTE_SPREAD = 20;
+/** a wave counts for the job when someone stands this near */
+export const WAVE_NEAR_M = 6;
+/** an account key: what the browser keeps (base64url) */
+export const KEY_RE = /^[A-Za-z0-9_-]{24,64}$/;
+
+/** open ground a note can land on: rings across the plaza, clear of the fountain, stalls, board and buildings */
+const NOTE_KEEP_OUT: [number, number, number][] = [
+  [0, 0, 6], // the fountain
+  [-10.5, -9, 3.5], [-3.6, -11, 3.5], [3.6, -11, 3.5], [10.5, -9, 3.5], // the stalls
+  [0, -20, 9], // the Pools Board
+  [24, 2, 6], // the Guard House
+  [-24, 2, 4.5], // the desk
+  [-18, 20, 4], // the Notice Board
+  [-11, 12, 2.2], [11, 13, 2.2], [28, 18, 2.2], // benches
+  [-13.5, 4.5, 2], [-12.8, 5.8, 2], [13.5, 6.5, 2], [16, -16, 2], [-15, -15, 2], // stacks
+];
+export const NOTE_SPOTS: [number, number][] = (() => {
+  const out: [number, number][] = [];
+  for (const r of [8, 12, 16, 20, 24, 28, 33]) {
+    const n = Math.round((2 * Math.PI * r) / 7);
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * 2 * Math.PI + r * 0.37;
+      const x = Math.round(Math.sin(a) * r * 10) / 10;
+      const z = Math.round(Math.cos(a) * r * 10) / 10;
+      // (the rings run clear of the lamps at r 31 and the trees at r 36-38)
+      if (NOTE_KEEP_OUT.some(([kx, kz, kr]) => Math.hypot(x - kx, z - kz) < kr)) continue;
+      out.push([x, z]);
+    }
+  }
+  return out;
+})();
+
+// ---------------------------------------------------------------- accounts
+
+export interface Account {
+  id: string;
+  name: string;
+  strap: number;
+  stack: number;
+  /** on an open round; refunded when a restart loses the round */
+  staked: number;
+  /** the UTC day the counts are for */
+  day: string;
+  wagePaid: boolean;
+  jobs: Record<JobId, { have: number; paid: boolean }>;
+  rounds: number;
+  notes: number;
+  created: number;
+  seen: number;
+}
+
+/** where accounts live: the Durable Object's SQLite in production, a Map in tests */
+export interface AccountStore {
+  byKeyHash(hash: string): Account | null;
+  byId(id: string): Account | null;
+  /** insert (a new account comes with its key's hash) or update */
+  put(a: Account, keyHash?: string): void;
+  nameTaken(name: string): boolean;
+  /** the biggest stacks, biggest first (ties: the older account first) */
+  topStacks(n: number): StackRow[];
+}
+
+/** accounts in memory (tests, and a room with no store) */
+export function memoryAccounts(): AccountStore & { all(): Account[] } {
+  const byId = new Map<string, Account>();
+  const byHash = new Map<string, string>();
+  return {
+    byKeyHash: (h) => {
+      const id = byHash.get(h);
+      const a = id ? byId.get(id) : undefined;
+      return a ? structuredClone(a) : null;
+    },
+    byId: (id) => {
+      const a = byId.get(id);
+      return a ? structuredClone(a) : null;
+    },
+    put: (a, keyHash) => {
+      byId.set(a.id, structuredClone(a));
+      if (keyHash) byHash.set(keyHash, a.id);
+    },
+    nameTaken: (name) => [...byId.values()].some((a) => a.name === name),
+    topStacks: (n) =>
+      [...byId.values()]
+        .sort((a, b) => b.stack - a.stack || a.created - b.created)
+        .slice(0, n)
+        .map((a) => ({ name: a.name, stack: a.stack })),
+    all: () => [...byId.values()].map((a) => structuredClone(a)),
+  };
+}
+
+/** "2026-09-24" for a time in ms */
+export const dayOf = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+
+const freshJobs = (): Account["jobs"] => Object.fromEntries(JOBS.map((j) => [j.id, { have: 0, paid: false }])) as Account["jobs"];
+
+/** a new day: the wage, the jobs and the day's counts start again (true when it rolled) */
+export function rollDay(a: Account, now: number): boolean {
+  const day = dayOf(now);
+  if (a.day === day) return false;
+  a.day = day;
+  a.wagePaid = false;
+  a.jobs = freshJobs();
+  a.rounds = 0;
+  a.notes = 0;
+  return true;
+}
+
+/** a stored account with anything missing or malformed put right (older rows, hand edits) */
+export function cleanAccount(a: Account): Account {
+  const jobs = freshJobs();
+  for (const j of JOBS) {
+    const had = a.jobs?.[j.id];
+    if (had && isNum(had.have)) jobs[j.id] = { have: Math.max(0, Math.min(j.need, Math.floor(had.have))), paid: had.paid === true };
+  }
+  return {
+    ...a,
+    stack: isNum(a.stack) ? Math.max(0, Math.floor(a.stack)) : START_STACK,
+    staked: isNum(a.staked) ? Math.max(0, Math.floor(a.staked)) : 0,
+    wagePaid: a.wagePaid === true,
+    jobs,
+    rounds: isNum(a.rounds) ? a.rounds : 0,
+    notes: isNum(a.notes) ? a.notes : 0,
+  };
+}
+
+export function meOf(a: Account): Me {
+  return {
+    stack: a.stack,
+    staked: a.staked,
+    day: a.day,
+    wagePaid: a.wagePaid,
+    jobs: JOBS.map((j) => ({ id: j.id, have: a.jobs[j.id].have, paid: a.jobs[j.id].paid })),
+    rounds: a.rounds,
+    notes: a.notes,
+  };
+}
 
 // ---------------------------------------------------------------- names
 
@@ -119,8 +289,14 @@ export interface RoomDeps {
   saveBoard?(rows: ScoreRow[]): void;
   /** close a socket (full room, no hello) */
   close?(id: string, code: number, reason: string): void;
-  /** a player joined; the host may remember (id, name, strap) to restore them after a restart */
-  joined?(id: string, name: string, strap: number): void;
+  /** a player joined; the host may remember (socket id, account id) to restore them after a restart */
+  joined?(id: string, accountId: string): void;
+  /** where accounts are kept; a room without one keeps them in memory */
+  accounts?: AccountStore;
+  /** an account key -> what is stored for it (a SHA-256 in production) */
+  hashKey?(key: string): Promise<string>;
+  /** drop loose notes about the plaza (default true) */
+  notes?: boolean;
 }
 
 interface Bucket {
@@ -139,6 +315,8 @@ interface Round {
   market: Market | null;
   /** simulate() for the whole round (no closeAt): the ticks are read from it */
   sim: SimResult;
+  /** dollars from the stack on this round (0: practice) */
+  stake: number;
   /** when it was laid; tick i is due at start + i * ROUND_TICK_MS */
   start: number;
   /** the last tick sent, 0 before the first */
@@ -152,6 +330,7 @@ export interface RoundView {
   seed: number;
   /** when its stretch of history began (unix seconds), or null for a simulated round */
   from: number | null;
+  stake: number;
   widthBins: number;
   offsetBins: number;
   start: number;
@@ -179,6 +358,8 @@ interface Player {
   errorAt: number;
   /** the open round, if any (one at a time) */
   round: Round | null;
+  /** the account behind the player: its stack, today's jobs */
+  acct: Account;
   /** a lay is waiting on the board or a history */
   laying: boolean;
 }
@@ -188,6 +369,8 @@ interface Conn {
   openedAt: number;
   msgs: Bucket;
   player: Player | null;
+  /** a hello is being answered (the key is being looked up) */
+  greeting?: boolean;
 }
 
 // ---------------------------------------------------------------- small pure helpers
@@ -378,12 +561,36 @@ export class RoomCore {
   private readonly conns = new Map<string, Conn>();
   private top: ScoreRow[] = [];
   private seq = 0;
+  private readonly store: AccountStore;
+  private readonly hashKey: (key: string) => Promise<string>;
+  private stacksTop: StackRow[] = [];
+  private readonly notes = new Map<string, Note>();
+  private noteAt = -Infinity;
 
   constructor(
     private readonly deps: RoomDeps,
     leaderboard?: unknown,
   ) {
     if (leaderboard !== undefined) this.loadBoard(leaderboard);
+    this.store = deps.accounts ?? memoryAccounts();
+    this.hashKey = deps.hashKey ?? (async (k) => `plain:${k}`);
+    this.stacksTop = this.store.topStacks(STACK_ROWS);
+  }
+
+  /** the biggest stacks, biggest first */
+  stacks(): StackRow[] {
+    return this.stacksTop.map((r) => ({ ...r }));
+  }
+
+  /** the notes on the ground */
+  notesOnGround(): Note[] {
+    return [...this.notes.values()].map((n) => ({ ...n }));
+  }
+
+  /** a joined player's account as they see it (tests, logs) */
+  meOf(id: string): Me | null {
+    const p = this.conns.get(id)?.player;
+    return p ? meOf(p.acct) : null;
   }
 
   /** replace the leaderboard with stored rows (cleaned) */
@@ -435,13 +642,20 @@ export class RoomCore {
    * Put a player back after the host restarted with their socket still open (Durable Object hibernation). No
    * broadcast: everyone else already knows them. Their first move is taken as their position.
    */
-  restore(id: string, name: string, strap: number): void {
-    if (this.conns.has(id)) return;
+  restore(id: string, accountId: string): boolean {
+    if (this.conns.has(id)) return true;
+    const found = typeof accountId === "string" ? this.store.byId(accountId) : null;
+    if (!found) return false;
+    const acct = cleanAccount(found);
     const now = this.deps.now();
+    this.refund(acct);
+    rollDay(acct, now);
+    this.store.put(acct);
     const conn: Conn = { id, openedAt: now, msgs: { tokens: MSG_BURST, at: now }, player: null };
-    conn.player = this.newPlayer(id, isRoomName(name) ? name : this.makeName(), this.clampStrap(strap), now);
+    conn.player = this.newPlayer(id, acct, now);
     conn.player.trustNext = true;
     this.conns.set(id, conn);
+    return true;
   }
 
   /** one raw frame from a socket; anything malformed is ignored */
@@ -463,7 +677,7 @@ export class RoomCore {
     if (!isRecord(msg) || typeof msg.t !== "string") return;
     const p = conn.player;
     if (!p) {
-      if (msg.t === "hello") this.hello(conn, msg, now);
+      if (msg.t === "hello") await this.hello(conn, msg, now);
       return;
     }
     switch (msg.t) {
@@ -479,6 +693,10 @@ export class RoomCore {
         return this.lay(p, msg, now);
       case "close":
         return this.close(p, msg, now);
+      case "pick":
+        return this.pick(p, msg, now);
+      case "pay":
+        return this.pay(p, now);
       default:
         return;
     }
@@ -488,16 +706,18 @@ export class RoomCore {
   roundOf(id: string): RoundView | null {
     const r = this.conns.get(id)?.player?.round;
     if (!r) return null;
-    const { roundId, pool, seed, widthBins, offsetBins, start, sent } = r;
-    return { roundId, pool: { ...pool }, seed, from: r.market?.from ?? null, widthBins, offsetBins, start, sent };
+    const { roundId, pool, seed, widthBins, offsetBins, start, sent, stake } = r;
+    return { roundId, pool: { ...pool }, seed, from: r.market?.from ?? null, widthBins, offsetBins, start, sent, stake };
   }
 
-  /** a socket closed; an open round is forfeited without a word */
+  /** a socket closed; an open round settles at the last hour sent, its stake paid back to the stack */
   leave(id: string): void {
     const conn = this.conns.get(id);
     if (!conn) return;
+    const p = conn.player;
+    if (p?.round) this.settle(p, p.round, Math.max(1, p.round.sent), this.deps.now(), true);
     this.conns.delete(id);
-    if (conn.player) this.deps.broadcast({ t: "leave", id });
+    if (p) this.deps.broadcast({ t: "leave", id });
   }
 
   /** TICK_HZ: close sockets that never said hello, advance every open round, flush the moves batch */
@@ -512,6 +732,10 @@ export class RoomCore {
     const players: Player[] = [];
     for (const c of this.conns.values()) if (c.player) players.push(c.player);
     for (const p of players) if (p.round) this.advance(p, p.round, now);
+    if (this.deps.notes !== false && players.length && this.notes.size < NOTES_ON_GROUND && now >= this.noteAt) {
+      this.noteAt = now + NOTE_EVERY_MS;
+      this.dropNote();
+    }
     const movers = players.filter((p) => p.dirty);
     if (!movers.length) return;
     const all = movers.map((p) => this.entryOf(p));
@@ -529,20 +753,92 @@ export class RoomCore {
 
   // ---------------------------------------------------------------- handlers
 
-  private hello(conn: Conn, msg: Record<string, unknown>, now: number): void {
+  private async hello(conn: Conn, msg: Record<string, unknown>, now: number): Promise<void> {
+    if (conn.greeting) return;
     if (this.size >= ROOM_CAP) {
       this.deps.send(conn.id, { t: "full" });
       this.conns.delete(conn.id);
       this.deps.close?.(conn.id, CLOSE_FULL, "full");
       return;
     }
-    const p = this.newPlayer(conn.id, this.makeName(), this.clampStrap(msg.strap), now);
+    conn.greeting = true;
+    const key = typeof msg.key === "string" && KEY_RE.test(msg.key) ? msg.key : null;
+    let found: Account | null = null;
+    try {
+      if (key) found = this.store.byKeyHash(await this.hashKey(key));
+    } catch {
+      found = null;
+    }
+    let newKey: string | null = null;
+    let acct: Account;
+    if (found) {
+      acct = cleanAccount(found);
+    } else {
+      newKey = this.randomKey();
+      let hash: string;
+      try {
+        hash = await this.hashKey(newKey);
+      } catch {
+        conn.greeting = false;
+        return;
+      }
+      acct = {
+        id: `a${this.randomId(15)}`,
+        name: this.makeName(),
+        strap: 0,
+        stack: START_STACK,
+        staked: 0,
+        day: dayOf(now),
+        wagePaid: false,
+        jobs: freshJobs(),
+        rounds: 0,
+        notes: 0,
+        created: now,
+        seen: now,
+      };
+      this.store.put(acct, hash);
+    }
+    conn.greeting = false;
+    if (this.conns.get(conn.id) !== conn) return; // gone while the key was looked up
+    // one session per account: an older one (another tab) is closed, its round settled
+    for (const other of [...this.conns.values()]) {
+      if (other !== conn && other.player?.acct.id === acct.id) {
+        this.deps.send(other.id, { t: "elsewhere" });
+        this.leave(other.id);
+        this.deps.close?.(other.id, CLOSE_ELSEWHERE, "elsewhere");
+        const fresh = this.store.byId(acct.id);
+        if (fresh) acct = cleanAccount(fresh);
+      }
+    }
+    if (this.size >= ROOM_CAP) {
+      this.deps.send(conn.id, { t: "full" });
+      this.conns.delete(conn.id);
+      this.deps.close?.(conn.id, CLOSE_FULL, "full");
+      return;
+    }
+    this.refund(acct);
+    rollDay(acct, now);
+    acct.strap = this.clampStrap(msg.strap);
+    acct.seen = now;
+    this.store.put(acct);
+    const p = this.newPlayer(conn.id, acct, now);
     conn.player = p;
     const players: PlayerState[] = [];
     for (const c of this.conns.values()) if (c.player) players.push(this.stateOf(c.player));
-    this.deps.send(p.id, { t: "welcome", you: p.id, name: p.name, players, board: this.leaderboard() });
+    this.refreshStacks();
+    this.deps.send(p.id, {
+      t: "welcome",
+      you: p.id,
+      name: p.name,
+      players,
+      board: this.leaderboard(),
+      me: meOf(acct),
+      notes: this.notesOnGround(),
+      stacks: this.stacks(),
+      ...(newKey ? { key: newKey } : {}),
+    });
     this.deps.broadcast({ t: "join", p: this.stateOf(p) }, p.id);
-    this.deps.joined?.(p.id, p.name, p.strap);
+    this.deps.joined?.(p.id, acct.id);
   }
 
   private move(p: Player, msg: Record<string, unknown>, now: number): void {
@@ -578,6 +874,108 @@ export class RoomCore {
     p.socialAt = now;
     // to everyone else: the sender's page shows its own bubble when it sends
     this.deps.broadcast(out, p.id);
+    if (out.t === "emote" && out.e === "wave") {
+      const near = [...this.conns.values()].some((c) => c.player && c.player !== p && Math.hypot(c.player.x - p.x, c.player.z - p.z) <= WAVE_NEAR_M);
+      if (near) this.job(p, "wave", 1, now);
+    }
+  }
+
+  /** progress on one of today's jobs (have is raised to at least `have`, capped at the job's need) */
+  private job(p: Player, id: JobId, have: number, now: number): void {
+    const a = p.acct;
+    rollDay(a, now);
+    const need = JOBS.find((j) => j.id === id)!.need;
+    const next = Math.min(need, Math.max(a.jobs[id].have, have));
+    if (next === a.jobs[id].have) return;
+    a.jobs[id].have = next;
+    this.store.put(a);
+    this.deps.send(p.id, { t: "me", me: meOf(a) });
+  }
+
+  /** pick up a loose note: it must be there, and you within NOTE_REACH of it, with notes left today */
+  private pick(p: Player, msg: Record<string, unknown>, now: number): void {
+    const id = typeof msg.note === "string" ? msg.note : "";
+    const note = this.notes.get(id);
+    if (!note) return;
+    const a = p.acct;
+    rollDay(a, now);
+    if (a.notes >= NOTES_PER_DAY) {
+      this.error(p, "notes done", now);
+      return;
+    }
+    if (Math.hypot(note.x - p.x, note.z - p.z) > NOTE_REACH) return;
+    this.notes.delete(id);
+    a.stack += note.v;
+    a.notes += 1;
+    const need = JOBS.find((j) => j.id === "notes")!.need;
+    a.jobs.notes.have = Math.min(need, a.jobs.notes.have + 1);
+    this.store.put(a);
+    this.deps.broadcast({ t: "picked", id: p.id, note: id, v: note.v });
+    this.deps.send(p.id, { t: "me", me: meOf(a) });
+    this.stackChanged(p);
+  }
+
+  /** collect the wage and the finished jobs, standing at Mr Bands' desk */
+  private pay(p: Player, now: number): void {
+    if (Math.hypot(p.x - DESK_SPOT.x, p.z - DESK_SPOT.z) > DESK_SPOT.r) {
+      this.error(p, "not at the desk", now);
+      return;
+    }
+    const a = p.acct;
+    rollDay(a, now);
+    let amount = 0;
+    if (!a.wagePaid) {
+      a.wagePaid = true;
+      amount += WAGE;
+    }
+    for (const j of JOBS) {
+      const s = a.jobs[j.id];
+      if (!s.paid && s.have >= j.need) {
+        s.paid = true;
+        amount += j.reward;
+      }
+    }
+    a.stack += amount;
+    this.store.put(a);
+    this.deps.send(p.id, { t: "paid", amount });
+    this.deps.send(p.id, { t: "me", me: meOf(a) });
+    if (amount) this.stackChanged(p);
+  }
+
+  /** a note on open ground, clear of the others */
+  private dropNote(): void {
+    const free = NOTE_SPOTS.filter(([x, z]) => ![...this.notes.values()].some((n) => Math.hypot(n.x - x, n.z - z) < 4));
+    if (!free.length) return;
+    const [x, z] = free[Math.floor(this.deps.random() * free.length) % free.length];
+    const note: Note = {
+      id: `n${this.randomId(7)}`,
+      x: r2(x + (this.deps.random() - 0.5) * 2),
+      z: r2(z + (this.deps.random() - 0.5) * 2),
+      v: NOTE_MIN + (Math.floor(this.deps.random() * (NOTE_SPREAD + 1)) % (NOTE_SPREAD + 1)),
+    };
+    this.notes.set(note.id, note);
+    this.deps.broadcast({ t: "notes", add: [{ ...note }], gone: [] });
+  }
+
+  /** a stake left on an account by a round a restart lost goes back to the stack */
+  private refund(a: Account): void {
+    if (a.staked > 0) {
+      a.stack += a.staked;
+      a.staked = 0;
+    }
+  }
+
+  /** tell the room the player's stack moved, and the stacks board if its top changed */
+  private stackChanged(p: Player): void {
+    this.deps.broadcast({ t: "stack", id: p.id, stack: p.acct.stack });
+    this.refreshStacks(true);
+  }
+
+  private refreshStacks(announce = false): void {
+    const next = this.store.topStacks(STACK_ROWS);
+    if (JSON.stringify(next) === JSON.stringify(this.stacksTop)) return;
+    this.stacksTop = next;
+    if (announce) this.deps.broadcast({ t: "stacks", rows: this.stacks() });
   }
 
   /** lay a band: validate, find the pool on the server's board, deal a seed, run the round, say "laid" */
@@ -601,6 +999,17 @@ export class RoomCore {
     }
     const widthBins = band.widthBins as number;
     const offsetBins = band.offsetBins as number;
+    // the stake: none (a practice round), or MIN_STAKE up to the whole stack, within today's staked rounds
+    const stake = msg.stake === undefined ? 0 : msg.stake;
+    if (!isNum(stake) || !Number.isInteger(stake) || stake < 0 || (stake > 0 && (stake < MIN_STAKE || stake > p.acct.stack))) {
+      this.error(p, "bad stake", now);
+      return;
+    }
+    rollDay(p.acct, now);
+    if (stake > 0 && p.acct.rounds >= ROUNDS_PER_DAY) {
+      this.error(p, "no rounds left", now);
+      return;
+    }
     p.laying = true;
     let pools: PoolParams[];
     try {
@@ -640,8 +1049,20 @@ export class RoomCore {
       this.error(p, "bad choice", start);
       return;
     }
-    const round: Round = { roundId: this.roundId(), pool, seed, widthBins, offsetBins, market, sim, start, sent: 0 };
+    if (stake > p.acct.stack) {
+      this.error(p, "bad stake", start);
+      return;
+    }
+    const round: Round = { roundId: this.roundId(), pool, seed, widthBins, offsetBins, market, sim, start, sent: 0, stake };
     p.round = round;
+    if (stake > 0) {
+      p.acct.stack -= stake;
+      p.acct.staked = stake;
+      p.acct.rounds += 1;
+      this.store.put(p.acct);
+      this.deps.send(p.id, { t: "me", me: meOf(p.acct) });
+      this.stackChanged(p);
+    }
     this.deps.send(p.id, {
       t: "laid",
       roundId: round.roundId,
@@ -678,9 +1099,8 @@ export class RoomCore {
   /** the heartbeat's work on one round: expire it, or send the ticks now due and settle at TICKS */
   private advance(p: Player, r: Round, now: number): void {
     if (now - r.start > ROUND_TTL_MS) {
-      p.round = null;
-      p.errorAt = now;
-      this.deps.send(p.id, { t: "error", why: "round expired" });
+      // (the ticks stalled): settle at the last hour sent, so a stake is never stranded
+      this.settle(p, r, Math.max(1, r.sent), now);
       return;
     }
     const due = Math.min(TICKS, Math.floor((now - r.start) / ROUND_TICK_MS));
@@ -704,19 +1124,42 @@ export class RoomCore {
     r.sent = Math.max(r.sent, upTo);
   }
 
-  /** score the round: simulate() re-run with closeAt, recorded, "scored" to the player, "board" if the top changed */
-  private settle(p: Player, r: Round, closeAt: number, now: number): void {
+  /**
+   * Score the round: simulate() re-run with closeAt, recorded, "scored" to the player, "board" if the top changed. A
+   * stake comes back as the position's worth at the close (value + fees, percent of the deposit), and the day's jobs
+   * move on. quiet: the player has gone, so nothing is sent to them.
+   */
+  private settle(p: Player, r: Round, closeAt: number, now: number, quiet = false): void {
     p.round = null;
-    let pct: number;
+    let res: SimResult;
     try {
-      pct = simulate(r.pool, r.seed, { widthBins: r.widthBins, offsetBins: r.offsetBins, closeAt }, r.market).scorePct;
+      res = simulate(r.pool, r.seed, { widthBins: r.widthBins, offsetBins: r.offsetBins, closeAt }, r.market);
     } catch {
-      return;
+      // cannot happen for a round that was dealt; the stake goes back rather than vanishing
+      res = { ...r.sim, closedAt: closeAt, scorePct: 0, valuePct: r.sim.valuePct.map(() => 100), feesPct: r.sim.feesPct.map(() => 0) };
     }
-    if (!isNum(pct)) return;
-    pct = r2(pct);
+    const pct = isNum(res.scorePct) ? r2(res.scorePct) : 0;
+    const a = p.acct;
+    let back = 0;
+    if (r.stake > 0) {
+      const worth = res.valuePct[closeAt] + res.feesPct[closeAt];
+      back = isNum(worth) ? Math.max(0, Math.round((r.stake * worth) / 100)) : r.stake;
+      a.stack += back;
+      a.staked = 0;
+    }
+    rollDay(a, now);
+    const hoursIn = res.inRange.slice(1, closeAt + 1).filter(Boolean).length;
+    const range = JOBS.find((j) => j.id === "range")!.need;
+    a.jobs.range.have = Math.min(range, Math.max(a.jobs.range.have, hoursIn));
+    if (pct > 0) a.jobs.beat.have = 1;
+    this.store.put(a);
     const { rank, changed } = this.record({ name: p.name, pool: r.pool.label, pct, at: now });
-    this.deps.send(p.id, r.market ? { t: "scored", roundId: r.roundId, pct, rank, from: r.market.from } : { t: "scored", roundId: r.roundId, pct, rank });
+    if (!quiet) {
+      const stakeBits = r.stake > 0 ? { stake: r.stake, back } : {};
+      this.deps.send(p.id, r.market ? { t: "scored", roundId: r.roundId, pct, rank, from: r.market.from, ...stakeBits } : { t: "scored", roundId: r.roundId, pct, rank, ...stakeBits });
+      this.deps.send(p.id, { t: "me", me: meOf(a) });
+    }
+    if (r.stake > 0) this.stackChanged(p);
     if (changed) {
       this.deps.broadcast({ t: "board", rows: this.leaderboard() });
       this.deps.saveBoard?.(this.leaderboard());
@@ -748,7 +1191,11 @@ export class RoomCore {
   }
 
   /** errors are fixed server strings, never anything the client sent */
-  private error(p: Player, why: "unknown pool" | "board unavailable" | "round in play" | "no such round" | "bad choice", now: number): void {
+  private error(
+    p: Player,
+    why: "unknown pool" | "board unavailable" | "round in play" | "no such round" | "bad choice" | "bad stake" | "no rounds left" | "not at the desk" | "notes done",
+    now: number,
+  ): void {
     if (now - p.errorAt < ERROR_GAP_MS) return;
     p.errorAt = now;
     this.deps.send(p.id, { t: "error", why });
@@ -759,15 +1206,16 @@ export class RoomCore {
     this.deps.send(p.id, { t: "moves", m: [this.entryOf(p)] });
   }
 
-  private newPlayer(id: string, name: string, strap: number, now: number): Player {
+  private newPlayer(id: string, acct: Account, now: number): Player {
     const a = (this.deps.random() * 2 - 1) * SPAWN_ARC;
     const d = SPAWN_INNER + this.deps.random() * (SPAWN_RADIUS - SPAWN_INNER);
     const x = r2(Math.sin(a) * d);
     const z = r2(Math.cos(a) * d);
     return {
       id,
-      name,
-      strap,
+      name: acct.name,
+      strap: acct.strap,
+      acct,
       x,
       z,
       ry: r3(Math.atan2(-x, -z)),
@@ -790,23 +1238,31 @@ export class RoomCore {
     return Math.min(STRAPS.length - 1, Math.max(0, Math.floor(v)));
   }
 
-  /** ADJECTIVE NOUN NN, not held by anyone in the room or on the board (when a free one turns up) */
+  /** ADJECTIVE NOUN NN, not held by any account, anyone in the room or anyone on the board (when a free one turns up) */
   private makeName(): string {
     const taken = new Set<string>(this.top.map((r) => r.name));
     for (const c of this.conns.values()) if (c.player) taken.add(c.player.name);
     let name = "";
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 48; i++) {
       const adj = NAME_ADJECTIVES[Math.floor(this.deps.random() * NAME_ADJECTIVES.length) % NAME_ADJECTIVES.length];
       const noun = NAME_NOUNS[Math.floor(this.deps.random() * NAME_NOUNS.length) % NAME_NOUNS.length];
       const nn = 10 + (Math.floor(this.deps.random() * 90) % 90);
       name = `${adj} ${noun} ${nn}`;
-      if (!taken.has(name)) break;
+      if (!taken.has(name) && !this.store.nameTaken(name)) break;
     }
     return name;
   }
 
+  /** an account key: 32 characters of base64url from the room's random */
+  private randomKey(): string {
+    const abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let s = "";
+    for (let i = 0; i < 32; i++) s += abc[Math.floor(this.deps.random() * 64) % 64];
+    return s;
+  }
+
   private stateOf(p: Player): PlayerState {
-    return { id: p.id, name: p.name, strap: p.strap, x: r2(p.x), z: r2(p.z), ry: r3(p.ry), moving: p.moving };
+    return { id: p.id, name: p.name, strap: p.strap, x: r2(p.x), z: r2(p.z), ry: r3(p.ry), moving: p.moving, stack: p.acct.stack };
   }
 
   private entryOf(p: Player): [string, number, number, number, 0 | 1] {
