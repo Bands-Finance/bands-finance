@@ -204,6 +204,9 @@ export function fixedAnswer(input: ReplyInput, env: NodeJS.ProcessEnv = process.
   if (COPYCAT_ASK_RE.test(topic) || HOUSE_CASHTAG_RE.test(topic) || OWN_TOKEN_RE.test(topic) || TOKEN_ASK_RE.test(topic)) {
     // after launch the reply line is disclosureLine(mint), 280 characters that promise the hold gate: it waits for Zach
     if (tokenLive) return skipT("token line awaits zach");
+    // TALK_TOKEN_LINE=off: no token answer at all (24 Sep: three BANDS mints went live on pump.fun from his ClawPump
+    // account on 22-23 Sep while this line still said "no token of mine is live"; off until the official mint is named)
+    if ((env.TALK_TOKEN_LINE ?? "").trim() === "off") return skipT("the token line is off (TALK_TOKEN_LINE=off)");
     const words = [...topic.matchAll(new RegExp(TOKEN_ASK_RE.source, "g"))].map((m) => m[0].trim());
     const generic = !COPYCAT_ASK_RE.test(topic) && !HOUSE_CASHTAG_RE.test(topic) && !OWN_TOKEN_RE.test(topic) && words.length > 0 && words.every((w) => GENERIC_TOKEN_PLURAL_RE.test(w));
     return generic ? skipT("a token topic with no fixed line: the model is not asked") : template("tokenPrelaunch");

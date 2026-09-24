@@ -461,6 +461,14 @@ async function main(): Promise<void> {
     }
   });
 
+  await test("TALK_TOKEN_LINE=off: a token question gets no answer at all, never the pre-launch line", () => {
+    const q = mention("wen token? whats the ca");
+    assert.equal(fixedAnswer(q, ENV)?.kind, "reply", "on by default");
+    const off = fixedAnswer(q, { ...ENV, TALK_TOKEN_LINE: "off" });
+    assert.ok(off?.kind === "skip" && /token line is off/.test(off.why));
+    assert.equal(fixedAnswer(mention("is this real money or paper?"), { ...ENV, TALK_TOKEN_LINE: "off" })?.kind, "reply", "the other fixed lines still answer");
+  });
+
   console.log("his voice (24 Sep: sharp and dry, with opinions)");
   await test("the reply prompt carries his voice and asks for sentence case; his approved views ride in the facts, digits left out", async () => {
     const fs = await import("node:fs");
