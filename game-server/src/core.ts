@@ -63,9 +63,14 @@ export const MAX_STEP_SECONDS = 2;
 export const JUMP_SLACK_M = 1;
 /** a clamp that moves the player more than this sends them a correction */
 export const CORRECTION_M = 0.5;
-/** visitors arrive on a ring between these radii, clear of the fountain at the centre */
-export const SPAWN_INNER = 7;
-export const SPAWN_RADIUS = 10;
+/**
+ * visitors arrive south of the fountain, between these radii and within SPAWN_ARC of due south, facing the centre: the
+ * first view is the fountain, the Pools Board and the Exchange behind it, and they stand clear of the stalls (north),
+ * the benches and the stacks (more than 40 degrees round), where a camera behind them would be crowded in
+ */
+export const SPAWN_INNER = 11;
+export const SPAWN_RADIUS = 16;
+export const SPAWN_ARC = Math.PI / 6;
 /** the room's heartbeat (batched moves, round ticks), ms */
 export const ROOM_TICK_MS = Math.round(1000 / TICK_HZ);
 
@@ -755,11 +760,10 @@ export class RoomCore {
   }
 
   private newPlayer(id: string, name: string, strap: number, now: number): Player {
-    const a = this.deps.random() * Math.PI * 2;
-    // a ring round the fountain at the centre (city.ts keeps its footprint within 4 m)
+    const a = (this.deps.random() * 2 - 1) * SPAWN_ARC;
     const d = SPAWN_INNER + this.deps.random() * (SPAWN_RADIUS - SPAWN_INNER);
-    const x = r2(Math.cos(a) * d);
-    const z = r2(Math.sin(a) * d);
+    const x = r2(Math.sin(a) * d);
+    const z = r2(Math.cos(a) * d);
     return {
       id,
       name,

@@ -38,6 +38,10 @@ import {
   RoomCore,
   ROUND_TTL_MS,
   SLOW_NOTICE_MS,
+  SPAWN_ARC,
+  SPAWN_INNER,
+  SPAWN_RADIUS,
+  wrapAngle,
 } from "../../game-server/src/core";
 import type { RoomDeps } from "../../game-server/src/core";
 import { EMOTES, MAX_SPEED, MOVE_HZ, PHRASES, ROOM_CAP, ROUND_TICK_MS, STRAPS, WORLD_RADIUS } from "../../web/src/game/protocol";
@@ -248,6 +252,16 @@ async function main() {
     assert.equal(ofType(w.inbox(b), "join").length, 0, "the newcomer is not told of themself");
     const spawn = w.pos(b);
     assert.ok(Math.hypot(spawn.x, spawn.z) <= WORLD_RADIUS, "spawned on the disc");
+    // arrivals come in south of the fountain facing it, clear of the stalls, benches and stacks
+    for (let seed = 1; seed <= 40; seed++) {
+      const v = world({ seed });
+      const p = v.pos(await v.join());
+      const r = Math.hypot(p.x, p.z);
+      assert.ok(r >= SPAWN_INNER - 0.01 && r <= SPAWN_RADIUS + 0.01, `r ${r}`);
+      assert.ok(Math.abs(Math.atan2(p.x, p.z)) <= SPAWN_ARC + 0.01, `south: ${p.x}, ${p.z}`);
+      assert.ok(Math.abs(wrapAngle(p.ry - Math.atan2(-p.x, -p.z))) < 0.01, "facing the centre");
+      for (const [bx, bz] of [[-11, 12], [11, 13], [-13.5, 4.5], [-12.8, 5.8], [13.5, 6.5]]) assert.ok(Math.hypot(p.x - bx, p.z - bz) > 2.5, "clear of benches and stacks");
+    }
     assert.deepEqual(w.joined.map((j) => j.id), [a, b], "the host is told who joined");
   });
 
