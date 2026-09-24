@@ -11,6 +11,7 @@
 import * as THREE from "three";
 import { outlineRes, shared, SPECS } from "../stage/engrave";
 import { CAPS, fitText, flat, hexRgb, INK, labelSprite, mat, OUTLINE_FINE, PAPER, part, SERIF, signTexture } from "./engraved";
+import { makeFigure, type Figure, type Gesture } from "./figure";
 import { STRAPS, WORLD_RADIUS } from "./protocol";
 
 export type SpotKind = "desk" | "stall" | "guards" | "notes";
@@ -43,9 +44,8 @@ export interface WorldCallbacks {
 }
 
 interface Walker {
+  fig: Figure;
   root: THREE.Group;
-  legL: THREE.Object3D;
-  legR: THREE.Object3D;
   tag: THREE.Sprite | null;
   bubble: THREE.Sprite | null;
   bubbleUntil: number;
@@ -53,7 +53,8 @@ interface Walker {
   target: THREE.Vector3;
   targetRy: number;
   moving: boolean;
-  phase: number;
+  /** how fast a remote walker is actually going, as a share of a walk (eased, for the stride) */
+  pace: number;
 }
 
 const SPAWN = new THREE.Vector3(0, 0, 20);
@@ -79,40 +80,10 @@ interface Box {
 
 // ---------------------------------------------------------------- the walker
 
-/** a visitor in a top hat and a long coat, the hat's strap in their colour */
-function makeWalker(strapHex: string): Walker {
-  const root = new THREE.Group();
-  const body = new THREE.Group();
-  root.add(body);
-  const leg = (x: number) => {
-    const pivot = new THREE.Group();
-    pivot.position.set(x, 0.92, 0);
-    const l = part(new THREE.CylinderGeometry(0.11, 0.1, 0.9, 10), mat("Ink"), true);
-    l.position.y = -0.45;
-    const shoe = part(new THREE.BoxGeometry(0.2, 0.1, 0.34), mat("Shoe"), true);
-    shoe.position.set(0, -0.88, 0.06);
-    pivot.add(l, shoe);
-    body.add(pivot);
-    return pivot;
-  };
-  const legL = leg(-0.14);
-  const legR = leg(0.14);
-  const coat = part(new THREE.CylinderGeometry(0.3, 0.44, 1.05, 14), mat("Ink"), true);
-  coat.position.y = 1.35;
-  const collar = part(new THREE.CylinderGeometry(0.16, 0.26, 0.14, 12), mat("Paper"), true);
-  collar.position.y = 1.9;
-  const head = part(new THREE.SphereGeometry(0.26, 18, 14), mat("Ivory"), true);
-  head.position.y = 2.12;
-  const brim = part(new THREE.CylinderGeometry(0.42, 0.42, 0.05, 20), mat("Hat"), true);
-  brim.position.y = 2.33;
-  const crown = part(new THREE.CylinderGeometry(0.27, 0.29, 0.52, 18), mat("Hat"), true);
-  crown.position.y = 2.61;
-  const strap = new THREE.Mesh(new THREE.CylinderGeometry(0.296, 0.296, 0.12, 18), flat(strapHex));
-  strap.position.y = 2.43;
-  const tie = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.08, 0.05), flat(strapHex));
-  tie.position.set(0, 1.93, 0.25);
-  body.add(coat, collar, head, brim, crown, strap, tie);
-  return { root, legL, legR, tag: null, bubble: null, bubbleUntil: 0, target: new THREE.Vector3(), targetRy: 0, moving: false, phase: 0 };
+/** a visitor (./figure.ts): a jointed figure in a frock coat and a hat, the strap and bow tie in their colour */
+function makeWalker(strapHex: string, seed?: number, kind: "visitor" | "mrbands" = "visitor"): Walker {
+  const fig = makeFigure({ strap: strapHex, kind, seed });
+  return { fig, root: fig.root, tag: null, bubble: null, bubbleUntil: 0, target: new THREE.Vector3(), targetRy: 0, moving: false, pace: 0 };
 }
 
 // ---------------------------------------------------------------- the world
@@ -546,11 +517,11 @@ export class ExchangeWorld {
     // routes checked against the map: clear of the fountain (r 4.5), the board (x ±8.5, z -21..-19), the stalls, the
     // Guard House (24, 2) and the desk (-24, 2), the Notice Board (-18, 20), the benches, the lamps (r 31) and the stacks
     const routes: { path: THREE.Vector3[]; speed: number; strap: number }[] = [
-      { path: pts([[0, 28], [-10, 26], [-16, 14], [-17, 4], [-8, -4], [8, -4], [18, 6], [16, 18], [6, 27]]), speed: 1.3, strap: 1 },
-      { path: pts([[-6, -24], [-12, -16], [-20, -8], [-30, -5], [-28, 10], [-20, -2]]), speed: 1.2, strap: 2 },
-      { path: pts([[11, -26], [20, -18], [30, -8], [32, 8], [20, 22], [6, -4]]), speed: 1.35, strap: 3 },
-      { path: pts([[-5, 14], [0, 19], [5, 14], [0, 12.5]]), speed: 0.9, strap: 4 },
-      { path: pts([[0, 28], [-10, 26], [-16, 14], [-17, 4], [-8, -4], [8, -4], [18, 6], [16, 18], [6, 27]]), speed: 1.1, strap: 5 },
+      { path: pts([[0, 28], [-10, 26], [-16, 14], [-17, 4], [-8, -4], [8, -4], [18, 6], [16, 18], [6, 27]]), speed: 1.6, strap: 1 },
+      { path: pts([[-6, -24], [-12, -16], [-20, -8], [-30, -5], [-28, 10], [-20, -2]]), speed: 1.45, strap: 2 },
+      { path: pts([[11, -26], [20, -18], [30, -8], [32, 8], [20, 22], [6, -4]]), speed: 1.7, strap: 3 },
+      { path: pts([[-5, 14], [0, 19], [5, 14], [0, 12.5]]), speed: 1.1, strap: 4 },
+      { path: pts([[0, 28], [-10, 26], [-16, 14], [-17, 4], [-8, -4], [8, -4], [18, 6], [16, 18], [6, 27]]), speed: 1.35, strap: 5 },
     ];
     routes.forEach((r, i) => {
       const lengths: number[] = [];
@@ -560,14 +531,14 @@ export class ExchangeWorld {
         lengths.push(l);
         total += l;
       }
-      const w = makeWalker(STRAPS[r.strap % STRAPS.length]);
+      const w = makeWalker(STRAPS[r.strap % STRAPS.length], 11 + i * 7);
       this.scene.add(w.root);
       this.strollers.push({ w, path: r.path, lengths, total, speed: r.speed, offset: i * 37.3 });
     });
   }
 
   /** where each passer-by is now: along its loop by the clock */
-  private placeStrollers(dt: number) {
+  private placeStrollers(dt: number, secs: number) {
     const t = Date.now() / 1000;
     for (const s of this.strollers) {
       let d = (t * s.speed + s.offset) % s.total;
@@ -582,13 +553,13 @@ export class ExchangeWorld {
       const root = s.w.root;
       root.position.set(a.x + (b.x - a.x) * f, 0, a.z + (b.z - a.z) * f);
       root.rotation.y = lerpAngle(root.rotation.y, Math.atan2(b.x - a.x, b.z - a.z), Math.min(1, dt * 5));
-      animateWalker(s.w, true, dt);
+      s.w.fig.animate(dt, s.speed / WALK, secs);
     }
   }
 
   /**
-   * Mr Bands at his desk, made from the visitors' own parts so he stands in the same world: a head taller, his top hat
-   * with the orange strap, dark glasses, a cigar and a cane, behind a writing desk with his ledger and a strapped stack.
+   * Mr Bands at his desk: the visitors' figure drawn as him (./figure.ts), a head taller, his top hat with the orange
+   * strap, dark glasses, a cigar and a cane, behind a writing desk with his ledger and a strapped stack.
    * (The real desk model, web/3d/desk.glb, is a close-up diorama 31 units across: it does not sit in a plaza, and it
    * would cost every visitor a megabyte.)
    */
@@ -627,24 +598,8 @@ export class ExchangeWorld {
     shade.position.set(-1.5, 2.05, -0.5);
     g.add(stack, band, lamp, shade);
     // the man himself, behind the desk, facing the plaza
-    const him = makeWalker(STRAPS[0]);
-    him.root.scale.setScalar(1.22);
+    const him = makeWalker(STRAPS[0], 1, "mrbands");
     him.root.position.set(0, 0, -1.25);
-    const body = him.root.children[0];
-    const glasses = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.09, 0.05), flat(INK));
-    glasses.position.set(0, 2.17, 0.24);
-    const cigar = part(new THREE.CylinderGeometry(0.028, 0.028, 0.3, 8), mat("Paper"), true);
-    cigar.rotation.set(Math.PI / 2, 0, 0.35);
-    cigar.position.set(0.12, 2.02, 0.36);
-    const ember = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.04, 8), flat("#ff7a1a"));
-    ember.rotation.copy(cigar.rotation);
-    ember.position.set(0.17, 2.02, 0.5);
-    const cane = part(new THREE.CylinderGeometry(0.035, 0.035, 1.6, 8), mat("Ink"), true);
-    cane.position.set(0.55, 0.8, 0.25);
-    cane.rotation.z = -0.12;
-    const knob = part(new THREE.SphereGeometry(0.07, 10, 8), mat("Brass"), true);
-    knob.position.set(0.6, 1.62, 0.25);
-    body.add(glasses, cigar, ember, cane, knob);
     g.add(him.root);
     this.npc = him;
     this.scene.add(g);
@@ -697,7 +652,7 @@ export class ExchangeWorld {
   setMe(name: string, strap: number) {
     this.scene.remove(this.me.root);
     const pos = this.me.root.position.clone();
-    this.me = makeWalker(STRAPS[strap] ?? STRAPS[0]);
+    this.me = makeWalker(STRAPS[strap] ?? STRAPS[0], 3);
     this.me.root.position.copy(pos);
     this.me.root.rotation.y = this.meRy;
     // no tag over your own head: your name is in the corner, and the tag would sit in your line of sight
@@ -707,13 +662,13 @@ export class ExchangeWorld {
 
   addRemote(id: string, name: string, strap: number, x: number, z: number, ry: number) {
     if (this.remotes.has(id)) return;
-    const w = makeWalker(STRAPS[strap] ?? STRAPS[0]);
+    const w = makeWalker(STRAPS[strap] ?? STRAPS[0], seedOf(id));
     w.root.position.set(x, 0, z);
     w.root.rotation.y = ry;
     w.target.set(x, 0, z);
     w.targetRy = ry;
     w.tag = labelSprite(name);
-    w.tag.position.y = 3.15;
+    w.tag.position.y = w.fig.height + 0.3;
     w.root.add(w.tag);
     this.scene.add(w.root);
     this.remotes.set(id, w);
@@ -740,9 +695,15 @@ export class ExchangeWorld {
     if (!w) return;
     if (w.bubble) w.root.remove(w.bubble);
     w.bubble = labelSprite(text, { bubble: true });
-    w.bubble.position.y = 3.95;
+    w.bubble.position.y = w.fig.height + 1.1;
     w.root.add(w.bubble);
     w.bubbleUntil = performance.now() + 4200;
+  }
+
+  /** someone ("me" for you) waves, tips their hat, cheers or shrugs */
+  gesture(id: string, g: Gesture) {
+    const w = id === "me" ? this.me : this.remotes.get(id);
+    w?.fig.gesture(g);
   }
 
   /** the server's word on where you are (your spawn, or a refused step): snap there; `face` also turns the camera behind you */
@@ -979,7 +940,8 @@ export class ExchangeWorld {
     } else this.gait = 0;
     const mm = this.marker.material as THREE.MeshBasicMaterial;
     if (!this.goal && mm.opacity > 0) mm.opacity = Math.max(0, mm.opacity - dt * 2.5);
-    animateWalker(this.me, moving, dt);
+    const secs = now / 1000;
+    this.me.fig.animate(dt, moving ? Math.min(1.7, this.gait) : 0, secs);
     if (moving || this.moved) this.cb.onMove(me.position.x, me.position.z, me.rotation.y, moving);
     this.moved = moving;
 
@@ -987,9 +949,12 @@ export class ExchangeWorld {
     for (const w of this.remotes.values()) {
       const d = w.target.clone().sub(w.root.position);
       const far = d.length() > 12;
-      w.root.position.add(far ? d : d.multiplyScalar(Math.min(1, dt * 10)));
+      const step = far ? d : d.multiplyScalar(Math.min(1, dt * 10));
+      w.root.position.add(step);
       w.root.rotation.y = lerpAngle(w.root.rotation.y, w.targetRy, Math.min(1, dt * 10));
-      animateWalker(w, w.moving, dt);
+      const pace = far ? 0 : step.length() / Math.max(dt, 1e-3) / WALK;
+      w.pace += (pace - w.pace) * Math.min(1, dt * 6);
+      w.fig.animate(dt, w.moving ? Math.min(1.7, Math.max(0.35, w.pace)) : 0, secs);
       if (w.bubble && now > w.bubbleUntil) {
         w.root.remove(w.bubble);
         w.bubble = null;
@@ -1000,13 +965,10 @@ export class ExchangeWorld {
       this.me.bubble = null;
     }
 
-    this.placeStrollers(dt);
+    this.placeStrollers(dt, secs);
 
-    // Mr Bands, idle: a slow sway, and a turn toward you when you come close
-    if (this.npc) {
-      const body = this.npc.root.children[0];
-      body.rotation.z = Math.sin(now / 1400) * 0.025;
-    }
+    // Mr Bands, standing at his desk (his idle: breath, weight, a look round)
+    this.npc?.fig.animate(dt, 0, secs);
 
     // what you stand near
     let best: Spot | null = null;
@@ -1115,13 +1077,11 @@ export class ExchangeWorld {
   }
 }
 
-function animateWalker(w: Walker, moving: boolean, dt: number) {
-  w.phase += dt * (moving ? 9 : 0);
-  const swing = moving ? Math.sin(w.phase) * 0.55 : 0;
-  w.legL.rotation.x += (swing - w.legL.rotation.x) * Math.min(1, dt * 14);
-  w.legR.rotation.x += (-swing - w.legR.rotation.x) * Math.min(1, dt * 14);
-  const body = w.root.children[0];
-  body.position.y = moving ? Math.abs(Math.sin(w.phase)) * 0.06 : body.position.y * 0.8;
+/** a remote visitor's own look, from their id (so they look the same to everyone) */
+function seedOf(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
+  return h >>> 0;
 }
 
 function lerpAngle(a: number, b: number, t: number): number {
