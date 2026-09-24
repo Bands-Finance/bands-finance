@@ -93,6 +93,8 @@ kbd { display: inline-block; min-width: 1.6em; padding: 1px 6px; border: 1px sol
 .lp__good { color: var(--good) !important; }
 .lp__bad { color: var(--bad) !important; }
 .lp__verdict { margin: 0; font-family: var(--font-serif); font-size: 18px; line-height: 1.5; color: var(--ink); }
+.lp__src { margin: 6px 0 0; font-family: var(--font-serif); font-style: italic; font-size: 13.5px; color: var(--ink-3); }
+.lp__reveal { margin: 8px 0 0; font-family: var(--font-serif); font-size: 15px; line-height: 1.5; color: var(--ink-2, var(--ink)); }
 .lp__fine { margin: 16px 0 0; font-family: var(--font-serif); font-style: italic; font-size: 13.5px; color: var(--ink-3); }
 
 @media (max-width: 640px) {

@@ -12,11 +12,14 @@
  *     server deals a seed it never sends, runs simulate() once and streams the result one tick at a time as its
  *     clock reaches each tick (tick()). A close settles at the last tick already sent; TICKS settles by itself. The
  *     score is simulate() re-run with that closeAt, so the browser never holds the seed or a tick ahead of time.
+ *   - the hours are real where they can be: the room reads the pool's hourly history (historySource) and deals a
+ *     random 48-hour stretch of it (a Market), named to the player only once the round is scored. A pool too new for
+ *     that, or a history that can't be read, plays the seeded simulation as before.
  */
 import { isEmote, isPhrase, MAX_SPEED, MOVE_HZ, ROOM_CAP, ROUND_TICK_MS, STRAPS, TICK_HZ, WORLD_RADIUS } from "../../web/src/game/protocol";
 import type { PlayerState, S2C, ScoreRow } from "../../web/src/game/protocol";
-import { poolParamsFromHot, simulate, TICKS, validateChoice } from "../../web/src/game/lpGame";
-import type { PoolParams, SimResult } from "../../web/src/game/lpGame";
+import { MARKET_HOURS, marketWindow, poolParamsFromHot, seriesOf, simulate, TICKS, validateChoice } from "../../web/src/game/lpGame";
+import type { Market, PoolParams, SimResult } from "../../web/src/game/lpGame";
 
 // ---------------------------------------------------------------- limits
 
@@ -44,6 +47,12 @@ export const BOARD_POOLS = 12;
 export const BOARD_TTL_MS = 2 * 60_000;
 /** after a failed board fetch, wait this long before trying again */
 export const BOARD_RETRY_MS = 15_000;
+/** a pool's hourly history is read again after this long (a new hour has closed) */
+export const HISTORY_TTL_MS = 20 * 60_000;
+/** after a failed history read, that pool plays simulated for this long before it is tried again */
+export const HISTORY_RETRY_MS = 2 * 60_000;
+/** histories kept at once (the board has BOARD_POOLS pools; the board changes) */
+export const HISTORY_KEEP = 32;
 /** a socket that has not said hello by now is closed */
 export const HELLO_TIMEOUT_MS = 10_000;
 /** open sockets (joined or not) beyond this are turned away at the door */
@@ -99,6 +108,8 @@ export interface RoomDeps {
   random(): number;
   /** the pools a band may be laid on, in the board's order (see boardSource) */
   board(): Promise<PoolParams[]>;
+  /** the pool's hourly history (a History, or bare candles), or null; see historySource. Without it every round is simulated */
+  history?(pool: PoolParams): Promise<unknown>;
   /** the top rows changed; persist them */
   saveBoard?(rows: ScoreRow[]): void;
   /** close a socket (full room, no hello) */
@@ -119,6 +130,8 @@ interface Round {
   seed: number;
   widthBins: number;
   offsetBins: number;
+  /** the real stretch of history the round replays, or null for a simulated one */
+  market: Market | null;
   /** simulate() for the whole round (no closeAt): the ticks are read from it */
   sim: SimResult;
   /** when it was laid; tick i is due at start + i * ROUND_TICK_MS */
@@ -132,6 +145,8 @@ export interface RoundView {
   roundId: string;
   pool: PoolParams;
   seed: number;
+  /** when its stretch of history began (unix seconds), or null for a simulated round */
+  from: number | null;
   widthBins: number;
   offsetBins: number;
   start: number;
@@ -159,7 +174,7 @@ interface Player {
   errorAt: number;
   /** the open round, if any (one at a time) */
   round: Round | null;
-  /** a lay is waiting on the board */
+  /** a lay is waiting on the board or a history */
   laying: boolean;
 }
 
@@ -276,6 +291,47 @@ export function boardSource(opts: {
         });
     }
     return inflight;
+  };
+}
+
+/**
+ * The pools' hourly histories, each read through load() and kept ttlMs, one read in flight per pool. A failed or
+ * empty read answers null (the round plays simulated) and that pool is not read again for retryMs. At most keep
+ * pools are held; the oldest read goes first.
+ */
+export function historySource(opts: {
+  load: (pool: PoolParams) => Promise<unknown>;
+  now: () => number;
+  ttlMs?: number;
+  retryMs?: number;
+  keep?: number;
+}): (pool: PoolParams) => Promise<unknown> {
+  const ttl = opts.ttlMs ?? HISTORY_TTL_MS;
+  const retry = opts.retryMs ?? HISTORY_RETRY_MS;
+  const keep = opts.keep ?? HISTORY_KEEP;
+  type Held = { at: number; data: unknown; inflight: Promise<unknown> | null };
+  const held = new Map<string, Held>();
+  return (pool) => {
+    const now = opts.now();
+    const key = pool.address;
+    const h = held.get(key);
+    if (h?.inflight) return h.inflight;
+    if (h && now - h.at < (h.data === null ? retry : ttl)) return Promise.resolve(h.data);
+    const entry: Held = { at: h?.at ?? now, data: h ? h.data : null, inflight: null };
+    entry.inflight = opts
+      .load(pool)
+      .then((d) => (seriesOf(d).length ? d : null))
+      .catch(() => null)
+      .then((d) => {
+        entry.at = opts.now();
+        entry.data = d;
+        entry.inflight = null;
+        return d;
+      });
+    held.delete(key);
+    held.set(key, entry);
+    while (held.size > keep) held.delete(held.keys().next().value as string);
+    return entry.inflight;
   };
 }
 
@@ -414,7 +470,7 @@ export class RoomCore {
     const r = this.conns.get(id)?.player?.round;
     if (!r) return null;
     const { roundId, pool, seed, widthBins, offsetBins, start, sent } = r;
-    return { roundId, pool: { ...pool }, seed, widthBins, offsetBins, start, sent };
+    return { roundId, pool: { ...pool }, seed, from: r.market?.from ?? null, widthBins, offsetBins, start, sent };
   }
 
   /** a socket closed; an open round is forfeited without a word */
@@ -544,15 +600,28 @@ export class RoomCore {
       return;
     }
     const pool = { ...found };
+    let market: Market | null = null;
+    if (this.deps.history) {
+      p.laying = true;
+      try {
+        market = this.marketFrom(pool, await this.deps.history(pool));
+      } catch {
+        market = null;
+      } finally {
+        p.laying = false;
+      }
+      if (this.conns.get(p.id)?.player !== p || p.round) return; // left while the history loaded
+    }
+    const start = this.deps.now();
     const seed = this.seed();
     let sim: SimResult;
     try {
-      sim = simulate(pool, seed, { widthBins, offsetBins });
+      sim = simulate(pool, seed, { widthBins, offsetBins }, market);
     } catch {
-      this.error(p, "bad choice", at);
+      this.error(p, "bad choice", start);
       return;
     }
-    const round: Round = { roundId: this.roundId(), pool, seed, widthBins, offsetBins, sim, start: at, sent: 0 };
+    const round: Round = { roundId: this.roundId(), pool, seed, widthBins, offsetBins, market, sim, start, sent: 0 };
     p.round = round;
     this.deps.send(p.id, {
       t: "laid",
@@ -561,7 +630,16 @@ export class RoomCore {
       lower: sim.lower,
       upper: sim.upper,
       tickMs: ROUND_TICK_MS,
+      real: market !== null,
     });
+  }
+
+  /** a random stretch of the pool's history long enough for a round, or null (too short, unreadable, unpriceable) */
+  private marketFrom(pool: PoolParams, history: unknown): Market | null {
+    const series = seriesOf(history);
+    if (series.length < MARKET_HOURS) return null;
+    const start = Math.min(series.length - MARKET_HOURS, Math.floor(this.deps.random() * (series.length - MARKET_HOURS + 1)));
+    return marketWindow(series, start, pool);
   }
 
   /** settle the open round at the last tick already sent (tick 1, sent now, if none had gone out) */
@@ -612,14 +690,14 @@ export class RoomCore {
     p.round = null;
     let pct: number;
     try {
-      pct = simulate(r.pool, r.seed, { widthBins: r.widthBins, offsetBins: r.offsetBins, closeAt }).scorePct;
+      pct = simulate(r.pool, r.seed, { widthBins: r.widthBins, offsetBins: r.offsetBins, closeAt }, r.market).scorePct;
     } catch {
       return;
     }
     if (!isNum(pct)) return;
     pct = r2(pct);
     const { rank, changed } = this.record({ name: p.name, pool: r.pool.label, pct, at: now });
-    this.deps.send(p.id, { t: "scored", roundId: r.roundId, pct, rank });
+    this.deps.send(p.id, r.market ? { t: "scored", roundId: r.roundId, pct, rank, from: r.market.from } : { t: "scored", roundId: r.roundId, pct, rank });
     if (changed) {
       this.deps.broadcast({ t: "board", rows: this.leaderboard() });
       this.deps.saveBoard?.(this.leaderboard());

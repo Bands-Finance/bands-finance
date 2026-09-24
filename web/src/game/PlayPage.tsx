@@ -186,10 +186,10 @@ export default function PlayPage() {
         const resolve = routes.current.laid.get(m.pool.label) ?? routes.current.laid.get(m.pool.address);
         routes.current.laid.delete(m.pool.label);
         routes.current.laid.delete(m.pool.address);
-        resolve?.({ roundId: m.roundId, lower: m.lower, upper: m.upper, tickMs: m.tickMs });
+        resolve?.({ roundId: m.roundId, lower: m.lower, upper: m.upper, tickMs: m.tickMs, real: m.real === true });
       };
       n.onTick = (m) => routes.current.frames.get(m.roundId)?.({ i: m.i, p: m.p, feesPct: m.feesPct, valuePct: m.valuePct, holdPct: m.holdPct, inRange: m.inRange });
-      n.onScored = (roundId, pct, rank) => routes.current.scores.get(roundId)?.({ pct, rank });
+      n.onScored = (roundId, pct, rank, from) => routes.current.scores.get(roundId)?.({ pct, rank, from });
       n.onCorrect = (x, z, ry) => world.current?.setMyPosition(x, z, ry);
       n.onBoard = (rows) => setLeaders(rows);
       n.connect(strapIx);

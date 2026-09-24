@@ -1,11 +1,14 @@
 /**
  * Where a stall round's hours come from. The panel (LpRound.tsx) draws whatever frames arrive and knows nothing else.
- *   offline: the simulation runs here, on a local seed, revealed one hour per ROUND_TICK_MS; the score is local.
+ * Both deal a random 48-hour stretch of the pool's real hourly history where it has one (a Market), and a simulated
+ * path where it doesn't; which stretch is told only with the score.
+ *   offline: the round runs here, on a local seed and history read from here, revealed one hour per ROUND_TICK_MS;
+ *            the score is local.
  *   online:  the room server deals the seed, keeps the path to itself and streams each hour as its clock reaches it;
  *            a close is a message, scored by the server at the last hour it sent. Nobody sees the future, so the
  *            leaderboard cannot be gamed by replaying seeds.
  */
-import { simulate, TICKS, type PoolParams } from "./lpGame";
+import { candlesOf, historyUrls, MARKET_HOURS, marketWindow, seriesOf, simulate, TICKS, type History, type Market, type PoolParams } from "./lpGame";
 import { ROUND_TICK_MS } from "./protocol";
 import type { ExchangeNet } from "./net";
 
@@ -14,6 +17,8 @@ export interface Laid {
   lower: number;
   upper: number;
   tickMs: number;
+  /** the hours are a real stretch of the pool's history */
+  real: boolean;
 }
 
 /** one hour of a round, as it happens */
@@ -29,6 +34,8 @@ export interface Frame {
 export interface Score {
   pct: number;
   rank: number | null;
+  /** a real round: when its stretch of history began (unix seconds) */
+  from?: number;
 }
 
 export interface RoundSource {
@@ -37,6 +44,38 @@ export interface RoundSource {
   close(roundId: string): void;
   /** stop listening (the panel closed) */
   stop(): void;
+}
+
+/** pools' hourly histories read from here, kept 20 minutes (a failed read, 2), so a replay doesn't read them again */
+const histories = new Map<string, { at: number; history: History | null }>();
+
+async function historyOf(pool: PoolParams): Promise<History | null> {
+  const urls = historyUrls(pool);
+  if (!urls) return null;
+  const h = histories.get(pool.address);
+  if (h && Date.now() - h.at < (h.history ? 20 : 2) * 60_000) return h.history;
+  const read = async (url: string) => {
+    const res = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(5_000) });
+    return res.ok ? candlesOf(await res.json()) : null;
+  };
+  let history: History | null = null;
+  try {
+    const [price, volume] = await Promise.all([read(urls.price), read(urls.volume)]);
+    if (price && volume) history = { price, volume };
+  } catch {
+    history = null;
+  }
+  histories.set(pool.address, { at: Date.now(), history });
+  return history;
+}
+
+/** a random stretch of the pool's history long enough for a round, or null */
+async function marketOf(pool: PoolParams): Promise<Market | null> {
+  const series = seriesOf(await historyOf(pool));
+  if (series.length < MARKET_HOURS) return null;
+  const a = new Uint32Array(1);
+  crypto.getRandomValues(a);
+  return marketWindow(series, a[0] % (series.length - MARKET_HOURS + 1), pool);
 }
 
 /** a round played here: the whole path is computed, and revealed an hour at a time */
@@ -48,14 +87,15 @@ export function offlineSource(): RoundSource {
       const a = new Uint32Array(1);
       crypto.getRandomValues(a);
       const seed = a[0];
-      const sim = simulate(pool, seed, { widthBins, offsetBins });
+      const market = await marketOf(pool);
+      const sim = simulate(pool, seed, { widthBins, offsetBins }, market);
       const roundId = `local-${seed}`;
       let i = 0;
       const finish = () => {
         window.clearInterval(timer);
         closeFn = null;
         const at = Math.max(1, i);
-        onScore({ pct: simulate(pool, seed, { widthBins, offsetBins, closeAt: at }).scorePct, rank: null });
+        onScore({ pct: simulate(pool, seed, { widthBins, offsetBins, closeAt: at }, market).scorePct, rank: null, from: market?.from });
       };
       closeFn = finish;
       window.clearInterval(timer);
@@ -64,7 +104,7 @@ export function offlineSource(): RoundSource {
         onFrame({ i, p: sim.path[i], feesPct: sim.feesPct[i], valuePct: sim.valuePct[i], holdPct: sim.holdPct[i], inRange: sim.inRange[i] });
         if (i >= TICKS) finish();
       }, ROUND_TICK_MS);
-      return { roundId, lower: sim.lower, upper: sim.upper, tickMs: ROUND_TICK_MS };
+      return { roundId, lower: sim.lower, upper: sim.upper, tickMs: ROUND_TICK_MS, real: market !== null };
     },
     close() {
       closeFn?.();
@@ -85,7 +125,7 @@ export function onlineSource(net: ExchangeNet, route: RoundRoutes): RoundSource 
         const timer = window.setTimeout(() => {
           route.laid.delete(pool.label);
           reject(new Error("The Exchange didn't answer. Try again in a moment."));
-        }, 6000);
+        }, 10_000);
         route.laid.set(pool.label, (laid) => {
           window.clearTimeout(timer);
           current = laid.roundId;
