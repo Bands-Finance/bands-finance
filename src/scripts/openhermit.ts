@@ -290,6 +290,33 @@ export function agentInstructions(prompt: string, mcp: McpTarget): AgentInstruct
   return { identity: identity.join("\n\n"), soul: soul.join("\n\n"), rules: rules.join("\n\n") };
 }
 
+/** Where each desk's hard limits are set: the paper desk's launchd plist, the live desk's env file. */
+export const DESK_LIMIT_SOURCES: Record<McpTarget, string> = { paper: "ops/com.bands.mrbands.paper.plist", live: "ops/live.env" };
+const LIMIT_KEYS = { MAX_POSITION_SOL: "maxPositionSol", MAX_TOTAL_EXPOSURE_SOL: "maxTotalExposureSol", MAX_TX_PER_DAY: "maxTxPerDay", MIN_SECONDS_BETWEEN_ACTIONS: "minSecondsBetweenActions" } as const;
+
+/** The limit settings a desk's own config sets ("KEY=value" lines or plist <key>/<string> pairs). PURE. */
+export function deskLimitsIn(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of Object.keys(LIMIT_KEYS)) {
+    const m = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>|^${key}=(.*)$`, "m").exec(text);
+    if (m) out[key] = (m[1] ?? m[2]).trim();
+  }
+  return out;
+}
+
+/**
+ * Why this process may not write the desk's rules, or null. On 22 Sep provisioning ran from .env (24 actions a day,
+ * 22.5 SOL a band) for the paper desk that runs 240 and 44: his rules then quoted caps the desk never had, and he
+ * cited a wrong "over the 24 cap" six times. The limits written must be the ones the desk itself runs. PURE.
+ */
+export function deskLimitMismatch(limits: Pick<typeof riskLimits, "maxPositionSol" | "maxTotalExposureSol" | "maxTxPerDay" | "minSecondsBetweenActions">, deskConfig: string, source: string): string | null {
+  const set = deskLimitsIn(deskConfig);
+  const off = Object.entries(set)
+    .filter(([key, v]) => Number(v) !== Number(limits[LIMIT_KEYS[key as keyof typeof LIMIT_KEYS]]))
+    .map(([key, v]) => `${key} ${limits[LIMIT_KEYS[key as keyof typeof LIMIT_KEYS]]} here, ${v} in ${source}`);
+  return off.length ? `this process's limits are not the desk's: ${off.join("; ")}. Run provision in that desk's environment.` : null;
+}
+
 /** The rows for this desk's limits. */
 export function instructionsForDesk(mcp: McpTarget): AgentInstructions {
   return agentInstructions(buildSystemPrompt(riskLimits, GENERIC_POOL), mcp);
@@ -645,6 +672,9 @@ async function runnerState(gw: Gateway, agentId: string): Promise<"running" | "s
 async function provision(settings: OpenHermitSettings, opts: ProvisionOptions): Promise<void> {
   // checked before the gateway is touched, so a refusal leaves every row as it was
   const houseToken = houseTokenFrom(process.env);
+  const source = DESK_LIMIT_SOURCES[opts.mcp];
+  const mismatch = deskLimitMismatch(riskLimits, fs.readFileSync(path.join(__dirname, "..", "..", source), "utf8"), source);
+  if (mismatch) throw new Error(`provision refused: ${mismatch}`);
   const gw = new Gateway(settings.gatewayUrl, settings.token);
   console.log(`provisioning ${settings.agentId} on ${settings.gatewayUrl}`);
 

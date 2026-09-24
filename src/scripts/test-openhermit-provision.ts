@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { buildSystemPrompt } from "../agent/persona";
 import type { JournalEntry } from "../journal";
-import { agentInstructions, DENIED_TOOLS, ensureModel, ensureToolPolicy, GATEWAY_INTROSPECTION_DEFAULTS, introspectionFor, isMemoryTool, MEMORY_TOOLS, toolPolicyRows, houseTokenFrom, instructionsForDesk, MCP_SERVERS, mcpServerRow, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, pickNewest, providerOf, REPLY_RULES, rowAudience, runnerAction, settingsFromEnv } from "./openhermit";
+import { deskLimitMismatch, deskLimitsIn, agentInstructions, DENIED_TOOLS, ensureModel, ensureToolPolicy, GATEWAY_INTROSPECTION_DEFAULTS, introspectionFor, isMemoryTool, MEMORY_TOOLS, toolPolicyRows, houseTokenFrom, instructionsForDesk, MCP_SERVERS, mcpServerRow, modelFamily, OBSERVATION_RULE, observationFromEntry, parseArgs, pickNewest, providerOf, REPLY_RULES, rowAudience, runnerAction, settingsFromEnv } from "./openhermit";
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -52,6 +52,20 @@ test("the flags: --mcp paper|live, --mcp-url, --provider, --model, --agent, in e
 });
 
 console.log("the house token on the gateway");
+test("provision refuses to write limits the desk does not run (22 Sep: 24 actions written for a desk running 240)", () => {
+  const plist = "<key>MAX_POSITION_SOL</key><string>44</string>\n    <key>MAX_TOTAL_EXPOSURE_SOL</key><string>175</string>\n    <key>MAX_TX_PER_DAY</key><string>240</string>";
+  assert.deepEqual(deskLimitsIn(plist), { MAX_POSITION_SOL: "44", MAX_TOTAL_EXPOSURE_SOL: "175", MAX_TX_PER_DAY: "240" });
+  assert.deepEqual(deskLimitsIn("MAX_POSITION_SOL=10\nMAX_TX_PER_DAY=400\nMIN_SECONDS_BETWEEN_ACTIONS=180"), { MAX_POSITION_SOL: "10", MAX_TX_PER_DAY: "400", MIN_SECONDS_BETWEEN_ACTIONS: "180" });
+  const theDesk = { maxPositionSol: 44, maxTotalExposureSol: 175, maxTxPerDay: 240, minSecondsBetweenActions: 600 };
+  assert.equal(deskLimitMismatch(theDesk, plist, "paper.plist"), null);
+  const fromDotEnv = { maxPositionSol: 22.5, maxTotalExposureSol: 90, maxTxPerDay: 24, minSecondsBetweenActions: 600 };
+  const why = deskLimitMismatch(fromDotEnv, plist, "paper.plist")!;
+  assert.match(why, /MAX_TX_PER_DAY 24 here, 240 in paper\.plist/);
+  assert.match(why, /MAX_POSITION_SOL 22\.5 here, 44 in paper\.plist/);
+  const fs = require("node:fs") as typeof import("node:fs");
+  for (const f of ["ops/com.bands.mrbands.paper.plist", "ops/live.env"]) assert.ok(Object.keys(deskLimitsIn(fs.readFileSync(f, "utf8"))).length >= 3, `${f} sets its limits`);
+});
+
 test("provision refuses without a house token, and refuses the operator token as one", () => {
   assert.throws(() => houseTokenFrom({}), /PLATFORM_HOUSE_TOKEN is not set: generate one into \.env \(PLATFORM_HOUSE_TOKEN=\$\(openssl rand -hex 32\)\)/);
   assert.throws(() => houseTokenFrom({ PLATFORM_HOUSE_TOKEN: "   ", PLATFORM_OPERATOR_TOKEN: "op" }), /not set/);
