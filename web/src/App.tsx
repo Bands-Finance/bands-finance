@@ -24,15 +24,20 @@ import { MePage } from "./platform/MePage";
 import { ToolCatalog } from "./components/ToolCatalog";
 import { HotNow } from "./components/HotNow";
 import { PlatformHome } from "./components/PlatformHome";
+import { lazy, Suspense } from "react";
+
+/** the Exchange (three.js, the desk model) loads only when someone opens Play */
+const PlayPage = lazy(() => import("./game/PlayPage"));
 import { useLiveRun } from "./hooks/useLiveRun";
 
-export type Route = "home" | "pools" | "learn" | "agents" | "me";
+export type Route = "home" | "pools" | "learn" | "agents" | "me" | "play";
 
 function routeFromHash(h: string): Route {
   if (h.startsWith("#/pools")) return "pools";
   if (h.startsWith("#/learn")) return "learn";
   if (h.startsWith("#/agents") || h.startsWith("#/@")) return "agents";
   if (h.startsWith("#/me")) return "me";
+  if (h.startsWith("#/play")) return "play";
   return "home";
 }
 
@@ -42,6 +47,7 @@ const TITLES: Record<Route, string> = {
   learn: "How it works · bands.finance",
   agents: "Agents · bands.finance",
   me: "Your Mr Bands · bands.finance",
+  play: "The Bands Exchange · bands.finance",
 };
 
 function useRoute(): Route {
@@ -177,6 +183,12 @@ export default function App() {
       )}
 
       {route === "me" && <MePage screen={screen} limits={limits} />}
+
+      {route === "play" && (
+        <Suspense fallback={<main className="app__tabview" style={{ padding: 48, textAlign: "center" }}>Opening the Exchange…</main>}>
+          <PlayPage />
+        </Suspense>
+      )}
 
       <Footer />
     </div>

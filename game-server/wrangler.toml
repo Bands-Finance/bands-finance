@@ -1,0 +1,17 @@
+# bands-exchange: the Bands Exchange room (bands.finance Play). See README.md.
+name = "bands-exchange"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+
+[vars]
+BOARD_URL = "https://bands.finance/hot.json"
+ALLOWED_ORIGINS = "https://bands.finance,http://localhost:5173,http://localhost:4312"
+
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
+# SQLite-backed class: the only kind the Workers free plan runs
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
