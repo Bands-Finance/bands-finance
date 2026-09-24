@@ -266,7 +266,18 @@ async function main(): Promise<void> {
     const miss = mo.gatherMoments(base({ build: [row({ id: "m-a", kind: "miss", text: "My miss: I left a stop switch on for about 61 hours." })], posts: [post(NOW - 2 * DAY, "x", "miss")] }))[0];
     assert.equal(miss.type, "miss");
     const ageDays = (NOW - Date.parse("2026-09-23")) / DAY;
-    assert.ok(Math.abs(miss.score - (42 - 15 - 2 * ageDays)) < 1e-9, "an owned miss scores 42, less 2 a day of age, less 15 after a miss (no shape twice in a row)");
+    assert.ok(Math.abs(miss.score - (42 - 2 * ageDays)) < 1e-9, "an owned miss scores 42, less 2 a day of age; a miss 2 days ago no longer counts against it");
+    const missAfter = (ago: number) => mo.gatherMoments(base({ build: [row({ id: "m-a", kind: "miss", text: "My miss: I left a stop switch on for about 61 hours." })], posts: [post(NOW - ago, "x", "miss")], buildPostsPerDay: 3 }))[0];
+    assert.ok(Math.abs(missAfter(HOUR).score - (42 - 15 - 2 * ageDays)) < 1e-9, "less 15 right after a miss (no shape twice in a row)");
+    assert.ok(Math.abs(missAfter(3 * HOUR).score - (42 - 2 * ageDays)) < 1e-9, "the penalty ends 3 hours after his last post");
+  });
+  await test("a quiet desk never silences him for good: 3 hours after a build note, the next build note is back over the floor (24 Sep)", () => {
+    const at = Date.parse("2026-09-24T07:20:00Z");
+    const rows = [row({ id: "b-x", at: "2026-09-22", text: "Since 22 Sep a paper swap pays the pool's own price impact." })];
+    const opts = { ...OPTS, postsPerDay: 10, targetPerDay: 8, minGapMin: 60, windowPosts: 3, nightPosts: 4, dayStartUtc: 0 };
+    const after = (ago: number) => mo.pickMoment({ ...base({ now: at, build: rows, posts: [post(at - ago, "A build note.", "build", "build:z")], lastDailyDay: "2026-09-23" }), buildPostsPerDay: 3 }, opts);
+    assert.equal(after(2 * HOUR).pick, null, "2 hours after a build note: the same shape waits");
+    assert.equal(after(5.5 * HOUR).pick?.key, "build:b-x", "5.5 hours after: it goes");
   });
   await test("learner counts: at most one in his last 14 posts; the screener once a day from 16 UTC, never a verdict", () => {
     const learning = [{ category: "memecoin", n: 17, need: 20 }, { category: "stock", n: 6, need: 20 }];

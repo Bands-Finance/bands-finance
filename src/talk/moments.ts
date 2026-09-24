@@ -21,7 +21,9 @@
  *   plus 15 at 0.5 SOL either way and 20 as a follow-up; build 30 (an owned miss 42), less 2 a day of age;
  *   learner 18 (58 when a forecast reaches its count); screener 16.
  *   Desk moments lose 5 a hour of age (not the losses at or below -1 SOL); a moment of the same type as his last
- *   post loses 15 (no shape twice in a row).
+ *   post loses 15 while that post is under SAME_TYPE_WINDOW_MS old (no shape twice in a row). On 24 Sep the penalty
+ *   had no end: with the desk quiet his last post was a build note, every build note sat under the floor, and he said
+ *   nothing for 6 hours.
  * Freshness: a desk event within 30 minutes is written as news; later it is a past-tense follow-up with no clock
  * time in its facts; a desk event older than 3 hours is dropped (a big loss is kept its UTC day).
  * Coverage: a close is told as a story only when the journal holds decision rows across the band's life (no gap
@@ -45,6 +47,8 @@ const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
 export const MIN_SCORE = 20;
+/** the same shape as his last post is penalised only while that post is this fresh */
+export const SAME_TYPE_WINDOW_MS = 3 * 60 * 60e3;
 /** a desk event this fresh is news; older, a past-tense follow-up */
 export const FRESH_MS = 30 * MIN;
 /** a desk event older than this is dropped (a close at or below BIG_LOSS_SOL is kept its UTC day) */
@@ -610,7 +614,8 @@ export function gatherMoments(i: MomentInputs, notes: string[] = []): Moment[] {
   if (daily) all.push(daily);
   all.push(...closeMoments(i, notes), ...refusalMoments(i), ...buildMoments(i, shortToday), ...promiseMoments(i));
   for (const m of [haltMoment(i), learnerMoment(i), screenerMoment(i), arcMoment(i)]) if (m) all.push(m);
-  const lastType = i.posts.length ? i.posts[i.posts.length - 1].type : null;
+  const last = i.posts.length ? i.posts[i.posts.length - 1] : null;
+  const lastType = last && i.now - last.at < SAME_TYPE_WINDOW_MS ? last.type : null;
   for (const m of all) if (m.type !== "daily" && m.type === lastType) m.score -= 15;
   return all.sort((a, b) => b.score - a.score || a.at - b.at);
 }
