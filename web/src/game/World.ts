@@ -8,9 +8,14 @@
  * THE TOWN (24 Sep): the ground you can walk is ./town.ts's (the plaza, the whole boulevard ring, the four streets out
  * to their domed ends), which the server shares; the rope is cut at the four street mouths and is a line you cannot
  * cross elsewhere (its spans fence the walker, as the server's rule does), and every named front is a Place from
- * town.ts's PLACES with a Spot at its door, a keeper standing beside it with a name tag, and an errand marker the page
- * can hang there (setMarker). The Clock Tower's climb is viewFrom(): the camera goes up for a while.
+ * town.ts's PLACES with a Spot at its door, a keeper standing beside it with a name tag, and a signpost the page can
+ * hang there (setMarker). The Clock Tower's climb is viewFrom(): the camera goes up for a while.
  * What a visitor wears (protocol.ts's Kit) goes on their figure with setKit.
+ *
+ * COINS (24 Sep): the game is to walk the town and gather them. A coin the room lists (addLooseNote: the wire keeps
+ * the notes' names) is a brass coin stamped with a B, turning where it lies; a mint mark (worth MARK_V or more) is
+ * the same coin larger with a double ring. Walk onto one and the room is asked for it (onNote). When the Mint spills
+ * a street's worth, the page hangs a second signpost at that street's mouth (setSpill).
  *
  * This file is the engine only: scene, avatars, input, camera, collisions and the spots you can use. It knows nothing
  * of React, the network or the mini-game; it reports where you are (onMove) and what you stand near (onNear), and the
@@ -22,8 +27,9 @@ import { CAPS, fitText, flat, hexRgb, INK, labelSprite, mat, OUTLINE, OUTLINE_FI
 import { buildCity, type City, type Seg } from "./city";
 import { makeFigure, type Figure, type Gesture } from "./figure";
 import { bands } from "./money";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { DESK_SPOT, DOOR_REACH_M, GUARD_SPOT, PLACE_IDS, STRAPS, WORLD_RADIUS, type Kit } from "./protocol";
-import { nearestWalkable, PLACES, ROPE_POSTS, ropeCut, routeTo, type Place } from "./town";
+import { nearestWalkable, PLACES, ROPE_POSTS, ropeCut, routeTo, STREET_ANGLES, type Place } from "./town";
 
 export type SpotKind = "desk" | "stall" | "guards" | "notes" | "place";
 
@@ -81,14 +87,24 @@ interface Walker {
 }
 
 const SPAWN = new THREE.Vector3(0, 0, 20);
-const WALK = 4.4;
-const SPRINT = 7.2;
+/** the town is big: a brisk walk, and a run to the street ends (the server's speed budget allows 9; the strollers keep their own) */
+const WALK = 5.5;
+const SPRINT = 8.5;
 /** a click-walk's waypoint on the way is passed once you are this near it (the last, the target, keeps the spot's own reach) */
 const WAYPOINT_M = 1.0;
-/** a loose note is asked for when you come this near it (the room allows a little more) */
+/** a coin is asked for when you come this near it (the room allows a little more) */
 const NOTE_PICK_M = 1.3;
-/** a loose note: two banknotes, one a little across the other, drawn once for every note */
-const NOTE_GEO = new THREE.BoxGeometry(0.86, 0.018, 0.4);
+/** a coin: a short brass cylinder standing on its edge, the same geometry for every coin */
+const COIN_R = 0.32;
+const COIN_H = 0.07;
+const COIN_GEO = new THREE.CylinderGeometry(COIN_R, COIN_R, COIN_H, 28);
+/** a coin's centre floats this high, turning; a mark's as much higher as it is bigger, so its rim clears the ground */
+const COIN_Y = 0.45;
+/** a coin leans back this much off upright as it turns: a coin spinning on its edge, not a wheel */
+const COIN_LEAN = 0.18;
+/** a coin worth this much or more is a mint mark: drawn bigger, its faces with a double ring */
+const MARK_V = 100;
+const MARK_SCALE = 1.5;
 
 /** a visitor's name tag: the name and the stack */
 const tagText = (name: string, stack?: number): string => (typeof stack === "number" ? `${name} · ${bands(stack)}` : name);
@@ -116,11 +132,18 @@ const KEEPER_KIT: Record<string, Partial<Kit>> = {
 const KEEPER_ASIDE_M = 1.5;
 /** and this far back from it: a door is on the pavement's edge, 0.25 m past the kerb, and a keeper on the kerb is in the way */
 const KEEPER_BACK_M = 0.5;
-/** the errand signpost's post, a thing on open ground the walker goes round */
+/** a signpost's post, a thing on open ground the walker goes round */
 const SIGNPOST_R = 0.3;
+/**
+ * the Mint's signpost stands beside a street's mouth, just outside the rope on the ring's inner pavement: this far
+ * round from the street's line (the mouth is one rope span, 0.07 rad each side; the click-route runs the line
+ * itself) and this far out (the rope is at 42, the inner kerb at 45.6, the boulevard's trees at 44.4 and 0.17 round)
+ */
+const SPILL_ASIDE = 0.1;
+const SPILL_R = 43.6;
 /** a keeper is drawn (and animated) only within this far of the camera: a figure that far is a speck under the fog's edge, and the ring holds twenty-one of them */
 const KEEPER_SHOW_M = 60;
-/** the errand marker stands this far the other way, and this far forward of the door, clear of a shop's awning */
+/** the page's signpost at a door stands this far the other way, and this far forward of the door, clear of a shop's awning */
 const MARKER_ASIDE_M = 1.7;
 const MARKER_FORWARD_M = 1.3;
 
@@ -202,10 +225,11 @@ export class ExchangeWorld {
   /** the keeper at each door, idle, with a name tag */
   private keepers: Walker[] = [];
   /**
-   * the errand's marker: a signpost with a hanging board, moved to the target door (built the first time it is asked
-   * for), and its post's collider, in the list while the signpost stands
+   * two signposts with hanging boards, each built the first time it is asked for, its post's collider in the list
+   * while it stands: the page's marker at a door (setMarker), and the Mint's at a street's mouth (setSpill)
    */
-  private signpost: { g: THREE.Group; board: THREE.Group; hit: Circle } | null = null;
+  private signpost: Signpost | null = null;
+  private spillpost: Signpost | null = null;
   /** the tower's climb: where the camera is held, and until when */
   private view: { pos: THREE.Vector3; until: number } | null = null;
   /** what you wear, kept through setMe's rebuild */
@@ -244,8 +268,8 @@ export class ExchangeWorld {
   private strollers: { w: Walker; path: THREE.Vector3[]; lengths: number[]; total: number; speed: number; offset: number }[] = [];
   private moved = false;
   private disposed = false;
-  /** loose notes on the ground, turning where they lie */
-  private looseNotes = new Map<string, { g: THREE.Group; x: number; z: number; askedAt: number; phase: number }>();
+  /** the coins on the ground, turning where they lie (by the wire's name for them) */
+  private looseNotes = new Map<string, { g: THREE.Group; x: number; z: number; askedAt: number; phase: number; y: number }>();
   /** keys and E are read only while this is on (the page turns it off while a panel is open) */
   private inputOn = true;
   private dprCap: number;
@@ -380,75 +404,77 @@ export class ExchangeWorld {
   }
 
   /**
-   * the errand's marker: an engraved signpost with a board hanging from its arm, at the target door (a PLACES door,
-   * or the plaza's own Guard House and desk the rules errand names); null takes it down, its post's collider with it
+   * the page's signpost: an engraved signpost with a board hanging from its arm, at a door (a PLACES door, or the
+   * plaza's own Guard House and desk); null takes it down, its post's collider with it
    */
   setMarker(placeId: string | null) {
     const p = placeId ? markerAt(placeId) : null;
     if (!p) {
-      if (this.signpost) {
-        this.signpost.g.visible = false;
-        const i = this.colliders.indexOf(this.signpost.hit);
-        if (i >= 0) this.colliders.splice(i, 1);
-      }
+      this.takeDown(this.signpost);
       return;
     }
     if (!this.signpost) {
-      const g = new THREE.Group();
-      const pole = part(new THREE.CylinderGeometry(0.06, 0.08, 3.6, 8), mat("Ink"));
-      pole.position.y = 1.8;
-      const arm = part(new THREE.BoxGeometry(1.3, 0.09, 0.09), mat("Ink"));
-      arm.position.set(0.55, 3.5, 0);
-      const finial = part(new THREE.SphereGeometry(0.09, 8, 6), mat("Brass"));
-      finial.position.y = 3.66;
-      const board = new THREE.Group();
-      board.position.set(0.75, 3.46, 0);
-      for (const x of [-0.32, 0.32]) {
-        const chain = part(new THREE.CylinderGeometry(0.012, 0.012, 0.34, 5), mat("Ink"));
-        chain.position.set(x, -0.17, 0);
-        board.add(chain);
-      }
-      const back = part(new THREE.BoxGeometry(0.94, 0.66, 0.04), mat("Wood"));
-      back.position.y = -0.67;
-      const face = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.9, 0.62),
-        new THREE.MeshBasicMaterial({
-          map: signTexture(360, 248, (c, w, h) => {
-            c.fillStyle = "#c9560a";
-            c.font = `700 40px ${CAPS}`;
-            c.textAlign = "center";
-            c.fillText("THIS WAY", w / 2, 78);
-            // a pointing hand would need a face; an ink arrow, cut as the rest of the town is
-            c.fillStyle = INK;
-            c.beginPath();
-            c.moveTo(w / 2 - 22, 96);
-            c.lineTo(w / 2 + 22, 96);
-            c.lineTo(w / 2 + 22, 150);
-            c.lineTo(w / 2 + 56, 150);
-            c.lineTo(w / 2, h - 34);
-            c.lineTo(w / 2 - 56, 150);
-            c.lineTo(w / 2 - 22, 150);
-            c.closePath();
-            c.fill();
-          }),
-        }),
-      );
-      face.position.set(0, -0.67, 0.025);
-      board.add(back, face);
-      g.add(pole, arm, finial, board);
-      this.scene.add(g);
-      this.signpost = { g, board, hit: { x: 0, z: 0, r: SIGNPOST_R } };
+      this.signpost = makeSignpost((c, w, h) => {
+        c.fillStyle = "#c9560a";
+        c.font = `700 40px ${CAPS}`;
+        c.textAlign = "center";
+        c.fillText("THIS WAY", w / 2, 78);
+        arrowDown(c, w / 2, 96, h - 34);
+      });
+      this.scene.add(this.signpost.g);
     }
     // the other side of the door from the keeper and a step toward the plaza, the arm reaching over the door
     const along = p.facing + Math.PI / 2;
     const x = p.x - Math.sin(along) * MARKER_ASIDE_M + Math.sin(p.facing) * MARKER_FORWARD_M;
     const z = p.z - Math.cos(along) * MARKER_ASIDE_M + Math.cos(p.facing) * MARKER_FORWARD_M;
-    this.signpost.g.position.set(x, 0, z);
-    this.signpost.g.rotation.y = p.facing;
-    this.signpost.g.visible = true;
-    this.signpost.hit.x = x;
-    this.signpost.hit.z = z;
-    if (!this.colliders.includes(this.signpost.hit)) this.colliders.push(this.signpost.hit);
+    this.putUp(this.signpost, x, z, p.facing);
+  }
+
+  /**
+   * the Mint spilled on a street (0..3, town.ts's order): a signpost at that street's mouth, beside a gatepost on the
+   * ring, its arm reaching over the mouth; null takes it down. Its own post, so the page's signpost can stand elsewhere
+   */
+  setSpill(street: number | null) {
+    if (street === null || !(street in STREET_ANGLES)) {
+      this.takeDown(this.spillpost);
+      return;
+    }
+    if (!this.spillpost) {
+      this.spillpost = makeSignpost((c, w, h) => {
+        c.textAlign = "center";
+        c.fillStyle = "#c9560a";
+        c.font = `700 40px ${CAPS}`;
+        c.fillText("THE MINT", w / 2, 68);
+        c.fillStyle = INK;
+        c.font = `600 26px ${CAPS}`;
+        c.fillText("SPILLED THIS WAY", w / 2, 106);
+        arrowDown(c, w / 2, 124, h - 34);
+      });
+      this.scene.add(this.spillpost.g);
+    }
+    // the post stands SPILL_ASIDE round from the street's line, facing the fountain: its arm then points at the mouth
+    const a = STREET_ANGLES[street] + SPILL_ASIDE;
+    const x = Math.sin(a) * SPILL_R;
+    const z = Math.cos(a) * SPILL_R;
+    this.putUp(this.spillpost, x, z, Math.atan2(-x, -z));
+  }
+
+  /** a signpost stood at (x, z) turned to face `facing`, its post in the walker's way */
+  private putUp(s: Signpost, x: number, z: number, facing: number) {
+    s.g.position.set(x, 0, z);
+    s.g.rotation.y = facing;
+    s.g.visible = true;
+    s.hit.x = x;
+    s.hit.z = z;
+    if (!this.colliders.includes(s.hit)) this.colliders.push(s.hit);
+  }
+
+  /** a signpost taken down: hidden, its post out of the walker's way (it is kept for the next time) */
+  private takeDown(s: Signpost | null) {
+    if (!s) return;
+    s.g.visible = false;
+    const i = this.colliders.indexOf(s.hit);
+    if (i >= 0) this.colliders.splice(i, 1);
   }
 
   /** the camera goes to (x, y, z) and looks over the town from there for ms, then comes back behind you */
@@ -945,22 +971,29 @@ export class ExchangeWorld {
     w.tag = tag;
   }
 
-  /** a loose note on the ground */
-  addLooseNote(n: { id: string; x: number; z: number }) {
+  /**
+   * a coin on the ground (the wire's "note"): brass, on its edge, a B on both faces; one the room lists as a mark is
+   * bigger, with a double ring. Its value is the room's business: nothing here reads it as money
+   */
+  addLooseNote(n: { id: string; x: number; z: number; kind?: "coin" | "mark"; v?: number }) {
     if (this.looseNotes.has(n.id)) return;
+    // the room says which are marks (the wire's `kind`); a value, when a dev script gives one, sizes it the same way
+    const mark = n.kind === "mark" || (n.v ?? 0) >= MARK_V;
     const g = new THREE.Group();
-    const a = part(NOTE_GEO, mat("Bill"), true);
-    const b = part(NOTE_GEO, mat("Bill"), true);
-    b.position.set(0.05, 0.022, 0.03);
-    b.rotation.y = 0.5;
-    g.add(a, b);
-    g.position.set(n.x, 0.45, n.z);
-    g.rotation.x = 0.35;
+    // the coin stands on its edge with a lean; the group turns it about the vertical
+    const stand = new THREE.Group();
+    stand.rotation.x = Math.PI / 2 - COIN_LEAN;
+    stand.add(part(COIN_GEO, mat("Brass"), true), new THREE.Mesh(coinFaces(), coinFace(mark)));
+    g.add(stand);
+    const scale = mark ? MARK_SCALE : 1;
+    g.scale.setScalar(scale);
+    const y = COIN_Y * scale;
+    g.position.set(n.x, y, n.z);
     this.scene.add(g);
-    this.looseNotes.set(n.id, { g, x: n.x, z: n.z, askedAt: -Infinity, phase: (n.x * 7.3 + n.z * 3.1) % 6.28 });
+    this.looseNotes.set(n.id, { g, x: n.x, z: n.z, askedAt: -Infinity, phase: (n.x * 7.3 + n.z * 3.1) % 6.28, y });
   }
 
-  /** a note was picked up (by anyone), or is not there any more (a note shares its geometry and material: nothing to free) */
+  /** a coin was picked up (by anyone), or is not there any more (a coin shares its geometry and materials: nothing to free) */
   removeLooseNote(id: string) {
     const n = this.looseNotes.get(id);
     if (!n) return;
@@ -968,14 +1001,14 @@ export class ExchangeWorld {
     this.looseNotes.delete(id);
   }
 
-  /** the room's word on the loose notes: what it lists is on the ground, nothing else is (a fresh welcome after a reconnect) */
-  setLooseNotes(list: { id: string; x: number; z: number }[]) {
+  /** the room's word on the coins: what it lists is on the ground, nothing else is (a fresh welcome after a reconnect) */
+  setLooseNotes(list: { id: string; x: number; z: number; kind?: "coin" | "mark"; v?: number }[]) {
     const keep = new Set(list.map((n) => n.id));
     for (const id of [...this.looseNotes.keys()]) if (!keep.has(id)) this.removeLooseNote(id);
     for (const n of list) this.addLooseNote(n);
   }
 
-  /** a note the room will not give this visitor (today's notes are picked): not asked for again this session */
+  /** a coin the room will not give this visitor (today's coins are gathered): not asked for again this session */
   muteNote(id: string) {
     const n = this.looseNotes.get(id);
     if (n) n.askedAt = Infinity;
@@ -990,7 +1023,7 @@ export class ExchangeWorld {
     this.remotes.delete(id);
   }
 
-  /** a fresh welcome: everyone and every loose note goes, and the room lists them again (so nobody who left meanwhile lingers) */
+  /** a fresh welcome: everyone and every coin goes, and the room lists them again (so nobody who left meanwhile lingers) */
   resetRoom() {
     for (const id of [...this.remotes.keys()]) this.removeRemote(id);
     for (const id of [...this.looseNotes.keys()]) this.removeLooseNote(id);
@@ -1300,10 +1333,10 @@ export class ExchangeWorld {
 
     this.placeStrollers(dt, secs);
     this.city.update(secs, new Date());
-    // loose notes turn and bob; one you walk onto is asked for (again after a moment, if the room has not answered)
+    // the coins turn and bob; one you walk onto is asked for (again after a moment, if the room has not answered)
     for (const [id, n] of this.looseNotes) {
       n.g.rotation.y = secs * 1.1 + n.phase;
-      n.g.position.y = 0.45 + Math.sin(secs * 2.2 + n.phase) * 0.07;
+      n.g.position.y = n.y + Math.sin(secs * 2.2 + n.phase) * 0.07;
       if (now - n.askedAt > 1500 && Math.hypot(n.x - me.position.x, n.z - me.position.z) <= NOTE_PICK_M) {
         n.askedAt = now;
         this.cb.onNote?.(id);
@@ -1321,8 +1354,8 @@ export class ExchangeWorld {
       w.fig.animate(dt, 0, secs);
       this.detail(w);
     }
-    // the errand's board swings a little on its chains
-    if (this.signpost?.g.visible) this.signpost.board.rotation.x = Math.sin(secs * 1.7) * 0.05;
+    // a signpost's board swings a little on its chains
+    for (const s of [this.signpost, this.spillpost]) if (s?.g.visible) s.board.rotation.x = Math.sin(secs * 1.7) * 0.05;
 
     // what you stand near
     let best: Spot | null = null;
@@ -1473,12 +1506,123 @@ function seedOf(id: string): number {
   return h >>> 0;
 }
 
-/** where an errand's marker stands: a PLACES door, or the plaza's own two the errands name, facing the fountain */
+/** where the page's marker stands: a PLACES door, or the plaza's own two it may name, facing the fountain */
 function markerAt(id: string): { x: number; z: number; facing: number } | null {
   const p = PLACES.find((q) => q.id === id);
   if (p) return p;
   const spot = id === PLACE_IDS.guardHouse ? GUARD_SPOT : id === PLACE_IDS.desk ? DESK_SPOT : null;
   return spot ? { x: spot.x, z: spot.z, facing: Math.atan2(-spot.x, -spot.z) } : null;
+}
+
+/** a signpost: its group, the board that swings on its arm, and its post's collider */
+interface Signpost {
+  g: THREE.Group;
+  board: THREE.Group;
+  hit: Circle;
+}
+
+/** an engraved signpost: an ink pole with a brass finial, an arm, and a board hanging from it on two chains, printed by `draw` */
+function makeSignpost(draw: (c: CanvasRenderingContext2D, w: number, h: number) => void): Signpost {
+  const g = new THREE.Group();
+  const pole = part(new THREE.CylinderGeometry(0.06, 0.08, 3.6, 8), mat("Ink"));
+  pole.position.y = 1.8;
+  const arm = part(new THREE.BoxGeometry(1.3, 0.09, 0.09), mat("Ink"));
+  arm.position.set(0.55, 3.5, 0);
+  const finial = part(new THREE.SphereGeometry(0.09, 8, 6), mat("Brass"));
+  finial.position.y = 3.66;
+  const board = new THREE.Group();
+  board.position.set(0.75, 3.46, 0);
+  for (const x of [-0.32, 0.32]) {
+    const chain = part(new THREE.CylinderGeometry(0.012, 0.012, 0.34, 5), mat("Ink"));
+    chain.position.set(x, -0.17, 0);
+    board.add(chain);
+  }
+  const back = part(new THREE.BoxGeometry(0.94, 0.66, 0.04), mat("Wood"));
+  back.position.y = -0.67;
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.62), new THREE.MeshBasicMaterial({ map: signTexture(360, 248, draw) }));
+  face.position.set(0, -0.67, 0.025);
+  board.add(back, face);
+  g.add(pole, arm, finial, board);
+  return { g, board, hit: { x: 0, z: 0, r: SIGNPOST_R } };
+}
+
+/** an ink arrow pointing down a board, from y0 to y1 about x (a pointing hand would need a face; an arrow is cut as the rest of the town is) */
+function arrowDown(c: CanvasRenderingContext2D, x: number, y0: number, y1: number) {
+  const head = y1 - Math.min(48, (y1 - y0) * 0.45);
+  c.fillStyle = INK;
+  c.beginPath();
+  c.moveTo(x - 22, y0);
+  c.lineTo(x + 22, y0);
+  c.lineTo(x + 22, head);
+  c.lineTo(x + 56, head);
+  c.lineTo(x, y1);
+  c.lineTo(x - 56, head);
+  c.lineTo(x - 22, head);
+  c.closePath();
+  c.fill();
+}
+
+/**
+ * a coin's two faces in one geometry, a hair off each end of the cylinder: the bottom one turned so its B reads
+ * upright from behind once the coin stands on its edge. Built once, shared by every coin
+ */
+let coinFacesGeo: THREE.BufferGeometry | null = null;
+function coinFaces(): THREE.BufferGeometry {
+  if (!coinFacesGeo) {
+    const lift = COIN_H / 2 + 0.003;
+    const top = new THREE.CircleGeometry(COIN_R, 28).rotateX(-Math.PI / 2).translate(0, lift, 0);
+    const bottom = new THREE.CircleGeometry(COIN_R, 28).rotateZ(Math.PI).rotateX(Math.PI / 2).translate(0, -lift, 0);
+    coinFacesGeo = mergeGeometries([top, bottom]);
+    top.dispose();
+    bottom.dispose();
+  }
+  return coinFacesGeo;
+}
+
+/**
+ * the stamp on a coin's faces, drawn once to a small canvas in the house faces: brass as the engraver hatches it, a
+ * ring at the rim (two on a mint mark), a B in the middle. One material for the coins, one for the marks
+ */
+const coinFaceMats = new Map<boolean, THREE.MeshBasicMaterial>();
+function coinFace(mark: boolean): THREE.MeshBasicMaterial {
+  let m = coinFaceMats.get(mark);
+  if (m) return m;
+  const px = 128;
+  const c = document.createElement("canvas");
+  c.width = px;
+  c.height = px;
+  const g = c.getContext("2d")!;
+  g.fillStyle = PAPER;
+  g.fillRect(0, 0, px, px);
+  // the hatch that reads as brass on every other brass thing in the plaza
+  g.strokeStyle = INK;
+  g.globalAlpha = 0.28;
+  g.lineWidth = 1.2;
+  for (let d = -px; d < px * 2; d += 5) {
+    g.beginPath();
+    g.moveTo(d, 0);
+    g.lineTo(d - px, px);
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+  const mid = px / 2;
+  g.lineWidth = 4;
+  for (const r of mark ? [mid - 7, mid - 16] : [mid - 8]) {
+    g.beginPath();
+    g.arc(mid, mid, r, 0, Math.PI * 2);
+    g.stroke();
+  }
+  g.fillStyle = INK;
+  g.font = `700 ${mark ? 60 : 74}px ${CAPS}`;
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText("B", mid, mid + 3);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.LinearSRGBColorSpace;
+  t.anisotropy = 4;
+  m = new THREE.MeshBasicMaterial({ map: t });
+  coinFaceMats.set(mark, m);
+  return m;
 }
 
 /** a point within r of a line on the ground, put r off it on the side the step came from; any other point as it is */

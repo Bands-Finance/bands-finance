@@ -176,9 +176,9 @@ export class Room extends DurableObject<Env> {
       this.core.loadTalk(talk);
     });
 
-    // Woken from hibernation: the sockets survived, the memory did not. Joined players are put back and sent their
-    // account (a round the restart lost had its stake refunded); a socket that had not said hello yet, or names an
-    // account already put back, is closed (its client reconnects).
+    // Woken from hibernation: the sockets survived, the memory did not (the coins on the ground and a spill with
+    // them; a practice round in play is simply gone). Joined players are put back and sent their account; a socket
+    // that had not said hello yet, or names an account already put back, is closed (its client reconnects).
     for (const ws of ctx.getWebSockets()) {
       const tag = ws.deserializeAttachment() as Tag | null;
       if (!tag?.id || typeof tag.account !== "string" || !this.core.restore(tag.id, tag.account)) {

@@ -1,59 +1,39 @@
 /**
  * bands.finance Play: the Bands Exchange (24 Sep, Zach: "a game where users can walk around on the bands.finance
- * platform"). The engraved plaza (src/game/World.ts), the live board and his notes as its signs, Mr Bands at his desk
- * with a few lines, the Guard House, and a stall game per top pool (src/game/LpRound.tsx). Online, you see the other
- * visitors (src/game/net.ts, the room server in game-server/): names the server gives, emotes and preset phrases only,
- * scores the server recomputes. With no server configured (VITE_GAME_WS_URL unset) it is the same world, alone.
+ * platform"). The engraved town (src/game/World.ts): the plaza with the live board and his notes as its signs, Mr
+ * Bands at his desk, the Guard House, a stall game per top pool (src/game/LpRound.tsx), and the streets out to their
+ * ends with a door on every named front (src/game/places.tsx, the map in src/game/TownMap.tsx). Online, you see the
+ * other visitors (src/game/net.ts, the room server in game-server/): names the server gives, emotes and preset
+ * phrases only, scores the server recomputes. With no server configured (VITE_GAME_WS_URL unset) it is the same
+ * world, alone.
  *
- * The stack (24 Sep, Zach: "the goal is for each player to stack bands"): online, the room keeps your account. Stake
- * part of it at the stalls, pick up loose notes, collect Mr Bands' wage and jobs at his desk, and climb the biggest
- * stacks. Offline every round is practice.
- *
- * A round rides on the server whether or not its stall panel is open (a staked one settles at its hold whatever
- * happens), so the page keeps the riding round itself (`live`): its frames go on arriving after the panel closes, a
- * chip on the HUD says where it is, the stall opened again takes it up, another stall lays nothing meanwhile, and a
- * round scored with no panel open is told in a toast. A practice round is closed when you walk away from its stall.
- *
- * The town (24 Sep, Zach: "an adventure game where users are actually exploring the town"): the streets are open and
- * every named front has a door. Behind it is an interior panel (src/game/places.tsx), the room server's answer to
- * "enter" filling it in; Mr Bands hands out errands at his desk and at Bands & Co. (the errand line on the HUD, the
- * target door marked in the world and ringed on the map); the shops sell kit the whole room sees; a first visit to a
- * door is a discovery. The map (src/game/TownMap.tsx) opens on M or its button.
+ * The game (24 Sep, Zach: "a simple game of exploring the town, finding coins, and going to Mr Bands and converting
+ * the coins to cash"): walk the town, pick up coins by walking over them, bring them back to Mr Bands' desk and cash
+ * them in, and the stack grows in bands and cash. The HUD says three things: who you are, how many coins you carry,
+ * and your stack. The four stalls stay as teaching games with nothing staked. Play money throughout.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExchangeWorld, type BoardRow, type Spot } from "./World";
 import { LpRound } from "./LpRound";
-import { poolParamsFromHot, TICKS, type PoolParams } from "./lpGame";
-import { DAILY, EMOTES, ERRANDS, JOBS, NOTES_PER_DAY, PHRASES, PLACE_IDS, STOCK, STRAPS, WAGE, type EmoteId, type JobId, type Me, type PhraseId, type ScoreRow, type StackRow } from "./protocol";
+import { poolParamsFromHot, type PoolParams } from "./lpGame";
+import { COINS_PER_DAY, EMOTES, PHRASES, STOCK, STRAPS, type EmoteId, type Me, type PhraseId, type ScoreRow, type StackRow } from "./protocol";
 import { ExchangeNet, gameWsUrl, type PlaceMsg } from "./net";
-import { bandsWord, usd } from "./money";
-import { isLayRefusal, newRoutes, offlineSource, onlineSource, type Frame, type LiveRound } from "./rounds";
-import { ErrandBoard, Interior, placeName, type BuildNote, type PaperBook } from "./places";
+import { bandsAndCash, bandsWord, usd } from "./money";
+import { isLayRefusal, newRoutes, offlineSource, onlineSource, type Frame } from "./rounds";
+import { Interior, placeName, type BuildNote } from "./places";
 import { TownMap, type MapPose } from "./TownMap";
-import { PLACES } from "./town";
-import { loadLiveFeed } from "../api";
-import { bookOf, recordOf } from "../model";
+import { PLACES, STREET_NAMES } from "./town";
 import "./PlayPage.css";
 
 type Panel = { kind: "desk" } | { kind: "guards" } | { kind: "notes" } | { kind: "stall"; pool: PoolParams } | { kind: "board" } | { kind: "place"; id: string } | { kind: "map" } | null;
 type NetStatus = "offline" | "connecting" | "online" | "full" | "closed" | "elsewhere";
 
-/** Mr Bands' daily jobs, in his words */
-const JOB_TEXT: Record<JobId, string> = {
-  range: "Keep price inside your band for 24 hours of one round",
-  beat: "Close a band ahead of just holding",
-  notes: "Pick up 5 loose notes around the plaza",
-  wave: "Wave at someone standing near you",
-};
-/** the room's other refusals, in words */
+/** the room's refusals, in words */
 const ERROR_TEXT: Record<string, string> = {
-  "not at the desk": "Walk up to Mr Bands' desk to collect.",
-  "notes done": "That's all the notes you can pick up today.",
-  "not there": "Walk up to the door first.",
+  "not there": "Walk up to it first.",
+  "notes done": "That's all the coins you can gather today.",
   "no stack": "Your stack won't cover it.",
   "have one": "You have one already.",
-  "no errand": "Nothing to take here yet.",
-  "wrong hour": "That's not what the tower showed. Climb again and look.",
 };
 /** the tower's top, for the climb's view: above the clock, looking over the town, and for how long */
 const TOWER_VIEW_HEIGHT = 34;
@@ -73,54 +53,23 @@ interface Limits {
   maxSlippagePct?: number;
 }
 
-/** what he says at his desk: his voice, no price calls, no token, play money named as such */
-const DESK_LINES = [
-  "Welcome to the Exchange. I'm Mr Bands, an AI agent. I make markets on Meteora, and I'm building this place.",
-  "A band is liquidity laid across a few price bins. While price trades inside it, every swap pays me a fee.",
-  "When price leaves and stays away, the band earns nothing. I close it and lay it again where the price is.",
-  "The stalls by the board are the pools paying the most fees this hour. Lay a band on one and see how it goes.",
-  "Everything here is play money. My own book is paper for now, and every trade I make is on the record.",
-];
-
 const EMOTE_TEXT: Record<EmoteId, string> = { wave: "waves", "tip-hat": "tips a hat", cheer: "cheers", shrug: "shrugs" };
 const EMOTE_LABEL: Record<EmoteId, string> = { wave: "Wave", "tip-hat": "Tip hat", cheer: "Cheer", shrug: "Shrug" };
-
-/** a riding round whose ticks stop for this long is let go (the server settles or refunds it within a minute) */
-const ROUND_QUIET_MS = 60_000;
-/** today, the way the server names a day ("2026-09-24") */
-const utcDay = () => new Date().toISOString().slice(0, 10);
-const sign = (n: number) => `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(2)}%`;
 
 /** a place's name inside a sentence: "the Hatter", "Cigars" */
 const theName = (id: string) => placeName(id).replace(/^The /, "the ");
 /** no doors found yet: one array, so the map's redraw timer is not reset by every render */
 const NONE_FOUND: string[] = [];
+/** "Twelve coins", "One coin", "34 coins": a count the way he would say it */
+const WORDS = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen", "Twenty"];
+const coinsSaid = (n: number) => `${WORDS[n] ?? n} coin${n === 1 ? "" : "s"}`;
 
-/**
- * the doors the errand in hand still wants: the next step of an ordered errand (its last one again while a task is
- * left there), every step not yet done of an any-order one, the run's doors not yet reached; none without an errand
- */
-function errandTargets(me: Me | null): string[] {
-  const e = me?.errand;
-  if (!me || !e) return [];
-  if (e.id === "daily") return me.daily ? me.daily.places.filter((p) => !me.daily!.found.includes(p)) : [];
-  const def = ERRANDS.find((x) => x.id === e.id);
-  if (!def) return [];
-  if (def.any) return def.steps.filter((p) => !e.done.includes(p));
-  return [def.steps[Math.min(e.step, def.steps.length - 1)]];
-}
-/** the errand line under the stack: his short form, and how far along an errand of several doors is */
-function errandLine(me: Me): string | null {
-  const e = me.errand;
-  if (!e) return null;
-  if (e.id === "daily") {
-    const d = me.daily;
-    return d ? `${DAILY.short}: ${d.places.map(theName).join(", ")} · ${d.found.length} of ${d.places.length}` : DAILY.short;
-  }
-  const def = ERRANDS.find((x) => x.id === e.id);
-  if (!def) return null;
-  const many = def.steps.length > 1 ? ` · ${def.any ? e.done.length : e.step} of ${def.steps.length}` : "";
-  return `${def.short}${many}`;
+/** what he says at his desk, by what you carry and what you just cashed in */
+function deskLine(me: Me | null, cashed: { coins: number; cash: number } | null): string {
+  if (cashed && cashed.coins > 0) return `${usd(cashed.cash)}. Strapped into your stack. Off you go.`;
+  const n = me?.coins ?? 0;
+  if (n <= 0) return "Nothing in your pockets. The town is full of coins; go and look.";
+  return `${coinsSaid(n)}. Let's see what they're worth.`;
 }
 
 const STRAP_KEY = "bands:play:strap";
@@ -142,15 +91,13 @@ export default function PlayPage() {
   const names = useRef(new Map<string, string>());
   /** the world was made once: it calls the page's current handler through this */
   const openRef = useRef<(s: Spot) => void>(() => undefined);
-  /** the round riding on the server: the ref for the net's handlers, the state for what is drawn */
-  const liveRef = useRef<LiveRound | null>(null);
-  const [live, setLiveState] = useState<LiveRound | null>(null);
-  const quietTimer = useRef(0);
   /** the panel as the world's handlers see it (they are bound once) */
   const panelRef = useRef<Panel>(null);
   const meRef = useRef<Me | null>(null);
-  /** the loose note last asked for, for a "notes done" answer */
+  /** the coin last asked for, for a "notes done" answer */
   const lastAsked = useRef<string | null>(null);
+  /** a cash-in answered, waiting for the account that follows it, so the toast says the stack it made */
+  const pendingCash = useRef<number | null>(null);
   const panelEl = useRef<HTMLDivElement>(null);
 
   const [entered, setEntered] = useState(false);
@@ -164,7 +111,6 @@ export default function PlayPage() {
   const [pools, setPools] = useState<PoolParams[]>([]);
   const [notes, setNotes] = useState<BuildNote[]>([]);
   const [limits, setLimits] = useState<Limits | null>(null);
-  const [line, setLine] = useState(0);
   const [phrasesOpen, setPhrasesOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [me, setMeState] = useState<Me | null>(null);
@@ -174,9 +120,10 @@ export default function PlayPage() {
   const toastTimer = useRef(0);
   /** the room's answer for the open interior (the tower's hour, a shop's stock, the talk) */
   const [placeInfo, setPlaceInfo] = useState<PlaceMsg | null>(null);
-  /** Mr Bands' paper book for the Exchange's wall, read once from the site's live feed when the floor first opens */
-  const [paper, setPaper] = useState<PaperBook | null>(null);
-  const paperAsked = useRef(false);
+  /** the desk's last cash-in, for its reveal (cleared when the desk opens again) */
+  const [cashed, setCashed] = useState<{ coins: number; cash: number } | null>(null);
+  /** the street the Mint spilled on, while its three minutes run */
+  const [spill, setSpill] = useState<{ street: number; until: number } | null>(null);
   /** where the walker is, for the map (the world writes it every frame; no render follows) */
   const pose = useRef<MapPose>({ x: 0, z: 20, ry: 0 });
   const [boardRows, setBoardRows] = useState<BoardRow[]>([]);
@@ -189,13 +136,6 @@ export default function PlayPage() {
   panelRef.current = panel;
   meRef.current = me;
 
-  const setLive = useCallback((l: LiveRound | null) => {
-    liveRef.current = l;
-    setLiveState(l);
-    window.clearTimeout(quietTimer.current);
-    if (l) quietTimer.current = window.setTimeout(() => setLive(null), ROUND_QUIET_MS);
-  }, []);
-
   // the world
   useEffect(() => {
     if (!canvas.current) return;
@@ -207,9 +147,9 @@ export default function PlayPage() {
       },
       onInteract: (s) => openRef.current(s),
       onNote: (id) => {
-        // today's notes picked: the room would only say so, and its one error a moment is better kept for a lay
+        // today's coins gathered: the room would only say so, and its one error a moment is better kept for a lay
         const m = meRef.current;
-        if (m && m.notes >= NOTES_PER_DAY) return;
+        if (m && m.coinsToday >= COINS_PER_DAY) return;
         lastAsked.current = id;
         net.current?.pick(id);
       },
@@ -275,7 +215,7 @@ export default function PlayPage() {
     };
   }, []);
 
-  // the room: others, emotes, phrases, rounds and the leaderboard
+  // the room: others, emotes, phrases, coins, rounds and the boards
   const connect = useCallback(
     (strapIx: number) => {
       const url = gameWsUrl();
@@ -283,13 +223,13 @@ export default function PlayPage() {
       net.current = n;
       n.onStatus = (s) => setStatus(s);
       n.onWelcome = (m) => {
+        // a spill under way when you arrive: the toast is past, but the ring and the signpost are not
+        setSpill(m.spill ?? null);
         setMyName(m.name);
         world.current?.setMe(m.name, strapIx);
         // a welcome is the whole room again (a reconnect missed who left and what was picked meanwhile): start clean
         world.current?.resetRoom();
         names.current.clear();
-        // and any round of the old session was settled when it went; nothing rides for this one yet
-        setLive(null);
         // start where the room put you (it spreads arrivals round the centre), so the first step is not a jump
         const mine = m.players.find((p) => p.id === m.you);
         if (mine) world.current?.setMyPosition(mine.x, mine.z, mine.ry, true);
@@ -310,10 +250,22 @@ export default function PlayPage() {
         world.current?.addRemote(p.id, p.name, p.strap, p.x, p.z, p.ry, p.stack, p.kit);
         setOthers(names.current.size);
       };
-      n.onMe = (m) => setMeState(m);
+      n.onMe = (m) => {
+        setMeState(m);
+        // the account after a cash-in: the toast says what went in and what the stack is now
+        const cash = pendingCash.current;
+        if (cash !== null) {
+          pendingCash.current = null;
+          notify(`+${usd(cash)} · ${bandsAndCash(m.stack)}`);
+        }
+      };
+      n.onCashed = (coins, cash) => {
+        setCashed({ coins, cash });
+        if (coins > 0) pendingCash.current = cash;
+      };
       n.onKit = (id, kit) => world.current?.setKit(id === n.you ? "me" : id, kit);
       n.onPlace = (m) => setPlaceInfo(m);
-      n.onFound = (place, paid) => notify(paid > 0 ? `You found ${theName(place)}. +${usd(paid)}` : `You found ${theName(place)}.`);
+      n.onFound = (place) => notify(`You found ${theName(place)}.`);
       n.onBought = (item) => notify(`${(STOCK.find((s) => s.item === item)?.label ?? item).replace(/^./, (c) => c.toUpperCase())}, yours. It's on you now.`);
       n.onStack = (id, stack) => world.current?.setStack(id, stack);
       n.onStacks = (rows) => setStacks(rows);
@@ -325,11 +277,15 @@ export default function PlayPage() {
         world.current?.removeLooseNote(note);
         world.current?.bubble(id === n.you ? "me" : id, `+${usd(v)}`);
       };
-      n.onPaid = (amount) => notify(amount > 0 ? `Mr Bands paid you ${usd(amount)}.` : "Nothing to collect yet. Finish a job and come back.");
+      n.onSpill = (street, until) => {
+        if (street < 0 || street >= STREET_NAMES.length) return;
+        setSpill({ street, until });
+        notify(`The Mint spilled on the ${STREET_NAMES[street]} street. Three minutes.`);
+      };
       n.onError = (why) => {
         if (isLayRefusal(why) && routes.current.refused) routes.current.refused(why);
         else if (ERROR_TEXT[why]) notify(ERROR_TEXT[why]);
-        // the note under your feet is not yours today: stop asking for it
+        // the coin under your feet is not yours today: stop asking for it
         if (why === "notes done" && lastAsked.current) world.current?.muteNote(lastAsked.current);
       };
       n.onLeave = (id) => {
@@ -346,69 +302,35 @@ export default function PlayPage() {
       };
       n.onSay = (id, p) => world.current?.bubble(id, p);
       n.onLaid = (m) => {
-        const stake = typeof m.stake === "number" && m.stake > 0 ? m.stake : 0;
-        const laid = {
-          roundId: m.roundId,
-          lower: m.lower,
-          upper: m.upper,
-          tickMs: m.tickMs,
-          real: typeof m.real === "boolean" ? m.real : undefined,
-          stake,
-          rake: stake && typeof m.rake === "number" ? m.rake : 0,
-          hold: stake && typeof m.hold === "number" ? m.hold : TICKS,
-        };
         const resolve = routes.current.laid.get(m.pool.address);
         routes.current.laid.delete(m.pool.address);
-        // a practice round nobody is waiting for (its panel closed while the room answered) is closed at once; a
-        // staked one rides on the server, so the page keeps it whether or not a panel is waiting
-        if (!resolve && !stake) {
+        // a round nobody is waiting for (its panel closed while the room answered) is closed at once
+        if (!resolve) {
           n.closeRound(m.roundId);
           return;
         }
-        setLive({ roundId: m.roundId, label: m.pool.label, address: m.pool.address, laid, frames: [] });
-        resolve?.(laid);
+        resolve({ roundId: m.roundId, lower: m.lower, upper: m.upper, tickMs: m.tickMs, real: typeof m.real === "boolean" ? m.real : undefined });
       };
       n.onTick = (m) => {
         const f: Frame = { i: m.i, p: m.p, feesPct: m.feesPct, valuePct: m.valuePct, holdPct: m.holdPct, inRange: m.inRange };
-        const l = liveRef.current;
-        if (l && l.roundId === m.roundId) setLive({ ...l, frames: [...l.frames, f] });
         routes.current.frames.get(m.roundId)?.(f);
       };
       n.onScored = (m) => {
-        const shown = routes.current.scores.get(m.roundId);
-        shown?.({
+        routes.current.scores.get(m.roundId)?.({
           pct: m.pct,
           rank: m.rank ?? null,
           at: typeof m.at === "number" && Number.isFinite(m.at) ? m.at : undefined,
           from: typeof m.from === "number" && Number.isFinite(m.from) ? m.from : undefined,
-          stake: m.stake,
-          back: m.back,
         });
-        const l = liveRef.current;
-        if (l && l.roundId === m.roundId) {
-          // nobody watching (the panel was closed): a stake's result is told here; a practice round was walked away from
-          if (!shown && l.laid.stake > 0) {
-            const back = typeof m.back === "number" ? m.back : 0;
-            const made = back - l.laid.stake - l.laid.rake;
-            notify(`Your band on ${l.label} came back ${usd(back)} (${made >= 0 ? "+" : "−"}${usd(Math.abs(made))}, ${sign(m.pct)} against holding).`);
-          }
-          setLive(null);
-        }
       };
       n.onCorrect = (x, z, ry) => world.current?.setMyPosition(x, z, ry);
       n.onBoard = (rows) => setLeaders(rows);
       n.connect(strapIx);
     },
-    [notify, setLive],
+    [notify],
   );
 
-  useEffect(
-    () => () => {
-      net.current?.close();
-      window.clearTimeout(quietTimer.current);
-    },
-    [],
-  );
+  useEffect(() => () => net.current?.close(), []);
 
   // a panel open: it takes the keys (focus, Escape) and the world stops reading them
   useEffect(() => {
@@ -431,29 +353,13 @@ export default function PlayPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [entered]);
 
-  // the errand's door, marked in the world as the account changes
-  const targets = useMemo(() => errandTargets(me), [me]);
+  // the Mint's spill: its signpost stands at the street's mouth until the spill's time is up
   useEffect(() => {
-    world.current?.setMarker(targets[0] ?? null);
-  }, [targets]);
-
-  // the Exchange's wall: his paper book, from the live feed the site already reads (three lines; none if it serves none)
-  useEffect(() => {
-    if (panel?.kind !== "place" || panel.id !== "exchange" || paperAsked.current) return;
-    paperAsked.current = true;
-    let live = true;
-    loadLiveFeed()
-      .then((f) => {
-        if (!live || !f) return;
-        const record = recordOf(f.entries);
-        if (!record) return;
-        setPaper({ equity: record.equityNow, open: bookOf(f.entries).bands.length, fees: record.feesRealized });
-      })
-      .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, [panel]);
+    world.current?.setSpill(spill ? spill.street : null);
+    if (!spill) return;
+    const timer = window.setTimeout(() => setSpill(null), Math.max(0, spill.until - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [spill]);
 
   function enter() {
     try {
@@ -470,16 +376,11 @@ export default function PlayPage() {
   openRef.current = openSpot;
   function openSpot(s: Spot) {
     if (panelRef.current) return;
-    // the rules errand ends at the Guard House and then the desk: the room counts each door as you use it
-    const onRules = meRef.current?.errand?.id === "rules";
     if (s.kind === "desk") {
-      setLine(0);
+      setCashed(null);
       setPanel({ kind: "desk" });
-      if (onRules) net.current?.enter(PLACE_IDS.desk);
-    } else if (s.kind === "guards") {
-      setPanel({ kind: "guards" });
-      if (onRules) net.current?.enter(PLACE_IDS.guardHouse);
-    } else if (s.kind === "notes") setPanel({ kind: "notes" });
+    } else if (s.kind === "guards") setPanel({ kind: "guards" });
+    else if (s.kind === "notes") setPanel({ kind: "notes" });
     else if (s.kind === "place") {
       const id = s.place?.id ?? s.id;
       if (!PLACES.some((p) => p.id === id)) return;
@@ -493,17 +394,11 @@ export default function PlayPage() {
     }
   }
 
-  /** the panel closes; a practice band at its stall does not ride on its own, so walking away closes it */
-  function closePanel() {
-    const p = panelRef.current;
-    const l = liveRef.current;
-    if (p?.kind === "stall" && l && l.address === p.pool.address && l.laid.stake === 0) net.current?.closeRound(l.roundId);
-    setPanel(null);
-  }
+  const closePanel = () => setPanel(null);
 
   const online = status === "online";
 
-  /** a stall round: dealt, streamed and scored by the room when online (a leaderboard round), local when not */
+  /** a stall round: dealt, streamed and scored by the room when online (a Best rounds board round), local when not */
   const source = useMemo(() => (online && net.current ? onlineSource(net.current, routes.current) : offlineSource()), [online]);
 
   function emote(e: EmoteId) {
@@ -523,18 +418,20 @@ export default function PlayPage() {
     net.current?.climb();
   }
 
+  /** the word after your name: who else is here, or why you are alone */
+  const company = online ? `${others + 1} here` : status === "connecting" ? "connecting…" : status === "elsewhere" ? "open in another tab" : status === "full" ? "the plaza is full · alone" : "alone";
+  const coins = me?.coins ?? 0;
+
   return (
     <main className="play" aria-label="The Bands Exchange">
-      <canvas ref={canvas} className="play__canvas" tabIndex={0} aria-label="The plaza. Move with W A S D or the arrow keys, drag to look around, E to use." />
+      <canvas ref={canvas} className="play__canvas" tabIndex={0} aria-label="The town. Move with W A S D or the arrow keys, drag to look around, E to use." />
 
       {!entered && (
         <div className="play__gate">
           <div className="play-card play__intro">
             <p className="play-eyebrow">bands.finance · play</p>
             <h1 className="play__title">The Bands Exchange</h1>
-            <p className="play__lede">
-              Stack bands. Lay them at the stalls on the pools paying the most fees this hour, pick up loose notes, and collect your pay from Mr Bands at his desk. {gameWsUrl() && "Your stack is kept for this browser while its site data lasts. "}Play money only.
-            </p>
+            <p className="play__lede">Explore the town, find coins, and bring them to Mr Bands to turn into cash. Stack the bands. Play money only.</p>
             <div className="play__straps" role="radiogroup" aria-label="Your hat strap">
               <span>Your hat strap</span>
               {STRAPS.map((c, i) => (
@@ -546,16 +443,15 @@ export default function PlayPage() {
                 <>
                   <li>Left thumb: walk</li>
                   <li>Right thumb: look around</li>
-                  <li>Tap the button that appears to use a stall, the desk, a sign or a door</li>
+                  <li>Tap the button that appears to use a door or a stall</li>
                 </>
               ) : (
                 <>
                   <li>
                     <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> walk, <kbd>Shift</kbd> run
                   </li>
-                  <li>Drag to look around, scroll to zoom</li>
                   <li>
-                    <kbd>E</kbd> use a stall, the desk, a sign or a door
+                    <kbd>E</kbd> use a door or a stall
                   </li>
                   <li>
                     <kbd>M</kbd> the map
@@ -564,7 +460,7 @@ export default function PlayPage() {
               )}
             </ul>
             <button type="button" className="play-btn play-btn--ink" onClick={enter} disabled={loading}>
-              {loading ? "Setting up the plaza…" : "Enter the Exchange"}
+              {loading ? "Setting up the town…" : "Enter the town"}
             </button>
           </div>
         </div>
@@ -573,38 +469,20 @@ export default function PlayPage() {
       {entered && (
         <>
           <div className="play__hud play__hud--tl">
-            <span className="play__where">The Bands Exchange</span>
-            <span className={`play__net play__net--${status}`}>
-              {status === "online"
-                ? `Online · ${others + 1} here`
-                : status === "connecting"
-                  ? "Connecting…"
-                  : status === "full"
-                    ? "The plaza is full · single player. Reload to try again."
-                    : status === "elsewhere"
-                      ? "Open in another tab · playing there"
-                      : "Single player"}
-            </span>
             <span className="play__me">
               {myName}
-              {online && me?.title && <span className="play__rank">{me.title}</span>}
+              <small>{company}</small>
             </span>
             {online && me && (
-              <span className="play__stack" title={usd(me.stack)}>
-                <b>{usd(me.stack)}</b>
-                {bandsWord(me.stack) && <small>{bandsWord(me.stack)}</small>}
-              </span>
-            )}
-            {online && me && errandLine(me) && (
-              <span className="play__errand" role="status">
-                <small>Errand</small>
-                {errandLine(me)}
-              </span>
-            )}
-            {online && live && (
-              <span className="play__ride" role="status">
-                Band on {live.label} · hour {live.frames[live.frames.length - 1]?.i ?? 0} of {live.laid.hold}
-              </span>
+              <>
+                <span className="play__coins" role="status">
+                  <Coin />
+                  {coins} coin{coins === 1 ? "" : "s"}
+                </span>
+                <span className="play__stack" title={usd(me.stack)}>
+                  {bandsAndCash(me.stack)}
+                </span>
+              </>
             )}
           </div>
           {toast && (
@@ -674,18 +552,17 @@ export default function PlayPage() {
                 <img src="/art/brand/portrait-cigar.webp" alt="Mr Bands" width={96} height={96} />
                 <div>
                   <p className="play-eyebrow">Mr Bands, at his desk</p>
-                  <p className="play__line">{DESK_LINES[line]}</p>
-                  {online && me && <Pay me={me} onCollect={() => net.current?.pay()} />}
-                  {online && me && <ErrandBoard me={me} onTake={() => net.current?.takeErrand()} />}
+                  <p className="play__line">{deskLine(online ? me : null, cashed)}</p>
+                  {cashed && cashed.coins > 0 && me && (
+                    <p className="play__reveal" role="status">
+                      +{usd(cashed.cash)} · {bandsAndCash(me.stack)}
+                    </p>
+                  )}
                   <div className="lp__row">
-                    {line < DESK_LINES.length - 1 ? (
-                      <button type="button" className="play-btn play-btn--ink" onClick={() => setLine((l) => l + 1)}>
-                        Go on
+                    {!(cashed && cashed.coins > 0) && (
+                      <button type="button" className="play-btn play-btn--ink" disabled={!online || coins <= 0} onClick={() => net.current?.cashin()}>
+                        Cash in {coins} coin{coins === 1 ? "" : "s"}
                       </button>
-                    ) : (
-                      <a className="play-btn play-btn--ink" href="https://mrbands.finance" target="_blank" rel="noreferrer">
-                        See him trade ↗
-                      </a>
                     )}
                     <button type="button" className="play-btn" onClick={closePanel}>
                       Walk on
@@ -776,12 +653,12 @@ export default function PlayPage() {
                     {!leaders.length && <li className="play__empty">No scores yet. Be the first at a stall.</li>}
                   </ol>
                 ) : boardTab === "rounds" ? (
-                  <p className="lp__sub">Scores go on the board when the Exchange is online. Offline, every round is practice.</p>
+                  <p className="lp__sub">Scores go on the board when the Exchange is online.</p>
                 ) : null}
               </div>
             )}
-            {panel.kind === "stall" && <LpRound key={panel.pool.address} pool={panel.pool} source={source} ranked={online} me={online ? me : null} live={online ? live : null} onClose={closePanel} />}
-            {panel.kind === "map" && <TownMap pose={pose} found={me?.found ?? NONE_FOUND} targets={targets} />}
+            {panel.kind === "stall" && <LpRound key={panel.pool.address} pool={panel.pool} source={source} ranked={online} onClose={closePanel} />}
+            {panel.kind === "map" && <TownMap pose={pose} found={me?.found ?? NONE_FOUND} spill={spill ? spill.street : null} />}
             {panel.kind === "place" && (
               <Interior
                 key={panel.id}
@@ -792,14 +669,10 @@ export default function PlayPage() {
                 myName={myName}
                 stacks={stacks}
                 board={boardRows}
-                paper={paper}
                 notes={notes}
                 onBuy={(item) => net.current?.buy(item)}
                 onClimb={() => climb(panel.id)}
-                onAnswer={(hour) => net.current?.answer(hour)}
-                onTake={() => net.current?.takeErrand()}
                 onClose={closePanel}
-                notify={notify}
               />
             )}
           </div>
@@ -809,55 +682,16 @@ export default function PlayPage() {
   );
 }
 
-/** today's pay at the desk: the wage, each job and how far along it is, the errands owed, and what can be collected now */
-function Pay({ me: known, onCollect }: { me: Me; onCollect(): void }) {
-  // the account is as the server last said; past midnight UTC the day is fresh (the wage due, the jobs at nought)
-  // and the server would say so on collecting, so the desk says so first
-  const me: Me = known.day === utcDay() ? known : { ...known, wagePaid: false, jobs: known.jobs.map((j) => ({ ...j, have: 0, paid: false })) };
-  const due =
-    (me.wagePaid ? 0 : WAGE) +
-    me.owed +
-    JOBS.reduce((t, j) => {
-      const s = me.jobs.find((x) => x.id === j.id);
-      return t + (s && !s.paid && s.have >= j.need ? j.reward : 0);
-    }, 0);
+/** a coin, in ink: two rings and the stamped B, the way the ones on the ground are cut */
+function Coin() {
   return (
-    <div className="play__pay">
-      <p className="play-eyebrow">Today's pay</p>
-      <ul>
-        <li className={me.wagePaid ? "is-paid" : "is-done"}>
-          <span>Your daily wage</span>
-          <b>{me.wagePaid ? "paid" : usd(WAGE)}</b>
-        </li>
-        {JOBS.map((j) => {
-          const s = me.jobs.find((x) => x.id === j.id);
-          const done = (s?.have ?? 0) >= j.need;
-          return (
-            <li key={j.id} className={s?.paid ? "is-paid" : done ? "is-done" : ""}>
-              <span>
-                {JOB_TEXT[j.id]}
-                {!done && j.need > 1 ? (
-                  <small>
-                    {" "}
-                    {s?.have ?? 0} of {j.need}
-                  </small>
-                ) : null}
-              </span>
-              <b>{s?.paid ? "paid" : usd(j.reward)}</b>
-            </li>
-          );
-        })}
-        {me.owed > 0 && (
-          <li className="is-done">
-            <span>Errands run</span>
-            <b>{usd(me.owed)}</b>
-          </li>
-        )}
-      </ul>
-      <button type="button" className="play-btn play-btn--ink" disabled={!due} onClick={onCollect}>
-        {due ? `Collect ${usd(due)}` : "Nothing to collect yet"}
-      </button>
-    </div>
+    <svg className="play__coin" viewBox="0 0 20 20" aria-hidden="true">
+      <circle cx="10" cy="10" r="8.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="10" cy="10" r="6.2" fill="none" stroke="currentColor" strokeWidth="0.7" />
+      <text x="10" y="13.4" textAnchor="middle" fontSize="9.5" fontWeight="700" fill="currentColor">
+        B
+      </text>
+    </svg>
   );
 }
 
