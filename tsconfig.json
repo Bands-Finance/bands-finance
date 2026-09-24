@@ -14,5 +14,5 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "exclude": ["src/scripts/test-web-model.ts"]
+  "exclude": ["src/scripts/test-web-model.ts", "src/scripts/test-game-room.ts", "src/scripts/test-lpgame.ts"]
 }

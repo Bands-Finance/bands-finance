@@ -4,7 +4,7 @@ import { useAccount } from "../platform/AccountProvider";
 import { shortAddress } from "../platform/useBandsAccount";
 import "./Header.css";
 
-export type Route = "home" | "pools" | "learn" | "agents" | "me";
+export type Route = "home" | "pools" | "learn" | "agents" | "me" | "play";
 
 export interface HeaderProps {
   route: Route;
@@ -25,6 +25,7 @@ const NAV: { id: Route; label: string; href: string }[] = [
   { id: "learn", label: "Learn", href: "#/learn" },
   { id: "agents", label: "Agents", href: "#/agents" },
   { id: "me", label: "Me", href: "#/me" },
+  { id: "play", label: "Play", href: "#/play" },
 ];
 
 export function Header({ route }: HeaderProps) {
