@@ -19,7 +19,7 @@
 import { isEmote, isPhrase, MAX_SPEED, MOVE_HZ, ROOM_CAP, ROUND_TICK_MS, STRAPS, TICK_HZ, WORLD_RADIUS } from "../../web/src/game/protocol";
 import type { PlayerState, S2C, ScoreRow } from "../../web/src/game/protocol";
 import { MARKET_HOURS, marketWindow, poolParamsFromHot, seriesOf, simulate, TICKS, validateChoice } from "../../web/src/game/lpGame";
-import type { Market, PoolParams, SimResult } from "../../web/src/game/lpGame";
+import type { History, Market, PoolParams, SimResult } from "../../web/src/game/lpGame";
 
 // ---------------------------------------------------------------- limits
 
@@ -292,6 +292,20 @@ export function boardSource(opts: {
     }
     return inflight;
   };
+}
+
+/**
+ * One pool's entry in the desk's history.json ({ pools: { [address]: { price: [[s, close]], volume: [[s, usd]] } } },
+ * src/publish/gameHistory.ts) as a History (candles, the shape hourlySeries reads), or null when it isn't there.
+ */
+export function historyFromFile(file: unknown, address: string): History | null {
+  const pools = isRecord(file) && isRecord(file.pools) ? file.pools : null;
+  const h = pools && Object.prototype.hasOwnProperty.call(pools, address) ? pools[address] : null;
+  if (!isRecord(h) || !Array.isArray(h.price) || !Array.isArray(h.volume)) return null;
+  const pairs = (rows: unknown[]) => rows.filter((r): r is [number, number] => Array.isArray(r) && r.length === 2 && isNum(r[0]) && isNum(r[1]));
+  const price = pairs(h.price).map(([t, c]) => [t, c, c, c, c, 0]);
+  const volume = pairs(h.volume).map(([t, v]) => [t, 1, 1, 1, 1, v]);
+  return price.length && volume.length ? { price, volume } : null;
 }
 
 /**
