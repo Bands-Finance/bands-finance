@@ -8,6 +8,11 @@
  * simulate() (src/game/lpGame.ts) and streams the result one tick at a time as its clock reaches each tick ("tick");
  * the player may "close" at any time, which settles the round at the last tick already sent. The browser never sees
  * the seed or any tick before its time, so there is nothing to search offline.
+ *
+ * THE STACK (24 Sep): every visitor keeps an account on the server, opened again by a key only their browser holds.
+ * Its stack is in whole dollars (a band is $1,000). It grows at the stalls (a staked round pays back the position's
+ * worth at the close: its value plus its fees), from Mr Bands (a daily wage and daily jobs, collected at his desk) and
+ * from loose notes found about the plaza. Every change to a stack is the server's own.
  */
 
 /** the plaza is a disc of this radius, in world units (metres); the server clamps every position into it */
@@ -41,6 +46,68 @@ export interface PlayerState {
   /** heading, radians */
   ry: number;
   moving: boolean;
+  /** their stack, dollars */
+  stack: number;
+}
+
+// ---------------------------------------------------------------- the stack
+
+/** a band: a strapped stack of $1,000 */
+export const BAND = 1000;
+/** a new account's stack */
+export const START_STACK = 1000;
+/** the least a staked round takes (0 is a practice round: nothing staked, nothing won) */
+export const MIN_STAKE = 100;
+/** staked rounds a day (UTC); practice rounds are unlimited */
+export const ROUNDS_PER_DAY = 24;
+/** Mr Bands' daily wage, collected at his desk */
+export const WAGE = 250;
+/** loose notes a player can pick up in a day */
+export const NOTES_PER_DAY = 40;
+/** how near a note you must be to pick it up, metres (the server's check) */
+export const NOTE_REACH = 2;
+/** where Mr Bands' pay is collected: the front of his desk, and how near it you must stand */
+export const DESK_SPOT = { x: -20.9, z: 2.8, r: 4.5 } as const;
+
+export type JobId = "range" | "beat" | "notes" | "wave";
+/** Mr Bands' daily jobs: `need` of something in a day, paid `reward` once at his desk */
+export const JOBS: readonly { id: JobId; need: number; reward: number }[] = [
+  /** keep price inside your band 24 hours of one round */
+  { id: "range", need: 24, reward: 300 },
+  /** close a band ahead of just holding */
+  { id: "beat", need: 1, reward: 300 },
+  /** pick up 5 loose notes */
+  { id: "notes", need: 5, reward: 200 },
+  /** wave at someone standing near you */
+  { id: "wave", need: 1, reward: 100 },
+];
+
+/** a player's own account, as they see it */
+export interface Me {
+  stack: number;
+  /** in play on an open round (not in the stack until it settles) */
+  staked: number;
+  /** the UTC day the counts below are for, "2026-09-24" */
+  day: string;
+  wagePaid: boolean;
+  jobs: { id: JobId; have: number; paid: boolean }[];
+  /** staked rounds played today */
+  rounds: number;
+  /** notes picked up today */
+  notes: number;
+}
+
+/** a loose note on the ground, worth v dollars */
+export interface Note {
+  id: string;
+  x: number;
+  z: number;
+  v: number;
+}
+
+export interface StackRow {
+  name: string;
+  stack: number;
 }
 
 export interface ScoreRow {
@@ -55,7 +122,8 @@ export interface ScoreRow {
 // ---------------------------------------------------------------- client -> server
 
 export type C2S =
-  | { t: "hello"; strap: number }
+  /** key: the account key this browser was given, to open the same account again */
+  | { t: "hello"; strap: number; key?: string }
   | { t: "move"; x: number; z: number; ry: number; moving: boolean }
   | { t: "emote"; e: EmoteId }
   | { t: "say"; p: PhraseId }
@@ -63,14 +131,32 @@ export type C2S =
    * lay a band on one of the live pools (by label or address; the server looks it up in its own copy of the board)
    * and start a round. One round open per player at a time, one lay a second.
    */
-  | { t: "lay"; pool: string; widthBins: number; offsetBins: number }
+  | { t: "lay"; pool: string; widthBins: number; offsetBins: number; stake?: number }
+  /** pick up a loose note (the server checks you stand within NOTE_REACH of it) */
+  | { t: "pick"; note: string }
+  /** collect the wage and any finished jobs (the server checks you stand at the desk) */
+  | { t: "pay" }
   /** settle the open round now, at the last tick the server has sent (tick 1 if none has gone out yet) */
   | { t: "close"; roundId: string };
 
 // ---------------------------------------------------------------- server -> client
 
 export type S2C =
-  | { t: "welcome"; you: string; name: string; players: PlayerState[]; board: ScoreRow[] }
+  /** key: sent once, when the account is new; the browser keeps it to come back to the same stack */
+  | { t: "welcome"; you: string; name: string; players: PlayerState[]; board: ScoreRow[]; me: Me; notes: Note[]; stacks: StackRow[]; key?: string }
+  /** this player's account changed */
+  | { t: "me"; me: Me }
+  /** someone's stack changed (for their name tag) */
+  | { t: "stack"; id: string; stack: number }
+  | { t: "notes"; add: Note[]; gone: string[] }
+  /** someone picked up a note worth v */
+  | { t: "picked"; id: string; note: string; v: number }
+  /** Mr Bands paid this player: the wage and jobs collected, in dollars */
+  | { t: "paid"; amount: number }
+  /** the biggest stacks changed */
+  | { t: "stacks"; rows: StackRow[] }
+  /** this account was opened in another tab; this socket is closed */
+  | { t: "elsewhere" }
   | { t: "join"; p: PlayerState }
   | { t: "leave"; id: string }
   /** batched positions: [id, x, z, ry, moving 0|1] */
@@ -88,7 +174,7 @@ export type S2C =
    * the round is settled (closed, or it reached TICKS): pct against holding; rank on the board, or null if not on it;
    * for a real round, when its stretch of history began (unix seconds)
    */
-  | { t: "scored"; roundId: string; pct: number; rank: number | null; from?: number }
+  | { t: "scored"; roundId: string; pct: number; rank: number | null; from?: number; stake?: number; back?: number }
   | { t: "board"; rows: ScoreRow[] }
   | { t: "full" }
   /** the visitor is sending too much; messages are being dropped */

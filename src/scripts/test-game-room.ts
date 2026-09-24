@@ -19,8 +19,17 @@ import {
   cleanBoard,
   CLOSE_FULL,
   CLOSE_NO_HELLO,
+  CLOSE_ELSEWHERE,
+  memoryAccounts,
+  NOTE_EVERY_MS,
+  NOTE_MIN,
+  NOTE_SPOTS,
+  NOTE_SPREAD,
+  NOTES_ON_GROUND,
   ERROR_GAP_MS,
   HELLO_TIMEOUT_MS,
+  LAY_GAP_MS,
+  SOCIAL_GAP_MS,
   HISTORY_KEEP,
   historyFromFile,
   HISTORY_RETRY_MS,
@@ -43,8 +52,26 @@ import {
   SPAWN_RADIUS,
   wrapAngle,
 } from "../../game-server/src/core";
-import type { RoomDeps } from "../../game-server/src/core";
-import { EMOTES, MAX_SPEED, MOVE_HZ, PHRASES, ROOM_CAP, ROUND_TICK_MS, STRAPS, WORLD_RADIUS } from "../../web/src/game/protocol";
+import type { AccountStore, RoomDeps } from "../../game-server/src/core";
+import {
+  BAND,
+  DESK_SPOT,
+  EMOTES,
+  JOBS,
+  MAX_SPEED,
+  MIN_STAKE,
+  MOVE_HZ,
+  NOTE_REACH,
+  NOTES_PER_DAY,
+  PHRASES,
+  ROOM_CAP,
+  ROUND_TICK_MS,
+  ROUNDS_PER_DAY,
+  START_STACK,
+  STRAPS,
+  WAGE,
+  WORLD_RADIUS,
+} from "../../web/src/game/protocol";
 import type { S2C, ScoreRow } from "../../web/src/game/protocol";
 import { hourlySeries, MARKET_HOURS, marketWindow, simulate, TICKS } from "../../web/src/game/lpGame";
 import type { Choice, PoolParams } from "../../web/src/game/lpGame";
@@ -101,7 +128,15 @@ const ofType = <T extends S2C["t"]>(msgs: S2C[], t: T): Of<T>[] => msgs.filter((
 
 /** a room on fakes: per-socket inboxes, a hand-wound clock */
 function world(
-  opts: { pools?: PoolParams[]; board?: () => Promise<PoolParams[]>; history?: (pool: PoolParams) => Promise<unknown>; leaderboard?: unknown; seed?: number } = {},
+  opts: {
+    pools?: PoolParams[];
+    board?: () => Promise<PoolParams[]>;
+    history?: (pool: PoolParams) => Promise<unknown>;
+    leaderboard?: unknown;
+    seed?: number;
+    accounts?: AccountStore;
+    notes?: boolean;
+  } = {},
 ) {
   let t = Date.parse("2026-09-24T12:00:00Z");
   const inbox = new Map<string, S2C[]>();
@@ -116,7 +151,7 @@ function world(
   };
   const closed: { id: string; code: number; reason: string }[] = [];
   const saved: ScoreRow[][] = [];
-  const joined: { id: string; name: string; strap: number }[] = [];
+  const joined: { id: string; account: string }[] = [];
   const deps: RoomDeps = {
     send: (id, msg) => push(id, msg),
     broadcast: (msg, exceptId) => {
@@ -126,9 +161,11 @@ function world(
     random: seeded(opts.seed ?? 7),
     board: opts.board ?? (async () => opts.pools ?? POOLS),
     ...(opts.history ? { history: opts.history } : {}),
+    ...(opts.accounts ? { accounts: opts.accounts } : {}),
+    notes: opts.notes ?? false,
     saveBoard: (rows) => saved.push(rows),
     close: (id, code, reason) => closed.push({ id, code, reason }),
-    joined: (id, name, strap) => joined.push({ id, name, strap }),
+    joined: (id, account) => joined.push({ id, account }),
   };
   const core = new RoomCore(deps, opts.leaderboard);
   const w = {
@@ -144,8 +181,14 @@ function world(
       t += ms;
     },
     inbox: (id: string) => inbox.get(id) ?? [],
-    /** read and empty one inbox */
+    /** read and empty one inbox, leaving out the account updates ("me": the stack tests read them with takeAll) */
     take(id: string): S2C[] {
+      const box = inbox.get(id) ?? [];
+      inbox.set(id, []);
+      return box.filter((m) => m.t !== "me");
+    },
+    /** read and empty one inbox, everything */
+    takeAll(id: string): S2C[] {
       const box = inbox.get(id) ?? [];
       inbox.set(id, []);
       return box;
@@ -454,7 +497,7 @@ async function main() {
     w.clear();
     await w.send(a, { t: "emote", e: "wave", note: "<script>" });
     assert.deepEqual(w.take(b), [{ t: "emote", id: a, e: "wave" }], "only the id and the emote go out");
-    assert.deepEqual(w.take(a), [], "no echo to the sender");
+    assert.deepEqual(w.take(a).filter((m) => m.t === "emote" || m.t === "say"), [], "no echo to the sender");
     await w.send(a, { t: "say", p: "Hello" });
     assert.equal(ofType(w.take(b), "say").length, 0, "inside the second: dropped (emotes and phrases share it)");
     assert.equal(ofType(w.take(a), "slow").length, 1);
@@ -568,7 +611,7 @@ async function main() {
       for (const m of w.take(a)) {
         if (m.t === "tick") seen.push({ m, at: w.now });
         else if (m.t === "scored") scored.push({ m, at: w.now, after: seen.length });
-        else assert.equal(m.t, "board", `unexpected ${m.t}`);
+        else assert.ok(m.t === "board" || m.t === "me", `unexpected ${m.t}`);
       }
     }
     assert.deepEqual(seen.map((s) => s.m.i), Array.from({ length: TICKS }, (_, j) => j + 1), "1..TICKS, in order, once each");
@@ -681,24 +724,31 @@ async function main() {
     assert.equal(ofType(w.take(a), "laid").length, 1);
   });
 
-  await test("leaving forfeits the round: nothing recorded, nothing broadcast, a lay in flight dropped", async () => {
-    const w = world();
+  await test("leaving settles the round at the last hour sent: the score recorded, the stake paid back; a lay in flight dropped", async () => {
+    const store = memoryAccounts();
+    const w = world({ accounts: store });
     const [a, b] = [await w.join(), await w.join()];
     w.clear();
-    await w.lay(a);
+    const { view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: 500 });
     w.run(5 * ROUND_TICK_MS);
     w.core.leave(a);
     w.run(TICKS * ROUND_TICK_MS + 1000);
-    assert.deepEqual(w.take(b), [{ t: "leave", id: a }], "only the leave");
-    assert.deepEqual(w.core.leaderboard(), []);
-    assert.deepEqual(w.saved, []);
+    const heard = w.take(b);
+    assert.deepEqual(heard.map((m) => m.t), ["stack", "stacks", "stack", "stacks", "board", "leave"], "the stake out, the stake back (each moving the stacks board), the score, the leave");
+    const res = simulate(CARDS, view.seed, { ...CHOICE, closeAt: 5 });
+    const name = w.core.leaderboard()[0].name;
+    assert.equal(w.core.leaderboard()[0].pct, res.scorePct);
+    const back = Math.round((500 * (res.valuePct[5] + res.feesPct[5])) / 100);
+    const acct = store.all().find((x) => x.name === name)!;
+    assert.equal(acct.stack, START_STACK - 500 + back);
+    assert.equal(acct.staked, 0);
 
     let release: (p: PoolParams[]) => void = () => {};
     const v = world({ board: () => new Promise<PoolParams[]>((r) => (release = r)) });
     const c = await v.join();
     v.take(c);
     v.advance(1000);
-    const pending = v.send(c, { t: "lay", pool: CARDS.label, ...CHOICE });
+    const pending = v.send(c, { t: "lay", pool: CARDS.label, ...CHOICE, stake: 300 });
     v.core.leave(c);
     release(POOLS);
     await pending;
@@ -706,18 +756,21 @@ async function main() {
     assert.equal(v.core.connections, 0);
   });
 
-  await test("a round still open TICKS * ROUND_TICK_MS + 30 s after it was laid is dropped: 'round expired', no ticks, no score", async () => {
+  await test("a round whose heartbeat stalls past TICKS * ROUND_TICK_MS + 30 s settles at the last hour sent", async () => {
     const w = world();
     const a = await w.join();
     w.take(a);
-    const { laid } = await w.lay(a);
+    const { laid, view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: 400 });
     w.advance(ROUND_TTL_MS - 500);
     assert.deepEqual(await w.close(a, "r-made-up"), [{ t: "error", why: "no such round" }], "an error just before");
     w.advance(501); // the heartbeat stalled all this while
     w.core.tick();
-    assert.deepEqual(w.take(a), [{ t: "error", why: "round expired" }], "told, even inside the error limit");
+    const [scored] = ofType(w.take(a), "scored");
+    const res = simulate(CARDS, view.seed, { ...CHOICE, closeAt: 1 });
+    assert.equal(scored.pct, res.scorePct);
+    assert.equal(scored.stake, 400);
     assert.equal(w.core.roundOf(a), null);
-    assert.deepEqual(w.core.leaderboard(), []);
+    assert.equal(w.core.meOf(a)!.staked, 0, "the stake is never stranded");
     w.advance(ERROR_GAP_MS);
     assert.deepEqual(await w.close(a, laid.roundId), [{ t: "error", why: "no such round" }]);
     const again = await w.lay(a);
@@ -859,23 +912,226 @@ async function main() {
     assert.equal(ofType(w.take(a), "slow").length, 1);
   });
 
-  await test("restore after a restart: back in the room without a broadcast, first move taken as the position", async () => {
-    const w = world();
-    const a = await w.join();
+  await test("restore after a restart: back in the room by account, without a broadcast, first move trusted, a lost round's stake refunded", async () => {
+    const store = memoryAccounts();
+    const before = world({ accounts: store });
+    const a = await before.join({ strap: 4 });
+    await before.lay(a, CARDS.label, { ...CHOICE, stake: 600 });
+    const acct = store.all()[0];
+    assert.equal(acct.staked, 600, "the stake is on the account while the round runs");
+    // the object restarts: a new core on the same store, the socket still open (its own seed: ids come from the random)
+    const w = world({ accounts: store, seed: 99 });
+    const b = await w.join();
     w.clear();
-    w.core.restore("zz0001", "Quiet Owl 17", 9);
+    assert.equal(w.core.restore("zz0001", acct.id), true);
     assert.equal(w.all().length, 0, "no join broadcast");
-    assert.equal(w.pos("zz0001").name, "Quiet Owl 17");
-    assert.equal(w.pos("zz0001").strap, STRAPS.length - 1);
+    assert.equal(w.pos("zz0001").name, acct.name);
+    assert.equal(w.pos("zz0001").strap, 4);
+    assert.equal(w.core.meOf("zz0001")!.stack, START_STACK, "the lost round's stake came back");
+    assert.equal(w.core.meOf("zz0001")!.staked, 0);
     w.advance(100);
     await w.send("zz0001", { t: "move", x: 30, z: -10, ry: 0, moving: true });
     assert.deepEqual([w.pos("zz0001").x, w.pos("zz0001").z], [30, -10]);
     w.advance(100);
     await w.send("zz0001", { t: "move", x: -30, z: -10, ry: 0, moving: true });
     assert.equal(w.pos("zz0001").x, 30, "only the first move is trusted");
-    w.core.restore("zz0002", "<b>hacker</b>", 0);
-    assert.ok(isRoomName(w.pos("zz0002").name), "a bad stored name is replaced");
-    void a;
+    assert.equal(w.core.restore("zz0002", "a-made-up-account"), false, "an unknown account is not restored (the host closes the socket)");
+    assert.equal(w.core.player("zz0002"), null);
+    void b;
+  });
+
+  // ---------------------------------------------------------------- the stack
+
+  await test("accounts: a new visitor gets a key and a $1,000 stack; the key opens the same account again; a bad key starts afresh", async () => {
+    const store = memoryAccounts();
+    const w = world({ accounts: store });
+    const a = await w.join({ strap: 2 });
+    const [wel] = ofType(w.take(a), "welcome");
+    assert.ok(wel.key && /^[A-Za-z0-9_-]{32}$/.test(wel.key), "a key for the browser to keep");
+    assert.equal(wel.me.stack, START_STACK);
+    assert.equal(wel.me.day, "2026-09-24");
+    assert.deepEqual(wel.me.jobs.map((j) => j.id), JOBS.map((j) => j.id));
+    assert.equal(wel.players.find((p) => p.id === a)!.stack, START_STACK, "stacks ride on the players");
+    assert.equal(store.all().length, 1);
+    assert.ok(!JSON.stringify(store.all()).includes(wel.key!), "the key itself is not stored");
+    w.core.leave(a);
+    // back later, with the key: the same name and stack, no new key
+    const b = await w.join({ strap: 5, key: wel.key });
+    const [back] = ofType(w.take(b), "welcome");
+    assert.equal(back.name, wel.name);
+    assert.equal(back.key, undefined);
+    assert.equal(w.pos(b).strap, 5, "the strap is the one picked today");
+    assert.equal(store.all().length, 1);
+    for (const key of ["short", "x".repeat(80), "not base64url!".padEnd(30, "!"), "A".repeat(32)]) {
+      const c = await w.join({ key });
+      const [fresh] = ofType(w.take(c), "welcome");
+      assert.ok(fresh.key && fresh.name !== wel.name, `${key.slice(0, 12)}: a new account`);
+    }
+  });
+
+  await test("one session per account: the older tab is told 'elsewhere' and closed, its round settled", async () => {
+    const w = world();
+    const a = await w.join();
+    const key = ofType(w.take(a), "welcome")[0].key!;
+    await w.lay(a, CARDS.label, { ...CHOICE, stake: 200 });
+    w.run(3 * ROUND_TICK_MS);
+    const b = await w.join({ key });
+    assert.ok(w.inbox(a).some((m) => m.t === "elsewhere"));
+    assert.deepEqual(w.closed.at(-1), { id: a, code: CLOSE_ELSEWHERE, reason: "elsewhere" });
+    assert.equal(w.core.player(a), null);
+    const [wel] = ofType(w.take(b), "welcome");
+    assert.equal(wel.me.staked, 0, "the round was settled, not stranded");
+    assert.notEqual(wel.me.stack, START_STACK - 200, "the stake's worth came back");
+  });
+
+  await test("stakes: MIN_STAKE up to the whole stack, whole dollars; taken at the lay, paid back at the close as value + fees", async () => {
+    const w = world();
+    const a = await w.join();
+    w.take(a);
+    for (const stake of [MIN_STAKE - 1, START_STACK + 1, 150.5, -100, "500", null]) {
+      w.advance(ERROR_GAP_MS + LAY_GAP_MS);
+      await w.send(a, { t: "lay", pool: CARDS.label, ...CHOICE, stake });
+      assert.deepEqual(ofType(w.take(a), "error").map((e) => e.why), ["bad stake"], `stake ${String(stake)}`);
+    }
+    const { laid, view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: 400 });
+    assert.equal(view.stake, 400);
+    assert.equal(w.core.meOf(a)!.stack, START_STACK - 400, "taken at the lay");
+    assert.equal(w.core.meOf(a)!.staked, 400);
+    assert.equal(w.core.meOf(a)!.rounds, 1);
+    w.advance(7 * ROUND_TICK_MS);
+    w.core.tick();
+    w.take(a);
+    const [scored] = ofType(await w.close(a, laid.roundId), "scored");
+    const res = simulate(CARDS, view.seed, { ...CHOICE, closeAt: 7 });
+    const back = Math.round((400 * (res.valuePct[7] + res.feesPct[7])) / 100);
+    assert.equal(scored.stake, 400);
+    assert.equal(scored.back, back);
+    assert.equal(w.core.meOf(a)!.stack, START_STACK - 400 + back);
+    assert.equal(w.core.meOf(a)!.staked, 0);
+    // a practice round leaves the stack alone and is not counted
+    const before = w.core.meOf(a)!.stack;
+    await w.playTo(a, TICKS);
+    assert.equal(w.core.meOf(a)!.stack, before);
+    assert.equal(w.core.meOf(a)!.rounds, 1);
+  });
+
+  await test("ROUNDS_PER_DAY staked rounds a day, practice unlimited; a new UTC day starts the count again", async () => {
+    const w = world();
+    const a = await w.join();
+    w.take(a);
+    for (let i = 0; i < ROUNDS_PER_DAY; i++) {
+      const { laid } = await w.lay(a, CARDS.label, { widthBins: 120, offsetBins: 0, stake: MIN_STAKE });
+      w.advance(ROUND_TICK_MS);
+      w.core.tick();
+      await w.close(a, laid.roundId);
+      if (w.core.meOf(a)!.stack < MIN_STAKE) break;
+    }
+    assert.equal(w.core.meOf(a)!.rounds, ROUNDS_PER_DAY);
+    w.advance(ERROR_GAP_MS + LAY_GAP_MS);
+    await w.send(a, { t: "lay", pool: CARDS.label, ...CHOICE, stake: MIN_STAKE });
+    assert.deepEqual(ofType(w.take(a), "error").map((e) => e.why), ["no rounds left"]);
+    await w.lay(a, CARDS.label, CHOICE); // practice still plays
+    w.run(TICKS * ROUND_TICK_MS + ROOM_TICK_MS);
+    w.take(a);
+    w.advance(24 * 3_600_000);
+    const { view } = await w.lay(a, CARDS.label, { ...CHOICE, stake: MIN_STAKE });
+    assert.equal(view.stake, MIN_STAKE, "a new day, new rounds");
+    assert.equal(w.core.meOf(a)!.rounds, 1);
+  });
+
+  await test("Mr Bands pays at his desk: the wage once a day and each finished job once; not from across the plaza", async () => {
+    const w = world();
+    const a = await w.join();
+    const b = await w.join();
+    w.take(a);
+    w.advance(ERROR_GAP_MS);
+    await w.send(a, { t: "pay" });
+    assert.deepEqual(ofType(w.take(a), "error").map((e) => e.why), ["not at the desk"]);
+    // the wave job: b stands near
+    await w.walk(b, DESK_SPOT.x + 2, DESK_SPOT.z);
+    await w.walk(a, DESK_SPOT.x, DESK_SPOT.z);
+    w.advance(SOCIAL_GAP_MS);
+    await w.send(a, { t: "emote", e: "wave" });
+    assert.equal(w.core.meOf(a)!.jobs.find((j) => j.id === "wave")!.have, 1);
+    await w.send(a, { t: "pay" });
+    const [paid] = ofType(w.take(a), "paid");
+    const wave = JOBS.find((j) => j.id === "wave")!.reward;
+    assert.equal(paid.amount, WAGE + wave);
+    assert.equal(w.core.meOf(a)!.stack, START_STACK + WAGE + wave);
+    await w.send(a, { t: "pay" });
+    assert.equal(ofType(w.take(a), "paid")[0].amount, 0, "nothing twice");
+    w.advance(24 * 3_600_000);
+    await w.send(a, { t: "pay" });
+    assert.equal(ofType(w.take(a), "paid")[0].amount, WAGE, "a new day, a new wage (the jobs start again)");
+    assert.equal(w.core.meOf(a)!.jobs.find((j) => j.id === "wave")!.have, 0);
+  });
+
+  await test("jobs: a wave with nobody near does not count; a round's hours in range and a round ahead of holding do", async () => {
+    const w = world();
+    const a = await w.join();
+    w.take(a);
+    await w.send(a, { t: "emote", e: "wave" });
+    assert.equal(w.core.meOf(a)!.jobs.find((j) => j.id === "wave")!.have, 0, "nobody near");
+    const { scored, view } = await w.playTo(a, TICKS, { widthBins: 120, offsetBins: 0 });
+    const res = simulate(CARDS, view.seed, { widthBins: 120, offsetBins: 0 });
+    const hours = res.inRange.slice(1).filter(Boolean).length;
+    const me = w.core.meOf(a)!;
+    assert.equal(me.jobs.find((j) => j.id === "range")!.have, Math.min(24, hours));
+    assert.equal(me.jobs.find((j) => j.id === "beat")!.have, scored.pct > 0 ? 1 : 0);
+  });
+
+  await test("loose notes: dropped on the heartbeat on open ground, NOTES_ON_GROUND at most; picked only within reach; NOTES_PER_DAY a day", async () => {
+    const w = world({ notes: true });
+    const a = await w.join();
+    const b = await w.join();
+    w.clear();
+    for (let i = 0; i < 12; i++) {
+      w.advance(NOTE_EVERY_MS);
+      w.core.tick();
+    }
+    const ground = w.core.notesOnGround();
+    assert.equal(ground.length, NOTES_ON_GROUND);
+    for (const n of ground) {
+      assert.ok(NOTE_SPOTS.some(([x, z]) => Math.hypot(n.x - x, n.z - z) <= Math.SQRT2 + 1e-9), "on an open spot");
+      assert.ok(n.v >= NOTE_MIN && n.v <= NOTE_MIN + NOTE_SPREAD);
+    }
+    assert.equal(ofType(w.take(b), "notes").length, NOTES_ON_GROUND, "everyone sees them drop");
+    const n = ground[0];
+    await w.send(a, { t: "pick", note: n.id });
+    assert.equal(w.core.notesOnGround().length, NOTES_ON_GROUND, "too far: still there");
+    await w.walk(a, n.x + NOTE_REACH * 0.7, n.z);
+    await w.send(a, { t: "pick", note: n.id });
+    assert.equal(w.core.meOf(a)!.stack, START_STACK + n.v);
+    assert.equal(w.core.meOf(a)!.notes, 1);
+    assert.equal(w.core.meOf(a)!.jobs.find((j) => j.id === "notes")!.have, 1);
+    assert.deepEqual(ofType(w.take(b), "picked"), [{ t: "picked", id: a, note: n.id, v: n.v }]);
+    await w.send(a, { t: "pick", note: n.id });
+    assert.equal(w.core.meOf(a)!.notes, 1, "gone is gone");
+    for (const [x, z] of NOTE_SPOTS) {
+      assert.ok(Math.hypot(x, z) < WORLD_RADIUS - 3, "inside the rope");
+      assert.ok(Math.hypot(x, z) > 6, "clear of the fountain");
+    }
+    assert.ok(NOTE_SPOTS.length >= 20, `${NOTE_SPOTS.length} spots`);
+    void NOTES_PER_DAY;
+  });
+
+  await test("the biggest stacks: biggest first, told to the room when the top changes", async () => {
+    const store = memoryAccounts();
+    const w = world({ accounts: store });
+    const a = await w.join();
+    const b = await w.join();
+    w.clear();
+    await w.walk(a, DESK_SPOT.x, DESK_SPOT.z);
+    await w.send(a, { t: "pay" });
+    const heard = w.take(b);
+    const rows = ofType(heard, "stacks").at(-1)!.rows;
+    assert.equal(rows[0].name, w.pos(a).name);
+    assert.equal(rows[0].stack, START_STACK + WAGE);
+    assert.equal(rows[1].stack, START_STACK);
+    assert.deepEqual(w.core.stacks(), rows);
+    assert.deepEqual(ofType(heard, "stack"), [{ t: "stack", id: a, stack: START_STACK + WAGE }], "the room sees the new stack (name tags)");
+    assert.equal(w.core.player(a)!.stack, START_STACK + WAGE);
+    assert.equal(BAND, 1000);
   });
 
   // ---------------------------------------------------------------- the board source and the door

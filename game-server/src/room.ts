@@ -7,11 +7,12 @@
  *   - a setInterval at TICK_HZ runs core.tick() (the batched moves, and the ticks of every round in play) while any
  *     socket is open, and stops when the room empties, so an empty room can hibernate and costs nothing
  *   - the leaderboard is kept in the object's storage under "board" and loaded before the first event
+ *   - accounts (the stacks) live in the object's SQLite (sqlAccounts), found by the SHA-256 of their key
  *   - pools' hourly histories come from the desk's history.json (HISTORY_URL) and are held in memory by historySource
  */
 import { DurableObject } from "cloudflare:workers";
 import type { S2C } from "../../web/src/game/protocol";
-import { boardSource, CLOSE_FULL, historyFromFile, historySource, ROOM_TICK_MS, RoomCore } from "./core";
+import { boardSource, CLOSE_FULL, historyFromFile, historySource, ROOM_TICK_MS, RoomCore, type Account, type AccountStore } from "./core";
 
 export interface Env {
   ROOM: DurableObjectNamespace<Room>;
@@ -26,8 +27,46 @@ export interface Env {
 /** what a socket's attachment holds */
 interface Tag {
   id: string;
-  name?: string;
-  strap?: number;
+  /** the account, once they have joined */
+  account?: string;
+}
+
+/** the accounts table: the whole account as JSON, with the columns it is looked up and ranked by */
+function sqlAccounts(sql: SqlStorage): AccountStore {
+  sql.exec(
+    "CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, key_hash TEXT UNIQUE NOT NULL, name TEXT NOT NULL, stack INTEGER NOT NULL, created INTEGER NOT NULL, data TEXT NOT NULL)",
+  );
+  sql.exec("CREATE INDEX IF NOT EXISTS accounts_stack ON accounts (stack DESC, created ASC)");
+  sql.exec("CREATE INDEX IF NOT EXISTS accounts_name ON accounts (name)");
+  const one = (q: string, v: string): Account | null => {
+    const row = sql.exec(q, v).toArray()[0];
+    if (!row) return null;
+    try {
+      return JSON.parse(String(row.data)) as Account;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    byKeyHash: (h) => one("SELECT data FROM accounts WHERE key_hash = ?", h),
+    byId: (id) => one("SELECT data FROM accounts WHERE id = ?", id),
+    put: (a, keyHash) => {
+      if (keyHash) sql.exec("INSERT INTO accounts (id, key_hash, name, stack, created, data) VALUES (?, ?, ?, ?, ?, ?)", a.id, keyHash, a.name, a.stack, a.created, JSON.stringify(a));
+      else sql.exec("UPDATE accounts SET name = ?, stack = ?, data = ? WHERE id = ?", a.name, a.stack, JSON.stringify(a), a.id);
+    },
+    nameTaken: (name) => sql.exec("SELECT 1 FROM accounts WHERE name = ? LIMIT 1", name).toArray().length > 0,
+    topStacks: (n) =>
+      sql
+        .exec("SELECT name, stack FROM accounts ORDER BY stack DESC, created ASC LIMIT ?", n)
+        .toArray()
+        .map((r) => ({ name: String(r.name), stack: Number(r.stack) })),
+  };
+}
+
+/** an account key -> the hex SHA-256 kept for it */
+async function sha256(key: string): Promise<string> {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 const BOARD_KEY = "board";
@@ -91,6 +130,8 @@ export class Room extends DurableObject<Env> {
       random: cryptoRandom,
       board,
       history,
+      accounts: sqlAccounts(ctx.storage.sql),
+      hashKey: sha256,
       saveBoard: (rows) => {
         this.ctx.storage.put(BOARD_KEY, rows).catch(() => {});
       },
@@ -103,10 +144,10 @@ export class Room extends DurableObject<Env> {
           /* already closing */
         }
       },
-      joined: (id, name, strap) => {
+      joined: (id, account) => {
         const ws = this.sockets.get(id);
         try {
-          ws?.serializeAttachment({ id, name, strap } satisfies Tag);
+          ws?.serializeAttachment({ id, account } satisfies Tag);
         } catch {
           /* closed under us */
         }
@@ -121,7 +162,7 @@ export class Room extends DurableObject<Env> {
     // had not said hello yet is closed (its client reconnects).
     for (const ws of ctx.getWebSockets()) {
       const tag = ws.deserializeAttachment() as Tag | null;
-      if (!tag?.id || typeof tag.name !== "string") {
+      if (!tag?.id || typeof tag.account !== "string" || !this.core.restore(tag.id, tag.account)) {
         try {
           ws.close(1012, "restart");
         } catch {
@@ -131,7 +172,6 @@ export class Room extends DurableObject<Env> {
       }
       this.sockets.set(tag.id, ws);
       this.idOfSocket.set(ws, tag.id);
-      this.core.restore(tag.id, tag.name, tag.strap ?? 0);
     }
     this.ensureTimer();
   }
