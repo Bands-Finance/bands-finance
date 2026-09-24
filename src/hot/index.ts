@@ -41,6 +41,7 @@ import { heatOf, hotMetrics, type HotInputs } from "./score";
 import { fetchDexScreener, fetchPumpSwap, fetchTokenPools, fetchTrending, originOf, SOL_MINT, USDC_MINT, type SourceOpts } from "./sources";
 import { appendHistory, heldPools, loadHotFile, readHistoryTail, saveHotFile } from "./store";
 import { detectSurges, SURGE_STICKY_MS, SURGE_WINDOW_MS } from "./surge";
+import { sustainedHeat, SUSTAINED_HOUR_MS } from "./sustained";
 import type { HotFile, HotHistoryRow, HotRow, PoolSample } from "./types";
 import { rpcConnection } from "../lib/timedFetch";
 
@@ -70,6 +71,7 @@ export {
 } from "./sources";
 export { appendHistory, heldPools, HISTORY_FILE, HOT_FILE, loadHotFile, parseHistory, readHistoryTail, rolledTape, saveHotFile, TAPE_MAX_BYTES } from "./store";
 export { detectSurges, latestByAddress, SURGE_MIN_ACCELERATION, SURGE_STICKY_MS, SURGE_TOP_N, SURGE_WINDOW_MS, topTenSeen, type SurgeCandidate, type SurgeVerdict } from "./surge";
+export { hourBuckets, SUSTAINED_ENV, SUSTAINED_HOUR_MS, sustainedHeat, type SustainedEnv, type SustainedVerdict } from "./sustained";
 export { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv, type LaunchVerdict } from "../screener/launch";
 export type { HotFeeSource, HotFile, HotHistoryRow, HotRow, HotSources, PoolSample } from "./types";
 
@@ -263,6 +265,18 @@ export function usableSiblings(samples: readonly PoolSample[], mint: string, tra
     .sort((a, b) => (b.vol24hUsd ?? 0) - (a.vol24hUsd ?? 0))
     .slice(0, Math.max(0, max));
 }
+
+/** What the tape grows an hour: 60 rows every 2 minutes at about 250 bytes a row. */
+export const TAPE_BYTES_PER_HOUR = 450 * 1024;
+
+/**
+ * How much of the tape a tick reads back: the longer of the surge window (6h) and the sustained-heat
+ * window (HOT_SUSTAINED_WINDOW_HOURS, 16h by default) at TAPE_BYTES_PER_HOUR, with half again for
+ * headroom (a busier tape writes longer rows), so 16 hours reads about 10.5 MB. Sized from the window
+ * rather than from the roll: the roll (src/hot/store.ts) lets the tape reach 32 MB and cuts it back to
+ * 16, and reading 16 MB to keep 16 hours meant parsing some 38 hours of rows every two minutes.
+ */
+export const historyTailBytes = (windowHours: number): number => Math.ceil(Math.max(SURGE_WINDOW_MS / SUSTAINED_HOUR_MS, windowHours) * TAPE_BYTES_PER_HOUR * 1.5);
 
 /* ---------- the tick ---------- */
 
@@ -488,9 +502,16 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
   // Metrics, heat, order.
   const prev = loadHotFile(dir);
   const prevByAddr = new Map((prev?.rows ?? []).map((r) => [r.address, r] as const));
-  const history = readHistoryTail(dir, now - SURGE_WINDOW_MS);
+  // The tape back over the longer of the two windows; detectSurges keeps to its own six hours.
+  const history = readHistoryTail(dir, now - Math.max(SURGE_WINDOW_MS, env.sustainedWindowHours * SUSTAINED_HOUR_MS), historyTailBytes(env.sustainedWindowHours));
   const firstSeenTape = new Map<string, number>();
-  for (const h of history) firstSeenTape.set(h.address, Math.min(firstSeenTape.get(h.address) ?? Infinity, h.ts));
+  const tapeByAddr = new Map<string, HotHistoryRow[]>();
+  for (const h of history) {
+    firstSeenTape.set(h.address, Math.min(firstSeenTape.get(h.address) ?? Infinity, h.ts));
+    const arr = tapeByAddr.get(h.address);
+    if (arr) arr.push(h);
+    else tapeByAddr.set(h.address, [h]);
+  }
   const nowIso = new Date(now).toISOString();
 
   type Scored = { c: Candidate; m: ReturnType<typeof hotMetrics>; heat: number; flags: string[] };
@@ -510,9 +531,19 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
     { surgeDailyPct: env.surgeDailyPct, now },
   );
   const surgeRule = new Map(surges.map((s) => [s.address, s.rule] as const));
+  // SUSTAINED HEAT (src/hot/sustained.ts), per row, off the tape: the hours are on every row; the verdict is on the rows
+  // that qualify, and only while HOT_SUSTAINED_MODE=on. The SUSTAINED line is logged for every row whose hot hours reached
+  // the threshold, qualifying or not (the note says what stopped it: the venue, the sells), so the rule can be watched on
+  // the live tape; in shadow mode a qualifying row is logged as "would be admitted" and admitted nowhere.
+  const shadow = env.sustainedMode === "shadow";
+  const sustainedNote = new Map<string, string>();
+  let sustainedCount = 0;
 
   const rows: HotRow[] = kept.map(({ c, m, heat, flags }) => {
     const p = prevByAddr.get(c.address);
+    const sh = sustainedHeat((tapeByAddr.get(c.address) ?? []).sort((a, b) => a.ts - b.ts), now, env, tradable(c.id.venue));
+    if (env.sustainedHours > 0 && sh.hours >= env.sustainedHours) sustainedNote.set(c.address, sh.qualifies && shadow ? `${sh.note} (shadow: would be admitted)` : sh.note);
+    if (sh.qualifies) sustainedCount++;
     const firedNow = surgeRule.has(c.address);
     const prevSurgeAt = p?.surgeAt ? Date.parse(p.surgeAt) : NaN;
     const surgeAt = firedNow ? nowIso : Number.isFinite(prevSurgeAt) && now - prevSurgeAt < SURGE_STICKY_MS ? p!.surgeAt : null;
@@ -558,6 +589,8 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
       flags,
       surge: surgeAt !== null,
       surgeAt,
+      sustainedHours: sh.hours,
+      sustained: sh.qualifies && !shadow,
       firstSeenAt: p?.firstSeenAt ?? (firstTape !== undefined ? new Date(firstTape).toISOString() : nowIso),
       lastSeenAt: nowIso,
     };
@@ -582,11 +615,12 @@ export async function runHotTick(opts: HotTickOptions = {}): Promise<HotFile> {
   const top = rows[0];
   log(
     `[hot] ${rows.length} rows · trending ${trending.samples.length}${env.pumpswapPages > 0 ? ` · pumpswap ${pump.samples.length}` : ""} · dexscreener ${dex.samples.length}/${universe.length} · onchain ${onchainReads}` +
-      `${siblingByAddr.size ? ` · siblings ${file.sources.siblingRows}/${siblingByAddr.size} from ${siblingLookups} lookup${siblingLookups === 1 ? "" : "s"}` : ""} · ${surges.length} surge${surges.length === 1 ? "" : "s"}` +
+      `${siblingByAddr.size ? ` · siblings ${file.sources.siblingRows}/${siblingByAddr.size} from ${siblingLookups} lookup${siblingLookups === 1 ? "" : "s"}` : ""} · ${surges.length} surge${surges.length === 1 ? "" : "s"}${sustainedCount ? ` · ${sustainedCount} sustained${shadow ? " (shadow)" : ""}` : ""}` +
       `${errors.length ? ` · ${errors.length} source error${errors.length === 1 ? "" : "s"}` : ""} · ${(file.tickMs / 1000).toFixed(1)}s` +
       (top ? ` · top ${top.name} ${fmtPct(top.feeToTvlDailyPct)}/day` : ""),
   );
   for (const r of rows) if (surgeRule.has(r.address)) log(`[hot] SURGE ${r.name} · ${r.venue} · ${surgeRule.get(r.address)} · ${describeRow(r)}`);
+  for (const r of rows) if (sustainedNote.has(r.address)) log(`[hot] SUSTAINED ${r.name} · ${r.venue} · ${sustainedNote.get(r.address)} · ${describeRow(r)}`);
   return file;
 }
 
@@ -754,6 +788,9 @@ export interface HotContextRow {
   heat: number;
   flags: string[];
   surge: boolean;
+  /** the pool qualifies on sustained heat (src/hot/sustained.ts), with its hot hours in the window */
+  sustained: boolean;
+  sustainedHours: number | null;
 }
 
 /**
@@ -780,5 +817,7 @@ export function hotContextFor(hot: HotFile | null, address: string, tradableVenu
     heat: r.heat,
     flags: r.flags,
     surge: r.surge,
+    sustained: r.sustained === true,
+    sustainedHours: r.sustainedHours ?? null,
   }));
 }

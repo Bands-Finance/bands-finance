@@ -257,7 +257,7 @@ export const HOT_HOLD_HEADLINE = "Under the band but the tape is hot. One more c
 export const IDLE_MULTIPLE = 3;
 
 /** A hot row as the policy reads it; `pick: false` marks this pool's own row, carried whatever its flags, which is not on the tradable list (src/hot hotPicksWithOwn). */
-export type PolicyHot = Pick<HotRow, "address" | "priceChange1hPct" | "flags" | "heat" | "surge"> & { pick?: boolean };
+export type PolicyHot = Pick<HotRow, "address" | "priceChange1hPct" | "flags" | "heat" | "surge" | "sustained"> & { pick?: boolean };
 
 export interface PolicyExtras {
   limits: RiskLimits;
@@ -421,6 +421,8 @@ interface HotView {
   flags: string[];
   heat: number | null;
   surge: boolean;
+  /** admitted-grade sustained heat on the tape (src/hot/sustained.ts) */
+  sustained: boolean;
 }
 
 /** This pool on the hot list: the observation's own list first, then the extras. */
@@ -448,9 +450,9 @@ function hotView(o: Observation, x: PolicyExtras): HotView {
   const mine = o.screen?.hot?.find((h) => h.thisPool);
   const row = x.hot?.find((h) => h.address === o.snapshot.address);
   const picked = !!row && row.pick !== false;
-  if (mine) return { onList: mine.pick !== false || picked, seen: true, priceChange1hPct: mine.priceChange1hPct, flags: mine.flags, heat: mine.heat, surge: mine.surge };
-  if (row) return { onList: picked, seen: true, priceChange1hPct: row.priceChange1hPct, flags: row.flags, heat: row.heat, surge: row.surge };
-  return { onList: false, seen: false, priceChange1hPct: null, flags: [], heat: null, surge: false };
+  if (mine) return { onList: mine.pick !== false || picked, seen: true, priceChange1hPct: mine.priceChange1hPct, flags: mine.flags, heat: mine.heat, surge: mine.surge, sustained: mine.sustained === true };
+  if (row) return { onList: picked, seen: true, priceChange1hPct: row.priceChange1hPct, flags: row.flags, heat: row.heat, surge: row.surge, sustained: row.sustained === true };
+  return { onList: false, seen: false, priceChange1hPct: null, flags: [], heat: null, surge: false, sustained: false };
 }
 
 const hold = (reasoning: string, headline: string, branch: PolicyBranch, reason: string, confidence = 0.7): PolicyResult => ({
@@ -1454,7 +1456,7 @@ export function policyDecide(o: Observation, x: PolicyExtras): PolicyResult {
     : listed && !isHotPick && !scoreOk
     ? `on the watchlist${score !== null ? `, screen score ${r(score, 1)}` : ""}`
     : isHotPick
-    ? `hot pick (heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}${hot.surge ? ", surge" : ""}${score !== null ? `, screen score ${r(score, 1)}` : ""})`
+    ? `hot pick (heat ${hot.heat === null ? "n/a" : r(hot.heat, 0)}${hot.surge ? ", surge" : ""}${hot.sustained ? ", sustained heat" : ""}${score !== null ? `, screen score ${r(score, 1)}` : ""})`
     : scoreOk
       ? `screen score ${r(score!, 1)} above ${env.minScore}`
       : `stock book: ${o.screen?.stock ? `${o.screen.stock.ticker} (${o.screen.stock.issuer})` : "tokenized stock"}${score !== null ? `, screen score ${r(score, 1)}` : ""}`;

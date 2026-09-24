@@ -4,7 +4,9 @@
  *   npx tsx src/scripts/test-meme.ts
  */
 import assert from "node:assert/strict";
-import { memeFloorEnv, memeFloorLine, memeRefusal } from "../screener/memeFloor";
+import fs from "node:fs";
+import path from "node:path";
+import { memeFloorEnv, memeFloorLine, memeRefusal, memeVerdict, sustainedSeatNote } from "../screener/memeFloor";
 import { parseDexScreener, parseGeckoPools } from "../hot/sources";
 import { orient } from "../hot/index";
 import { fetchPoolHistory, historyFresh, historyFromSignatures, historyMetrics, historyPhrase, historyRefusal, memeHistoryEnv, OHLCV_URL, parseOhlcv } from "../screener/memeHistory";
@@ -28,11 +30,18 @@ async function main(): Promise<void> {
   console.log("memecoin floor");
   const env = memeFloorEnv({});
 
-  await test("memeFloorEnv: $1M market cap and 24h by default; 0 turns a floor off; a ceiling only when set", () => {
-    assert.deepEqual(env, { minMarketCapUsd: 1_000_000, maxMarketCapUsd: null, minAgeHours: 24, stocksOnly: false });
-    assert.deepEqual(memeFloorEnv({ MEME_MIN_MARKET_CAP_USD: "0", MEME_MIN_AGE_HOURS: "0", MEME_MAX_MARKET_CAP_USD: "50000000" }), { minMarketCapUsd: 0, maxMarketCapUsd: 50_000_000, minAgeHours: 0, stocksOnly: false });
+  await test("memeFloorEnv: $1M market cap and 24h by default; 0 turns a floor off; a ceiling only when set; the sustained-heat hours come from the hot env (0 in shadow mode) and its own age floor from MEME_SUSTAINED_MIN_AGE_HOURS", () => {
+    assert.deepEqual(env, { minMarketCapUsd: 1_000_000, maxMarketCapUsd: null, minAgeHours: 24, stocksOnly: false, sustainedMinHours: 12, sustainedMinAgeHours: 24 });
+    assert.deepEqual(memeFloorEnv({ MEME_MIN_MARKET_CAP_USD: "0", MEME_MIN_AGE_HOURS: "0", MEME_MAX_MARKET_CAP_USD: "50000000" }), { minMarketCapUsd: 0, maxMarketCapUsd: 50_000_000, minAgeHours: 0, stocksOnly: false, sustainedMinHours: 12, sustainedMinAgeHours: 24 });
     assert.equal(memeFloorEnv({ MEME_MAX_MARKET_CAP_USD: "junk" }).maxMarketCapUsd, null);
     assert.equal(memeFloorEnv({ MEME_MIN_AGE_HOURS: "-5" }).minAgeHours, 0);
+    assert.equal(memeFloorEnv({ HOT_SUSTAINED_HOURS: "0" }).sustainedMinHours, 0, "HOT_SUSTAINED_HOURS=0 turns the exemption off");
+    assert.equal(memeFloorEnv({ HOT_SUSTAINED_HOURS: "8" }).sustainedMinHours, 8);
+    assert.equal(memeFloorEnv({ HOT_SUSTAINED_MODE: "shadow" }).sustainedMinHours, 0, "shadow mode: the hot watch counts and logs, the floor admits nothing");
+    assert.equal(memeFloorEnv({ HOT_SUSTAINED_MODE: "on" }).sustainedMinHours, 12);
+    assert.equal(memeFloorEnv({ MEME_SUSTAINED_MIN_AGE_HOURS: "48" }).sustainedMinAgeHours, 48);
+    assert.equal(memeFloorEnv({ MEME_SUSTAINED_MIN_AGE_HOURS: "-1" }).sustainedMinAgeHours, 0);
+    assert.equal(memeFloorEnv({ MEME_SUSTAINED_MIN_AGE_HOURS: "junk" }).sustainedMinAgeHours, 24);
   });
 
   await test("today's book, replayed: GOOGL at 8.6h and CAT at 0.8h are refused as launches; DJT at $166k under the cap floor; baton at 118h and $11.7M passes (the floor is not a trend filter)", () => {
@@ -67,6 +76,92 @@ async function main(): Promise<void> {
     assert.equal(memeFloorLine([], env), null);
     const line = memeFloorLine(["a", "b", "c", "d", "e", "f"], env)!;
     assert.equal(line, "memecoin floor (>= 24h old, >= $1.0M market cap) kept out 6: a; b; c; d; and 2 more");
+  });
+
+  console.log("sustained heat: the one exemption");
+  const env720 = { ...env, minAgeHours: 720 };
+  const cracker = { symbol: "CRACKER", marketCapUsd: 3_200_000, ageHours: 98.2 };
+  await test("a pool refused on AGE is admitted on sustained heat, with the admission named; not one hour short; never when the exemption is off", () => {
+    assert.equal(memeRefusal(cracker, env720), "CRACKER is 98.2h old, under the 720h memecoin floor: not on launch", "the floor on its own, and CRACKER/SOL on 24 Sep");
+    assert.equal(memeRefusal({ ...cracker, sustainedHours: 12 }, env720), null, "twelve hot hours on the tape stand in");
+    assert.deepEqual(memeVerdict({ ...cracker, sustainedHours: 14 }, env720), { refusal: null, sustained: "CRACKER admitted on sustained heat, 14 hot hours on the tape, though 98.2h old, under the 720h floor" });
+    assert.equal(memeRefusal({ ...cracker, sustainedHours: 11 }, env720), "CRACKER is 98.2h old, under the 720h memecoin floor: not on launch", "eleven is not twelve");
+    assert.equal(memeRefusal({ ...cracker, sustainedHours: null }, env720)?.startsWith("CRACKER is 98.2h old"), true);
+    assert.equal(memeRefusal({ ...cracker, sustainedHours: 20 }, { ...env720, sustainedMinHours: 0 })?.startsWith("CRACKER is 98.2h old"), true, "HOT_SUSTAINED_HOURS=0: off");
+    assert.equal(memeRefusal({ ...cracker, sustainedHours: 20 }, { minMarketCapUsd: 1_000_000, maxMarketCapUsd: null, minAgeHours: 720 })?.startsWith("CRACKER is 98.2h old"), true, "an env without the knob: off");
+    assert.deepEqual(memeVerdict({ symbol: "ZCAT", marketCapUsd: 121_273_935, ageHours: 800, sustainedHours: 20 }, env720), { refusal: null, sustained: null }, "a token the floor admits on its own is not an admission on sustained heat: full seat");
+  });
+  await test("a pool refused on MARKET CAP is admitted likewise (xHYPE's $51,858), an unknown cap too but never an unknown age; a ceiling and STOCKS_ONLY never, and a ceiling is judged on the way in", () => {
+    const xhype = { symbol: "xHYPE", marketCapUsd: 51_858, ageHours: 900 };
+    assert.equal(memeRefusal(xhype, env720), "xHYPE is at $51,858 market cap, under the $1.0M memecoin floor");
+    assert.deepEqual(memeVerdict({ ...xhype, sustainedHours: 20 }, env720), { refusal: null, sustained: "xHYPE admitted on sustained heat, 20 hot hours on the tape, though $51,858 market cap, under the $1.0M floor" });
+    assert.equal(memeVerdict({ symbol: "X", marketCapUsd: 5_000_000, ageHours: null, sustainedHours: 13 }, env720).refusal, "X: age unknown, and the desk does not pick a memecoin it cannot date; 13h of sustained heat would stand in, but never for a pool the desk cannot date");
+    assert.match(memeVerdict({ symbol: "X", marketCapUsd: null, ageHours: 900, sustainedHours: 13 }, env720).sustained!, /though market cap unknown$/, "twelve hours of fees are more evidence than a supply figure");
+    assert.match(memeVerdict({ symbol: "wXMR", marketCapUsd: 623, ageHours: 900, tokenSideUsd: 13_000, volume24hUsd: 380_980, priceChange24hPct: 2.3, sustainedHours: 13 }, env720).sustained!, /^wXMR admitted on sustained heat, 13 hot hours on the tape, though market cap reads \$623/, "an unreadable cap the volume could not stand in for");
+    const capped = { ...env720, maxMarketCapUsd: 50_000_000 };
+    assert.equal(memeRefusal({ symbol: "STONK", marketCapUsd: 160_460_060, ageHours: 820, sustainedHours: 20 }, capped), "STONK is at $160M market cap, over the $50M memecoin ceiling", "too big is a different question");
+    assert.match(memeRefusal({ symbol: "wXMR", marketCapUsd: 623, ageHours: 900, tokenSideUsd: 13_000, volume24hUsd: 1_046_717, sustainedHours: 20 }, capped)!, /a ceiling cannot be judged without it/);
+    // a pool refused on its age has not had its cap read yet: the ceiling is still judged before the exemption seats it
+    assert.equal(memeRefusal({ symbol: "STONK", marketCapUsd: 160_460_060, ageHours: 100, sustainedHours: 20 }, capped), "STONK is 100.0h old, under the 720h memecoin floor: not on launch; 20h of sustained heat would stand in, but $160M market cap, over the $50M ceiling");
+    assert.equal(memeRefusal({ symbol: "X", marketCapUsd: null, ageHours: 100, sustainedHours: 20 }, capped), "X is 100.0h old, under the 720h memecoin floor: not on launch; 20h of sustained heat would stand in, but a ceiling cannot be judged without a market cap");
+    assert.equal(memeRefusal({ symbol: "Y", marketCapUsd: 2_000_000, ageHours: 100, sustainedHours: 20 }, capped), null, "under the ceiling: admitted");
+    assert.equal(memeRefusal({ ...cracker, sustainedHours: 20 }, { ...env720, stocksOnly: true }), "CRACKER is not a tokenized stock, and the book is stocks only (STOCKS_ONLY)");
+  });
+  await test("the exemption's own age floor: a KNOWN age of at least MEME_SUSTAINED_MIN_AGE_HOURS, whichever line refused; the tape starts when the watch first sees a pool", () => {
+    assert.equal(memeRefusal({ ...cracker, ageHours: 20, sustainedHours: 14 }, env720), "CRACKER is 20.0h old, under the 720h memecoin floor: not on launch; 14h of sustained heat would stand in, but not at 20.0h old: a sustained-heat seat needs 24h");
+    assert.equal(memeRefusal({ ...cracker, ageHours: 24, sustainedHours: 14 }, env720), null, "24h is the line");
+    assert.equal(memeRefusal({ ...cracker, ageHours: 20, sustainedHours: 14 }, { ...env720, sustainedMinAgeHours: 12 }), null, "the knob moves it");
+    assert.equal(memeRefusal({ ...cracker, ageHours: 20, sustainedHours: 14 }, { ...env720, sustainedMinAgeHours: 0 }), null, "0 = any known age");
+    assert.match(memeRefusal({ ...cracker, ageHours: null, sustainedHours: 14 }, { ...env720, sustainedMinAgeHours: 0 })!, /never for a pool the desk cannot date$/, "but never an unknown one");
+    assert.equal(memeRefusal({ ...cracker, ageHours: 20, sustainedHours: 14 }, { minMarketCapUsd: 1_000_000, maxMarketCapUsd: null, minAgeHours: 720, sustainedMinHours: 12 }), null, "an env without the knob has no extra line");
+    assert.match(memeRefusal({ ...cracker, ageHours: null, sustainedHours: 14 }, { minMarketCapUsd: 1_000_000, maxMarketCapUsd: null, minAgeHours: 720, sustainedMinHours: 12 })!, /never for a pool the desk cannot date$/, "and still wants the age known");
+    // the cap line under a 0 age floor: an unknown or young age is caught by the exemption's floor, not the floor's
+    assert.equal(memeRefusal({ symbol: "xHYPE", marketCapUsd: 51_858, ageHours: null, sustainedHours: 20 }, { ...env, minAgeHours: 0 }), "xHYPE is at $51,858 market cap, under the $1.0M memecoin floor; 20h of sustained heat would stand in, but never for a pool the desk cannot date");
+    assert.equal(memeRefusal({ symbol: "xHYPE", marketCapUsd: 51_858, ageHours: 10, sustainedHours: 20 }, { ...env, minAgeHours: 0 }), "xHYPE is at $51,858 market cap, under the $1.0M memecoin floor; 20h of sustained heat would stand in, but not at 10.0h old: a sustained-heat seat needs 24h");
+    // at the defaults (both 24h) the age line is never set aside: a pool under the floor is under the exemption's floor too
+    assert.equal(memeRefusal({ symbol: "GOOGL", marketCapUsd: 20_824_115, ageHours: 8.6, sustainedHours: 14 }, env), "GOOGL is 8.6h old, under the 24h memecoin floor: not on launch; 14h of sustained heat would stand in, but not at 8.6h old: a sustained-heat seat needs 24h");
+  });
+  await test("the hot lane's row carries its day: a row at -60% with 14 hot hours is refused as a collapse, and every site that builds a candidate from a hot row passes the field", () => {
+    // the hot row as pickPools builds the candidate from it (the hot lane; hotMeme for the launch and pair lanes)
+    const row = { address: "H", baseSymbol: "DUMP", marketCapUsd: 2_400_000, ageHours: 40, stock: null, priceChange24hPct: -60, sustained: true, sustainedHours: 14 };
+    const c = { symbol: row.baseSymbol, marketCapUsd: row.marketCapUsd, ageHours: row.ageHours, stock: row.stock, priceChange24hPct: row.priceChange24hPct, sustainedHours: row.sustained ? row.sustainedHours : null };
+    assert.equal(memeRefusal(c, env720), "DUMP is 40.0h old, under the 720h memecoin floor: not on launch; 14h of sustained heat would stand in, but a token down 60% on the day is in collapse");
+    assert.equal(memeRefusal({ ...c, priceChange24hPct: undefined }, env720), null, "without the field the collapse guard cannot fire, which is why the sites below must pass it");
+    const src = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+    assert.match(src, /marketCapUsd: r\.marketCapUsd, ageHours: r\.ageHours, stock: r\.stock, priceChange24hPct: r\.priceChange24hPct, sustainedHours: sustainedHoursOf\(r\.address\)/, "the hot lane");
+    assert.match(src, /stock: r\?\.stock \?\? null, priceChange24hPct: r\?\.priceChange24hPct \?\? null, sustainedHours: sustainedHoursOf\(address\)/, "hotMeme, which the launch and pair lanes read");
+    assert.match(src, /marketCapUsd: r\.marketCapUsd, ageHours: r\.ageHours, priceChange24hPct: r\.priceChange24hPct, sustainedHours: sustainedHoursOf\(r\.address\)/, "the history refresh's hot-row loop");
+    assert.match(src, /\$\{v\.sustained\} and the \$\{hist\.minDays\}-day history rule/, "the admission note names the history rule it set aside");
+  });
+  await test("sustainedSeatNote: after a restart a HELD pool the floor refuses today keeps the smaller seat; an unheld one, or one the floor admits on its own, gets none", () => {
+    const admitted = memeVerdict({ ...cracker, sustainedHours: 14 }, env720);
+    assert.equal(sustainedSeatNote(admitted, true), admitted.sustained);
+    assert.equal(sustainedSeatNote(admitted, false), admitted.sustained, "a fresh admission is the note whether or not the band is laid yet");
+    const cooled = memeVerdict({ ...cracker, sustainedHours: null }, env720);
+    assert.equal(sustainedSeatNote(cooled, true), "held on an admission the restart forgot; the floor refuses it today (CRACKER is 98.2h old, under the 720h memecoin floor: not on launch)");
+    assert.equal(sustainedSeatNote(cooled, false), null, "not held: the picker's business, not the seat's");
+    assert.equal(sustainedSeatNote(memeVerdict({ symbol: "ZCAT", marketCapUsd: 121_273_935, ageHours: 800 }, env720), true), null, "the floor admits it on its own: a full seat");
+    assert.equal(sustainedSeatNote(memeVerdict({ symbol: "TSLAx", marketCapUsd: null, ageHours: null, stock: { ticker: "TSLA" } }, env720), true), null, "a stock is never judged");
+    assert.equal(sustainedSeatNote(memeVerdict({ symbol: "BANDS", marketCapUsd: 40_000, ageHours: 3, house: true }, env720), true), null, "nor the house token");
+    // and the desk asks it with the seats the floor never judged left out: a pinned pool is not 'held', and the house pool is marked
+    const src = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+    assert.match(src, /sustainedSeatNote\(memeVerdict\(memeCandidateOf\(app, address\), memeFloorEnv\(\)\), held && !pinned\)/, "sustainedSeatFor");
+    assert.match(src, /const pinned = config\.pinnedPools\.includes\(address\) \|\| seatFlagsOf\(app, address\)\.pinned;/);
+    assert.match(src, /const house = seatFlagsOf\(app, address\)\.house;/, "memeCandidateOf");
+  });
+  await test("a token in collapse is never admitted on its heat: a collapse day is a high-fee day", () => {
+    assert.equal(memeRefusal({ ...cracker, priceChange24hPct: -50, sustainedHours: 20 }, env720), "CRACKER is 98.2h old, under the 720h memecoin floor: not on launch; 20h of sustained heat would stand in, but a token down 50% on the day is in collapse");
+    assert.equal(memeRefusal({ ...cracker, priceChange24hPct: -49.9, sustainedHours: 20 }, env720), null);
+    assert.match(memeRefusal({ symbol: "RUG", marketCapUsd: 40_000, ageHours: 900, tokenSideUsd: 300_000, volume24hUsd: 1_500_000, priceChange24hPct: -99.8, sustainedHours: 20 }, env720)!, /is in collapse$/);
+  });
+  await test("memeFloorLine names what was admitted on sustained heat beside what was kept out, each note cut to what the header does not already say", () => {
+    const note = memeVerdict({ ...cracker, sustainedHours: 14 }, env720).sustained!;
+    assert.equal(note, "CRACKER admitted on sustained heat, 14 hot hours on the tape, though 98.2h old, under the 720h floor");
+    assert.equal(memeFloorLine(["a"], env720, [note]), "memecoin floor (>= 720h old, >= $1.0M market cap) kept out 1: a; admitted on sustained heat (>= 12 hot hours on the tape): CRACKER, 14 hot hours, though 98.2h old, under the 720h floor");
+    assert.equal(memeFloorLine([], env720, [`${note} and the 30-day history rule`, "xHYPE admitted on sustained heat, 20 hot hours on the tape, though $51,858 market cap, under the $1.0M floor"]), "memecoin floor (>= 720h old, >= $1.0M market cap) kept out nothing; admitted on sustained heat (>= 12 hot hours on the tape): CRACKER, 14 hot hours, though 98.2h old, under the 720h floor and the 30-day history rule; xHYPE, 20 hot hours, though $51,858 market cap, under the $1.0M floor");
+    assert.equal(memeFloorLine([], env720, ["a note in another shape"]), "memecoin floor (>= 720h old, >= $1.0M market cap) kept out nothing; admitted on sustained heat (>= 12 hot hours on the tape): a note in another shape");
+    assert.equal(memeFloorLine([], env720, []), null);
+    assert.equal(memeFloorLine(["a"], env720, []), "memecoin floor (>= 720h old, >= $1.0M market cap) kept out 1: a", "unchanged when nothing was admitted");
   });
 
   console.log("market cap on the fast watch's rows");

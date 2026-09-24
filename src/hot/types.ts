@@ -66,6 +66,10 @@ export interface HotRow {
   surge: boolean;
   /** when the latest surge fired, if within the sticky window */
   surgeAt: string | null;
+  /** SUSTAINED HEAT (src/hot/sustained.ts): hot hours in the trailing window on the tape; absent on a row written before the rule */
+  sustainedHours?: number;
+  /** the pool qualifies on sustained heat: the memecoin floor admits it past its age and cap lines, on a smaller seat */
+  sustained?: boolean;
   firstSeenAt: string;
   lastSeenAt: string;
 }

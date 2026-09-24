@@ -66,6 +66,9 @@ export interface ScreenContext {
     heat: number;
     flags: string[];
     surge: boolean;
+    /** the pool qualifies on sustained heat (src/hot/sustained.ts): hot for sustainedHours of the trailing window; absent on an older row */
+    sustained?: boolean;
+    sustainedHours?: number | null;
   }[];
 }
 
@@ -335,7 +338,7 @@ export function formatObservation(o: Observation): string {
     lines.push("Daily pace = what a dollar in the pool earned in the last hour, times 24. Acceleration = last hour versus the 24h rate.");
     for (const h of o.screen.hot) {
       lines.push(
-        `- ${h.thisPool ? "THIS POOL: " : ""}${h.name} on ${h.venue}${h.tradable ? "" : " (not tradable yet)"}${h.pick === false ? " (not on the tradable list)" : ""}: liquidity ${usdShort(h.liquidityUsd)}, vol 1h ${usdShort(h.vol1hUsd)}, daily pace ${r(h.feeToTvlDailyPct, 2)}%, acceleration ${r(h.acceleration, 1)}x, 1h move ${r(h.priceChange1hPct, 1)}%, heat ${r(h.heat, 0)}${h.surge ? ", SURGE" : ""}${h.flags.length ? ` [${h.flags.join(", ")}]` : ""}`,
+        `- ${h.thisPool ? "THIS POOL: " : ""}${h.name} on ${h.venue}${h.tradable ? "" : " (not tradable yet)"}${h.pick === false ? " (not on the tradable list)" : ""}: liquidity ${usdShort(h.liquidityUsd)}, vol 1h ${usdShort(h.vol1hUsd)}, daily pace ${r(h.feeToTvlDailyPct, 2)}%, acceleration ${r(h.acceleration, 1)}x, 1h move ${r(h.priceChange1hPct, 1)}%, heat ${r(h.heat, 0)}${h.surge ? ", SURGE" : ""}${h.sustained ? `, SUSTAINED ${h.sustainedHours ?? "?"}h hot` : ""}${h.flags.length ? ` [${h.flags.join(", ")}]` : ""}`,
       );
     }
     lines.push("");

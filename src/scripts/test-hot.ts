@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
 import {
+  appendHistory,
   boardFee,
   boardTop,
   DEXSCREENER_URL,
@@ -18,8 +19,11 @@ import {
   flipPct,
   heatOf,
   heldPools,
+  historyTailBytes,
   hotEnv,
   hotMetrics,
+  hourBuckets,
+  sustainedHeat,
   hotPicks,
   hotRoutes,
   identityOf,
@@ -39,6 +43,7 @@ import {
   solPriceFromSamples,
   splitName,
   startHotWatch,
+  TAPE_BYTES_PER_HOUR,
   topTenSeen,
   TRENDING_URL,
   venueOfDex,
@@ -159,7 +164,18 @@ async function main(): Promise<void> {
   await test("hotEnv: defaults, overrides, blanks and junk fall back", () => {
     const d = hotEnv({});
     assert.deepEqual(d, { intervalSec: 120, minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150,
-      geckoterminal: false, onchainReads: 8, siblingMinVol24hUsd: 500_000, siblingLookups: 6, siblingTtlMin: 30, pumpswapPages: 1 });
+      geckoterminal: false, onchainReads: 8, siblingMinVol24hUsd: 500_000, siblingLookups: 6, siblingTtlMin: 30, pumpswapPages: 1,
+      sustainedFeePct: 0.3, sustainedLiqUsd: 100_000, sustainedHours: 12, sustainedWindowHours: 16, sustainedMaxSellShare: 0.9, sustainedSeat: 0.5, sustainedMode: "on" });
+    const su = hotEnv({ HOT_SUSTAINED_HOURS: "0", HOT_SUSTAINED_SEAT: "2", HOT_SUSTAINED_WINDOW_HOURS: "0", HOT_SUSTAINED_FEE_PCT: "0.5", HOT_SUSTAINED_MODE: " Shadow " });
+    assert.equal(su.sustainedHours, 0, "HOT_SUSTAINED_HOURS=0 turns sustained heat off");
+    assert.equal(su.sustainedSeat, 1, "a seat multiple is never over 1: the exemption can only shrink a seat");
+    assert.equal(su.sustainedWindowHours, 1);
+    assert.equal(su.sustainedFeePct, 0.5);
+    assert.equal(su.sustainedMode, "shadow", "the literal shadow, whatever the case or the spaces");
+    assert.equal(hotEnv({ HOT_SUSTAINED_SEAT: "0" }).sustainedSeat, 0.1, "0 is no seat, not a smaller one: the seat is clamped to [0.1, 1]");
+    assert.equal(hotEnv({ HOT_SUSTAINED_SEAT: "0.05" }).sustainedSeat, 0.1);
+    assert.equal(hotEnv({ HOT_SUSTAINED_SEAT: "-3" }).sustainedSeat, 0.1);
+    assert.equal(hotEnv({ HOT_SUSTAINED_MODE: "off" }).sustainedMode, "on", "anything but shadow is on: HOT_SUSTAINED_HOURS=0 is the off switch");
     const e = hotEnv({ HOT_INTERVAL_SEC: "30", HOT_MIN_LIQUIDITY_USD: "", HOT_MAX_ROWS: "abc", HOT_ONCHAIN_READS: "2", HOT_SIBLING_LOOKUPS: "0", HOT_SIBLING_TTL_MIN: "junk" });
     assert.equal(e.intervalSec, 30);
     assert.equal(e.minLiquidityUsd, 20_000);
@@ -315,6 +331,76 @@ async function main(): Promise<void> {
     // A yield surge on a pool already in the top 10 reports as yield, not top10.
     const both = detectSurges([{ address: "P0", feeToTvlDailyPct: 12, acceleration: 2 }], earlier, opts);
     assert.deepEqual(both, [{ address: "P0", rule: "yield" }]);
+  });
+
+  /* ---------- sustained heat ---------- */
+  const senv = { sustainedFeePct: 0.3, sustainedLiqUsd: 100_000, sustainedHours: 12, sustainedWindowHours: 16, sustainedMaxSellShare: 0.9 };
+  // one tick in the middle of hour bucket i (0 = the hour just gone), CRACKER-shaped: 0.31%/h on $117k, sells 60%
+  const tick = (i: number, o: Partial<HotHistoryRow> = {}): HotHistoryRow => tape([{ ts: NOW - (i + 0.5) * H, address: "C", heat: 10, feeToTvl1hPct: 0.31, liquidityUsd: 117_000, sellShare1h: 0.6, ...o }])[0];
+  const hours = (idx: number[], o: Partial<HotHistoryRow> = {}) => idx.map((i) => tick(i, o));
+  const range = (n: number, from = 0) => Array.from({ length: n }, (_, i) => from + i);
+  await test("sustained heat: qualifies at exactly HOURS hot hours in the window, not at HOURS-1; the note carries the numbers", () => {
+    const twelve = sustainedHeat(hours(range(12)), NOW, senv);
+    assert.equal(twelve.hours, 12);
+    assert.equal(twelve.qualifies, true);
+    assert.equal(twelve.note, "hot 12 of the last 16h (fee/TVL >= 0.3%/h on >= $100K, median 0.31%/h over them); sells 60% of the last hour");
+    const eleven = sustainedHeat(hours(range(11)), NOW, senv);
+    assert.equal(eleven.hours, 11);
+    assert.equal(eleven.qualifies, false);
+    assert.equal(eleven.note, "hot 11 of the last 16h (fee/TVL >= 0.3%/h on >= $100K, median 0.31%/h over them), under the 12 the desk wants");
+    assert.deepEqual(sustainedHeat([], NOW, senv), { hours: 0, qualifies: false, note: "hot 0 of the last 16h (fee/TVL >= 0.3%/h on >= $100K), under the 12 the desk wants" });
+  });
+  await test("sustained heat: gaps inside the window are allowed; hours outside it, and ticks from the future, do not count", () => {
+    const gappy = [...hours([0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]), ...hours([3, 7, 11], { feeToTvl1hPct: 0.05 })];
+    const v = sustainedHeat(gappy, NOW, senv);
+    assert.equal(v.hours, 12, "twelve hot hours with three cold ones between them");
+    assert.equal(v.qualifies, true);
+    assert.equal(sustainedHeat(hours(range(12, 16)), NOW, senv).hours, 0, "sixteen hours ago and older: outside the window");
+    assert.equal(sustainedHeat(hours(range(12, 4)), NOW, senv).hours, 12, "hours 4..15 sit inside it");
+    assert.equal(sustainedHeat(hours(range(12, -2)), NOW, senv).hours, 10, "two ticks after `now` are not history");
+    assert.equal(sustainedHeat(hours(range(12)), NOW, { ...senv, sustainedWindowHours: 8 }).hours, 8, "a shorter window sees fewer");
+  });
+  await test("sustained heat: an hour is judged by its median tick, so a liquidity dip under the floor breaks the hour and a torn tick does not", () => {
+    const dipped = [...hours(range(11)), tick(11, { liquidityUsd: 80_000 })];
+    const v = sustainedHeat(dipped, NOW, senv);
+    assert.equal(v.hours, 11, "the twelfth hour's liquidity sat under $100K: not hot");
+    assert.equal(v.qualifies, false);
+    const torn = [...hours(range(12)), tick(11, { liquidityUsd: 80_000 }), tick(11, { liquidityUsd: 117_500 })];
+    assert.equal(sustainedHeat(torn, NOW, senv).hours, 12, "one tick of three under the line: the hour's median holds");
+    const mostly = [...hours(range(12)), tick(11, { liquidityUsd: 80_000 }), tick(11, { liquidityUsd: 79_000 })];
+    assert.equal(sustainedHeat(mostly, NOW, senv).hours, 11, "two of three under: the hour is gone");
+    assert.equal(sustainedHeat(hours(range(12), { feeToTvl1hPct: 0.29 }), NOW, senv).hours, 0, "0.29%/h is under 0.3");
+    assert.equal(sustainedHeat(hours(range(12), { feeToTvl1hPct: null }), NOW, senv).hours, 0, "no fee figure, no hot hour");
+    const b = hourBuckets(hours([0, 2]), NOW, 4);
+    assert.deepEqual(b, [null, { feePct: 0.31, liquidityUsd: 117_000 }, null, { feePct: 0.31, liquidityUsd: 117_000 }], "oldest first, null where the tape has nothing");
+  });
+  await test("sustained heat: the latest hour's sell share caps it; unknown sells do not; an untradable venue does not qualify", () => {
+    const dumped = [...hours(range(11, 1)), tick(0, { sellShare1h: 0.95 })];
+    const v = sustainedHeat(dumped, NOW, senv);
+    assert.equal(v.hours, 12);
+    assert.equal(v.qualifies, false);
+    assert.equal(v.note, "hot 12 of the last 16h (fee/TVL >= 0.3%/h on >= $100K, median 0.31%/h over them), but sells were 95% of the last hour, over the 90% it may be while being seated");
+    assert.equal(sustainedHeat([...hours(range(11, 1)), tick(0, { sellShare1h: 0.9 })], NOW, senv).qualifies, true, "90% is the line, not over it");
+    const unknown = sustainedHeat([...hours(range(11, 1)), tick(0, { sellShare1h: null })], NOW, senv);
+    assert.equal(unknown.qualifies, true);
+    assert.equal(unknown.note, "hot 12 of the last 16h (fee/TVL >= 0.3%/h on >= $100K, median 0.31%/h over them)");
+    const orca = sustainedHeat(hours(range(12)), NOW, senv, false);
+    assert.equal(orca.qualifies, false);
+    assert.match(orca.note, /but not on a venue the desk trades$/);
+  });
+  await test("sustained heat: HOT_SUSTAINED_HOURS=0 turns it off, and the hours are still counted for the row", () => {
+    const off = sustainedHeat(hours(range(14)), NOW, { ...senv, sustainedHours: 0 });
+    assert.equal(off.hours, 14);
+    assert.equal(off.qualifies, false);
+    assert.match(off.note, /sustained heat is off \(HOT_SUSTAINED_HOURS=0\)$/);
+  });
+  await test("historyTailBytes: the tape read is sized from the window at ~450 KB an hour and half again, floored at the surge window's six hours", () => {
+    assert.equal(TAPE_BYTES_PER_HOUR, 450 * 1024);
+    assert.equal(historyTailBytes(16), Math.ceil(16 * 450 * 1024 * 1.5), "16h reads about 10.5 MB, not the 16 MB the roll keeps");
+    assert.ok(historyTailBytes(16) < 11 * 1024 * 1024 && historyTailBytes(16) > 10 * 1024 * 1024);
+    assert.equal(historyTailBytes(1), Math.ceil(6 * 450 * 1024 * 1.5), "a window shorter than the surge window still reads the surge window");
+    assert.equal(historyTailBytes(6), historyTailBytes(1));
+    assert.equal(historyTailBytes(48), 3 * historyTailBytes(16));
   });
 
   /* ---------- hotPicks ---------- */
@@ -490,7 +576,7 @@ async function main(): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-bands-hot-"));
   // siblingLookups 0 and pumpswapPages 0: these tests pin the tick's exact call budget. Sibling discovery has its own
   // tests (npm run test:launch); the PumpSwap source is pinned on its own below, with its call counted.
-  const env = { minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150,
+  const env = { minLiquidityUsd: 20_000, minAgeHours: 12, surgeDailyPct: 5, maxRows: 60, boardTop: 150, sustainedFeePct: 0.3, sustainedLiqUsd: 100_000, sustainedHours: 12, sustainedWindowHours: 16, sustainedMaxSellShare: 0.9,
       geckoterminal: true, onchainReads: 2, siblingLookups: 0, pumpswapPages: 0 };
   const feeCache = new Map<string, FeeCacheEntry>();
   const feeReads: string[] = [];
@@ -565,6 +651,8 @@ async function main(): Promise<void> {
     assert.deepEqual(ansem.flags, ["fee-unknown"]);
 
     assert.ok(first.rows.every((r) => r.surge && r.surgeAt === first.generatedAt), "an empty tape: every row in the top 10 fires");
+    assert.ok(first.rows.every((r) => r.sustainedHours === 0 && r.sustained === false), "an empty tape: nothing is sustained");
+    assert.ok(!logs.some((l) => l.startsWith("[hot] SUSTAINED ")), logs.join("\n"));
     assert.ok(first.rows.every((r) => r.firstSeenAt === first.generatedAt && r.lastSeenAt === first.generatedAt));
     assert.ok(logs.some((l) => l.startsWith("[hot] 8 rows · trending 6 · dexscreener 6/9 · onchain 2 · 8 surges")), logs.join("\n"));
     assert.equal(logs.filter((l) => l.startsWith("[hot] SURGE ")).length, 8);
@@ -602,6 +690,52 @@ async function main(): Promise<void> {
     assert.ok(logs.some((l) => l.includes("SURGE STONK / SOL · meteora-dlmm · yield ·")), logs.join("\n"));
     assert.ok(third.rows.filter((r) => r.address !== STONK_SOL).every((r) => !r.surge && r.surgeAt === null), "the first tick's badges lapsed");
     assert.equal(readHistoryTail(dir, later).filter((r) => r.surge).length, 1);
+  });
+  await test("a tape that shows EMBER / USDC paying for 16 hours: the row is sustained and the tick logs its SUSTAINED line; a pool at the threshold on a venue the desk does not trade is logged and not sustained; HOT_SUSTAINED_HOURS=0 keeps the hours but not the verdict; shadow mode logs 'would be admitted' and admits nothing", async () => {
+    const d4 = fs.mkdtempSync(path.join(os.tmpdir(), "mr-bands-hot-"));
+    for (let i = 15; i >= 0; i--) {
+      appendHistory(d4, [{ ts: NOW - (i + 0.5) * H, address: EMBER_USDC, venue: "meteora-dlmm", vol1hUsd: 800_000, vol5mUsd: 40_000, liquidityUsd: 1_066_950, feeToTvl1hPct: 0.5, sellShare1h: 0.45, priceChange1hPct: 1, heat: 60 }]);
+      appendHistory(d4, [{ ts: NOW - (i + 0.5) * H, address: STONK_SOL, venue: "meteora-dlmm", vol1hUsd: 50_000, vol5mUsd: 4_000, liquidityUsd: 2_841_734, feeToTvl1hPct: 0.004, sellShare1h: 0.5, priceChange1hPct: 0, heat: 20 }]);
+      // JubJub / ZEC sits on Raydium's CPMM (the tick reads the trending source's bare "raydium"), which the desk does not trade: hot for 13 hours, at the threshold, never sustained
+      if (i < 13) appendHistory(d4, [{ ts: NOW - (i + 0.5) * H, address: JUBJUB_ZEC, venue: "raydium", vol1hUsd: 200_000, vol5mUsd: 10_000, liquidityUsd: 125_803, feeToTvl1hPct: 0.4, sellShare1h: 0.5, priceChange1hPct: 0, heat: 50 }]);
+    }
+    const logs: string[] = [];
+    const r = await runHotTick({ dataDir: d4, env, screen: SCREEN, held: [ANSEM_SOL], now: NOW, fetchImpl: fakeFetch(), sleep: async () => {}, readFee: async () => 0.5, log: (s) => logs.push(s) });
+    const ember = r.rows.find((x) => x.address === EMBER_USDC)!;
+    assert.equal(ember.sustainedHours, 16);
+    assert.equal(ember.sustained, true);
+    const stonk = r.rows.find((x) => x.address === STONK_SOL)!;
+    assert.equal(stonk.sustainedHours, 0, "0.004%/h is not heat");
+    assert.equal(stonk.sustained, false);
+    const jub = r.rows.find((x) => x.address === JUBJUB_ZEC)!;
+    assert.equal(jub.sustainedHours, 13);
+    assert.equal(jub.sustained, false, "at the threshold, but not on a venue the desk trades");
+    assert.ok(r.rows.filter((x) => x.address !== EMBER_USDC).every((x) => !x.sustained));
+    const line = logs.find((l) => l.startsWith("[hot] SUSTAINED EMBER"));
+    assert.ok(line, logs.join("\n"));
+    assert.ok(line!.startsWith("[hot] SUSTAINED EMBER / USDC · meteora-dlmm · hot 16 of the last 16h (fee/TVL >= 0.3%/h on >= $100K, median 0.50%/h over them); sells 45% of the last hour · liq $1.07M · vol 1h $795.4K"), line);
+    const jubLine = logs.find((l) => l.startsWith("[hot] SUSTAINED JubJub"));
+    assert.ok(jubLine, `the line is logged whenever the hot hours reach the threshold, so the rule can be watched on the tape:\n${logs.join("\n")}`);
+    assert.ok(jubLine!.startsWith("[hot] SUSTAINED JubJub / ZEC · raydium · hot 13 of the last 16h (fee/TVL >= 0.3%/h on >= $100K, median 0.40%/h over them), but not on a venue the desk trades · "), jubLine);
+    assert.equal(logs.filter((l) => l.startsWith("[hot] SUSTAINED ")).length, 2);
+    assert.ok(logs.some((l) => l.startsWith("[hot] 8 rows") && l.includes(" · 1 sustained") && !l.includes("(shadow)")), logs.join("\n"));
+    const off = await runHotTick({ dataDir: d4, env: { ...env, sustainedHours: 0 }, screen: SCREEN, held: [ANSEM_SOL], now: NOW + 2 * 60e3, fetchImpl: fakeFetch(), sleep: async () => {}, readFee: async () => 0.5, log: (s) => logs.push(s) });
+    const emberOff = off.rows.find((x) => x.address === EMBER_USDC)!;
+    assert.equal(emberOff.sustainedHours, 16, "the hours are still counted");
+    assert.equal(emberOff.sustained, false, "but nothing qualifies while the rule is off");
+    assert.equal(logs.filter((l) => l.startsWith("[hot] SUSTAINED ")).length, 2, "and with no threshold there is no line");
+    const shadowLogs: string[] = [];
+    const shadow = await runHotTick({ dataDir: d4, env: { ...env, sustainedMode: "shadow" }, screen: SCREEN, held: [ANSEM_SOL], now: NOW + 4 * 60e3, fetchImpl: fakeFetch(), sleep: async () => {}, readFee: async () => 0.5, log: (s) => shadowLogs.push(s) });
+    const emberShadow = shadow.rows.find((x) => x.address === EMBER_USDC)!;
+    assert.equal(emberShadow.sustainedHours, 16);
+    assert.equal(emberShadow.sustained, false, "shadow mode admits nothing: the floor never sees a qualifying row");
+    const shadowLine = shadowLogs.find((l) => l.startsWith("[hot] SUSTAINED EMBER"));
+    assert.ok(shadowLine, shadowLogs.join("\n"));
+    assert.ok(shadowLine!.includes("; sells 45% of the last hour (shadow: would be admitted) · liq $1.07M"), shadowLine);
+    assert.ok(shadowLogs.some((l) => l.startsWith("[hot] 8 rows") && l.includes(" · 1 sustained (shadow)")), shadowLogs.join("\n"));
+    const jubShadow = shadowLogs.find((l) => l.startsWith("[hot] SUSTAINED JubJub"));
+    assert.ok(jubShadow && !jubShadow.includes("shadow"), "a row that does not qualify is not 'would be admitted' in any mode");
+    fs.rmSync(d4, { recursive: true, force: true });
   });
   await test("a source that fails is named in sources.errors and the console; rows come from the ones that answered", async () => {
     const logs: string[] = [];

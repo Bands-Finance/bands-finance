@@ -442,7 +442,11 @@ async function main() {
     // and the desk is wired to THESE, not to a retyped copy of them: this test used to assert the
     // expression against itself and would have passed with the penalty dropped from index.ts
     const src = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
-    assert.match(src, /effectiveMaxPositionSol: seatCapSol\(riskLimits\.maxPositionSol, view\.sizeMultiplier, learnedState\(\), o\.address\)/);
+    // the engine's multiple carries the SUSTAINED-HEAT seat (src/index.ts sustainedSeatFor, HOT_SUSTAINED_SEAT) since 24 Sep: still this expression, still the learned state
+    assert.match(src, /effectiveMaxPositionSol: seatCapSol\(riskLimits\.maxPositionSol, view\.sizeMultiplier \* \(sustainedSeat\?\.multiplier \?\? 1\), learnedState\(\), o\.address\)/);
+    // and the guard context and the journal record carry the same product, so the guard's band-size ceiling judges the sustained-heat seat and the record shows what it judged
+    assert.match(src, /const engineCtx: EngineGuardContext = \{[^}]*?sizeMultiplier: view\.sizeMultiplier \* \(sustainedSeat\?\.multiplier \?\? 1\),/, "the guard context");
+    assert.match(src, /const journalEngine: JournalEngine = \{[^}]*?sizeMultiplier: view\.sizeMultiplier \* \(sustainedSeat\?\.multiplier \?\? 1\),/, "the journal record");
     assert.equal((src.match(/reentryMin: reentryMinFor\(/g) ?? []).length, 2, "both sit-out call sites go through it");
     assert.ok(!/Math\.max\(\w+\.reentryMin, sitOutMinFor\(/.test(src), "and no site spells the wait a second way");
   });

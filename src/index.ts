@@ -72,7 +72,7 @@ import { choosePinnedPool, pinnedPoolAt, pinnedTickers, PINNED_REFRESH_MS, refre
 import { flowByPool, flowContextLine, readFlowFile, type FlowContext, type PoolMeta as FlowPoolMeta } from "./scouts/flow";
 import { consolidation, rankSeats, seatFaded, seatLine, seatRankingEnv, seatYield, sittingOut, swapDepthWithin, weakSeatRotation, type HeldSeat, type RankedSeat, type SeatRotation } from "./screener/seatYield";
 import { pinRotateMinAgeMin, pinSeatAction, rotationCandidate, type RotationBand } from "./engine/rotation";
-import { memeFloorEnv, memeFloorLine, memeRefusal, type MemeCandidate } from "./screener/memeFloor";
+import { memeFloorEnv, memeFloorLine, memeRefusal, memeVerdict, sustainedSeatNote, type MemeCandidate } from "./screener/memeFloor";
 import { fetchPoolHistory, historyFresh, historyPhrase, historyRefusal, memeHistoryEnv, type HistoryRecord } from "./screener/memeHistory";
 import { fetchMeteoraStockPools, meteoraStockCandidates, meteoraStockEnv, saveStockMints, stockMintMap, stockTagFromMap, type MeteoraStockPool } from "./screener/meteoraStocks";
 import { verifiedStock } from "./screener/stocks";
@@ -101,7 +101,7 @@ import { noteDeploy, noteIteration, noteScreen, readLearnedView } from "./status
 import { createDeployer } from "./publish/deploy";
 import { rpcConnection } from "./lib/timedFetch";
 import { basisForPool, basisForTicker, basisVerdict, refreshBasis, sessionClock, sessionWidthMultiplier, type BasisRow } from "./basis";
-import { hotContextFor, hotPicks, hotPicksWithOwn, HotRow, launchRowOf, loadHot, runHotTick, startHotWatch, type HotPickOptions } from "./hot";
+import { hotContextFor, hotEnv, hotPicks, hotPicksWithOwn, HotRow, launchRowOf, loadHot, runHotTick, startHotWatch, type HotPickOptions } from "./hot";
 import {
   circuitLossSol,
   circuitVerdict,
@@ -187,6 +187,8 @@ interface App {
   rotateOut: { pool: string; label: string; reason: string } | null;
   /** a month of each memecoin pool's trading, read from GeckoTerminal (src/screener/memeHistory.ts), by pool address */
   memeHistory: Map<string, HistoryRecord>;
+  /** pools the memecoin floor admitted on SUSTAINED HEAT (src/hot/sustained.ts), by address, with the admission: they get HOT_SUSTAINED_SEAT of a seat while held */
+  sustainedSeats: Map<string, string>;
   /** Meteora's tokenized-stock pools (the RWA category, src/screener/meteoraStocks.ts) and when they were read */
   meteoraStocks: { at: number; pools: MeteoraStockPool[] } | null;
   /** the held pools this cycle could not observe, as the pool count and the exposure limit still count them (src/engine/marks.ts) */
@@ -430,6 +432,52 @@ function hotRowsFor(app: App, address: string): (HotRow & { pick: boolean })[] {
 const hotRowOf = (address: string): HotRow | undefined => loadHot()?.rows.find((r) => r.address === address);
 
 /**
+ * SUSTAINED HEAT as the memecoin floor reads it: the tape's hot hours for a pool, from a hot row that QUALIFIES
+ * (src/hot/sustained.ts), else null. The verdict, not the raw hours: the sell-share cap and the venue are judged in
+ * the hot watch, and a row written before the rule has neither field and reads as not sustained.
+ */
+const sustainedHoursOf = (address: string): number | null => {
+  const r = loadHotFileCached()?.rows.find((x) => x.address === address);
+  return r?.sustained === true && typeof r.sustainedHours === "number" ? r.sustainedHours : null;
+};
+
+/**
+ * A pool as the memecoin floor judges it: the board row when it has one (which knows the pool's token side), else the
+ * fast watch's row; the house pool marked as such, since the floor never judges the house token.
+ */
+function memeCandidateOf(app: App, address: string): MemeCandidate {
+  const house = seatFlagsOf(app, address).house;
+  const p = app.screen?.pools.find((x) => x.address === address);
+  if (p) return { symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, house, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct, sustainedHours: sustainedHoursOf(address) };
+  const r = loadHotFileCached()?.rows.find((x) => x.address === address);
+  return { symbol: r?.baseSymbol ?? address.slice(0, 6), marketCapUsd: r?.marketCapUsd ?? null, ageHours: r?.ageHours ?? null, stock: r?.stock ?? null, house, priceChange24hPct: r?.priceChange24hPct ?? null, sustainedHours: sustainedHoursOf(address) };
+}
+
+/**
+ * THE SUSTAINED-HEAT SEAT: a pool the floor admitted on its tape and nothing else gets HOT_SUSTAINED_SEAT of the seat it
+ * would otherwise get (half by default), for as long as it is held. The admission is remembered from the picker
+ * (app.sustainedSeats). After a restart nothing is remembered, and the floor's verdict on the pool NOW cannot recover
+ * it: a pool that has cooled since it was seated no longer qualifies, and re-reading the floor would hand a held
+ * CRACKER band a full seat on its next re-lay. So a HELD memecoin the floor refuses today is sized as the smaller seat
+ * as well (sustainedSeatNote: it was admitted on sustained heat, or its cap has since fallen under the floor; either
+ * way the desk would not seat it today), in shadow mode too, so a band seated before the switch keeps its seat. A pinned
+ * pool (PINNED_POOLS, or a pinned stock) was never the floor's to admit, so its refusal says nothing about how it was
+ * seated and it keeps its full seat. Only a pool the floor admits on its own gets the full seat otherwise. Null when the
+ * exemption is off.
+ */
+function sustainedSeatFor(app: App, address: string, held: boolean): { multiplier: number; note: string } | null {
+  const env = hotEnv();
+  if (env.sustainedHours <= 0) return null;
+  let note = app.sustainedSeats.get(address) ?? null;
+  if (note === null) {
+    const pinned = config.pinnedPools.includes(address) || seatFlagsOf(app, address).pinned;
+    note = sustainedSeatNote(memeVerdict(memeCandidateOf(app, address), memeFloorEnv()), held && !pinned);
+    if (note !== null) app.sustainedSeats.set(address, note);
+  }
+  return note === null ? null : { multiplier: env.sustainedSeat, note };
+}
+
+/**
  * The launch lane's verdict on a pool, read from the fast watch's row. The hot watch is the only
  * source that knows a pool this young: the screener's board is up to 15 minutes old and ranks on a
  * 24h history a two-hour-old pool does not have. Null when the lane is off, the watch has no row for
@@ -578,18 +626,25 @@ async function refreshPinned(app: App): Promise<void> {
   }
 }
 
+/**
+ * Whether a pool is a pinned seat (a pinned stock, by ticker or as a made pair) or the house pool (PAIR_HOUSE_MINTS):
+ * the seats no lane's floor ever judged. The rotation picker reads them, and so does the sustained-heat seat.
+ */
+function seatFlagsOf(app: App, pool: string): { pinned: boolean; house: boolean } {
+  return {
+    pinned: pinnedTickerOf(app, pool) !== null || (isPairAddress(pool) && pinnedTickers().includes(app.paper?.pairPools?.[pool]?.stock?.ticker ?? loadState().pairPools?.[pool]?.stock?.ticker ?? "")),
+    house: !!app.paper?.pairPools?.[pool]?.house || pairEnv().houseMints.includes(pairMintOf(pool) ?? ""),
+  };
+}
+
 /** The book's bands as the rotation picker needs them: venue, age, value, fee pace, and whether they are pinned or the house pool. */
 function rotationBands(app: App, heldAll: string[]): RotationBand[] {
-  const houseMints = pairEnv().houseMints;
   // a pool holding an ask band (src/engine/askExit.ts) is not a seat to rotate: rotating it would sell what the ask is working off
   const askPools = askPoolsOf(loadState().askBands);
   const held = heldAll.filter((pool) => !askPools.has(pool));
   const venueOf = (pool: string): string | null =>
     app.screen?.pools.find((p) => p.address === pool)?.venue ?? app.pools.get(pool)?.venue.id ?? (isPairAddress(pool) || pinnedPoolAt(app.pinned, pool) ? "meteora-dlmm" : null);
-  const flags = (pool: string) => ({
-    pinned: pinnedTickerOf(app, pool) !== null || (isPairAddress(pool) && pinnedTickers().includes(app.paper?.pairPools?.[pool]?.stock?.ticker ?? loadState().pairPools?.[pool]?.stock?.ticker ?? "")),
-    house: !!app.paper?.pairPools?.[pool]?.house || houseMints.includes(pairMintOf(pool) ?? ""),
-  });
+  const flags = (pool: string) => seatFlagsOf(app, pool);
   if (app.paper) {
     const byPool = new Map<string, RotationBand>();
     const now = Date.now();
@@ -629,12 +684,12 @@ async function refreshMemeHistory(app: App, funds: Set<"SOL" | "USDC">): Promise
   const wanted = new Map<string, { symbol: string; yieldPct: number }>();
   for (const p of app.screen?.pools ?? []) {
     if (p.stock || !tradableVenue(p) || !quoteOk(p.quoteSymbol) || (p.volume24hUsd ?? 0) < minVolume) continue;
-    if (memeRefusal({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct }, meme)) continue;
+    if (memeRefusal({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct, sustainedHours: sustainedHoursOf(p.address) }, meme)) continue;
     wanted.set(p.address, { symbol: p.baseSymbol, yieldPct: p.feeToTvl24hPct ?? 0 });
   }
   for (const r of loadHotFileCached()?.rows ?? []) {
     if (r.stock || !isTradableVenue(r.venue) || !quoteOk(r.quoteSymbol) || (r.vol24hUsd ?? 0) < minVolume) continue;
-    if (memeRefusal({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours }, meme)) continue;
+    if (memeRefusal({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours, priceChange24hPct: r.priceChange24hPct, sustainedHours: sustainedHoursOf(r.address) }, meme)) continue;
     if (!wanted.has(r.address)) wanted.set(r.address, { symbol: r.baseSymbol, yieldPct: r.feeToTvlDailyPct ?? 0 });
   }
   const due = [...wanted.entries()].filter(([a]) => !historyFresh(app.memeHistory.get(a), hist, now)).sort((a, b) => b[1].yieldPct - a[1].yieldPct).slice(0, hist.lookupsPerCycle);
@@ -768,6 +823,8 @@ const stockSeatSol = (): number => Math.min(pairStockSeatSol(riskLimits.maxTotal
 
 function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">): string[] {
   const set = new Set<string>([...config.pinnedPools, ...withPositions]);
+  // a sustained-heat admission (sustainedSeatFor) lives as long as the band does; a pool no longer held is judged afresh
+  for (const a of [...app.sustainedSeats.keys()]) if (!withPositions.includes(a)) app.sustainedSeats.delete(a);
   // An ASK band (src/engine/askExit.ts) is inventory being worked off, not a seat: its pool is worked (observed and
   // decided every cycle, its token's slot kept) but it leaves its seat free for the lanes. `seatsHeld()` is what counts
   // against MAX_ACTIVE_POOLS; `set` is what is worked.
@@ -812,16 +869,32 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // in. Checked only on a token the lane would otherwise seat, so the log names what it actually kept out.
   const meme = memeFloorEnv();
   const memeRefused: string[] = [];
+  const memeAdmitted: string[] = [];
   const hist = memeHistoryEnv();
-  // the floor, then the strict rule: a memecoin pool needs a month of its own trading on record
+  // The floor, then the strict rule: a memecoin pool needs a month of its own trading on record. A pool admitted on
+  // SUSTAINED HEAT (src/hot/sustained.ts, memeVerdict) skips the history rule as well: that rule is the age floor's
+  // stricter twin (MEME_MIN_HISTORY_DAYS of trading on record, refusing a pool younger than that by construction), and
+  // the tape IS a record the desk read itself, hour by hour. Without this the exemption seats nothing while the rule is
+  // on: CRACKER at four days old would clear the floor on its tape and be refused "under the 30 days" a line later.
+  // Such a seat is remembered (app.sustainedSeats) so the pool loop sizes it at HOT_SUSTAINED_SEAT.
   const memeOk = (c: MemeCandidate, address: string): boolean => {
-    const why = memeRefusal(c, meme) ?? (c.stock || c.house ? null : historyRefusal(c.symbol, app.memeHistory.get(address), hist, Date.now(), c.ageHours ?? null));
+    const v = memeVerdict(c, meme);
+    if (v.sustained !== null) {
+      // the note names every rule the admission set aside: the history rule too, when it would have refused
+      const h = c.stock || c.house ? null : historyRefusal(c.symbol, app.memeHistory.get(address), hist, Date.now(), c.ageHours ?? null);
+      const note = h === null ? v.sustained : `${v.sustained} and the ${hist.minDays}-day history rule`;
+      if (!memeAdmitted.includes(note)) memeAdmitted.push(note);
+      app.sustainedSeats.set(address, note);
+      return true;
+    }
+    const why = v.refusal ?? (c.stock || c.house ? null : historyRefusal(c.symbol, app.memeHistory.get(address), hist, Date.now(), c.ageHours ?? null));
     if (why && !memeRefused.includes(why)) memeRefused.push(why);
     return why === null;
   };
-  const hotMeme = (address: string): Pick<MemeCandidate, "marketCapUsd" | "ageHours" | "stock"> => {
+  // the fast watch's row as the floor judges it, its day included: a token in collapse is never admitted on its heat
+  const hotMeme = (address: string): Pick<MemeCandidate, "marketCapUsd" | "ageHours" | "stock" | "priceChange24hPct" | "sustainedHours"> => {
     const r = loadHotFileCached()?.rows.find((x) => x.address === address);
-    return { marketCapUsd: r?.marketCapUsd ?? null, ageHours: r?.ageHours ?? null, stock: r?.stock ?? null };
+    return { marketCapUsd: r?.marketCapUsd ?? null, ageHours: r?.ageHours ?? null, stock: r?.stock ?? null, priceChange24hPct: r?.priceChange24hPct ?? null, sustainedHours: sustainedHoursOf(address) };
   };
   const minVolume = Number(process.env.POLICY_MIN_VOLUME_24H_USD ?? 250_000);
   const usdcOk = typeof app.screen?.solPriceUsd === "number" && app.screen.solPriceUsd > 0 && funds.has("USDC");
@@ -972,7 +1045,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   // THE CANDIDATE A ROTATION FREED A SEAT FOR goes first, before any lane, while it still passes every gate the board loop applies
   if (app.seatFor && seatsHeld() < ordinaryCap && !set.has(app.seatFor.address) && !takenTokens.has(app.seatFor.baseMint)) {
     const p = (app.screen?.pools ?? []).find((x) => x.address === app.seatFor!.address);
-    const ok = !!p && tradableVenue(p) && quoteOk(p.quoteSymbol) && watchlistRefusal(p, watch) === null && (p.volume24hUsd ?? 0) >= minVolume && p.score > Math.max(0, policyEnv().minScore) && !p.flags.includes("thin") && !p.flags.includes("no-24h-data") && !(p.stock && !verifiedStock(p.stock)) && !satOutNow(p.address) && memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct }, p.address);
+    const ok = !!p && tradableVenue(p) && quoteOk(p.quoteSymbol) && watchlistRefusal(p, watch) === null && (p.volume24hUsd ?? 0) >= minVolume && p.score > Math.max(0, policyEnv().minScore) && !p.flags.includes("thin") && !p.flags.includes("no-24h-data") && !(p.stock && !verifiedStock(p.stock)) && !satOutNow(p.address) && memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct, sustainedHours: sustainedHoursOf(p.address) }, p.address);
     if (ok) {
       take(p.address, p.baseMint);
       console.log(`[cycle ${app.cycle}] the seat a rotation freed goes to ${p.name.replace(/\s*\/\s*/, "/")}, as ranked`);
@@ -983,7 +1056,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     if (seatsHeld() >= ordinaryCap) break;
     const row = { address: r.address, baseSymbol: r.baseSymbol, baseMint: r.baseMint, name: r.name };
     if (r.stock && !verifiedStock(r.stock)) continue;
-    if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume && !takenTokens.has(r.baseMint) && !satOutNow(r.address) && memeOk({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours, stock: r.stock }, r.address)) take(r.address, r.baseMint);
+    if (quoteOk(r.quoteSymbol) && watchlistRefusal(row, watch) === null && (r.vol24hUsd ?? 0) >= minVolume && !takenTokens.has(r.baseMint) && !satOutNow(r.address) && memeOk({ symbol: r.baseSymbol, marketCapUsd: r.marketCapUsd, ageHours: r.ageHours, stock: r.stock, priceChange24hPct: r.priceChange24hPct, sustainedHours: sustainedHoursOf(r.address) }, r.address)) take(r.address, r.baseMint);
   }
   const candidates = (app.screen?.pools ?? []).filter(
     (p) =>
@@ -1018,7 +1091,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
   }
   // the board order the memecoin seat ranking reads: the measured-fee order, only pools that would pass the picker's every gate
   app.boardOrder = byYield
-    .filter((p) => !(p.stock && !verifiedStock(p.stock)) && !satOutNow(p.address) && memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct }, p.address))
+    .filter((p) => !(p.stock && !verifiedStock(p.stock)) && !satOutNow(p.address) && memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct, sustainedHours: sustainedHoursOf(p.address) }, p.address))
     .slice(0, 8)
     .map((p) => ({ address: p.address, label: p.name.replace(/\s*\/\s*/, "/"), baseMint: p.baseMint, measuredPct: measuredFeeOnDepth(p) }));
   for (const p of byYield) {
@@ -1026,7 +1099,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
     if (takenTokens.has(p.baseMint) || set.has(p.address)) continue;
     if (p.stock && !verifiedStock(p.stock)) continue;
     if (satOutNow(p.address)) continue;
-    if (!memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct }, p.address)) continue;
+    if (!memeOk({ symbol: p.baseSymbol, marketCapUsd: p.mcapUsd ?? p.fdvUsd ?? null, ageHours: p.ageHours, stock: p.stock, tokenSideUsd: tokenSideUsdOf(p), volume24hUsd: p.volume24hUsd, priceChange24hPct: p.priceChange24hPct, sustainedHours: sustainedHoursOf(p.address) }, p.address)) continue;
     take(p.address, p.baseMint);
   }
 
@@ -1120,7 +1193,7 @@ function pickPools(app: App, withPositions: string[], funds: Set<"SOL" | "USDC">
       );
     }
   }
-  const floorLine = memeFloorLine(memeRefused, meme);
+  const floorLine = memeFloorLine(memeRefused, meme, memeAdmitted);
   if (floorLine) console.log(`[cycle ${app.cycle}] ${floorLine}`);
   return [...set];
 }
@@ -1606,6 +1679,9 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   // A paid move (a sale) waits for the fees it is missing to cover its cost; an all-quote re-lay is a close and an open with
   // no sale, and the guard lets it go after the idle wait instead (antiChurn's idle argument, POLICY_IDLE_RELAY_SEC).
   const moveSec = bandFeesPerDayUsd !== null && px ? Math.round(moveAfterSec(moveCostUsd, bandFeesPerDayUsd, cfg.outOfRangeSec)) : Math.max(cfg.outOfRangeSec, OUT_OF_RANGE_FALLBACK_SEC);
+  // THE SUSTAINED-HEAT SEAT (sustainedSeatFor): folded into the engine's own multiple below, so the policy's "max band"
+  // cap, and everything downstream of it, sees HOT_SUSTAINED_SEAT of the seat without a new path of its own.
+  const sustainedSeat = sustainedSeatFor(app, o.address, positions.length > 0);
   const engineObs: EngineObservation = {
     halt: view.haltedUntil !== null ? { until: view.haltedUntil, stage: view.haltStage, reason: view.haltReason } : null,
     standDown: view.standDownUntil !== null ? { until: view.standDownUntil, reason: view.standDownReason } : null,
@@ -1617,7 +1693,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     // it multiplies the human-set cap, so it can only ever take a smaller seat than MAX_POSITION_SOL,
     // never a larger one, and it can never bench a pool. The guards are untouched: this is a size the
     // guards then judge, not a guard.
-    effectiveMaxPositionSol: seatCapSol(riskLimits.maxPositionSol, view.sizeMultiplier, learnedState(), o.address),
+    effectiveMaxPositionSol: seatCapSol(riskLimits.maxPositionSol, view.sizeMultiplier * (sustainedSeat?.multiplier ?? 1), learnedState(), o.address),
     stops,
     outOfRangeSec: oorSec,
     minOutOfRangeSec: moveSec,
@@ -1654,7 +1730,7 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
     learned: learnedFor(o.address, snapshot.label),
   };
   console.log(
-    `${tag}${venueTag} active bin ${snapshot.activeBinId} price ${snapshot.activePrice.toPrecision(6)} ${snapshot.priceLabel} | quote ${q.symbol}${quoteIsSol ? "" : ` (1 ${q.symbol} = ${q.priceInSol.toFixed(6)} SOL)`} | screen ${screen ? `#${screen.rank} score ${screen.score}` : "n/a"} | wallet ${sol.toFixed(4)} SOL, ${quoteIsSol ? "" : `${quote.toFixed(2)} ${q.symbol}, `}${token.ui.toFixed(2)} ${snapshot.baseToken.symbol} | bands ${positions.length} | size x${view.sizeMultiplier}${knife ? ` | ${knife}` : ""}`,
+    `${tag}${venueTag} active bin ${snapshot.activeBinId} price ${snapshot.activePrice.toPrecision(6)} ${snapshot.priceLabel} | quote ${q.symbol}${quoteIsSol ? "" : ` (1 ${q.symbol} = ${q.priceInSol.toFixed(6)} SOL)`} | screen ${screen ? `#${screen.rank} score ${screen.score}` : "n/a"} | wallet ${sol.toFixed(4)} SOL, ${quoteIsSol ? "" : `${quote.toFixed(2)} ${q.symbol}, `}${token.ui.toFixed(2)} ${snapshot.baseToken.symbol} | bands ${positions.length} | size x${view.sizeMultiplier}${sustainedSeat ? ` | sustained-heat seat x${sustainedSeat.multiplier} (${sustainedSeat.note})` : ""}${knife ? ` | ${knife}` : ""}`,
   );
 
   // The engine decides first. When it has a directive the LLM is not asked this cycle.
@@ -1761,7 +1837,8 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   const engineCtx: EngineGuardContext = {
     haltedUntil: view.haltedUntil,
     standDownUntil: view.standDownUntil,
-    sizeMultiplier: view.sizeMultiplier,
+    // the same product as effectiveMaxPositionSol above: the guard's band-size ceiling sees the sustained-heat seat too
+    sizeMultiplier: view.sizeMultiplier * (sustainedSeat?.multiplier ?? 1),
     benched: view.bench.benched,
     benchReason: view.bench.reason,
     regimeReason: view.regime.reason,
@@ -1995,7 +2072,8 @@ async function runPool(app: App, o: Observed, all: Observed[], sol: number): Pro
   const journalEngine: JournalEngine = {
     directive: directive?.kind ?? null,
     reason: directive?.reason ?? null,
-    sizeMultiplier: view.sizeMultiplier,
+    // what the guard judged the seat at, the sustained-heat seat included
+    sizeMultiplier: view.sizeMultiplier * (sustainedSeat?.multiplier ?? 1),
     bench: { stops6h: view.bench.stops6h, multiplier: view.bench.multiplier, benched: view.bench.benched },
     regime: { medianMove24hPct: view.regime.medianMove24hPct, multiplier: view.regime.multiplier },
     halt: view.haltedUntil !== null ? { until: view.haltedUntil, stage: view.haltStage ?? 0 } : null,
@@ -2788,6 +2866,7 @@ async function main(): Promise<void> {
     pinnedAt: 0,
     rotateOut: null,
     memeHistory: new Map(),
+    sustainedSeats: new Map(),
     meteoraStocks: null,
   };
   appRef = app;
