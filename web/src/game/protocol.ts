@@ -16,7 +16,8 @@
  * nothing on them: a round records its result against holding on the Best rounds board and touches no stack. Every
  * change to a stack is the server's own: a cash-in, or a purchase at one of the town's shops.
  *
- * THE TOWN: the walkable ground is the plaza, the boulevard ring and the four streets out to their domed ends, one
+ * THE TOWN: the walkable ground is the plaza, the boulevard ring, the four streets out to their domed ends, the ring
+ * road that joins them and the four quarters between them (the Park, the Canal, the Market Square, the Station), one
  * shape for both sides (web/src/game/town.ts: walkable, nearestWalkable, PLACES, COIN_ZONES). Every named front is a
  * Place with a door; standing within DOOR_REACH_M of it a visitor may "enter" (the server checks the position,
  * records the discovery and answers what the interior shows), "buy" kit at a shop, "climb" the tower. Kit worn is in
@@ -84,6 +85,18 @@ export const PLACE_IDS = {
   northEnd: "north-end",
   westEnd: "west-end",
   southEnd: "south-end",
+  /** the four quarters' gates on the ring road (a discovery each, nothing to enter) */
+  park: "park",
+  canal: "canal",
+  market: "market",
+  station: "station",
+  /** the ring road's fronts (a line each, nothing to buy) */
+  grandHotel: "grand-hotel",
+  ironmonger: "ironmonger",
+  chandler: "chandler",
+  baker: "baker",
+  apothecary: "apothecary",
+  gazette: "gazette",
   /** the plaza's own (not in PLACES): the Guard House and the desk */
   guardHouse: "guard-house",
   desk: "desk",

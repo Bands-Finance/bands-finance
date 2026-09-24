@@ -13,6 +13,12 @@ import * as THREE from "three";
  * ones as the camera closes in, so there is never a jump.
  *
  * The renderer runs with a linear output colour space: the colours below are display colours, written as is.
+ *
+ * The plate can be printed at any hour: the shared uniforms carry the paper's tint, the contour ink, the hatch ink,
+ * the light's direction and a night factor, and their DEFAULTS are the desk's daylight, so a scene that never writes
+ * them (mrbands.finance's desk) looks exactly as it always has. The Exchange's day cycle (web/src/game/light.ts)
+ * writes them as the hour turns. A material given the ENG_LIT define reads a per-vertex aLit (0 or 1): where it is
+ * set, the night factor turns the paper under that surface into lamplight (a lit window, a lamp's globe).
  */
 
 export type EngraveKind = "plain" | "bill" | "page" | "tape" | "accent" | "stripe";
@@ -71,14 +77,29 @@ export const PAPER = "#f3ecdd";
 export const INK = "#16120f";
 export const ORANGE = "#ff7a1a";
 const ORANGE_INK = "#8f3a06";
+/** lamplight: the warm paper a lit window or a lamp's globe shows at night */
+export const LAMPLIGHT = "#ffd58c";
+/** the day paper's luminance, the tone a far surface thins to under the fog whatever the paper's tint that hour */
+const PAPER_L = (() => {
+  const p = v3(PAPER);
+  return ((p.x + p.y + p.z) / 3).toFixed(4);
+})();
 
 /** Shared by every engraved material so one write moves them all. */
 export const shared = {
+  /** the paper's tint this hour: the day's paper by default */
   uPaper: { value: v3(PAPER) },
+  /** the contour ink (every outline, the city's included, reads this one): lightened a shade at night so forms still part from a dark paper */
   uInk: { value: v3(INK) },
+  /** the hatch ink: the lines that carry the tone; it stays ink at every hour */
+  uHatch: { value: v3(INK) },
   uAccent: { value: v3(ORANGE) },
   uAccentInk: { value: v3(ORANGE_INK) },
   uLightDir: { value: new THREE.Vector3(0.5, 0.8, 0.4).normalize() },
+  /** 0 by day, 1 at night: turns the lit surfaces (ENG_LIT) to lamplight and lets the fog fade far things into the night paper */
+  uNight: { value: 0 },
+  /** the colour lamplight paints a lit surface */
+  uGlow: { value: v3(LAMPLIGHT) },
   /** the target distance between lines, in device pixels */
   uPitch: { value: 5.0 },
   /** 0..1, fades the whole plate toward bare paper (used while the stage boots) */
@@ -94,6 +115,10 @@ varying vec3 vEngWP;
 varying vec3 vEngWN;
 varying vec3 vEngLP;
 varying vec2 vEngUV;
+#ifdef ENG_LIT
+attribute float aLit;
+varying float vEngLit;
+#endif
 `;
 
 const VERT_MAIN = /* glsl */ `
@@ -112,6 +137,9 @@ const VERT_MAIN = /* glsl */ `
   #else
     vEngUV = vec2(0.0);
   #endif
+  #ifdef ENG_LIT
+    vEngLit = aLit;
+  #endif
 }
 `;
 
@@ -120,11 +148,17 @@ varying vec3 vEngWP;
 varying vec3 vEngWN;
 varying vec3 vEngLP;
 varying vec2 vEngUV;
+#ifdef ENG_LIT
+varying float vEngLit;
+#endif
 uniform vec3 uPaper;
 uniform vec3 uInk;
+uniform vec3 uHatch;
 uniform vec3 uAccent;
 uniform vec3 uAccentInk;
 uniform vec3 uLightDir;
+uniform float uNight;
+uniform vec3 uGlow;
 uniform float uPitch;
 uniform float uFade;
 uniform float uFeed;
@@ -159,7 +193,19 @@ float engRect(vec2 p, vec2 h) { vec2 d = abs(p) - h; return max(d.x, d.y); }
 const FRAG_MAIN = /* glsl */ `
 {
   vec3 lit = gl_FragColor.rgb;
-  float L = clamp(dot(lit, vec3(0.3333)), 0.0, 1.0);
+  float Lraw = dot(lit, vec3(0.3333));
+  #ifdef USE_FOG
+    // the fog is taken here, not by three: by day it lifts the lit tone toward the paper so far lines thin to bare
+    // paper (three's own fog did just that), and that measure is kept whatever the paper's tint, so at night far
+    // things thin to the night paper too instead of crosshatching toward a dark fog colour
+    #ifdef FOG_EXP2
+      float engFog = 1.0 - exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);
+    #else
+      float engFog = smoothstep(fogNear, fogFar, vFogDepth);
+    #endif
+    Lraw = mix(Lraw, mix(dot(fogColor, vec3(0.3333)), ${PAPER_L}, uNight), engFog);
+  #endif
+  float L = clamp(Lraw, 0.0, 1.0);
   vec3 N = normalize(vEngWN);
   vec3 V = normalize(cameraPosition - vEngWP);
   float spec = pow(max(dot(N, normalize(uLightDir + V)), 0.0), uGloss) * uShine;
@@ -180,7 +226,15 @@ const FRAG_MAIN = /* glsl */ `
   float ink = max(l1, l2);
 
   vec3 paper = uPaper;
-  vec3 inkCol = uInk;
+  vec3 inkCol = uHatch;
+  #ifdef ENG_LIT
+    // a lit surface at night: lamplight where the paper would be, the hatch thinned to the glazing bars
+    float glow = clamp(vEngLit, 0.0, 1.0) * uNight;
+    paper = mix(paper, uGlow, glow);
+    float glowThin = 1.0 - glow * 0.8;
+  #else
+    float glowThin = 1.0;
+  #endif
 
   if (uKind == 1) {
     // a banknote seen from above: a ruled border and an oval, drawn in the prototype's own space
@@ -227,12 +281,17 @@ const FRAG_MAIN = /* glsl */ `
     ink *= 1.0 - stripe * 0.9;
   }
 
+  ink *= glowThin;
   vec3 col;
   if (uKind == 4) {
-    col = mix(uAccent, uAccentInk, ink * 0.85);
+    // an accent (a strap, an awning) at night: the same orange, but under a dark sky, not lit from within
+    col = mix(uAccent, uAccentInk, ink * 0.85) * (1.0 - uNight * 0.4);
   } else {
     col = mix(paper, inkCol, ink);
   }
+  #ifdef USE_FOG
+    col = mix(col, fogColor, engFog * uNight);
+  #endif
   col = mix(col, uPaper, uFade);
   gl_FragColor = vec4(col, 1.0);
 }
@@ -265,12 +324,25 @@ export function engraveMaterial(opts: EngraveOptions): THREE.MeshLambertMaterial
       .replace("#include <project_vertex>", `#include <project_vertex>\n${VERT_MAIN}`);
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", `#include <common>\n${FRAG_PARS}`)
+      // the fog is applied by the plate itself (see FRAG_MAIN), so three's own pass is left out
+      .replace("#include <fog_fragment>", "")
       .replace("#include <dithering_fragment>", `#include <dithering_fragment>\n${FRAG_MAIN}`);
   };
-  // one program per kind/uv combination is enough; the tone and the rest are uniforms
+  // one program per kind/uv combination is enough (three adds the defines to the key); the tone and the rest are uniforms
   m.customProgramCacheKey = () => `engrave:${opts.hasUv ? 1 : 0}`;
   m.userData.engrave = own;
   return m;
+}
+
+/**
+ * Lets an engraved material read the aLit attribute: a mesh in this material whose geometry carries aLit = 1 shows
+ * lamplight at night (light.ts sets it on the city's windows and the lamps' globes). A mesh without the attribute is
+ * unchanged, so the material may stay shared. Must be called before the material's first draw.
+ */
+export function litMaterial(m: THREE.Material): void {
+  if (m.defines?.ENG_LIT !== undefined) return;
+  m.defines = { ...(m.defines ?? {}), ENG_LIT: "" };
+  m.needsUpdate = true;
 }
 
 /**

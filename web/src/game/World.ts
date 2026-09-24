@@ -17,6 +17,11 @@
  * the same coin larger with a double ring. Walk onto one and the room is asked for it (onNote). When the Mint spills
  * a street's worth, the page hangs a second signpost at that street's mouth (setSpill).
  *
+ * ALIVE (24 Sep): everything that moves of its own accord (the passers-by, the carts, the birds, the newsboy, the
+ * sweeper, the dog, the wind on the awnings and the smoke) is ./life.ts's, built once the city stands and stepped
+ * every frame; its carts' colliders are among the world's, so you step round them. The camera sits closer (DIST,
+ * PITCH), sways a little at the walk's cadence, and opens out (FOV_OUT) beyond the rope, where the streets are long.
+ *
  * This file is the engine only: scene, avatars, input, camera, collisions and the spots you can use. It knows nothing
  * of React, the network or the mini-game; it reports where you are (onMove) and what you stand near (onNear), and the
  * page (src/components/PlayPage.tsx) opens the panels. Remote visitors are driven through addRemote/moveRemote.
@@ -26,6 +31,8 @@ import { outlineRes, shared, SPECS } from "../stage/engrave";
 import { CAPS, fitText, flat, hexRgb, INK, labelSprite, mat, OUTLINE, OUTLINE_FINE, PAPER, part, SERIF, signTexture } from "./engraved";
 import { buildCity, type City, type Seg } from "./city";
 import { makeFigure, type Figure, type Gesture } from "./figure";
+import { buildLife, type Life } from "./life";
+import { mountLight, type TownLight } from "./light";
 import { bands } from "./money";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { DESK_SPOT, DOOR_REACH_M, GUARD_SPOT, PLACE_IDS, STRAPS, WORLD_RADIUS, type Kit } from "./protocol";
@@ -163,6 +170,14 @@ const LABEL_NEAR_M = 11;
 const TAG_FADE_M = [22, 30] as const;
 /** the camera looks at a point this high above your feet: above the head, so tall signs stay in frame */
 const EYE = 2.4;
+/** the follow camera's rest: this far behind you, this far down on you (a wheel changes the distance) */
+const DIST = 8;
+const PITCH = 0.22;
+/** the camera's sway while you walk: this much roll, at the walk's cadence (the figure's own strides a second) */
+const SWAY = 0.02;
+/** the view, degrees across: the plaza as it was, and opened out beyond the rope, where the streets are long */
+const FOV_PLAZA = 50;
+const FOV_OUT = 55;
 
 /** colliders: circles on the ground the walker is pushed out of */
 interface Circle {
@@ -207,6 +222,22 @@ function retop(w: Walker) {
 
 // ---------------------------------------------------------------- the world
 
+/** ?hour= from the page's query or its hash query (0..24, a fraction allowed), else null: the real hour runs */
+function forcedHour(): number | null {
+  if (typeof location === "undefined") return null;
+  for (const q of [location.search, location.hash.includes("?") ? location.hash.slice(location.hash.indexOf("?")) : ""]) {
+    const v = new URLSearchParams(q).get("hour");
+    if (v !== null && v !== "" && Number.isFinite(Number(v))) return Number(v);
+  }
+  return null;
+}
+
+/** a Date whose local-time reading is UTC, so the tower's hands (city.ts reads getHours) match the shared sky */
+function utcClock(): Date {
+  const now = new Date();
+  return new Date(now.getTime() + now.getTimezoneOffset() * 60_000);
+}
+
 export class ExchangeWorld {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -238,8 +269,13 @@ export class ExchangeWorld {
   private keys = new Set<string>();
   private joy = new THREE.Vector2();
   private yaw = 0;
-  private pitch = 0.26;
-  private dist = 9.5;
+  private pitch = PITCH;
+  private dist = DIST;
+  /** the walk's cadence, for the camera's sway, and the sway itself (eased, so a stop has no corner in it) */
+  private cadence = 0;
+  private roll = 0;
+  /** the view's width now, eased toward where you are (the plaza or beyond the rope) */
+  private fovNow = FOV_PLAZA;
   private dragging: { x: number; y: number; id: number; startX: number; startY: number; at: number; moved: boolean } | null = null;
   /**
    * click or tap to walk: the way there (town.ts's routeTo: through a mouth, round the ring, along a street), the
@@ -264,8 +300,14 @@ export class ExchangeWorld {
   private stallSigns: THREE.Mesh[] = [];
   private npc: Walker | null = null;
   private city!: City;
-  /** passers-by: walkers on loops through the open plaza, placed by the clock so every visitor sees them in the same places */
-  private strollers: { w: Walker; path: THREE.Vector3[]; lengths: number[]; total: number; speed: number; offset: number }[] = [];
+  /** the town's own life (./life.ts): the passers-by, carts, birds, the newsboy, sweeper and dog, the wind and smoke */
+  private life!: Life;
+  /** the day cycle: the town printed at the hour its clock shows (light.ts); the page owns it, so bands.finance sees night */
+  light!: TownLight;
+  /** the stalls' awnings, hinged at the back, for the wind */
+  private stallAwnings: THREE.Mesh[] = [];
+  /** where the other visitors stand, handed to the life each frame (the birds scatter from them, the dog follows them) */
+  private otherAt: THREE.Vector3[] = [];
   private moved = false;
   private disposed = false;
   /** the coins on the ground, turning where they lie (by the wire's name for them) */
@@ -365,7 +407,6 @@ export class ExchangeWorld {
     this.buildNoticeBoard();
     this.buildDesk();
     this.buildDecor();
-    this.buildStrollers();
 
     this.city = buildCity();
     this.scene.add(this.city.root);
@@ -373,6 +414,12 @@ export class ExchangeWorld {
     this.walls.push(...this.city.walls);
     this.fences.push(...this.city.fences);
     this.buildPlaces();
+    // the life reads the city's instances (awnings, flags, chimney pots, globes), so it comes after the city
+    this.life = buildLife(this.city.root);
+    this.scene.add(this.life.root);
+    this.colliders.push(...this.life.colliders);
+    // the hour can be forced from the page's query (?hour=22, on the dev page or after #/play?debug) for a look at night
+    this.light = mountLight(this.scene, forcedHour() === null ? {} : { hour: forcedHour()! });
   }
 
   /** every door in the town (town.ts's PLACES): a spot to use, and a keeper beside it, idle, named by the sign */
@@ -565,10 +612,12 @@ export class ExchangeWorld {
         pole.position.set(px, 2.3, -0.55);
         g.add(pole);
       }
-      const awning = part(new THREE.BoxGeometry(3.6, 0.16, 1.7), mat("Strap"));
-      awning.position.set(0, 3.5, 0.05);
+      // the awning hangs from its back edge (the geometry is pushed forward of the pivot), so the wind can lift its front
+      const awning = part(new THREE.BoxGeometry(3.6, 0.16, 1.7).translate(0, 0, 0.85), mat("Strap"));
+      awning.position.set(0, 3.5, -0.8);
       awning.rotation.x = 0.16;
       g.add(awning);
+      this.stallAwnings.push(awning);
       const sign = new THREE.Mesh(new THREE.PlaneGeometry(3, 0.95), new THREE.MeshBasicMaterial({ map: this.stallTexture(null) }));
       sign.position.set(0, 2.72, -0.5);
       g.add(sign);
@@ -768,52 +817,6 @@ export class ExchangeWorld {
     bench(-11, 12, 0.5);
     bench(11, 13, -0.5);
     bench(28, 18, -1.0);
-  }
-
-  /** five passers-by on loops through the open plaza (clear of the stalls, benches and lamps) */
-  private buildStrollers() {
-    const pts = (xz: number[][]) => xz.map(([x, z]) => new THREE.Vector3(x, 0, z));
-    // routes checked against the map: clear of the fountain (r 4.5), the board (x ±8.5, z -21..-19), the stalls, the
-    // Guard House (24, 2) and the desk (-24, 2), the Notice Board (-18, 20), the benches, the lamps (r 31) and the stacks
-    const routes: { path: THREE.Vector3[]; speed: number; strap: number }[] = [
-      { path: pts([[0, 28], [-10, 26], [-16, 14], [-17, 4], [-8, -4], [8, -4], [18, 6], [16, 18], [6, 27]]), speed: 1.6, strap: 1 },
-      { path: pts([[-6, -24], [-12, -16], [-20, -8], [-30, -5], [-28, 10], [-20, -2]]), speed: 1.45, strap: 2 },
-      { path: pts([[11, -26], [20, -18], [30, -8], [32, 8], [20, 22], [6, -4]]), speed: 1.7, strap: 3 },
-      { path: pts([[-5, 14], [0, 19], [5, 14], [0, 12.5]]), speed: 1.1, strap: 4 },
-      { path: pts([[0, 28], [-10, 26], [-16, 14], [-17, 4], [-8, -4], [8, -4], [18, 6], [16, 18], [6, 27]]), speed: 1.35, strap: 5 },
-    ];
-    routes.forEach((r, i) => {
-      const lengths: number[] = [];
-      let total = 0;
-      for (let k = 0; k < r.path.length; k++) {
-        const l = r.path[k].distanceTo(r.path[(k + 1) % r.path.length]);
-        lengths.push(l);
-        total += l;
-      }
-      const w = makeWalker(STRAPS[r.strap % STRAPS.length], 11 + i * 7);
-      this.scene.add(w.root);
-      this.strollers.push({ w, path: r.path, lengths, total, speed: r.speed, offset: i * 37.3 });
-    });
-  }
-
-  /** where each passer-by is now: along its loop by the clock */
-  private placeStrollers(dt: number, secs: number) {
-    const t = Date.now() / 1000;
-    for (const s of this.strollers) {
-      let d = (t * s.speed + s.offset) % s.total;
-      let k = 0;
-      while (d > s.lengths[k]) {
-        d -= s.lengths[k];
-        k = (k + 1) % s.path.length;
-      }
-      const a = s.path[k];
-      const b = s.path[(k + 1) % s.path.length];
-      const f = d / s.lengths[k];
-      const root = s.w.root;
-      root.position.set(a.x + (b.x - a.x) * f, 0, a.z + (b.z - a.z) * f);
-      root.rotation.y = lerpAngle(root.rotation.y, Math.atan2(b.x - a.x, b.z - a.z), Math.min(1, dt * 5));
-      s.w.fig.animate(dt, s.speed / WALK, secs);
-    }
   }
 
   /**
@@ -1207,10 +1210,19 @@ export class ExchangeWorld {
     outlineRes.value.set(w, h);
     shared.uPitch.value = 5.2 * dpr;
     this.camera.aspect = w / h;
-    // a phone held upright: open the view out so the plaza is not seen through a slot (about 37 degrees across at
-    // most phone shapes, where a 50 degree view gives 24)
-    this.camera.fov = w < h ? Math.min(72, (2 * Math.atan(Math.tan((40 * Math.PI) / 360) / (w / h)) * 180) / Math.PI) : 50;
+    this.fovNow = this.fovFor(this.fovNow);
+    this.camera.fov = this.fovNow;
     this.camera.updateProjectionMatrix();
+  }
+
+  /**
+   * the view's width for the canvas's shape: the one wanted in landscape; a phone held upright opens out so the
+   * plaza is not seen through a slot (about 37 degrees across at most phone shapes, where a 50 degree view gives 24)
+   */
+  private fovFor(landscape: number): number {
+    const w = this.canvas.clientWidth || 1;
+    const h = this.canvas.clientHeight || 1;
+    return w < h ? Math.min(72, (2 * Math.atan(Math.tan((40 * Math.PI) / 360) / (w / h)) * 180) / Math.PI) : landscape;
   }
 
   private loop(now: number) {
@@ -1331,8 +1343,14 @@ export class ExchangeWorld {
       this.me.bubble = null;
     }
 
-    this.placeStrollers(dt, secs);
-    this.city.update(secs, new Date());
+    // the town's life: the passers-by by the clock, the carts, the birds (which scatter from everyone), the rest
+    this.otherAt.length = 0;
+    for (const w of this.remotes.values()) this.otherAt.push(w.root.position);
+    this.life.update(dt, secs, this.camera.position, me.position, this.otherAt);
+    // the wind on the stalls' awnings
+    this.stallAwnings.forEach((a, i) => (a.rotation.x = 0.16 + 0.03 * Math.sin(secs * 1.6 + i * 1.9) + 0.012 * Math.sin(secs * 4.1 + i)));
+    // the tower shows the hour the sky is printed at: UTC, the same for every visitor in the room (light.ts)
+    this.city.update(secs, utcClock());
     // the coins turn and bob; one you walk onto is asked for (again after a moment, if the room has not answered)
     for (const [id, n] of this.looseNotes) {
       n.g.rotation.y = secs * 1.1 + n.phase;
@@ -1343,7 +1361,6 @@ export class ExchangeWorld {
       }
     }
     for (const w of this.remotes.values()) this.detail(w);
-    for (const s of this.strollers) this.detail(s.w);
 
     // Mr Bands, standing at his desk (his idle: breath, weight, a look round); the keepers at their doors likewise
     this.npc?.fig.animate(dt, 0, secs);
@@ -1387,6 +1404,19 @@ export class ExchangeWorld {
       );
       this.camera.position.lerp(this.clearView(target, cam), Math.min(1, dt * 8));
       this.camera.lookAt(target);
+      // a sway at the walk's cadence (the figure's strides a second, by its gait), rolled about the line of sight
+      const g = Math.min(1, this.gait);
+      if (moving) this.cadence = (this.cadence + dt * (1.15 + 0.65 * g) * Math.PI * 2) % (Math.PI * 2);
+      this.roll += (SWAY * Math.sin(this.cadence) * g - this.roll) * Math.min(1, dt * 6);
+      this.camera.rotateZ(this.roll);
+    }
+    // the view opens out beyond the rope, where the streets are long, and closes to the plaza's own inside it
+    const r = Math.hypot(me.position.x, me.position.z);
+    const fovWant = this.fovFor(r > WORLD_RADIUS ? FOV_OUT : FOV_PLAZA);
+    if (Math.abs(fovWant - this.fovNow) > 0.01) {
+      this.fovNow += (fovWant - this.fovNow) * Math.min(1, dt * 2.5);
+      this.camera.fov = this.fovNow;
+      this.camera.updateProjectionMatrix();
     }
     this.key.position.set(me.position.x - 16, 26, me.position.z + 13);
     this.key.target.position.set(me.position.x, 0, me.position.z);
@@ -1489,6 +1519,7 @@ export class ExchangeWorld {
 
   dispose() {
     this.disposed = true;
+    this.light.dispose();
     cancelAnimationFrame(this.raf);
     this.ro.disconnect();
     window.removeEventListener("keydown", this.onKey);

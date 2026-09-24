@@ -9,9 +9,9 @@
  *     collides with; the rope is crossed only at a street's mouth) and checked against MAX_SPEED; a rejected move
  *     is answered with a correction: a { t: "moves" } carrying the player's OWN id, sent only to them. Batched moves
  *     never carry the recipient's own entry, so an own-id entry always means "snap back to this".
- *   - the coins (24 Sep, the simple town): COIN_ZONES of town.ts says how many lie on the plaza, the ring and each
- *     street, and a mint mark at each street's end; each zone refills one of its own every COIN_EVERY_MS (a mark every
- *     MARK_EVERY_MS) while anyone is in. A coin's worth is drawn here from its zone's range and kept here: the ground
+ *   - the coins (24 Sep, the simple town): COIN_ZONES of town.ts says how many lie on the plaza, the ring, each
+ *     street, the ring road and each quarter, and a mint mark at each street's end and each quarter's landmark; each
+ *     zone refills one of its own every COIN_EVERY_MS (a mark every MARK_EVERY_MS) while anyone is in. A coin's worth is drawn here from its zone's range and kept here: the ground
  *     is told a coin and its kind, a pick is told what it was worth. A pick puts the coin in the account's pockets
  *     (coins, coinCash); a "cashin" at Mr Bands' desk moves the cash into the stack. COINS_PER_DAY a day (UTC).
  *     Once an hour, on the room's clock and nothing else, the Mint spills SPILL_COINS along one street over

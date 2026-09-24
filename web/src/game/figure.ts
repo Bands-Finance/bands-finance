@@ -20,6 +20,10 @@
  * eight more, and the two are blended by speed, which eases like a critically damped spring. Standing, the body is
  * lowered until the lower sole just meets the ground; moving, that is blended with a drawn bob so there is no corner
  * where the weight changes feet. Gestures play over the top; one cut short by another fades out along its own curve.
+ *
+ * THE TOWN'S OWN (24 Sep): handOf() gives a figure's wrist or elbow so ./life.ts can hand the newsboy his bundle and
+ * the sweeper his broom, and makeDog() is a small dog drawn the same way (a coat, ink ears, a collar in the strap
+ * colour): a trot on diagonal pairs, and a sit that folds the hind legs under as the body tips back on its hips.
  */
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
@@ -911,6 +915,134 @@ class Person implements Figure {
 
 export function makeFigure(o: FigureOpts): Figure {
   return new Person(o);
+}
+
+/**
+ * a figure's hand (the wrist group) or elbow, by side, for something it carries: a broom, a bundle of papers. The
+ * groups are named when the figure is built, so a thing hung here follows the arm through the walk and the gestures
+ */
+export function handOf(f: Figure, side: "L" | "R", joint: "wrist" | "elbow" = "wrist"): THREE.Object3D {
+  return f.root.getObjectByName(`${joint}${side}`) ?? f.root;
+}
+
+// ---------------------------------------------------------------- the dog
+
+export interface Dog {
+  /** paws at y = 0, facing +z; the caller moves and turns it */
+  root: THREE.Group;
+  /** speed 0 = still, 1 = a trot (~3 m/s); sit eases it down onto its haunches and back up */
+  animate(dt: number, speed: number, t: number, sit: boolean): void;
+  /** the top of the head, standing, metres */
+  readonly height: number;
+}
+
+/** a small dog's proportions: a hip and shoulder height, a leg's length, the hips this far behind the shoulders */
+const DOG_HIP_Y = 0.3;
+const DOG_LEG = 0.29;
+const DOG_SPAN = 0.25;
+
+function buildDogGeos() {
+  const chest = ellip(0.13, 0.135, 0.17, 0, 0.06, 0.2);
+  const rump = ellip(0.115, 0.12, 0.16, 0, 0.05, 0.02);
+  const body = merge([chest, rump]);
+  const skull = ellip(0.085, 0.08, 0.095, 0, 0, 0, 0, 0, 0, 12);
+  const snout = ellip(0.045, 0.04, 0.085, 0, -0.025, 0.1, 0, 0, 0, 10);
+  const head = merge([skull, snout]);
+  const nose = new THREE.SphereGeometry(0.02, 8, 6);
+  nose.translate(0, -0.015, 0.183);
+  const ear = ellip(0.02, 0.07, 0.045, 0, -0.03, -0.01);
+  const eyes = merge([ellip(0.011, 0.012, 0.008, 0.038, 0.02, 0.078), ellip(0.011, 0.012, 0.008, -0.038, 0.02, 0.078)]);
+  // a leg hangs from its joint: a lathe down to the paw, the paw a little egg on the ground
+  const leg = merge([
+    lathe([[0.001, -DOG_LEG + 0.02], [0.028, -DOG_LEG + 0.03], [0.03, -0.1], [0.038, -0.02], [0.001, 0.03]], 10),
+    ellip(0.034, 0.024, 0.045, 0, -DOG_LEG + 0.024, 0.012),
+  ]);
+  const tail = new THREE.CylinderGeometry(0.012, 0.022, 0.22, 8);
+  tail.translate(0, 0.11, 0);
+  const collar = new THREE.TorusGeometry(0.075, 0.012, 6, 16);
+  collar.rotateX(Math.PI / 2);
+  return { body, head, nose, ear, eyes, leg, tail, collar };
+}
+
+let DOG_GEO: ReturnType<typeof buildDogGeos> | null = null;
+const dogGeos = () => (DOG_GEO ??= buildDogGeos());
+
+/** a dog drawn as the figures are: a coat in Cloth, ink ears and nose, a collar in the strap colour; 17 draws */
+export function makeDog(o: { strap: string; seed?: number }): Dog {
+  const G = dogGeos();
+  const rand = rng(o.seed ?? 5);
+  const coat = mat(rand() < 0.5 ? "Cloth" : "Wood");
+  const ink = flatC(INK);
+  const root = new THREE.Group();
+  // the body hangs on the hips, so sitting is a turn about them
+  const body = new THREE.Group();
+  body.position.set(0, DOG_HIP_Y, -DOG_SPAN / 2);
+  root.add(body);
+  body.add(part(G.body, coat, true));
+  const neck = new THREE.Group();
+  neck.position.set(0, 0.15, 0.36);
+  body.add(neck);
+  neck.add(part(G.head, coat, true));
+  neck.add(bit(G.nose, ink), bit(G.eyes, ink));
+  for (const sx of [-1, 1]) {
+    const ear = bit(G.ear, ink);
+    ear.position.set(sx * 0.075, 0.02, -0.02);
+    ear.rotation.z = sx * 0.35;
+    neck.add(ear);
+  }
+  const collar = bit(G.collar, flatC(o.strap));
+  collar.position.set(0, -0.05, -0.03);
+  collar.rotation.x = 0.4;
+  neck.add(collar);
+  // the legs: 0 front left, 1 front right, 2 hind left, 3 hind right
+  const legs: THREE.Group[] = [];
+  for (let i = 0; i < 4; i++) {
+    const g = new THREE.Group();
+    g.position.set((i % 2 ? -1 : 1) * (i < 2 ? 0.07 : 0.075), 0, i < 2 ? DOG_SPAN : 0);
+    g.add(part(G.leg, coat, true));
+    body.add(g);
+    legs.push(g);
+  }
+  const tail = new THREE.Group();
+  tail.position.set(0, 0.06, -0.14);
+  tail.rotation.x = -0.9;
+  tail.add(part(G.tail, coat, true));
+  body.add(tail);
+
+  let sp = 0;
+  let phase = rand() * TAU;
+  let sitK = 0;
+  const seedPh = rand() * 100;
+  return {
+    root,
+    height: 0.62,
+    animate(dt, speed, t, sit) {
+      dt = clamp(dt, 0, 0.1);
+      sp += (speed - sp) * Math.min(1, dt * 7);
+      sitK += ((sit ? 1 : 0) - sitK) * Math.min(1, dt * 3.5);
+      const s = sitK;
+      const w = smooth(0, 0.5, sp) * (1 - s);
+      const still = 1 - w;
+      if (w > 0.001) phase = (phase + dt * (2.2 + 0.9 * sp) * TAU) % TAU;
+      const tt = t + seedPh;
+      // a trot: the diagonal pairs swing together
+      for (let i = 0; i < 4; i++) {
+        const pair = i === 0 || i === 3 ? 0 : Math.PI;
+        const swing = Math.sin(phase + pair) * 0.5 * w;
+        // sitting: the hind legs fold forward under the body, the front ones stay plumb as the body tips back
+        legs[i].rotation.x = -swing + (i < 2 ? 0.6 : -1.25) * s;
+      }
+      body.position.y = DOG_HIP_Y + 0.012 * Math.cos(2 * phase) * w - 0.14 * s;
+      body.rotation.x = -0.6 * s;
+      body.rotation.z = 0.02 * Math.sin(tt * 1.3) * still;
+      // the head: level as the body tips, bobbing with the trot, looking about when still
+      neck.rotation.x = 0.55 * s - 0.05 * Math.cos(2 * phase) * w + 0.03 * Math.sin(tt * 0.7) * still;
+      neck.rotation.y = (0.5 * Math.sin(tt * 0.31) + 0.2 * Math.sin(tt * 1.1)) * still;
+      // the tail: up and wagging when still or sat, streaming when it runs
+      tail.rotation.x = -0.9 + 0.5 * w + 0.3 * s;
+      tail.rotation.y = Math.sin(tt * 8.5) * (0.45 * still + 0.15 * w);
+    },
+  };
 }
 
 /** how many draws a figure costs (each mesh is one, its contour another) */

@@ -100,6 +100,7 @@ import {
 import type { Me, S2C, ScoreRow } from "../../web/src/game/protocol";
 import {
   COIN_DOOR_M,
+  COIN_FIXTURE_M,
   COIN_GAP_M,
   COIN_ZONES,
   coinSpot,
@@ -107,19 +108,28 @@ import {
   FOUNTAIN_R,
   inMouth,
   KERB_OUT,
+  LANE_T,
   MARK_COIN_T,
   nearestWalkable,
   PLACES,
   PLAZA_FIXTURES,
+  quarterAt,
+  QUARTERS,
+  RING_ROAD_HALF_M,
+  RING_ROAD_IN,
+  RING_ROAD_R,
   ROPE_BAND_M,
+  ROUTE_GRAPH,
   routeTo,
   STREET_ANGLES,
   STREET_HALF_WIDTH_M,
   STREET_NAMES,
+  toLocal,
+  toWorld,
   TOWN_RADIUS,
   walkable,
 } from "../../web/src/game/town";
-import type { CoinZone } from "../../web/src/game/town";
+import type { CoinZone, Quarter } from "../../web/src/game/town";
 import { hourlySeries, MARKET_HOURS, marketWindow, simulate, TICKS } from "../../web/src/game/lpGame";
 import type { Choice, PoolParams } from "../../web/src/game/lpGame";
 
@@ -343,7 +353,10 @@ const CHOICE: Choice = { widthBins: 20, offsetBins: 0 };
 /** the wire's account: what "me" says, and only that */
 const ME_KEYS = ["coins", "coinsToday", "day", "found", "kit", "stack"];
 
-/** where a coin's zone puts it: the ground it is on, by the shape town.ts walks */
+/**
+ * where a coin's zone puts it: the ground it is on, by the shape town.ts walks (a street's corridor first, so a coin
+ * at a ring road crossing counts as the street's; the ring road's own zone is judged by its radius instead)
+ */
 function groundOf(x: number, z: number): { ground: string; t: number } {
   const r = Math.hypot(x, z);
   if (r < WORLD_RADIUS) return { ground: "plaza", t: r };
@@ -353,8 +366,17 @@ function groundOf(x: number, z: number): { ground: string; t: number } {
     const s = x * Math.cos(a) - z * Math.sin(a);
     if (t > KERB_OUT && Math.abs(s) <= STREET_HALF_WIDTH_M) return { ground: STREET_NAMES[i], t };
   }
-  return { ground: "ring", t: r };
+  if (r <= KERB_OUT) return { ground: "ring", t: r };
+  if (Math.abs(r - RING_ROAD_R) <= RING_ROAD_HALF_M) return { ground: "ring-road", t: r };
+  const q = quarterAt(x, z);
+  if (q) return { ground: q.qr.id, t: r };
+  return { ground: "off", t: r };
 }
+/** is the coin on its zone's ground: a ring road coin anywhere on the road's band, the rest by groundOf */
+const onGround = (zone: CoinZone, x: number, z: number): boolean =>
+  zone.ground === "ring-road" ? Math.abs(Math.hypot(x, z) - RING_ROAD_R) <= RING_ROAD_HALF_M - 0.75 + 1e-9 : groundOf(x, z).ground === zone.ground;
+/** a quarter's point in the world */
+const inQuarter = (q: Quarter, p: number, qq: number): [number, number] => toWorld(q, p, qq);
 
 /** a keeper's spot as World.ts stands them: 1.5 m along the front (facing + a quarter turn) and 0.5 m back from the door */
 const KEEPERS = PLACES.map((p) => {
@@ -1749,6 +1771,11 @@ async function main() {
         legs.push([x, z]);
         for (const [lx, lz] of legs) await w.walk(id, lx, lz);
       },
+      /** walk to (x, z) the way town.ts's routeTo goes: leg by leg, the room accepting every step */
+      async goRoute(id: string, x: number, z: number) {
+        const p = w.pos(id);
+        for (const [lx, lz] of routeTo(p.x, p.z, x, z)) await w.walk(id, lx, lz);
+      },
       /** stand at the door (on the ground nearest it) */
       async at(id: string, place: string) {
         const d = t.door(place);
@@ -1943,6 +1970,165 @@ async function main() {
     // a leg across the plaza bends round the fountain
     const across = legal("across the plaza", [-20, 0], [20, 0]);
     assert.equal(across.length, 2, "one bend round the fountain");
+  });
+
+  await test("town: the ring road, the lanes and the quarters are ground; their water and buildings are not, and a step into them is pulled back out", () => {
+    const at = (a: number, r: number) => [Math.sin(a) * r, Math.cos(a) * r] as const;
+    const cm = (v: number) => Math.round(v * 100) / 100;
+    // the ring road: an annulus RING_ROAD_HALF_M either side of RING_ROAD_R, all the way round
+    for (const a of [0.3, 1.0, 2.2, 3.1, 4.4, 5.9]) {
+      assert.equal(walkable(...at(a, RING_ROAD_R)), true, `the ring road at ${a}`);
+      assert.equal(walkable(...at(a, RING_ROAD_IN + 0.1)), true, "its inner edge");
+      assert.equal(walkable(...at(a, RING_ROAD_R + RING_ROAD_HALF_M + 3)), false, "the blocks beyond it");
+      const back = nearestWalkable(...at(a, RING_ROAD_R + RING_ROAD_HALF_M + 3));
+      assert.ok(Math.abs(Math.hypot(...back) - (RING_ROAD_R + RING_ROAD_HALF_M)) < 0.01, "pulled to its outer edge");
+    }
+    // a lane leaves a street across the blocks' line at LANE_T; the blocks either side of it are not ground
+    const [east] = STREET_ANGLES;
+    const on = (t: number, s: number) => [t * Math.sin(east) + s * Math.cos(east), t * Math.cos(east) - s * Math.sin(east)] as const;
+    assert.equal(walkable(...on((LANE_T[0] + LANE_T[1]) / 2, 15)), true, "the lane");
+    assert.equal(walkable(...on((LANE_T[0] + LANE_T[1]) / 2, -15)), true, "the lane on the other side");
+    assert.equal(walkable(...on(LANE_T[0] - 3, 15)), false, "the block before it");
+    assert.equal(walkable(...on(LANE_T[1] + 3, 15)), false, "the block after it");
+    const intoLane = nearestWalkable(...on(LANE_T[0] - 1, 15));
+    assert.ok(Math.abs(intoLane[0] * Math.sin(east) + intoLane[1] * Math.cos(east) - LANE_T[0]) < 0.01, "pulled to the lane's edge");
+    // each quarter: its gate, its waypoints and the ground about its landmark are ground; the plaza's side of it is not
+    for (const q of QUARTERS) {
+      for (const [p, qq] of [...q.gates, ...q.nodes]) assert.ok(walkable(...inQuarter(q, p, qq)), `${q.id}: (${p}, ${qq})`);
+      assert.equal(walkable(...inQuarter(q, q.rIn - 3, 0)), false, `${q.id}: short of its ground`);
+      assert.equal(quarterAt(...inQuarter(q, q.rIn + 4, 0))?.qr.id, q.id, `${q.id}: its own ground`);
+      for (const o of q.obstacles) {
+        const [p, qq] = o.kind === "disc" ? [o.p, o.q] : [(o.p0 + o.p1) / 2, (o.q0 + o.q1) / 2];
+        const [x, z] = inQuarter(q, p, qq);
+        const deck = q.decks.some((d) => p >= d.p0 && p <= d.p1 && qq >= d.q0 && qq <= d.q1);
+        assert.equal(walkable(x, z), deck, `${q.id}: ${deck ? "the deck over" : "not"} the ${o.kind} at (${p}, ${qq})`);
+        const [bx, bz] = nearestWalkable(x, z);
+        assert.ok(walkable(bx, bz), `${q.id}: pulled out onto ground`);
+        // to its nearest edge (the canal's portals sit at the blocks' line, so their nearest ground is a few metres off)
+        if (!deck) assert.ok(Math.hypot(bx - x, bz - z) < (o.kind === "disc" ? o.r : Math.min(o.p1 - o.p0, o.q1 - o.q0) / 2) + 6, `${q.id}: near its edge`);
+      }
+    }
+    // the canal: the water either side of the bridge is not ground, the bridge is, and a step off the deck lands on it
+    const canal = QUARTERS.find((q) => q.id === "canal")!;
+    const deck = canal.decks[0];
+    assert.equal(walkable(...inQuarter(canal, (deck.p0 + deck.p1) / 2, 0)), true, "the bridge");
+    assert.equal(walkable(...inQuarter(canal, (deck.p0 + deck.p1) / 2, deck.q1 + 1)), false, "the water beside it");
+    const onto = nearestWalkable(...inQuarter(canal, (deck.p0 + deck.p1) / 2, deck.q1 + 1));
+    assert.deepEqual(toLocal(canal, ...onto).map(cm), [(deck.p0 + deck.p1) / 2, deck.q1], "onto the deck's edge");
+    // the station: the shed and the train are not ground; the platforms between them are
+    const station = QUARTERS.find((q) => q.id === "station")!;
+    assert.equal(walkable(...inQuarter(station, 90, -9.5)), true, "the platform");
+    assert.equal(walkable(...inQuarter(station, 90, -3)), false, "the train");
+    assert.equal(walkable(...inQuarter(station, 110, 0)), false, "the shed");
+    assert.equal(walkable(...inQuarter(station, 110, 19)), true, "the yard beside the shed");
+    // anywhere at all: the pull-back lands on ground, and leaves a point on the ground where it is
+    let s = 17;
+    const rng = () => ((s = (s * 1103515245 + 12345) % 2147483648), s / 2147483648);
+    for (let i = 0; i < 4000; i++) {
+      const x = (rng() * 2 - 1) * (TOWN_RADIUS + 10);
+      const z = (rng() * 2 - 1) * (TOWN_RADIUS + 10);
+      const [nx, nz] = nearestWalkable(x, z);
+      assert.ok(walkable(nx, nz), `(${x.toFixed(1)}, ${z.toFixed(1)}) -> (${nx.toFixed(1)}, ${nz.toFixed(1)}) is ground`);
+      if (walkable(x, z)) assert.deepEqual([nx, nz], [x, z]);
+    }
+  });
+
+  await test("town: routeTo's graph links only clear walks, and reaches every quarter from the desk and the ring road round", () => {
+    // every link of the graph is a straight walk on the ground
+    let links = 0;
+    ROUTE_GRAPH.links.forEach((ls, i) => {
+      for (const j of ls) {
+        if (j < i) continue;
+        links++;
+        const [ax, az] = ROUTE_GRAPH.pts[i];
+        const [bx, bz] = ROUTE_GRAPH.pts[j];
+        const n = Math.ceil(Math.hypot(bx - ax, bz - az) / 0.25);
+        for (let k = 0; k <= n; k++) assert.ok(walkable(ax + ((bx - ax) * k) / n, az + ((bz - az) * k) / n), `link ${i}-${j} off the ground`);
+      }
+    });
+    assert.ok(links > 150, `${links} links`);
+    assert.ok(ROUTE_GRAPH.links.every((ls) => ls.length > 0), "no node is an island");
+    const legal = (name: string, from: readonly [number, number], to: readonly [number, number]) => {
+      const path = routeTo(from[0], from[1], to[0], to[1]);
+      assert.deepEqual(path[path.length - 1], nearestWalkable(to[0], to[1]), `${name}: ends at the target`);
+      let [px, pz] = nearestWalkable(from[0], from[1]);
+      path.forEach(([qx, qz], i) => {
+        assert.equal(crossesRope(px, pz, qx, qz), false, `${name}: leg ${i} crosses the rope`);
+        const n = Math.max(1, Math.ceil(Math.hypot(qx - px, qz - pz) / 0.25));
+        for (let k = 0; k <= n; k++) assert.ok(walkable(px + ((qx - px) * k) / n, pz + ((qz - pz) * k) / n), `${name}: leg ${i} off the ground near (${qx.toFixed(0)}, ${qz.toFixed(0)})`);
+        [px, pz] = [qx, qz];
+      });
+      return path;
+    };
+    const desk = [DESK_SPOT.x, DESK_SPOT.z] as const;
+    const at = (a: number, r: number) => [Math.sin(a) * r, Math.cos(a) * r] as const;
+    for (const q of QUARTERS) {
+      const gate = PLACES.find((p) => p.id === q.id)!;
+      const there = legal(`desk to the ${q.id}'s gate`, desk, [gate.x, gate.z]);
+      assert.ok(there.some(([x, z]) => Math.abs(Math.hypot(x, z) - 40.5) < 0.01), `${q.id}: out through a mouth`);
+      // to the landmark's side: a waypoint of the quarter's own is a point on its ground
+      const [nx, nz] = inQuarter(q, ...q.nodes[0]);
+      legal(`desk to the ${q.id}`, desk, [nx, nz]);
+      legal(`the ${q.id} back to the desk`, [nx, nz], desk);
+      // in by a lane: from the street a quarter turn before it, at the lane, the walk crosses the blocks' line once
+      const street = STREET_ANGLES.findIndex((s) => Math.abs(((q.a - Math.PI / 4 - s + Math.PI * 3) % (Math.PI * 2)) - Math.PI) < 1e-9);
+      const from = at(STREET_ANGLES[street], (LANE_T[0] + LANE_T[1]) / 2);
+      const lane = legal(`${STREET_NAMES[street]} street into the ${q.id}`, from, [nx, nz]);
+      // the walk passes through the lane (a point of a leg between the street's corridor and the blocks' back line)
+      let [px, pz] = from;
+      let viaLane = false;
+      for (const [qx, qz] of lane) {
+        for (let k = 0; k <= 40; k++) {
+          const x = px + ((qx - px) * k) / 40;
+          const z = pz + ((qz - pz) * k) / 40;
+          const sa = STREET_ANGLES[street];
+          const t = x * Math.sin(sa) + z * Math.cos(sa);
+          const ss = Math.abs(x * Math.cos(sa) - z * Math.sin(sa));
+          if (t >= LANE_T[0] && t <= LANE_T[1] && ss > STREET_HALF_WIDTH_M + 1 && ss < 24) viaLane = true;
+        }
+        [px, pz] = [qx, qz];
+      }
+      assert.ok(viaLane, `${q.id}: by the lane, not the ring road`);
+    }
+    // the ring road round, and from a quarter to the next by it
+    const round = legal("the ring road round", at(0.3, RING_ROAD_R), at(3.0, RING_ROAD_R + 1));
+    assert.ok(round.slice(0, -1).every(([x, z]) => Math.abs(Math.hypot(x, z) - RING_ROAD_R) < 0.01), "along the road's middle");
+    legal("the park to the canal's wharf", inQuarter(QUARTERS[0], 100, 26), inQuarter(QUARTERS[1], 118, 4));
+    legal("the station's platform to the gazette", inQuarter(QUARTERS[3], 88, -9.5), [PLACES.find((p) => p.id === "gazette")!.x, PLACES.find((p) => p.id === "gazette")!.z]);
+    // on the same ground a straight clear walk is one waypoint; not through the water
+    const canal = QUARTERS[1];
+    assert.deepEqual(routeTo(...inQuarter(canal, 96, 8), ...inQuarter(canal, 96, -8)), [inQuarter(canal, 96, -8)], "along the towpath: straight");
+    const over = legal("across the canal", inQuarter(canal, 96, 12), inQuarter(canal, 112, 12));
+    assert.ok(over.some(([x, z]) => Math.abs(toLocal(canal, x, z)[1]) <= 3), "by the bridge");
+  });
+
+  await test("town: a quarter's gate is a door on the ring road, reached by the route the town gives, found once, nothing to enter; the ring road's fronts are doors too", async () => {
+    const w = town();
+    const a = await w.join();
+    w.takeAll(a);
+    for (const q of QUARTERS) {
+      const gate = PLACES.find((p) => p.id === q.id)!;
+      assert.equal(gate.kind, "quarter");
+      assert.ok(Math.abs(Math.hypot(gate.x, gate.z) - RING_ROAD_IN) < 0.01, `${q.id}: on the ring road's inner edge`);
+    }
+    const park = PLACES.find((p) => p.id === "park")!;
+    await w.goRoute(a, park.x, park.z);
+    const p = w.pos(a);
+    assert.ok(Math.hypot(p.x - park.x, p.z - park.z) < DOOR_REACH_M, `at the park's gate (${Math.hypot(p.x - park.x, p.z - park.z).toFixed(2)} m)`);
+    const heard = await w.enter(a, "park");
+    assert.deepEqual(ofType(heard, "found"), [{ t: "found", place: "park" }]);
+    assert.deepEqual(ofType(heard, "place"), [{ t: "place", id: "park" }], "nothing to enter: the id alone");
+    assert.deepEqual(ofType(await w.enter(a, "park"), "found"), [], "found once");
+    assert.deepEqual(w.core.meOf(a)!.found, ["park"]);
+    // from the gate along the road to the Grand Hotel's door, a discovery like any front's
+    const hotel = PLACES.find((p) => p.id === "grand-hotel")!;
+    await w.goRoute(a, hotel.x, hotel.z);
+    assert.deepEqual(ofType(await w.enter(a, "grand-hotel"), "found"), [{ t: "found", place: "grand-hotel" }]);
+    // 4 m short of the canal's gate is not there
+    const canal = PLACES.find((p) => p.id === "canal")!;
+    await w.goRoute(a, canal.x, canal.z + 4);
+    assert.deepEqual(ofType(await w.enter(a, "canal"), "error"), [{ t: "error", why: "not there" }]);
+    assert.equal(w.core.meOf(a)!.stack, START_STACK, "a discovery pays nothing");
   });
 
   await test("town: a new account wears the default kit and everyone sees it", async () => {
@@ -2143,15 +2329,20 @@ async function main() {
 
   // ---------------------------------------------------------------- the coins
 
-  await test("coins: COIN_ZONES is the plaza, the ring, each street and a mark at each end, ~50 coins worth more the farther out", () => {
-    assert.equal(COIN_ZONES.length, 2 + 2 * STREET_NAMES.length);
-    assert.equal(COINS_ON_GROUND, 6 + 10 + 4 * 8 + 4);
+  await test("coins: COIN_ZONES is the plaza, the ring, each street and a mark at each end, the ring road, each quarter and a mark at its landmark: ~100 coins worth more the farther out", () => {
+    assert.equal(COIN_ZONES.length, 2 + 2 * STREET_NAMES.length + 1 + 2 * QUARTERS.length);
+    assert.equal(COINS_ON_GROUND, 6 + 10 + 4 * 8 + 4 + 12 + 4 * 6 + 4);
     const byId = new Map(COIN_ZONES.map((z) => [z.id, z]));
     assert.deepEqual(byId.get("plaza"), { id: "plaza", ground: "plaza", kind: "coin", count: 6, min: 5, max: 25 });
     assert.deepEqual(byId.get("ring"), { id: "ring", ground: "ring", kind: "coin", count: 10, min: 10, max: 40 });
     for (const s of STREET_NAMES) {
       assert.deepEqual(byId.get(s), { id: s, ground: s, kind: "coin", count: 8, min: 20, max: 80 });
       assert.deepEqual(byId.get(`${s}-mark`), { id: `${s}-mark`, ground: s, kind: "mark", count: 1, min: 100, max: 100 });
+    }
+    assert.deepEqual(byId.get("ring-road"), { id: "ring-road", ground: "ring-road", kind: "coin", count: 12, min: 30, max: 60 });
+    for (const q of QUARTERS) {
+      assert.deepEqual(byId.get(q.id), { id: q.id, ground: q.id, kind: "coin", count: 6, min: 40, max: 90 });
+      assert.deepEqual(byId.get(`${q.id}-mark`), { id: `${q.id}-mark`, ground: q.id, kind: "mark", count: 1, min: 100, max: 100 });
     }
     assert.equal(COINS_PER_DAY, 150);
     // the balance the brief sets out: an active hour on the streets lands about a band; a whole day's cap is a few
@@ -2164,7 +2355,16 @@ async function main() {
     const rng = seeded(31);
     const inZone = (zone: CoinZone, x: number, z: number) => {
       const g = groundOf(x, z);
-      assert.equal(g.ground, zone.ground, `${zone.id}: (${x}, ${z}) is on the ${g.ground}`);
+      assert.ok(onGround(zone, x, z), `${zone.id}: (${x}, ${z}) is on the ${g.ground}`);
+      const q = QUARTERS.find((qq) => qq.id === zone.ground);
+      if (q) {
+        // on its quarter's ground: never in the water or a building, clear of every fixture; a mark about the landmark
+        const [p, qq] = toLocal(q, x, z);
+        for (const f of q.fixtures) assert.ok(Math.hypot(p - f.p, qq - f.q) >= f.r + COIN_FIXTURE_M - 1e-9, `${zone.id}: clear of the fixture at (${f.p}, ${f.q})`);
+        const d = Math.hypot(p - q.landmark.p, qq - q.landmark.q);
+        if (zone.kind === "mark") assert.ok(d >= q.landmark.r0 - 1e-6 && d <= q.landmark.r1 + 1e-6, `${zone.id}: at the landmark (${d.toFixed(1)} m)`);
+        return;
+      }
       if (zone.kind === "mark") assert.ok(g.t >= MARK_COIN_T[0] - 1e-9 && g.t <= MARK_COIN_T[1] + 1e-9, `${zone.id}: a mark near the end (t ${g.t.toFixed(1)})`);
       if (zone.ground === "plaza") assert.ok(g.t < WORLD_RADIUS - ROPE_BAND_M - 1, `${zone.id}: inside the rope`);
       if (zone.ground === "ring") assert.ok(g.t > WORLD_RADIUS + ROPE_BAND_M && g.t <= KERB_OUT, `${zone.id}: on the boulevard, off the rope's band`);
@@ -2198,12 +2398,17 @@ async function main() {
         }
       }
     }
-    // a ground packed solid answers null rather than a spot on top of another
+    // a ground packed solid answers null rather than a spot on top of another (packed until the sampler's tries find
+    // nothing five times running, so the last gap it could have found by luck is filled too)
     const plaza = COIN_ZONES[0];
     const packed: { x: number; z: number }[] = [];
-    for (let i = 0; i < 400; i++) {
+    for (let i = 0, misses = 0; i < 400 && misses < 5; i++) {
       const spot = coinSpot(plaza, rng, packed, 12);
-      if (!spot) break;
+      if (!spot) {
+        misses++;
+        continue;
+      }
+      misses = 0;
       packed.push({ x: spot[0], z: spot[1] });
     }
     assert.ok(packed.length >= 3 && packed.length < 400, `packed with ${packed.length} at 12 m: then none`);
@@ -2220,8 +2425,9 @@ async function main() {
     w.run(COIN_EVERY_MS - ROOM_TICK_MS);
     assert.equal(w.core.coinsOnGround().length, COIN_ZONES.length, "nothing more inside the pace");
     w.run(2 * ROOM_TICK_MS);
-    assert.equal(w.core.coinsOnGround().length, COIN_ZONES.length + 6, "COIN_EVERY_MS on: one more from each zone short of its count (the marks are full)");
-    w.run(8 * COIN_EVERY_MS);
+    const refilling = COIN_ZONES.filter((z) => z.count > 1).length;
+    assert.equal(w.core.coinsOnGround().length, COIN_ZONES.length + refilling, "COIN_EVERY_MS on: one more from each zone short of its count (the marks are full)");
+    w.run(Math.max(...COIN_ZONES.map((z) => z.count)) * COIN_EVERY_MS);
     const ground = w.core.coinsOnGround();
     assert.equal(ground.length, COINS_ON_GROUND, "every zone full");
     for (const zone of COIN_ZONES) {
@@ -2230,7 +2436,7 @@ async function main() {
       for (const c of mine) {
         assert.equal(c.kind, zone.kind);
         assert.ok(Number.isInteger(c.v) && c.v >= zone.min && c.v <= zone.max, `${zone.id}: worth $${c.v}`);
-        assert.equal(groundOf(c.x, c.z).ground, zone.ground, `${zone.id}: on its ground`);
+        assert.ok(onGround(zone, c.x, c.z), `${zone.id}: on its ground`);
         assert.ok(walkable(c.x, c.z));
       }
       assert.ok(mine.every((c) => mine.every((d) => c === d || Math.hypot(c.x - d.x, c.z - d.z) >= COIN_GAP_M)), `${zone.id}: spaced`);
@@ -2251,7 +2457,7 @@ async function main() {
     const wel = ofType(w.takeAll(b), "welcome")[0];
     assert.equal(wel.notes.length, COINS_ON_GROUND);
     assert.deepEqual(Object.keys(wel.notes[0]).sort(), ["id", "kind", "x", "z"]);
-    assert.equal(wel.notes.filter((n) => n.kind === "mark").length, 4, "the four marks stand out");
+    assert.equal(wel.notes.filter((n) => n.kind === "mark").length, COIN_ZONES.filter((z) => z.kind === "mark").length, "the marks stand out: one at each street's end and each quarter's landmark");
     // a mark taken comes back after MARK_EVERY_MS, not COIN_EVERY_MS; a street's coin after COIN_EVERY_MS
     const mark = w.inZone("east-mark")[0];
     await w.pick(a, mark);
@@ -2418,7 +2624,7 @@ async function main() {
     const w = town({ coins: true, accounts: store });
     const a = await w.join();
     const b = await w.join();
-    w.run(9 * COIN_EVERY_MS + 2 * ROOM_TICK_MS); // the ring's tenth coin lands on the heartbeat after 180 s
+    w.run(11 * COIN_EVERY_MS + 2 * ROOM_TICK_MS); // the ring road's twelfth coin lands on the heartbeat after 220 s
     assert.equal(w.core.coinsOnGround().length, COINS_ON_GROUND);
     w.clear();
     const puts = store.puts;
