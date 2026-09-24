@@ -36,6 +36,7 @@ export const AREA_WORDS: Record<string, string> = {
   learn: "what I learn from my trades",
   learning: "what I learn from my trades",
   openhermit: "OpenHermit, the agentic runtime I run on",
+  play: "the Bands Exchange, the plaza you can walk on my platform",
   platform: "my platform",
   snapshot: "what my site shows",
   publish: "what my site shows",
