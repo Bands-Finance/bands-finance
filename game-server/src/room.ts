@@ -7,10 +7,12 @@
  *   - a setInterval at TICK_HZ runs core.tick() (the batched moves, and the ticks of every round in play) while any
  *     socket is open, and stops when the room empties, so an empty room can hibernate and costs nothing
  *   - the leaderboard is kept in the object's storage under "board" and loaded before the first event
+ *   - pools' hourly histories are read from GeckoTerminal (fetchHistory) and held in memory by historySource
  */
 import { DurableObject } from "cloudflare:workers";
+import { candlesOf, historyUrls, type History, type PoolParams } from "../../web/src/game/lpGame";
 import type { S2C } from "../../web/src/game/protocol";
-import { boardSource, CLOSE_FULL, ROOM_TICK_MS, RoomCore } from "./core";
+import { boardSource, CLOSE_FULL, historySource, ROOM_TICK_MS, RoomCore } from "./core";
 
 export interface Env {
   ROOM: DurableObjectNamespace<Room>;
@@ -31,6 +33,24 @@ const BOARD_KEY = "board";
 
 /** uniform [0, 1) from the platform's CSPRNG (seeds, ids and names come from here) */
 const cryptoRandom = (): number => crypto.getRandomValues(new Uint32Array(1))[0] / 4294967296;
+
+/** a pool's hourly history from GeckoTerminal (public, keyless; about 30 reads a minute allowed, the room makes a few an hour) */
+async function fetchHistory(pool: PoolParams): Promise<History | null> {
+  const urls = historyUrls(pool);
+  if (!urls) return null;
+  const read = async (url: string) => {
+    const res = await fetch(url, {
+      headers: { accept: "application/json", "user-agent": "bands-exchange/1" },
+      signal: AbortSignal.timeout(4_000),
+    });
+    if (!res.ok) throw new Error(`history ${res.status}`);
+    const c = candlesOf(await res.json());
+    if (!c) throw new Error("history unreadable");
+    return c;
+  };
+  const [price, volume] = await Promise.all([read(urls.price), read(urls.volume)]);
+  return { price, volume };
+}
 
 async function fetchBoard(url: string): Promise<unknown> {
   const res = await fetch(url, {
@@ -53,6 +73,7 @@ export class Room extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const board = boardSource({ load: () => fetchBoard(env.BOARD_URL), now: () => Date.now() });
+    const history = historySource({ load: fetchHistory, now: () => Date.now() });
     this.core = new RoomCore({
       send: (id, msg) => this.sendText(id, this.textOf(msg)),
       broadcast: (msg, exceptId) => {
@@ -62,6 +83,7 @@ export class Room extends DurableObject<Env> {
       now: () => Date.now(),
       random: cryptoRandom,
       board,
+      history,
       saveBoard: (rows) => {
         this.ctx.storage.put(BOARD_KEY, rows).catch(() => {});
       },

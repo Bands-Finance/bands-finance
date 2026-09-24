@@ -1,6 +1,7 @@
 /**
  * The stall's game (bands.finance Play): lay a band on a live pool with play money, watch 48 hours of price go
- * through it, close it when you like, and score against just holding. The hours come from a RoundSource
+ * through it, close it when you like, and score against just holding. The hours are a hidden stretch of the pool's
+ * real history where it has one, named when the round is scored. The hours come from a RoundSource
  * (src/game/rounds.ts): the room server's stream online, the local simulation offline; this panel only draws them.
  * It teaches the trade-off his desk lives on: narrow bands take more of the fees and leave the price sooner.
  */
@@ -19,6 +20,12 @@ export interface LpRoundProps {
 type Phase = "setup" | "laying" | "running" | "done";
 
 const sign = (n: number, d = 2) => `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(d)}%`;
+/** "21 Sep, 14:00" in UTC */
+const when = (unix: number) => {
+  const d = new Date(unix * 1000);
+  const mon = d.toLocaleString("en-GB", { month: "short", timeZone: "UTC" });
+  return `${d.getUTCDate()} ${mon}, ${String(d.getUTCHours()).padStart(2, "0")}:00`;
+};
 
 export function LpRound({ pool, source, ranked, onClose }: LpRoundProps) {
   const [width, setWidth] = useState(16);
@@ -145,6 +152,11 @@ export function LpRound({ pool, source, ranked, onClose }: LpRoundProps) {
       </div>
 
       <canvas ref={chart} className="lp__chart" aria-label="Price over 48 hours with your band" />
+      {laid && laid.real !== undefined && phase !== "setup" && (
+        <p className="lp__src">
+          {laid.real ? "48 real hours from this pool's last eight days, prices and fees as they traded. Which hours is revealed at the end." : "Simulated hours: this pool hasn't traded long enough for two days of history."}
+        </p>
+      )}
 
       {phase === "setup" || phase === "laying" ? (
         <div className="lp__controls">
@@ -211,6 +223,11 @@ export function LpRound({ pool, source, ranked, onClose }: LpRoundProps) {
                 You finished <b className={(score?.pct ?? 0) >= 0 ? "lp__good" : "lp__bad"}>{sign(score?.pct ?? net)}</b> against just holding
                 {score?.rank ? <>, number {score.rank} on the board</> : null}. Price stayed in your band {inRangeHours} of {hours} hours.
               </p>
+              {score?.from !== undefined && (
+                <p className="lp__reveal">
+                  Those were {pool.label}'s real hours from {when(score.from)} to {when(score.from + TICKS * 3600)} UTC.
+                </p>
+              )}
               <div className="lp__row">
                 <button type="button" className="play-btn play-btn--ink" onClick={() => setPhase("setup")}>
                   Play again
@@ -223,7 +240,7 @@ export function LpRound({ pool, source, ranked, onClose }: LpRoundProps) {
           )}
         </div>
       )}
-      <p className="lp__fine">A game with play money on a simulated price, shaped by this pool's last hour. Not a forecast, not advice.</p>
+      <p className="lp__fine">A game with play money. The hours replay this pool's own history where it has two days of it, and are simulated where it doesn't. Not a forecast, not advice.</p>
     </div>
   );
 }

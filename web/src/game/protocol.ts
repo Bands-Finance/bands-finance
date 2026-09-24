@@ -77,12 +77,18 @@ export type S2C =
   | { t: "moves"; m: [string, number, number, number, 0 | 1][] }
   | { t: "emote"; id: string; e: EmoteId }
   | { t: "say"; id: string; p: PhraseId }
-  /** the band is down: the pool it was laid on (public board data), its price bounds relative to p0 = 1, the pace */
-  | { t: "laid"; roundId: string; pool: import("./lpGame").PoolParams; lower: number; upper: number; tickMs: number }
+  /**
+   * the band is down: the pool it was laid on (public board data), its price bounds relative to p0 = 1, the pace, and
+   * whether the hours are a real stretch of the pool's history (which one is kept back until the round is scored)
+   */
+  | { t: "laid"; roundId: string; pool: import("./lpGame").PoolParams; lower: number; upper: number; tickMs: number; real?: boolean }
   /** tick i (1..TICKS) of the server's round, sent when the server's clock reaches it; the SimResult arrays at i */
   | { t: "tick"; roundId: string; i: number; p: number; feesPct: number; valuePct: number; holdPct: number; inRange: boolean }
-  /** the round is settled (closed, or it reached TICKS): pct against holding; rank on the board, or null if not on it */
-  | { t: "scored"; roundId: string; pct: number; rank: number | null }
+  /**
+   * the round is settled (closed, or it reached TICKS): pct against holding; rank on the board, or null if not on it;
+   * for a real round, when its stretch of history began (unix seconds)
+   */
+  | { t: "scored"; roundId: string; pct: number; rank: number | null; from?: number }
   | { t: "board"; rows: ScoreRow[] }
   | { t: "full" }
   /** the visitor is sending too much; messages are being dropped */

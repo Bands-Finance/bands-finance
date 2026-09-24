@@ -4,7 +4,8 @@
  * moves, the emote and phrase allow-lists, and the server-streamed round: a band laid only on board pools, ticks sent
  * in order as the server clock reaches them, close settling at the last tick sent (a simulate() replay, never the
  * client's claim), auto-settle at TICKS, one round at a time, forfeit on leave, expiry, and never a seed on the wire.
- * Then the best-per-name top 20, malformed input, the board source and origins.
+ * Rounds on a pool's real history: a hidden stretch replayed, named only with the score, and the simulated fallback.
+ * Then the best-per-name top 20, malformed input, the board and history sources and origins.
  *   npm run test:game-room
  */
 import assert from "node:assert/strict";
@@ -20,6 +21,10 @@ import {
   CLOSE_NO_HELLO,
   ERROR_GAP_MS,
   HELLO_TIMEOUT_MS,
+  HISTORY_KEEP,
+  HISTORY_RETRY_MS,
+  HISTORY_TTL_MS,
+  historySource,
   isRoomName,
   MAX_CONNECTIONS,
   MOVE_BURST,
@@ -36,7 +41,7 @@ import {
 import type { RoomDeps } from "../../game-server/src/core";
 import { EMOTES, MAX_SPEED, MOVE_HZ, PHRASES, ROOM_CAP, ROUND_TICK_MS, STRAPS, WORLD_RADIUS } from "../../web/src/game/protocol";
 import type { S2C, ScoreRow } from "../../web/src/game/protocol";
-import { simulate, TICKS } from "../../web/src/game/lpGame";
+import { hourlySeries, MARKET_HOURS, marketWindow, simulate, TICKS } from "../../web/src/game/lpGame";
 import type { Choice, PoolParams } from "../../web/src/game/lpGame";
 
 let passed = 0;
@@ -90,7 +95,9 @@ type Of<T extends S2C["t"]> = Extract<S2C, { t: T }>;
 const ofType = <T extends S2C["t"]>(msgs: S2C[], t: T): Of<T>[] => msgs.filter((m): m is Of<T> => m.t === t);
 
 /** a room on fakes: per-socket inboxes, a hand-wound clock */
-function world(opts: { pools?: PoolParams[]; board?: () => Promise<PoolParams[]>; leaderboard?: unknown; seed?: number } = {}) {
+function world(
+  opts: { pools?: PoolParams[]; board?: () => Promise<PoolParams[]>; history?: (pool: PoolParams) => Promise<unknown>; leaderboard?: unknown; seed?: number } = {},
+) {
   let t = Date.parse("2026-09-24T12:00:00Z");
   const inbox = new Map<string, S2C[]>();
   /** every frame that went to any socket, as it went */
@@ -113,6 +120,7 @@ function world(opts: { pools?: PoolParams[]; board?: () => Promise<PoolParams[]>
     now: () => t,
     random: seeded(opts.seed ?? 7),
     board: opts.board ?? (async () => opts.pools ?? POOLS),
+    ...(opts.history ? { history: opts.history } : {}),
     saveBoard: (rows) => saved.push(rows),
     close: (id, code, reason) => closed.push({ id, code, reason }),
     joined: (id, name, strap) => joined.push({ id, name, strap }),
@@ -469,7 +477,8 @@ async function main() {
     const [a, b, c] = [await w.join(), await w.join(), await w.join()];
     w.clear();
     const { laid, view } = await w.lay(a, "cards / usdc");
-    assert.deepEqual(Object.keys(laid).sort(), ["lower", "pool", "roundId", "t", "tickMs", "upper"]);
+    assert.deepEqual(Object.keys(laid).sort(), ["lower", "pool", "real", "roundId", "t", "tickMs", "upper"]);
+    assert.equal(laid.real, false, "no history to read: simulated");
     assert.deepEqual(laid.pool, CARDS);
     const sim = simulate(CARDS, view.seed, CHOICE);
     assert.equal(laid.lower, sim.lower);
@@ -894,6 +903,162 @@ async function main() {
 
     const cold = boardSource({ now: () => 0, load: async () => ({ rows: [] }) });
     assert.deepEqual(await cold(), [], "an empty board is empty");
+  });
+
+  // ---------------------------------------------------------------- rounds on a pool's real history
+
+  const HR = 3600;
+  const T0 = Date.parse("2026-09-16T00:00:00Z") / 1000;
+  /** a pool's last 100 hours as GeckoTerminal sends them (newest first): a wavy price, a volume that cycles */
+  const CANDLES = Array.from({ length: 100 }, (_, k) => {
+    const c = 2 * (1 + 0.03 * Math.sin(k / 4) + 0.002 * k);
+    return [T0 + k * HR, c, c, c, c, 1500 * (k % 7)];
+  }).reverse();
+  const LIVE = { ...CARDS, liquidityUsd: 250_000, feeRate: 0.002 };
+  const sig7 = (v: number) => Number(v.toPrecision(7));
+
+  await test("real history: a hidden 48-hour stretch is replayed, and named only with the score", async () => {
+    const reads: string[] = [];
+    const w = world({ pools: [LIVE], history: async (p) => (reads.push(p.address), CANDLES) });
+    const id = await w.join();
+    w.take(id);
+    const { laid, view } = await w.lay(id, LIVE.label);
+    assert.equal(laid.real, true);
+    assert.deepEqual(reads, [LIVE.address]);
+    assert.ok(view.from !== null, "the server knows its stretch");
+    const series = hourlySeries(CANDLES);
+    const start = (view.from! - HR - series[0].ts) / HR;
+    assert.ok(Number.isInteger(start) && start >= 0 && start <= series.length - MARKET_HOURS, `start ${start}`);
+    const market = marketWindow(series, start, LIVE)!;
+    w.run(TICKS * ROUND_TICK_MS + ROOM_TICK_MS);
+    const heard = w.take(id);
+    const ticks = ofType(heard, "tick");
+    assert.equal(ticks.length, TICKS);
+    for (const k of ticks) assert.equal(k.p, sig7(market.path[k.i]), `tick ${k.i} is the pool's own hour`);
+    const [scored] = ofType(heard, "scored");
+    assert.equal(scored.from, view.from, "the stretch is named with the score");
+    assert.equal(scored.pct, simulate(LIVE, view.seed, { ...CHOICE, closeAt: TICKS }, market).scorePct);
+    assert.equal(scored.pct, simulate(LIVE, view.seed + 1, { ...CHOICE, closeAt: TICKS }, market).scorePct, "the seed plays no part");
+    // before the score nothing on the wire says which hours they were
+    const before = w.wire.slice(0, w.wire.findIndex((j) => j.includes('"scored"')));
+    for (const j of before) assert.ok(!j.includes('"from"') && !j.includes(String(view.from)), `stretch leaked early: ${j}`);
+    w.assertNoSeed();
+  });
+
+  await test("real history: a close settles on the stretch at the last hour sent (a History: quote prices, USD volume)", async () => {
+    const usd = CANDLES.map((c) => [c[0], 150, 150, 150, 150, (c[5] as number) * 150]);
+    const w = world({ pools: [LIVE], history: async () => ({ price: CANDLES, volume: usd }), seed: 11 });
+    const id = await w.join();
+    w.take(id);
+    const { laid, view } = await w.lay(id, LIVE.label);
+    w.advance(9 * ROUND_TICK_MS);
+    w.core.tick();
+    w.take(id);
+    const [scored] = ofType(await w.close(id, laid.roundId), "scored");
+    const series = hourlySeries(CANDLES, usd);
+    assert.equal(series[10].volUsd, (CANDLES[CANDLES.length - 11][5] as number) * 150, "the volume is the USD read's");
+    const market = marketWindow(series, (view.from! - HR - series[0].ts) / HR, LIVE)!;
+    assert.equal(scored.pct, simulate(LIVE, view.seed, { ...CHOICE, closeAt: 9 }, market).scorePct);
+    assert.equal(scored.from, view.from);
+  });
+
+  await test("real history: a stretch is dealt at random across the history", async () => {
+    const starts = new Set<number>();
+    for (let seed = 1; seed <= 12; seed++) {
+      const w = world({ pools: [LIVE], history: async () => CANDLES, seed });
+      const id = await w.join();
+      const { view } = await w.lay(id, LIVE.label);
+      starts.add(view.from!);
+    }
+    assert.ok(starts.size >= 8, `${starts.size} different stretches in 12 rounds`);
+  });
+
+  await test("real history: none to be had (no reader, unreadable, too short, no liquidity) plays simulated", async () => {
+    const cases: [string, PoolParams, ((p: PoolParams) => Promise<unknown>) | undefined][] = [
+      ["no reader", LIVE, undefined],
+      ["null", LIVE, async () => null],
+      ["throws", LIVE, async () => Promise.reject(new Error("429"))],
+      ["30 hours", LIVE, async () => CANDLES.slice(0, 30)],
+      ["no liquidity", { ...CARDS }, async () => CANDLES],
+    ];
+    for (const [why, pool, history] of cases) {
+      const w = world({ pools: [pool], history });
+      const id = await w.join();
+      w.take(id);
+      const { laid, view } = await w.lay(id, pool.label);
+      assert.equal(laid.real, false, why);
+      assert.equal(view.from, null, why);
+      w.run(TICKS * ROUND_TICK_MS + ROOM_TICK_MS);
+      const [scored] = ofType(w.take(id), "scored");
+      assert.equal(scored.pct, simulate(pool, view.seed, { ...CHOICE, closeAt: TICKS }).scorePct, why);
+      assert.ok(!("from" in scored), `${why}: nothing to name`);
+    }
+  });
+
+  await test("real history: a second lay while it loads is refused; leaving while it loads lays nothing", async () => {
+    let release: (v: unknown) => void = () => {};
+    const w = world({ pools: [LIVE], history: () => new Promise((r) => (release = r)) });
+    const id = await w.join();
+    w.take(id);
+    w.advance(1000);
+    const first = w.send(id, { t: "lay", pool: LIVE.label, ...CHOICE });
+    await new Promise((r) => setImmediate(r));
+    w.advance(ERROR_GAP_MS + 1000);
+    await w.send(id, { t: "lay", pool: LIVE.label, ...CHOICE });
+    assert.deepEqual(ofType(w.take(id), "error").map((e) => e.why), ["round in play"]);
+    release(CANDLES);
+    await first;
+    assert.equal(ofType(w.take(id), "laid").length, 1);
+
+    const v = world({ pools: [LIVE], history: () => new Promise((r) => (release = r)) });
+    const gone = await v.join();
+    v.advance(1000);
+    const lay = v.send(gone, { t: "lay", pool: LIVE.label, ...CHOICE });
+    await new Promise((r) => setImmediate(r));
+    v.core.leave(gone);
+    release(CANDLES);
+    await lay;
+    assert.equal(ofType(v.inbox(gone), "laid").length, 0);
+    assert.equal(v.core.roundOf(gone), null);
+  });
+
+  await test("historySource: held a while per pool, one read in flight, a failure backs off, the oldest goes first", async () => {
+    let t = 0;
+    const loads: string[] = [];
+    let fail = false;
+    const src = historySource({
+      now: () => t,
+      load: async (p) => {
+        loads.push(p.address);
+        if (fail) throw new Error("down");
+        return p.address === "empty" ? [] : CANDLES;
+      },
+    });
+    const A = { ...LIVE, address: "A" };
+    const [x, y] = await Promise.all([src(A), src(A)]);
+    assert.deepEqual(loads, ["A"], "concurrent callers share one read");
+    assert.equal(x, CANDLES);
+    assert.equal(y, CANDLES);
+    t += HISTORY_TTL_MS - 1;
+    await src(A);
+    assert.equal(loads.length, 1, "held");
+    t += 1;
+    fail = true;
+    assert.equal(await src(A), null, "a failed read answers null: the round plays simulated");
+    assert.equal(loads.length, 2);
+    await src(A);
+    assert.equal(loads.length, 2, "no retry inside the back-off");
+    t += HISTORY_RETRY_MS;
+    fail = false;
+    assert.equal(await src(A), CANDLES, "read again after the back-off");
+    assert.equal(await src({ ...LIVE, address: "empty" }), null, "an empty history is none");
+    // more pools than it keeps: the oldest read is dropped and read again when asked
+    for (let i = 0; i < HISTORY_KEEP; i++) await src({ ...LIVE, address: `P${i}` });
+    const n = loads.length;
+    await src(A);
+    assert.equal(loads.length, n + 1, "A was the oldest: dropped");
+    await src({ ...LIVE, address: `P${HISTORY_KEEP - 1}` });
+    assert.equal(loads.length, n + 1, "a recent one is still held");
   });
 
   await test("originAllowed: exact origins from the list only", () => {

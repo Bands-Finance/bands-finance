@@ -2,9 +2,12 @@
  * LAY A BAND (bands.finance Play, 24 Sep): the mini-game's whole model, one pure module.
  *
  * A visitor walks to a live pool stall and lays a band of price bins with a play deposit worth 100. Price then moves
- * for TICKS ticks (one tick = one simulated hour). While price is inside the band the band earns fees; when price
- * leaves it the band is left holding all of one side. The round is scored against simply holding what was deposited.
+ * for TICKS ticks (one tick = one hour). While price is inside the band the band earns fees; when price leaves it the
+ * band is left holding all of one side. The round is scored against simply holding what was deposited.
  * A teaching game, not advice.
+ *
+ * The hours are real where they can be: a Market is a hidden 48-hour stretch of the pool's own hourly history (its
+ * prices, and the fees its real volume paid each hour). A pool too new for that plays a simulated path instead.
  *
  * Pure and deterministic by construction: the only randomness is the seeded rng below, there is no clock, no global
  * state and no import. The room server (a Cloudflare Worker) replays simulate() from the round's seed and the
@@ -25,6 +28,30 @@ export interface PoolParams {
   volPctPerHour: number;
   /** the width of one price bin, basis points */
   binStepBps: number;
+  /** the pool's liquidity in USD now: the denominator for a real hour's fees */
+  liquidityUsd?: number;
+  /** the share of volume the pool keeps as fees (0.01 = 1%) */
+  feeRate?: number;
+  /** the base token's mint, so its history is read as the base priced in the quote */
+  baseMint?: string;
+}
+
+/** a stretch of the pool's own history for a round to replay, in place of a simulated path */
+export interface Market {
+  /** the price at the close of each hour, relative to the first: TICKS+1 values, path[0] = 1 */
+  path: number[];
+  /** the fees the pool paid in hour t (1..TICKS), percent of its liquidity; index 0 is 0 */
+  feePct: number[];
+  /** unix seconds at path[0] (the stretch runs TICKS hours from here) */
+  from: number;
+}
+
+/** one hour of a pool's history, oldest first */
+export interface Hour {
+  /** unix seconds at the start of the hour */
+  ts: number;
+  close: number;
+  volUsd: number;
 }
 
 export interface Choice {
@@ -76,6 +103,12 @@ const HOT_VOL_MIN = 0.5;
 const HOT_VOL_MAX = 15;
 const HOT_STEP_MIN = 10;
 const HOT_STEP_MAX = 100;
+/** a fee share outside this is not a fee tier (bad data): the row's feePct is used instead */
+const FEE_RATE_MAX = 0.1;
+/** hourlySeries fills at most this many silent hours in a row; a longer silence starts the series again after it */
+const GAP_FILL_MAX = 12;
+/** the history a round can use is this many hours at most (GeckoTerminal's 200 candles, and a little over) */
+const SERIES_MAX = 240;
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 const isInt = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v);
@@ -183,14 +216,22 @@ export function validateChoice(c: unknown): string | null {
  *   DEPOSIT * feePctPerHour/100 * concentration,  concentration = clamp(CONC_REF / widthBins, CONC_MIN, CONC_MAX)
  * to a running total that is never compounded. Tick 0 earns nothing.
  *
+ * With a market (a real stretch of the pool's history), its path replaces the simulated one and hour t's fees are its
+ * own: DEPOSIT * market.feePct[t]/100 * concentration. The seed then plays no part.
+ *
  * Closing: after closedAt the books are shut, so feesPct, valuePct and holdPct stay at their closedAt values to the end
  * of the arrays (path and inRange carry on: they are the market's, not the player's). scorePct is
  * valuePct + feesPct - holdPct at closedAt, rounded to 2 decimals.
  */
-export function simulate(pool: PoolParams, seed: number, choice: Choice): SimResult {
+export function simulate(pool: PoolParams, seed: number, choice: Choice, market?: Market | null): SimResult {
   const why = validateChoice(choice);
   if (why) throw new Error(`lpGame: bad choice: ${why}`);
-  const path = pricePath(pool, seed); // checks the pool
+  if (market) {
+    assertPool(pool);
+    const bad = marketProblem(market);
+    if (bad) throw new Error(`lpGame: bad market: ${bad}`);
+  }
+  const path = market ? market.path.slice() : pricePath(pool, seed); // checks the pool
 
   const { widthBins, offsetBins } = choice;
   const closedAt = choice.closeAt ?? TICKS;
@@ -212,7 +253,7 @@ export function simulate(pool: PoolParams, seed: number, choice: Choice): SimRes
   };
 
   const concentration = clamp(CONC_REF / widthBins, CONC_MIN, CONC_MAX);
-  const feePerTick = DEPOSIT * (pool.feePctPerHour / 100) * concentration;
+  const feeAt = (t: number): number => DEPOSIT * ((market ? market.feePct[t] : pool.feePctPerHour) / 100) * concentration;
 
   const inRange: boolean[] = [];
   const feesPct: number[] = [];
@@ -228,7 +269,7 @@ export function simulate(pool: PoolParams, seed: number, choice: Choice): SimRes
       holdPct.push(holdPct[t - 1]);
       continue;
     }
-    if (t >= 1 && inRange[t]) fees += feePerTick;
+    if (t >= 1 && inRange[t]) fees += feeAt(t);
     feesPct.push(fees);
     valuePct.push(valueAt(P));
     holdPct.push(token0 * P + quote0);
@@ -247,6 +288,10 @@ export function simulate(pool: PoolParams, seed: number, choice: Choice): SimRes
  *   volPctPerHour = max(|priceChange1hPct|, |priceChange5mPct| * sqrt(12), 0.5), capped at 15
  *                   (a missing or non-finite price change counts as 0, so a row with neither plays at the 0.5 floor)
  *   binStepBps    = round(feePct * 100), clamped to [10, 100] (fee tier 0.2% -> 20 bps)
+ *   liquidityUsd  = liquidityUsd, when a number > 0
+ *   feeRate       = fees1hUsd / vol1hUsd when both are > 0 and the share is at most 10% (a dynamic fee, as it ran),
+ *                   else feePct / 100
+ *   baseMint      = baseMint, when a string
  */
 export function poolParamsFromHot(row: unknown): PoolParams | null {
   if (typeof row !== "object" || row === null || Array.isArray(row)) return null;
@@ -259,11 +304,129 @@ export function poolParamsFromHot(row: unknown): PoolParams | null {
   if (feeToTvl === null || feeTier === null || feeTier <= 0) return null;
   const move1h = Math.abs(finite(r.priceChange1hPct) ?? 0);
   const move5m = Math.abs(finite(r.priceChange5mPct) ?? 0);
-  return {
+  const out: PoolParams = {
     label,
     address,
     feePctPerHour: clamp(feeToTvl, 0, HOT_FEE_MAX),
     volPctPerHour: Math.min(Math.max(move1h, move5m * Math.sqrt(12), HOT_VOL_MIN), HOT_VOL_MAX),
     binStepBps: clamp(Math.round(feeTier * 100), HOT_STEP_MIN, HOT_STEP_MAX),
   };
+  const liq = finite(r.liquidityUsd);
+  if (liq !== null && liq > 0) out.liquidityUsd = liq;
+  const fees = finite(r.fees1hUsd);
+  const vol = finite(r.vol1hUsd);
+  const share = fees !== null && vol !== null && fees > 0 && vol > 0 ? fees / vol : null;
+  out.feeRate = share !== null && share <= FEE_RATE_MAX ? share : feeTier / 100;
+  if (typeof r.baseMint === "string" && r.baseMint.trim()) out.baseMint = r.baseMint.trim();
+  return out;
+}
+
+// ---------------------------------------------------------------- the pool's own history
+
+/** GeckoTerminal candles -> [unix s on the hour, close, volume] for each well-formed row (close > 0, volume >= 0) */
+function candleRows(candles: unknown): [number, number, number][] {
+  if (!Array.isArray(candles)) return [];
+  const out: [number, number, number][] = [];
+  for (const c of candles) {
+    if (!Array.isArray(c) || c.length < 6) continue;
+    const [ts, , , , close, vol] = c as unknown[];
+    if (!isInt(ts) || ts % 3600 !== 0 || finite(close) === null || (close as number) <= 0 || finite(vol) === null || (vol as number) < 0) continue;
+    out.push([ts, close as number, vol as number]);
+  }
+  return out;
+}
+
+/**
+ * GeckoTerminal hourly candles ([unix s, open, high, low, close, volume], newest first as it sends them, any order
+ * accepted) -> one Hour per hour, oldest first. The closes come from `candles`; the volume from `volumeUsd` when given
+ * (the same hours read in USD: candles priced in the quote count their volume in the quote, SOL for a SOL pair), else
+ * from `candles`. An hour with no trades has no candle: up to GAP_FILL_MAX of them in a row are filled with the last
+ * close and no volume; after a longer silence the series starts again. Rows that are not six finite numbers with a
+ * close > 0 and a volume >= 0 on the hour are skipped. At most SERIES_MAX hours, the newest.
+ */
+export function hourlySeries(candles: unknown, volumeUsd?: unknown): Hour[] {
+  const vol = volumeUsd === undefined ? null : new Map(candleRows(volumeUsd).map(([ts, , v]) => [ts, v]));
+  const byTs = new Map<number, Hour>();
+  for (const [ts, close, v] of candleRows(candles)) byTs.set(ts, { ts, close, volUsd: vol ? (vol.get(ts) ?? 0) : v });
+  const hours = [...byTs.values()].sort((a, b) => a.ts - b.ts);
+  let out: Hour[] = [];
+  for (const h of hours) {
+    const prev = out[out.length - 1];
+    if (prev) {
+      const gap = (h.ts - prev.ts) / 3600 - 1;
+      if (gap > GAP_FILL_MAX) out = [];
+      else for (let k = 1; k <= gap; k++) out.push({ ts: prev.ts + k * 3600, close: prev.close, volUsd: 0 });
+    }
+    out.push(h);
+  }
+  return out.slice(-SERIES_MAX);
+}
+
+const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+/**
+ * Where a pool's hourly history is read: GeckoTerminal's public API, the last 200 hours, twice. `price` has the base
+ * priced in the quote (by the base's mint when the board gives it, so a pair the API lists the other way round still
+ * reads right); `volume` is the same hours in USD, for the volume (the quote-priced read counts it in the quote).
+ * null for an address that is not a Solana address.
+ */
+export function historyUrls(pool: PoolParams): { price: string; volume: string } | null {
+  if (typeof pool?.address !== "string" || !BASE58.test(pool.address)) return null;
+  const token = pool.baseMint && BASE58.test(pool.baseMint) ? pool.baseMint : "base";
+  const at = `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool.address}/ohlcv/hour?aggregate=1&limit=200&token=${token}`;
+  return { price: `${at}&currency=token`, volume: `${at}&currency=usd` };
+}
+
+/** a pool's history as read: candles priced in the quote, and the same hours in USD for their volume */
+export interface History {
+  price: unknown[];
+  volume: unknown[];
+}
+
+/** a History (or bare candles, their own volume) -> its hours */
+export function seriesOf(h: unknown): Hour[] {
+  if (Array.isArray(h)) return hourlySeries(h);
+  const r = h as Partial<History> | null;
+  return r && Array.isArray(r.price) && Array.isArray(r.volume) ? hourlySeries(r.price, r.volume) : [];
+}
+
+/** that API's answer -> its candles (hourlySeries' input), or null */
+export function candlesOf(body: unknown): unknown[] | null {
+  const list = (body as { data?: { attributes?: { ohlcv_list?: unknown } } } | null)?.data?.attributes?.ohlcv_list;
+  return Array.isArray(list) ? list : null;
+}
+
+/** how many hours a Market needs: TICKS of them after the one it starts on */
+export const MARKET_HOURS = TICKS + 1;
+
+/**
+ * The stretch of a series starting at hour `start` as a Market, or null (too short, no liquidity or fee share to
+ * price the fees by). path[t] = close[start+t] / close[start]; feePct[t] = volUsd[start+t] * feeRate / liquidityUsd
+ * * 100, clamped to [0, 5]: the pool's real fees that hour over its liquidity now.
+ */
+export function marketWindow(series: Hour[], start: number, pool: PoolParams): Market | null {
+  const liq = pool.liquidityUsd;
+  const rate = pool.feeRate;
+  if (!isInt(start) || start < 0 || start + MARKET_HOURS > series.length) return null;
+  if (!liq || !(liq > 0) || rate === undefined || !(rate >= 0)) return null;
+  const p0 = series[start].close;
+  const path: number[] = [];
+  const feePct: number[] = [];
+  for (let t = 0; t <= TICKS; t++) {
+    const h = series[start + t];
+    path.push(t === 0 ? 1 : h.close / p0);
+    feePct.push(t === 0 ? 0 : clamp(((h.volUsd * rate) / liq) * 100, 0, HOT_FEE_MAX));
+  }
+  const m: Market = { path, feePct, from: series[start].ts + 3600 };
+  return marketProblem(m) ? null : m;
+}
+
+function marketProblem(m: Market): string | null {
+  if (typeof m !== "object" || m === null) return "market missing";
+  if (!Array.isArray(m.path) || m.path.length !== TICKS + 1) return `path must hold ${TICKS + 1} prices`;
+  if (!Array.isArray(m.feePct) || m.feePct.length !== TICKS + 1) return `feePct must hold ${TICKS + 1} values`;
+  if (m.path[0] !== 1) return "path must start at 1";
+  for (const p of m.path) if (finite(p) === null || p <= 0) return "prices must be numbers > 0";
+  for (const f of m.feePct) if (finite(f) === null || f < 0) return "fees must be numbers >= 0";
+  return null;
 }

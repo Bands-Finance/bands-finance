@@ -177,16 +177,19 @@ export default function PlayPage() {
       n.onMoves = (moves) => {
         for (const [id, x, z, ry, moving] of moves) world.current?.moveRemote(id, x, z, ry, moving === 1);
       };
-      n.onEmote = (id, e) => world.current?.bubble(id, `*${EMOTE_TEXT[e]}*`);
+      n.onEmote = (id, e) => {
+        world.current?.gesture(id, e);
+        world.current?.bubble(id, `*${EMOTE_TEXT[e]}*`);
+      };
       n.onSay = (id, p) => world.current?.bubble(id, p);
       n.onLaid = (m) => {
         const resolve = routes.current.laid.get(m.pool.label) ?? routes.current.laid.get(m.pool.address);
         routes.current.laid.delete(m.pool.label);
         routes.current.laid.delete(m.pool.address);
-        resolve?.({ roundId: m.roundId, lower: m.lower, upper: m.upper, tickMs: m.tickMs });
+        resolve?.({ roundId: m.roundId, lower: m.lower, upper: m.upper, tickMs: m.tickMs, real: typeof m.real === "boolean" ? m.real : undefined });
       };
       n.onTick = (m) => routes.current.frames.get(m.roundId)?.({ i: m.i, p: m.p, feesPct: m.feesPct, valuePct: m.valuePct, holdPct: m.holdPct, inRange: m.inRange });
-      n.onScored = (roundId, pct, rank) => routes.current.scores.get(roundId)?.({ pct, rank });
+      n.onScored = (roundId, pct, rank, from) => routes.current.scores.get(roundId)?.({ pct, rank, from });
       n.onCorrect = (x, z, ry) => world.current?.setMyPosition(x, z, ry);
       n.onBoard = (rows) => setLeaders(rows);
       n.connect(strapIx);
@@ -227,6 +230,7 @@ export default function PlayPage() {
   const source = useMemo(() => (online && net.current ? onlineSource(net.current, routes.current) : offlineSource()), [online]);
 
   function emote(e: EmoteId) {
+    world.current?.gesture("me", e);
     world.current?.bubble("me", `*${EMOTE_TEXT[e]}*`);
     net.current?.emote(e);
   }

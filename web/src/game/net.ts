@@ -66,8 +66,8 @@ export class ExchangeNet {
   onLaid: (laid: LaidMsg) => void = () => {};
   /** one tick of the open round, in order, as the server's clock reaches it */
   onTick: (tick: TickMsg) => void = () => {};
-  /** rank: where this score sits on the leaderboard, or null when it is not on it */
-  onScored: (roundId: string, pct: number, rank: number | null) => void = () => {};
+  /** rank: where this score sits on the leaderboard, or null when it is not on it; from: a real round's first hour */
+  onScored: (roundId: string, pct: number, rank: number | null, from?: number) => void = () => {};
   onBoard: (rows: ScoreRow[]) => void = () => {};
   onStatus: (status: NetStatus) => void = () => {};
   /** the server is dropping this visitor's messages (sending too fast) */
@@ -279,7 +279,7 @@ export class ExchangeNet {
         this.onTick(msg);
         return;
       case "scored":
-        this.onScored(msg.roundId, msg.pct, msg.rank ?? null);
+        this.onScored(msg.roundId, msg.pct, msg.rank ?? null, typeof msg.from === "number" && Number.isFinite(msg.from) ? msg.from : undefined);
         return;
       case "board":
         if (Array.isArray(msg.rows)) this.onBoard(msg.rows);
