@@ -78,6 +78,7 @@ export const pct = (n: number): string => `${Math.round(Math.abs(n))}%`;
 /** Dollars as a person writes them: "$0.29", "$4.74M", "$25,480". */
 export function usd(n: number): string {
   const a = Math.abs(n);
+  if (a >= 1e9) return `$${(a / 1e9).toFixed(2)}B`;
   if (a >= 1e6) return `$${(a / 1e6).toFixed(2)}M`;
   if (a >= 1000) return `$${withCommas(String(Math.round(a)))}`;
   return `$${a.toFixed(2)}`;
@@ -132,7 +133,7 @@ export function numberTokenSpans(text: string, tickers: readonly string[] = []):
   let s = ` ${text} `;
   for (const t of [...tickers].sort((a, b) => b.length - a.length)) if (t) s = s.split(t).join(" ".repeat(t.length));
   const out: NumberSpan[] = [];
-  const re = new RegExp(`(\\d{1,2}) (${MONTH_RE})\\b|(\\d{1,2}):(\\d{2})|(?<![A-Za-z_0-9])(\\$?)(\\d+(?:,\\d{3})*(?:\\.\\d+)?)([MK]\\b)?`, "g");
+  const re = new RegExp(`(\\d{1,2}) (${MONTH_RE})\\b|(\\d{1,2}):(\\d{2})|(?<![A-Za-z_0-9])(\\$?)(\\d+(?:,\\d{3})*(?:\\.\\d+)?)([MKB]\\b)?`, "g");
   for (const m of s.matchAll(re)) {
     const start = (m.index ?? 0) - 1;
     const end = start + m[0].length;

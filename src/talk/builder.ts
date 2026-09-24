@@ -27,7 +27,9 @@ import { lintContextOf, type TalkEnv } from "./env";
 import { bookHeadlineFacts, bookStartOf } from "./facts";
 import { backoff, jitterMin, type RecentText } from "./guards";
 import { readBuildLedger } from "./buildLedger";
-import { pickMoment, type LearningCount, type Moment, type MomentInputs, type PostMemory, type ScreenPool } from "./moments";
+import { pickMoment, tickerOf, type LearningCount, type Moment, type MomentInputs, type PostMemory, type ScreenPool } from "./moments";
+import { PERSONALITY_FILE, readPersonality } from "./personality";
+import { DEFAULT_TAKE_POSTS_PER_DAY, deskDayOf, readDexOverview, stockBoardOf, type Opinion, type TakeInputs } from "./takes";
 import { askPost, factIds, type AskImpl, type PostDraft, type PromptMemory } from "./postBrain";
 import { brainProblem } from "./replyBrain";
 import { vetBuilderPost, type BuilderRefusal, type BuilderVetContext } from "./postGuards";
@@ -123,7 +125,7 @@ export function screenPoolsOf(file: string): ScreenPool[] {
 }
 
 /** Everything the picker reads, from the files. */
-export async function momentInputsOf(o: Pick<BuilderTickOptions, "t" | "now" | "paperDesk" | "dailyHourUtc" | "st" | "cwd" | "tailBytes">): Promise<{ inputs: MomentInputs; recent: RecentText[]; linksToday: number }> {
+export async function momentInputsOf(o: Pick<BuilderTickOptions, "t" | "now" | "paperDesk" | "dailyHourUtc" | "st" | "cwd" | "tailBytes"> & { env?: NodeJS.ProcessEnv }): Promise<{ inputs: MomentInputs; recent: RecentText[]; linksToday: number }> {
   const { t, now } = o;
   const data = loadTalkData(t, now, o.tailBytes ?? 8 * 1024 * 1024);
   const book = data.source === "paper" ? data.book : null;
@@ -146,6 +148,26 @@ export async function momentInputsOf(o: Pick<BuilderTickOptions, "t" | "now" | "
     .sort((a, b) => a.at - b.at);
   const lessons = readLessons(path.join(t.dataDir, LESSONS_FILE), now - 2 * DAY).filter((l) => l.mode === "paper");
   const buildPerDay = Number((process.env.TALK_BUILD_POSTS_PER_DAY ?? "").trim());
+  const deskLog = readTail(path.join(t.dataDir, LEARNING_LOG), 512 * 1024);
+  // takes (src/talk/takes.ts), only with TALK_TAKES=true: his approved opinions and what each topic stands on
+  const env = o.env ?? process.env;
+  let takes: TakeInputs | null = null;
+  if ((env.TALK_TAKES ?? "").trim() === "true") {
+    let opinions: Opinion[] = [];
+    try {
+      if (fs.existsSync(path.join(t.statePath, PERSONALITY_FILE))) opinions = readPersonality(t.statePath, now).opinions;
+    } catch {
+      opinions = []; // a personality file that does not validate is Zach's to fix; takes go on from the facts alone
+    }
+    takes = {
+      perDay: Math.floor(intEnv(env, "TALK_TAKE_POSTS_PER_DAY", DEFAULT_TAKE_POSTS_PER_DAY, 0, 24)),
+      opinions,
+      dexes: await readDexOverview(t.statePath, now),
+      stocks: stockBoardOf(deskLog),
+      desk: deskDayOf(data.journal.entries, now),
+      openBands: (data.book?.bands ?? []).map((b) => ({ label: tickerOf(b.label) ?? "", openedAt: b.openedAt })).filter((b) => b.label),
+    };
+  }
   const inputs: MomentInputs = {
     ...(Number.isFinite(buildPerDay) && buildPerDay >= 0 && (process.env.TALK_BUILD_POSTS_PER_DAY ?? "").trim() ? { buildPostsPerDay: Math.floor(buildPerDay) } : {}),
     now,
@@ -157,7 +179,7 @@ export async function momentInputsOf(o: Pick<BuilderTickOptions, "t" | "now" | "
     lessons,
     journal: data.journal.entries,
     journalFrom: data.journal.from,
-    learning: learningCountsOf(readTail(path.join(t.dataDir, LEARNING_LOG), 512 * 1024)),
+    learning: learningCountsOf(deskLog),
     screen: screenPoolsOf(path.join(t.dataDir, SCREEN_FILE)),
     build: readBuildLedger(t.statePath, o.cwd ?? process.cwd()).rows,
     posts,
@@ -165,6 +187,7 @@ export async function momentInputsOf(o: Pick<BuilderTickOptions, "t" | "now" | "
     seen: new Set([...log.seen, ...unresolvedIntentKeys(t.statePath, now - 7 * DAY)]),
     dailyHourUtc: o.dailyHourUtc,
     lastDailyDay: o.st.lastDailyDay,
+    takes,
   };
   const recent: RecentText[] = posts.map((p) => ({ at: p.at, text: p.text, key: p.key, type: p.type }));
   const linksToday = posts.filter((p) => utcDay(p.at) === utcDay(now) && /\.(finance|io|ag)\b/.test(p.text)).length;

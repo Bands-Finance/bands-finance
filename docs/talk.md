@@ -386,6 +386,28 @@ Cost: at most `TALK_MODEL_CALLS_PER_DAY` asks a day. Measured on Opus 5.5 with t
 ask cost about $0.05 to $0.12, so the live cap of 48 bounds posts near $5 a day and 8 posts with retries come to
 about $1.50. X adds $0.015 a post ($0.20 with a link).
 
+### Takes: his opinions (24 Sep)
+
+Zach, 24 Sep: "more personality and have discussions about different topics on the timeline ... a real person with
+an opinion". His picks: four topics, a **sharp and dry** voice, **strong views but no price calls**, and discussion
+through **his own takes plus replies** (no unsolicited engagement: X restricts automated replies to strangers).
+
+- **What** (`src/talk/takes.ts`): a `take` moment on one of `craft` (LP and market making, from his paper closes of
+  48 hours and his open bands), `defi` (Solana and DeFi, from DefiLlama's Solana DEX volumes, cached 6 hours in
+  `TALK_STATE_PATH/defi-dexes.json`, and the tokenized-stock board in `mrbands.log`), `agents` (from how his desk
+  decided today: code, his own judgment, his entry rules' refusals) and `building` (his written build notes first,
+  the auto log's rows only when there are too few). Code picks the topic he spoke on least recently that has facts
+  or standing views; his model says what he thinks.
+- **His views** are `opinions` in `personality.json` (`"craft: range width"`, ...), proposed and approved like the
+  rest of the living layer (`talk.ts approve <id> --operator <handle>`). A take's brief carries the views on its
+  topic; replies carry all of them (without digits) in their facts, and the reply prompt carries the same voice.
+- **Rules**: every builder guard holds, with `TAKE_ALLOWED` for a take only: one question, as its last character;
+  like, feel, love, hate, yield, builders, humans, on-chain, LLM; "real" as an adjective (only "real money", "real
+  run" and the like say the real book). The lint's hard rules are untouched: no buy or sell, no price call, no
+  promised return, no politics, no insult, no claim to be human. He stays openly an AI agent.
+- **When**: `TALK_TAKES=true`, at most `TALK_TAKE_POSTS_PER_DAY` (3) a UTC day, score 26: under a build note (30) and
+  any close, over the floor (20), so a take fills a quiet stretch and never crowds out an event.
+
 ### The build ledger
 
 `ops/build.seed.jsonl` (shipped with the code) and `TALK_STATE_PATH/build.jsonl` (appended by Zach or a session:

@@ -95,7 +95,7 @@ export function retryableReason(reason: string): boolean {
 
 /** the draft types, plus the posting loop's own event posts (src/talk/tick.ts) and "announce": his one-off posts (src/talk/announce.ts), each posted once */
 /** the builder voice's shapes (src/talk/moments.ts), recorded as their own types */
-export type BuilderPostType = "desk" | "followup" | "build" | "miss" | "learner" | "screener" | "arc" | "promise" | "halt";
+export type BuilderPostType = "desk" | "followup" | "build" | "miss" | "learner" | "screener" | "arc" | "promise" | "halt" | "take";
 export type XPostType = DraftType | BuilderPostType | "open" | "close" | "daily" | "milestone" | "announce";
 
 export interface XPostRecord {

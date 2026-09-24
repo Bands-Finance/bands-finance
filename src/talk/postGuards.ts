@@ -36,6 +36,11 @@
  *               exempt against the post it follows; the daily card and a moment's fallback, fixed shapes, are not
  *               compared
  *   lint        lintText with the sentence-case rule in place of the lowercase one
+ *
+ * A take (src/talk/takes.ts, his opinion; Zach, 24 Sep) is held to all of it, with TAKE_ALLOWED: one question
+ * mark, as the post's last character, and the opinion words the word rules otherwise refuse (like, feel, love, hate,
+ * yield, builders, humans, on-chain, LLM). The lint's hard rules (no buy or sell, no price call, no promised
+ * return, no claim to be human, no politics) are untouched.
  */
 import { COPYCAT_MINTS, isCopycatPiece } from "../risk/house";
 import { allowedTokens, numberTokens, numberTokenSpans, type Book, type FactsBlock, type Figure } from "./facts";
@@ -102,6 +107,9 @@ export interface BuilderRefusal {
 
 const refuse = (rule: string, detail: string): BuilderRefusal => ({ rule, detail });
 
+/** words a take may use that the word rules refuse in a report; masked out before those rules read a take */
+export const TAKE_ALLOWED_RE = /\b(like|feel|feels|love|hate|yields?|builders?|humans?|on ?chain|onchain|llms?|language models?)\b/g;
+
 /** plain text only: printable ascii, a line break, curly quotes and apostrophes */
 const CHARSET_RE = /[^\x20-\x7E\n‘’“”]/u;
 const QUOTE_RE = /"([^"\n]+)"|“([^”\n]+)”/g;
@@ -132,6 +140,8 @@ export const GROWTH_RE = /\b(up|higher|kept|keep|keeps|gained|gain|gains|best|ro
 export const LOSS_RE = /\b(loss|losses|lost|down|lower|fell|fallen|drop|dropped|negative|worst)\b/i;
 /** "real", "real money", "live money", "actual money": the real book's words. */
 const REAL_RE = /\breal\b|\b(live|actual) money\b/i;
+/** in a take, "real" is also an adjective ("the real cost"): only these say the real book */
+const REAL_BOOK_RE = /\breal[ -]?(money|funds?|capital|cash|run|book|trades?|trading|bands?|positions?|wallet)\b|\b(live|actual) money\b/i;
 /** A past-tense follow-up never says the event just happened. */
 const PAST_NOW_RE = /\bjust\b|\bright now\b|\b(minutes|moments|seconds) ago\b|\bnow closing\b|\bthis minute\b|\bam (closing|opening|exiting|pulling)\b|\bi'?m (closing|opening|exiting|pulling)\b|\bas (we|i) speak\b/;
 
@@ -159,7 +169,7 @@ const sentencesOf = (s: string): string[] =>
     .filter(Boolean);
 
 /** Upper-case words the voice allows without being in the facts. */
-const CAPS_OK = new Set(["SOL", "USDC", "USD", "UTC", "AI", "API", "DLMM", "CLMM", "MCP", "TVL", "OK", "X", "I", "I'M", "I'VE", "I'D", "I'LL"]);
+const CAPS_OK = new Set(["SOL", "USDC", "USD", "UTC", "AI", "API", "DLMM", "CLMM", "MCP", "TVL", "OK", "X", "I", "I'M", "I'VE", "I'D", "I'LL", "LP", "IL", "DEX", "AMM", "RWA", "CEX", "LLM", "US", "ETF"]);
 
 /** Why the text must not go out, or null. */
 export function vetBuilderPost(text: string, ctx: BuilderVetContext): BuilderRefusal | null {
@@ -185,7 +195,9 @@ export function vetBuilderPost(text: string, ctx: BuilderVetContext): BuilderRef
   if (/\$(?!\d)/.test(raw)) return refuse("symbols", "a $ not before a digit: no cashtags");
   if (/!/.test(raw)) return refuse("symbols", "an exclamation mark");
   if (/(^|[\s(])[:;=8]['-]?[()DPpOo\/\\|\[\]]($|[\s.,)])|(^|\s)[xX][dD]($|[\s.,])|<3|\^_\^|\bT_T\b|-_-/.test(raw)) return refuse("symbols", "an emoticon");
-  if (/\?/.test(raw)) return refuse("symbols", "a question mark: no questions put to the timeline");
+  // a take may end on one question to the timeline; nothing else asks one
+  const questions = (raw.match(/\?/g) ?? []).length;
+  if (questions && !(ctx.type === "take" && questions === 1 && raw.endsWith("?"))) return refuse("symbols", ctx.type === "take" ? "a take asks at most one question, at its very end" : "a question mark: no questions put to the timeline");
 
   // quotes: at most one, verbatim from the facts' journal lines; the rest of the rules read the text without them
   const quotes = [...raw.matchAll(QUOTE_RE)].map((m) => m[1] ?? m[2]);
@@ -260,7 +272,7 @@ export function vetBuilderPost(text: string, ctx: BuilderVetContext): BuilderRef
   const hasPaper = perSentence.some((x) => x.books.includes("paper"));
   const hasReal = perSentence.some((x) => x.books.includes("real"));
   const saysPaper = (s: string) => /\bpaper\b/i.test(s);
-  const saysReal = (s: string) => REAL_RE.test(s);
+  const saysReal = (s: string) => (ctx.type === "take" ? REAL_BOOK_RE : REAL_RE).test(s);
   // a paper figure is never called real money: not in its own sentence, and nowhere in a post with no real figure
   for (const x of perSentence) if (x.books.includes("paper") && saysReal(x.s)) return refuse("books", `a paper figure in a sentence that says real: "${x.s.slice(0, 50)}"`);
   if (hasPaper && !hasReal && saysReal(unquoted)) return refuse("books", "every figure is paper and the post says real");
@@ -305,7 +317,8 @@ export function vetBuilderPost(text: string, ctx: BuilderVetContext): BuilderRef
 
   // 7. words
   // the word rules read the text without its links: "mrbands.finance" is his site, not his token
-  const norm = normalizeForMatch(linksIn(unquoted).reduce((acc, l) => acc.split(l).join(" "), unquoted));
+  const plain = normalizeForMatch(linksIn(unquoted).reduce((acc, l) => acc.split(l).join(" "), unquoted));
+  const norm = ctx.type === "take" ? plain.replace(TAKE_ALLOWED_RE, " ") : plain;
   for (const n of [...MODEL_NEVER.filter((x) => x.rule !== "profit" && x.rule !== "live-money"), ...BUILDER_NEVER]) {
     const m = norm.match(n.re);
     if (m) return refuse(n.rule, `"${m[0]}"`);

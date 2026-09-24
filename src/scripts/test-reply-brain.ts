@@ -461,6 +461,37 @@ async function main(): Promise<void> {
     }
   });
 
+  console.log("his voice (24 Sep: sharp and dry, with opinions)");
+  await test("the reply prompt carries his voice and asks for sentence case; his approved views ride in the facts, digits left out", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { readPersonality, proposeChanges, approveProposal } = await import("../talk/personality.js");
+    const p = replyPrompt(mention("what do you think about wide ranges?"), replyFactsOf(ENV));
+    assert.match(p, /## your voice\nsharp and dry/);
+    assert.match(p, /one or two short sentences in sentence case/);
+    assert.ok(!/lowercase sentences/.test(p));
+    assert.ok(PROMPT_TEXTS.some((t) => /## your voice/.test(t)), "a reply that restates the voice is refused");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-bands-voice-"));
+    const env = { ...ENV, TALK_STATE_PATH: dir, OPERATOR_HANDLE: "louz514" };
+    assert.deepEqual(replyFactsOf(env).opinions, [], "no personality file: no views, and none created");
+    assert.ok(!fs.existsSync(path.join(dir, "personality.json")));
+    readPersonality(dir);
+    const r = proposeChanges(
+      [
+        { target: "opinions", action: "add", payload: { topic: "craft: range width", view: "wide ranges feel safe and are just slow", confidence: "high", formed_from: "paper closes 22-23 sep" }, reason: "his view on ranges", evidence: "lessons.jsonl" },
+        { target: "opinions", action: "add", payload: { topic: "craft: counting", view: "fees without the net are half a number, 2 halves", confidence: "high", formed_from: "paper closes" }, reason: "his view on counting", evidence: "lessons.jsonl" },
+      ],
+      { statePath: dir, env: talkEnv(env) },
+    );
+    assert.equal(r.accepted.length, 2, JSON.stringify(r.rejected));
+    for (const x of r.accepted) assert.ok(approveProposal(x.id, "louz514", { statePath: dir, env: talkEnv(env) }).ok);
+    const f = replyFactsOf(env);
+    assert.deepEqual(f.opinions, ["wide ranges feel safe and are just slow"], "a view with a digit stays out");
+    assert.match(factsText(f), /your standing views[^\n]*\n  - wide ranges feel safe and are just slow/);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   console.log(process.exitCode ? "reply brain: FAILED" : `reply brain: ${passed} passed`);
 }
 

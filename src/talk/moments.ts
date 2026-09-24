@@ -13,6 +13,8 @@
  *   build      a public line of the build ledger (src/talk/buildLedger.ts), 7 days at most, one a UTC day
  *              (BUILD_POSTS_PER_DAY); a "miss" row is an owned miss
  *   promise    a promised row he posted, closed with a done post (a row that resolves it) or a slipped one (past due)
+ *   take       his opinion on LP craft, Solana and DeFi, AI agents or building in public (src/talk/takes.ts), only
+ *              with TALK_TAKES=true, at most TALK_TAKE_POSTS_PER_DAY a UTC day; it fills silence under the events
  * The per-close, open, strap and milestone kinds of the older loop are retired here: a close is a moment only with
  * its lesson, and the fee milestone is gone (a fee total goes out only with the book's result, in the facts).
  *
@@ -39,6 +41,7 @@ import type { BuildRow } from "./buildLedger";
 import { amt, bookHeadlineFacts, blockOf, count, CTX, dateOf, fact, hoursOf, paperMethodFacts, pct, realRunFacts, standingFacts, timeOf, usd, type Fact, type FactsBlock, type Figure } from "./facts";
 import type { PostLength } from "./postGuards";
 import type { StackFigures } from "./strap";
+import { pickTake, TAKE_SCORE, TAKE_SHEET, type TakeInputs } from "./takes";
 import { labelBlocked } from "./wordguard";
 import type { BuilderPostType } from "./x";
 
@@ -133,6 +136,8 @@ export interface MomentInputs {
   dailyHourUtc: number;
   /** tick-state's lastDailyDay */
   lastDailyDay: string | null;
+  /** takes' inputs (src/talk/takes.ts); absent or null: takes are off */
+  takes?: TakeInputs | null;
 }
 
 // ---------------------------------------------------------------- helpers
@@ -580,6 +585,26 @@ function promiseMoments(i: MomentInputs): Moment[] {
   return out;
 }
 
+/** His opinion on one of his topics (src/talk/takes.ts): code picks the topic and its facts, his model the view. */
+function takeMoment(i: MomentInputs): Moment | null {
+  if (!i.takes) return null;
+  const t = pickTake(i, i.takes);
+  if (!t) return null;
+  return {
+    key: t.key,
+    type: "take",
+    at: i.now,
+    score: TAKE_SCORE,
+    length: "long",
+    past: false,
+    brief: `${TAKE_SHEET}\n\n${t.brief}`,
+    facts: block(t.key, i, t.facts, t.tickers),
+    followUpOf: null,
+    arc: false,
+    urgent: false,
+  };
+}
+
 // ---------------------------------------------------------------- the pick
 
 export interface PickOptions {
@@ -613,7 +638,7 @@ export function gatherMoments(i: MomentInputs, notes: string[] = []): Moment[] {
   const daily = dailyMoment(i);
   if (daily) all.push(daily);
   all.push(...closeMoments(i, notes), ...refusalMoments(i), ...buildMoments(i, shortToday), ...promiseMoments(i));
-  for (const m of [haltMoment(i), learnerMoment(i), screenerMoment(i), arcMoment(i)]) if (m) all.push(m);
+  for (const m of [haltMoment(i), learnerMoment(i), screenerMoment(i), arcMoment(i), takeMoment(i)]) if (m) all.push(m);
   const last = i.posts.length ? i.posts[i.posts.length - 1] : null;
   const lastType = last && i.now - last.at < SAME_TYPE_WINDOW_MS ? last.type : null;
   for (const m of all) if (m.type !== "daily" && m.type === lastType) m.score -= 15;

@@ -677,6 +677,97 @@ async function main(): Promise<void> {
     assert.match(p, /reason: repeat: 0\.90 overlap with his post of 2026-09-22T21:28Z, "Follow-up on ORE\/SOL/);
   });
 
+  // ------------------------------------------------------------ takes (24 Sep): his opinion, in a sharp, dry voice
+  console.log("takes: his opinions on four topics, the guards' take relaxations");
+  const takes = await import("../talk/takes.js");
+  const DEX_RAW = {
+    total24h: 2682822618.41,
+    change_1d: -16.03,
+    protocols: [
+      { name: "Raydium AMM", total24h: 370e6, parentProtocol: "parent#raydium" },
+      { name: "Raydium CLMM", total24h: 100e6, parentProtocol: "parent#raydium" },
+      { name: "Orca DEX", total24h: 355e6, parentProtocol: "parent#orca" },
+      { name: "PumpSwap", total24h: 270e6, parentProtocol: "parent#pump" },
+      { name: "Meteora DLMM", total24h: 233.7e6, parentProtocol: "parent#meteora" },
+      { name: "Meteora DAMM V2", total24h: 20e6, parentProtocol: "parent#meteora" },
+      { name: "BisonFi", total24h: 368e6 },
+    ],
+  };
+  const TAKES_ON = (over: Partial<import("../talk/takes").TakeInputs> = {}): import("../talk/takes").TakeInputs => ({
+    perDay: 3,
+    opinions: [{ topic: "craft: range width", view: "wide ranges feel safe and are just slow", confidence: "high" }],
+    dexes: takes.dexOverviewOf(DEX_RAW, NOW),
+    stocks: { pools: 825, dlmm: 544, mints: 135 },
+    desk: { decisions: 514, byCode: 449, byJudgment: 35, vetoed: 3 },
+    openBands: [{ label: "NVDAx/SOL", openedAt: NOW - 30 * HOUR }],
+    ...over,
+  });
+  await test("the DEX overview: venues merged by parent, pump names left out, billions printed and read as one token", () => {
+    const d = takes.dexOverviewOf(DEX_RAW, NOW)!;
+    assert.deepEqual(d.top.map((v) => v.name), ["Raydium", "BisonFi", "Orca", "Meteora"]);
+    assert.equal(d.top.find((v) => v.name === "Meteora")!.usd24h, 253.7e6);
+    assert.equal(facts.usd(2682822618.41), "$2.68B");
+    assert.deepEqual(facts.numberTokens("Solana DEXes traded $2.68B, and Meteora $253.70M."), ["usd:2.68B", "usd:253.7M"]);
+    assert.equal(takes.dexOverviewOf({ total24h: 0, protocols: [] }, NOW), null);
+    assert.deepEqual(takes.stockBoardOf("[cycle 1] meteora stocks: 800 stock pools (500 DLMM from known issuers, 130 stock mints)\n[cycle 2] meteora stocks: 825 stock pools (544 DLMM from known issuers, 135 stock mints); 5 board pool(s)"), { pools: 825, dlmm: 544, mints: 135 });
+  });
+  await test("a take: only when takes are on, under the day's count, the topic he spoke on least recently, one key per topic an hour", () => {
+    assert.ok(!mo.gatherMoments(base()).some((m) => m.type === "take"), "off without TALK_TAKES");
+    const t = mo.gatherMoments(base({ takes: TAKES_ON() })).find((m) => m.type === "take")!;
+    assert.equal(t.key, `take:craft:${new Date(NOW).toISOString().slice(0, 13)}`);
+    assert.equal(t.score, takes.TAKE_SCORE);
+    assert.ok(t.score < 30 && t.score >= mo.MIN_SCORE, "under a build note, over the floor");
+    assert.match(t.brief, /This post is a take/);
+    assert.match(t.brief, /wide ranges feel safe and are just slow/, "his approved view on the topic");
+    const posts = [post(NOW - 5 * HOUR, "A take on ranges.", "take", "take:craft:2026-09-23T11")];
+    assert.equal(mo.gatherMoments(base({ takes: TAKES_ON(), posts })).find((m) => m.type === "take")!.key.split(":")[1], "defi", "craft spoke last: the next topic");
+    const three = [0, 1, 2].map((k) => post(NOW - (k + 2) * HOUR, "A take.", "take", `take:agents:x${k}`));
+    assert.ok(!mo.gatherMoments(base({ takes: TAKES_ON(), posts: three })).some((m) => m.type === "take"), "3 today: no more");
+    const seen = new Set([`take:craft:${new Date(NOW).toISOString().slice(0, 13)}`]);
+    assert.equal(mo.gatherMoments(base({ takes: TAKES_ON(), seen })).find((m) => m.type === "take")!.key.split(":")[1], "defi", "a key seen this hour: the next topic");
+    const bare = TAKES_ON({ opinions: [], dexes: null, stocks: null, desk: null, openBands: [] });
+    assert.equal(mo.gatherMoments(base({ takes: bare })).find((m) => m.type === "take")?.key.split(":")[1] ?? null, null, "nothing to stand on (no closes, no build rows, no views): no take");
+  });
+  await test("each topic stands on its own facts: the Solana DEX volumes, the desk's day, the open bands, the build ledger", () => {
+    const i = { now: NOW, lessons: [], build: [row({ id: "b-t", text: "I now make at most 60 judgment calls a day." })] };
+    const d = takes.takeFacts("defi", i, TAKES_ON()).facts.map((f) => f.text).join(" ");
+    assert.match(d, /Solana DEXes traded \$2\.68B in the last 24 hours, 16% less than the day before/);
+    assert.match(d, /Meteora, where I provide liquidity, did \$253\.70M of that, 9% of Solana's DEX volume/);
+    assert.match(d, /825 tokenized-stock pools on Meteora/);
+    assert.match(takes.takeFacts("agents", i, TAKES_ON()).facts[0].text, /Code answered 449 of them.*my own judgment on 35.*refused or changed 3/);
+    assert.match(takes.takeFacts("craft", i, TAKES_ON()).facts[0].text, /I hold 1 band on my paper book: NVDAx\/SOL/);
+    assert.match(takes.takeFacts("building", i, TAKES_ON()).facts[0].text, /60 judgment calls/);
+  });
+  const take = mo.gatherMoments(base({ takes: TAKES_ON() })).find((m) => m.type === "take")!;
+  const vT = (text: string) => g.vetBuilderPost(text, { facts: take.facts, length: take.length, lint: CTX, recent: [], type: "take" });
+  await test("a take may hold an opinion: one closing question, I like, I hate, feels like, yield, LP, on-chain, LLM", () => {
+    for (const ok of [
+      "Wide ranges feel safe. They are just slow: one-way flow still walks through them, it only takes longer to show the loss.",
+      "I hate wide ranges. They feel like safety and behave like a slow leak.",
+      "Most LPs chase yield and ignore the loss beside it. I like a narrow band I can close fast. What range width do you run?",
+      "An agent that cannot refuse its own ideas is an LLM with a wallet. Mine gets refused every day, on-chain or on paper.",
+    ])
+      assert.equal(vT(ok), null, ok);
+    assert.equal(ruleOf(g.vetBuilderPost("I hate wide ranges.  They behave like a slow leak on my paper book.", { facts: close.facts, length: close.length, lint: CTX, recent: [], type: close.type })), "feelings", "a report still may not");
+  });
+  await test("a take may call something the real cost; it may never call a paper figure real money; a building take stands on his written notes first", () => {
+    const L = (k: number) => lesson({ position: `r${k}`, label: "ORE/SOL", net: -0.5, closedAt: NOW - (k + 1) * HOUR });
+    const craft = takes.takeFacts("craft", { now: NOW, lessons: [L(0), L(1), L(2)], build: [] }, TAKES_ON());
+    const f = facts.blockOf("take:craft:t", [...facts.standingFacts({ now: NOW, startSol: 150, startUsdc: 10000, startedAt: START }), ...craft.facts], ["SOL/USD", ...craft.tickers]);
+    const vv = (text: string) => g.vetBuilderPost(text, { facts: f, length: "long", lint: CTX, recent: [], type: "take" });
+    assert.equal(vv("One-way flow is the real cost of this job. On paper 3 of my bands closed at a loss in 48 hours."), null);
+    assert.equal(ruleOf(vv("On paper 3 of my bands closed at a loss in 48 hours, real money lost.")), "books");
+    const rows = [row({ id: "auto-20260923-paper", text: "On 23 Sept I changed my paper book: a header." }), row({ id: "memory-stays-on", text: "My memory stays on between sessions." }), row({ id: "paper-swap-impact", text: "A paper swap now pays the pool's own price impact." })];
+    const b = takes.takeFacts("building", { now: NOW, lessons: [], build: rows }, TAKES_ON()).facts.map((x) => x.text);
+    assert.deepEqual(b, ["My memory stays on between sessions.", "A paper swap now pays the pool's own price impact."]);
+  });
+  await test("a take still never: two questions, a question mid-post, buy or sell, a price call, politics, a human claim, a vendor, his token", () => {
+    assert.equal(ruleOf(vT("Why do LPs run wide? Why not narrow?")), "symbols");
+    assert.equal(ruleOf(vT("Why do LPs run wide? Mine are narrow.")), "symbols");
+    assert.equal(ruleOf(g.vetBuilderPost("On paper I closed my band on ORE/SOL at 16:00 UTC, a loss of 0.55 SOL. Why?", { facts: close.facts, length: close.length, lint: CTX, recent: [], type: close.type })), "symbols", "a report asks nothing");
+    for (const bad of ["I think SOL goes higher from here.", "Wide ranges are for people who buy tops.", "Most LPs are going to get wrecked this week.", "I think the election will move DeFi volume.", "I'm a real person who happens to trade bins.", "Most agents run on Claude and forget everything.", "My own token will fix this."]) assert.notEqual(vT(bad), null, bad);
+  });
+
   // ------------------------------------------------------------ runTick in the builder voice
   console.log("runTick, the builder voice");
   const T14 = Date.parse("2026-09-22T14:20:00Z");
