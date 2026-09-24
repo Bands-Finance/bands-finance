@@ -17,7 +17,6 @@ const ECOSYSTEM: { name: string; href: string }[] = [
   { name: "Meteora", href: "https://app.meteora.ag" },
   { name: "Solana", href: "https://solana.com" },
   { name: "Solscan", href: "https://solscan.io" },
-  { name: "GeckoTerminal", href: "https://www.geckoterminal.com" },
 ];
 
 export function Footer() {
