@@ -56,7 +56,7 @@ import { openHermitAvailable, openHermitSettings } from "./agent/openhermit";
 import type { LearnMode } from "./learn/surface";
 import type { Decision } from "./agent/schema";
 import { entryForecastOf, policyBandOf, policyDecide, policyEnv, swapFeePctFor } from "./agent/policy";
-import { POSITION_RENT_SOL } from "./tools/dlmm";
+import { POSITION_RENT_NOW_SOL, POSITION_RENT_SOL } from "./tools/dlmm";
 import { allProposals, approvedProposals, decideProposal, markExecuted, markRefused, pendingProposals, proposalDecision, proposalNote, proposalOutcome, Proposal } from "./platform/proposals";
 import { autoBudget, autoDecide, autoEnv, deskHalt, nextApprovedProposal, noteDeskApprovals } from "./platform/autoDecide";
 import type { EngineObservation, Observation, ScreenContext } from "./agent/observation";
@@ -65,6 +65,7 @@ import { describeLimits } from "./risk/limits";
 import { killSwitchActive, loadState, saveState, RiskState, todayUtc } from "./risk/state";
 import { execute, executeSkim, ExecutionResult, toOpenPlan } from "./executor";
 import { appendEquity, appendJournal, JournalEngine, JournalEntry, readFlows, readRecent, sumFlows, toJournalPool } from "./journal";
+import { fundsOf, knobOf, seatableAfterClose, type FundsInput } from "./desk/funds";
 import { loadScreen, runScreen, tradableVenue } from "./screener";
 import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
@@ -500,13 +501,27 @@ const launchCandidates = (): LaunchCandidate[] =>
  * cost against the gas reserve before it proposes anything.
  */
 function fundableQuotes(app: App, sol: number, usdc: number): Set<"SOL" | "USDC"> {
-  const minSeatSol = Math.max(0.05, (riskLimits.maxTotalExposureSol * policyEnv().minSeatPct) / 100);
-  const rentBudget = POSITION_RENT_SOL * config.maxActivePools;
-  const solPrice = solPriceOf(app);
-  const out = new Set<"SOL" | "USDC">();
-  if (sol - riskLimits.gasReserveSol - rentBudget >= minSeatSol) out.add("SOL");
-  if (solPrice !== null && usdc / solPrice >= minSeatSol && sol - POSITION_RENT_SOL >= riskLimits.gasReserveSol) out.add("USDC");
-  return out;
+  // the rule and its reason live in src/desk/funds.ts (the lopsided wallet, 25 Sep 2026)
+  const f = fundsOf(fundsInputOf(app, sol, usdc));
+  if (f.dropped) console.log(`[cycle ${app.cycle}] funds: ${f.dropped}`);
+  return f.quotes;
+}
+
+function fundsInputOf(app: App, sol: number, usdc: number): FundsInput {
+  return {
+    sol,
+    usdc,
+    solPriceUsd: solPriceOf(app),
+    gasReserveSol: riskLimits.gasReserveSol,
+    maxPositionSol: riskLimits.maxPositionSol,
+    // last cycle's board regime (this cycle's is read after the picks): x0.5 lays at most half the max band
+    regimeMultiplier: app.regime?.multiplier,
+    minSeatSol: Math.max(0.05, (riskLimits.maxTotalExposureSol * policyEnv().minSeatPct) / 100),
+    positionRentSol: POSITION_RENT_SOL,
+    maxActivePools: config.maxActivePools,
+    minSharePct: knobOf(process.env.POLICY_QUOTE_MIN_SHARE_PCT, 50),
+    dropUnderSol: knobOf(process.env.POLICY_QUOTE_DROP_UNDER_SOL, 0.5),
+  };
 }
 
 /** The stock pair lane's candidates: the board grouped by ticker, with the hot watch's last-hour volume where it has one. */
@@ -2580,10 +2595,24 @@ async function runIteration(app: App): Promise<void> {
           const env = { ...rEnvNow, minYieldPct: pEnvNow.minSeatYieldPct };
           const worth = rankSeats(ranked, env);
           console.log(`[cycle ${app.cycle}] memecoin seat ranking: held ${heldMeme.map((h) => `${h.label} ${h.yieldPctPerDay.toFixed(1)}% on ${(h.heldSol ?? 0).toFixed(1)} SOL`).join(", ")} | candidates ${ranked.map((r) => `${r.label} ${r.yieldPctPerDay.toFixed(1)}% on ${r.capSol.toFixed(1)} SOL`).join(", ")} | a seat makes way at ${env.memeRotateFactor}x`);
-          const rot = weakSeatRotation(heldMeme, worth, env, now);
+          // THE TARGET MUST BE SEATABLE ON THE WALLET THE CLOSE RETURNS TO (src/desk/funds.ts, seatableAfterClose). The weakest
+          // held seat does not depend on the candidates, so the second call gives up the same seat or none.
+          const first = weakSeatRotation(heldMeme, worth, env, now);
+          const out = first ? observed.find((o) => o.address === first.pool) : undefined;
+          const outQ = out ? quoteOf(out.snapshot) : null;
+          const { seatable, after } =
+            out && outQ
+              ? seatableAfterClose(worth, fundsInputOf(app, solAtStart, usdcAtStart), {
+                  quote: outQ.symbol,
+                  valueInQuote: out.positions.reduce((t, p) => t + p.valueInSol, 0) / outQ.priceInSol,
+                  rentRefundSol: out.positions.length * POSITION_RENT_NOW_SOL,
+                })
+              : { seatable: worth, after: null };
+          const rot = first && seatable.length ? weakSeatRotation(heldMeme, seatable, env, now) : null;
+          if (first && !rot) console.log(`[cycle ${app.cycle}] seat yield: ${first.label} stays: after its close the wallet would fund new seats in ${after?.size ? [...after].join(" and ") : "neither quote"} only, and no candidate there clears the bar`);
           if (rot) {
             app.rotateOut = rot;
-            const best = worth.find((r) => !heldMeme.some((h) => h.address === r.address));
+            const best = seatable.find((r) => !heldMeme.some((h) => h.address === r.address));
             app.seatFor = best ? { address: best.address, baseMint: best.mint } : null;
             console.log(`[cycle ${app.cycle}] seat yield: rotating out ${rot.label} (${rot.pool.slice(0, 6)}): ${rot.reason}`);
           }

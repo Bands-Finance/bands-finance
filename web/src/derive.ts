@@ -129,6 +129,8 @@ export interface Cycle {
   t: number;
   /** oldest first */
   entries: JournalEntry[];
+  /** bookCycle's: every entry is read as it stood after its move (heldAfter), so the cycle's wallet is its newest entry's */
+  held?: boolean;
 }
 
 /**
@@ -187,7 +189,8 @@ const bookMoved = (e: JournalEntry): boolean => e.execution.mode === "live" || e
  * The band an open laid, as the next cycle will read it: the decision's bins round the active bin (a Meteora band
  * includes it on every side, src/executor.ts toOpenPlan; a CLMM's one-sided band sits strictly beside it, src/tools/bins.ts),
  * priced off the active bin by the bin step, in range at the price it was laid, no fees yet, worth what went in. The
- * rent is the open's ledger row when the entry carries one, else the book's rule (rentOf).
+ * band carries the rent its close refunds (the book's rule, rentOf, the figure the next read gets); the wallet pays what
+ * the open's ledger row says it paid (rentPaid), which can include a token account or bin array no close gives back.
  */
 function laidBand(e: JournalEntry, o: NonNullable<JournalEntry["decision"]["open"]>, opened: NonNullable<JournalEntry["execution"]["opened"]>): Position {
   const p = e.pool;
@@ -204,8 +207,6 @@ function laidBand(e: JournalEntry, o: NonNullable<JournalEntry["decision"]["open
   const priceAt = (bin: number) => p.price * Math.pow(1 + p.binStep / 10_000, bin - a);
   const inRange = lowerBinId <= a && a <= upperBinId;
   const quoteIsX = q.side === "X";
-  const ledger = (e.execution as { ledger?: { mech?: string; position?: string; rentSol?: number }[] }).ledger;
-  const rent = ledger?.find((r) => r.mech === "open" && r.position === opened.address && typeof r.rentSol === "number")?.rentSol;
   return {
     address: opened.address,
     lowerBinId,
@@ -223,8 +224,18 @@ function laidBand(e: JournalEntry, o: NonNullable<JournalEntry["decision"]["open
     solInPosition: o.amountSol * q.priceInSol,
     lastUpdatedAt: Math.floor(Date.parse(e.ts) / 1000),
     entryValueSol: opened.entryValueSol,
-    ...(typeof rent === "number" ? { rentSol: Math.abs(rent) } : {}),
   };
+}
+
+/**
+ * The rent an open paid, from its ledger row (the position, plus a fresh token account or bin array the close never
+ * refunds), else what the band gets back. 25 Sep 2026: the CATE/USDC open paid 0.04341368 and its close refunded
+ * 0.04189984, and for that cycle the page said 0.0434 SOL of rent comes back.
+ */
+function rentPaid(e: JournalEntry, laid: Position): number {
+  const ledger = (e.execution as { ledger?: { mech?: string; position?: string; rentSol?: number }[] }).ledger;
+  const rent = ledger?.find((r) => r.mech === "open" && r.position === laid.address && typeof r.rentSol === "number")?.rentSol;
+  return typeof rent === "number" && Number.isFinite(rent) ? Math.abs(rent) : rentOf(laid, e);
 }
 
 /**
@@ -287,7 +298,7 @@ export function heldAfter(e: JournalEntry): JournalEntry {
     const tokenPriceInQuote = typeof e.pool.tokenPriceInQuote === "number" ? e.pool.tokenPriceInQuote : e.pool.tokenPriceInSol / q.priceInSol;
     quoteAdd(-(o.amountSol + bought * tokenPriceInQuote));
     w.token -= Math.max(0, o.amountToken - bought);
-    w.sol -= rentOf(laid, e);
+    w.sol -= rentPaid(e, laid);
     moved = true;
   }
   return moved ? { ...e, wallet: w, positions } : e;
@@ -305,7 +316,7 @@ export function bookCycle(newestFirst: JournalEntry[]): Cycle | null {
   const cycles = cyclesOf(newestFirst);
   const newest = cycles[cycles.length - 1];
   if (!newest) return null;
-  const held = { ...newest, entries: newest.entries.map(heldAfter) };
+  const held: Cycle = { ...newest, entries: newest.entries.map(heldAfter), held: true };
   const prev = cycles[cycles.length - 2];
   if (!prev) return held;
   const seen = new Set(newest.entries.map((e) => e.pool.address));
@@ -314,8 +325,15 @@ export function bookCycle(newestFirst: JournalEntry[]): Cycle | null {
 }
 
 /** The wallet's USDC leg as one of the cycle's entries journals it, in SOL; null when none of them is USDC-quoted. */
+/**
+ * The entries in the order their wallets are read for the cycle's: a raw cycle's first entry holds the wallet before any of its
+ * moves; the book's (held) newest holds it after all of them, since the desk reads the wallet afresh before each pool it works
+ * (src/index.ts), and a carried entry is the cycle before, older than every entry of this one.
+ */
+const walletOrder = (c: Cycle): JournalEntry[] => (c.held ? [...c.entries].sort((a, b) => b.ts.localeCompare(a.ts)) : c.entries);
+
 export function cycleQuoteLegSol(c: Cycle): number | null {
-  for (const e of c.entries) {
+  for (const e of walletOrder(c)) {
     const v = quoteLegSol(e);
     if (v !== null) return v;
   }
@@ -329,7 +347,7 @@ export function cycleQuoteLegSol(c: Cycle): number | null {
  * USDC: the caller passes the leg the last USDC-quoted cycle carried (cycleEquitySeries), or the book drops it.
  */
 export function cycleEquity(c: Cycle, carriedQuoteSol: number | null = null): number {
-  const first = c.entries[0];
+  const first = walletOrder(c)[0];
   const tokens = new Map<string, number>();
   let bands = 0;
   for (const e of c.entries) {
@@ -350,7 +368,7 @@ export function cycleEquitySeries(cycles: Cycle[], book: Cycle | null = null): n
   return cycles.map((c, i) => {
     const cyc = i === cycles.length - 1 && book ? book : c;
     // the leg a later SOL-quoted cycle carries is the one this cycle left AFTER its moves (a close hands its USDC back)
-    const own = cycleQuoteLegSol({ ...cyc, entries: cyc.entries.map(heldAfter) });
+    const own = cycleQuoteLegSol({ ...cyc, entries: cyc.entries.map(heldAfter), held: true });
     if (own !== null) quoteSol = own;
     return cycleEquity(cyc, quoteSol);
   });

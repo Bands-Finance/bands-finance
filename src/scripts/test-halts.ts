@@ -167,11 +167,14 @@ async function main(): Promise<void> {
     assert.equal(row(true, true, false).level, "WARN");
   });
 
-  await test("ops/live.env halts the live desk and pins the policy; the rehearsal lifts the halt and the feed, the preflight lifts nothing", () => {
+  await test("ops/live.env: the halt is one literal \"true\" line or none, and the policy is pinned; the rehearsal lifts the halt and the feed, the preflight lifts nothing", () => {
     const repo = path.resolve(__dirname, "../..");
     const lines = fs.readFileSync(path.join(repo, "ops/live.env"), "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
     const values = (k: string) => lines.filter((l) => l.startsWith(`${k}=`)).map((l) => l.slice(k.length + 1));
-    assert.deepEqual(values("KILL_SWITCH"), ["true"]);
+    // cleared at the go step (no line: Zach, 25 Sep 2026), or halted by one literal "true" line: only "true" halts, so True, 1
+    // or false would look like a halt (or a cleared desk) without being one, and a second line would quietly win
+    const kill = values("KILL_SWITCH");
+    assert.ok(kill.length === 0 || (kill.length === 1 && kill[0] === "true"), `ops/live.env KILL_SWITCH is absent or one literal "true" line, got ${JSON.stringify(kill)}`);
     assert.deepEqual(values("DECIDER"), ["policy"], "one DECIDER line: a second would quietly win");
     assert.deepEqual(values("DRY_RUN"), [], "DRY_RUN is the service's to set, never this file's");
     const scripts = JSON.parse(fs.readFileSync(path.join(repo, "package.json"), "utf8")).scripts as Record<string, string>;

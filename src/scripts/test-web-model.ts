@@ -311,6 +311,51 @@ async function main() {
     assert.equal(bookOf([c1, c2, c3, c4, live].reverse()).bands.find((b) => b.address === "c2")!.openTx, "sigOpen");
   });
 
+  await test("the book's wallet is its newest entry's, after its move: a move in a pool worked second is counted on both sides (17 Sep: the GP open read +7.53 SOL)", () => {
+    // the desk reads the wallet afresh before each pool it works (src/index.ts runPool), so the second entry's wallet already
+    // holds the first one's move and, read after its own (heldAfter), every move of the cycle; the first entry's has none of the rest
+    const open = { side: "SOL_ONLY", amountSol: 2, amountToken: 0, binsBelowActive: 4, binsAboveActive: 0, strategy: "Spot" };
+    const withExec = (e: JournalEntry, exec: Record<string, unknown>, dec: Record<string, unknown> = {}) => ({ ...e, decision: { ...e.decision, ...dec }, execution: { ...e.execution, ...exec } }) as JournalEntry;
+    const truth = 5 + 20 + RENT;
+    // an open worked second: AAA holds a1 (20 SOL), then DDD lays 2 SOL; the 2 SOL and the rent leave the wallet for the band
+    const opened = withExec(entry({ cycle: 2, min: 11, pool: "DDD", sol: 5, action: "OPEN_POSITION" }), { opened: { address: "d1", entryValueSol: 2 } }, { open });
+    const atOpen = [entry({ cycle: 1, min: 1, pool: "AAA", sol: 5, positions: [band("a1", 20)] }), entry({ cycle: 1, min: 2, pool: "DDD", sol: 5 }), entry({ cycle: 2, min: 10, pool: "AAA", sol: 5, positions: [band("a1", 20)] }), opened].reverse();
+    assert.ok(Math.abs(cycleEquity(bookCycle(atOpen)!) - truth) < 1e-9, `the book ${cycleEquity(bookCycle(atOpen)!)}`);
+    assert.ok(Math.abs(recordOf(atOpen)!.equityNow - truth) < 1e-9, `the record without history ${recordOf(atOpen)!.equityNow}`);
+    const series = equitySeriesOf(atOpen);
+    assert.ok(Math.abs(series[series.length - 1].equity - truth) < 1e-9, "the series' last point");
+    // a close worked second: the band leaves the book and its 20 SOL and the rent land in the wallet
+    const closed = entry({ cycle: 2, min: 11, pool: "AAA", sol: 5, positions: [band("a1", 20)], action: "CLOSE_POSITION", closed: "a1" });
+    const atClose = [entry({ cycle: 1, min: 1, pool: "DDD", sol: 5 }), entry({ cycle: 1, min: 2, pool: "AAA", sol: 5, positions: [band("a1", 20)] }), entry({ cycle: 2, min: 10, pool: "DDD", sol: 5 }), closed].reverse();
+    assert.ok(Math.abs(recordOf(atClose)!.equityNow - truth) < 1e-9, `the close ${recordOf(atClose)!.equityNow}`);
+    // the USDC leg the same way: CCC (USDC) holds c1, then EEE (USDC) lays 1,000 USDC (10 SOL at 0.01)
+    const laidUsdc = withExec(entry({ cycle: 2, min: 11, pool: "EEE", sol: 5, usdc: 2000, action: "OPEN_POSITION" }), { opened: { address: "e1", entryValueSol: 10 } }, { open: { ...open, amountSol: 1000 } });
+    const atUsdc = [entry({ cycle: 1, min: 1, pool: "CCC", sol: 5, usdc: 2000, positions: [band("c1", 10)] }), entry({ cycle: 1, min: 2, pool: "EEE", sol: 5, usdc: 2000 }), entry({ cycle: 2, min: 10, pool: "CCC", sol: 5, usdc: 2000, positions: [band("c1", 10)] }), laidUsdc].reverse();
+    assert.ok(Math.abs(recordOf(atUsdc)!.equityNow - (5 + 20 + 10 + RENT)) < 1e-9, `the USDC open ${recordOf(atUsdc)!.equityNow}`);
+    // and the leg a later cycle of SOL pools alone carries is the one cycle 2 left after BOTH its moves: 1,000 USDC, not 2,000
+    const solAfter = [...[...atUsdc].reverse(), entry({ cycle: 3, min: 20, pool: "AAA", sol: 5 - RENT }), entry({ cycle: 4, min: 30, pool: "AAA", sol: 5 - RENT })].reverse();
+    assert.ok(Math.abs(cycleEquitySeries(cyclesOf(solAfter))[3] - (5 - RENT + 10)) < 1e-9, `the carried USDC leg ${cycleEquitySeries(cyclesOf(solAfter))[3]}`);
+    // the history before the book is read before its moves, as the desk marks it: unchanged
+    assert.ok(Math.abs(cycleEquitySeries(cyclesOf(atOpen))[1] - truth) < 1e-9, "cycle 2 read raw (no book) is the book before DDD's open");
+  });
+
+  await test("the book after an open that paid more rent than the position holds: the wallet pays the ledger's rent, the band carries what its close refunds", () => {
+    // 25 Sep 2026 13:51Z: the first CATE/USDC open paid 0.04341368 SOL (the position and a fresh token account) and its close
+    // refunded 0.04189984; for that cycle the site said 0.0434 SOL of rent comes back
+    const paid = 0.04341368;
+    const base = entry({ cycle: 2, min: 10, pool: "AAA", sol: 5, positions: [], action: "OPEN_POSITION" });
+    const e = {
+      ...base,
+      mode: "live",
+      decision: { ...base.decision, open: { side: "SOL_ONLY", amountSol: 1, amountToken: 0, binsBelowActive: 4, binsAboveActive: 0, strategy: "Spot" } },
+      execution: { ...base.execution, mode: "live", opened: { address: "a2", entryValueSol: 1 }, ledger: [{ mech: "open", position: "a2", rentSol: -paid }] },
+    } as unknown as JournalEntry;
+    const held = heldAfter(e);
+    assert.ok(Math.abs(rentOf(held.positions[0], held) - LIVE_POSITION_RENT_SOL) < 1e-12, `the band carries what its close refunds, not what the open paid: ${rentOf(held.positions[0], held)}`);
+    assert.ok(Math.abs(held.wallet.sol - (5 - 1 - paid)) < 1e-9, "the wallet paid what the ledger says it paid");
+    assert.ok(Math.abs(recordOf([e])!.rent - LIVE_POSITION_RENT_SOL) < 1e-12, "the record's rent that comes back");
+  });
+
   await test("the USDC leg is carried across cycles that do not journal it: a cycle worked in SOL pools alone does not mark the wallet's USDC as nothing", () => {
     // 25 Sep 2026: a SOL-quoted entry's wallet says quote SOL and nothing of the USDC; a cycle of ANTHROPIC/SOL alone read 71 USDC as 0
     const chrono = [...fixture()].reverse();

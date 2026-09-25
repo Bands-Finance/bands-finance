@@ -152,11 +152,17 @@ async function main(): Promise<void> {
     // the 14 Sep board from data/ while a CATE/USDC band was open
     const now = T0 + 3_600_000;
     const refused = plainShellRefusal({}, T0, now);
-    assert.ok(refused && /refused/.test(refused) && /ops\/live\.env/.test(refused) && /SNAPSHOT_BOOK=none/.test(refused), refused ?? "no refusal");
+    assert.ok(refused && /refused/.test(refused) && /ops\/live\.env/.test(refused) && /SNAPSHOT_BOOK is not set/.test(refused), refused ?? "no refusal");
     assert.match(refused!, /60 min old/);
     assert.equal(plainShellRefusal({ DATA_DIR: "data", DRY_RUN: "true" }, T0, now)?.slice(0, 18), "snapshot: refused.", "the repo .env is a plain shell");
     assert.equal(plainShellRefusal({ SNAPSHOT_BOOK: "real" }, T0, now), null, "the live desk's env");
-    assert.equal(plainShellRefusal({ SNAPSHOT_BOOK: "none" }, T0, now), null, "the paper plist, or a blank on purpose");
+    // the paper plist (AUTO_DEPLOY=true, SNAPSHOT_BOOK=none) loaded beside the live desk: its 30-minute deploy would ship
+    // journal.json {entries: []} and equity.json {points: []} over the live desk's own push, on both sites
+    assert.match(plainShellRefusal({ SNAPSHOT_BOOK: "none" }, T0, now) ?? "", /^snapshot: refused\. .*SNAPSHOT_BOOK=none would publish an empty book/, "the paper plist never blanks a trading desk");
+    assert.match(plainShellRefusal({ SNAPSHOT_BOOK: " None " }, T0, now) ?? "", /^snapshot: refused\./, "case and spaces as snapshotBook reads them");
+    assert.match(plainShellRefusal({ SNAPSHOT_BOOK: "paper" }, T0, now) ?? "", /^snapshot: refused\. .*the paper book/, "nor does a hand-run paper book replace it");
+    assert.equal(plainShellRefusal({ SNAPSHOT_BOOK: "none" }, T0, T0 + REAL_BOOK_MAX_AGE_MS + 60_000), null, "the paper plist deploys once the real desk has stopped");
+    assert.equal(plainShellRefusal({ SNAPSHOT_BOOK: "none" }, null, now), null, "and when there is no real book at all");
     assert.equal(plainShellRefusal({}, T0, T0 + REAL_BOOK_MAX_AGE_MS + 60_000), null, "a finished run is not a desk trading");
     assert.equal(plainShellRefusal({}, null, now), null, "no real book at all");
     assert.equal(plainShellRefusal({ SNAPSHOT_BOOK: "  " }, T0, now)?.slice(0, 18), "snapshot: refused.", "blank is unset");

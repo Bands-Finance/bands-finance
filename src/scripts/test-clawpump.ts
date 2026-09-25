@@ -83,7 +83,10 @@ async function main(): Promise<void> {
     assert.equal(t.name, "Mr Bands");
     assert.equal(t.symbol, "BANDS");
     assert.doesNotMatch(t.description ?? env.TOKEN_DESCRIPTION ?? "", /bands\.finance|https?:\/\//i, "Zach, 22 Sep: the token is not linked to the website yet");
-    assert.equal(env.TOKEN_ON_SITE, "false", "the site prints nothing about the token until this reads true");
+    // announced 25 Sep 2026 (Zach's go, commit e993e58): the site names the token and links its ClawPump page, nothing else
+    assert.equal(env.TOKEN_ON_SITE, "true", "the token is announced: the site's paragraph and ClawPump link are on");
+    assert.match(env.TOKEN_URL ?? "", /^https:\/\/clawpump\.tech\/tokens\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "the link is the token's ClawPump page and nothing else");
+    assert.doesNotMatch(env.TOKEN_DESCRIPTION ?? "", /pays (holders )?nothing|pays nobody/i, "Zach, 25 Sep: a key to his engine, never a warning label");
     assert.equal(isSolPair(t.pumpPair), true);
     assert.equal(t.devBuySol, 0);
     assert.equal(t.creatorFeeBps, null);

@@ -51,14 +51,16 @@ export function snapshotBook(env: NodeJS.ProcessEnv): SnapshotBook {
  * band was open. A real book with a decision inside REAL_BOOK_MAX_AGE_MS is a desk trading now.
  */
 export function plainShellRefusal(env: NodeJS.ProcessEnv, realNewestTs: number | null, now: number, realDir = "data-mainnet"): string | null {
-  if ((env.SNAPSHOT_BOOK ?? "").trim()) return null;
+  // only the live desk's own book may ship while it trades: none (the paper plist, which is still installed with RunAtLoad and
+  // AUTO_DEPLOY) would blank it on both sites every 30 minutes, paper would replace it (25 Sep 2026 review)
+  const set = (env.SNAPSHOT_BOOK ?? "").trim().toLowerCase();
+  if (set === "real") return null;
   if (realNewestTs === null || !Number.isFinite(realNewestTs) || now - realNewestTs > REAL_BOOK_MAX_AGE_MS) return null;
   const ago = Math.max(0, Math.round((now - realNewestTs) / 60_000));
-  return (
-    `snapshot: refused. SNAPSHOT_BOOK is not set and ${realDir} has a real decision ${ago} min old: from this shell the snapshot would ` +
-    `publish an empty book and this shell's DATA_DIR board over a desk that is trading. Run it as the live desk does: ` +
-    `set -a; . ops/live.env; set +a; npm run dash:deploy (or SNAPSHOT_BOOK=none to blank the book on purpose).`
-  );
+  const what = set
+    ? `SNAPSHOT_BOOK=${set} would publish ${set === "none" ? "an empty book" : "the paper book"}`
+    : `SNAPSHOT_BOOK is not set: from this shell the snapshot would publish an empty book and this shell's DATA_DIR board`;
+  return `snapshot: refused. ${realDir} has a real decision ${ago} min old and ${what} over a desk that is trading. Run it as the live desk does: set -a; . ops/live.env; set +a; npm run dash:deploy.`;
 }
 
 /** The newest decision's time in a real book's journal, or null when it has none readable. */

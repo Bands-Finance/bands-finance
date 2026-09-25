@@ -45,6 +45,10 @@ window over `DATA_DIR`, and a restart on `data-mainnet` would print that run a s
    rows: on 25 Sep a 3.703 SOL sweep read as "Mr Bands is up 3.7 SOL today" until it was noted. A swap inside the
    wallet (SOL to USDC for a USDC-quoted seat) is not a flow. Known gap: the drawdown guard's day high still reads a
    sweep as equity, so a withdrawal would read as a loss to it; halt around one.
+   With one seat and both quotes in the wallet, the desk seats new bands in the quote that holds the book: a quote whose
+   seat is under half the other's AND under 0.5 SOL is skipped for new seats (src/desk/funds.ts;
+   `POLICY_QUOTE_MIN_SHARE_PCT=50`, `POLICY_QUOTE_DROP_UNDER_SOL=0.5`, a blank line keeps the default, 0 turns the share
+   test off). On 25 Sep, 1.04 SOL beside 497 USDC laid a 0.19 SOL BP/SOL band that lost its rent while the USDC sat idle.
 2. `npm run live:preflight`: every FAIL except the kill switch must be clear before the rehearsal (the SOL balance
    line turns PASS once funded). The kill switch row FAILs by design: it names `KILL_SWITCH=true` until step 4.
 3. `npm run live:rehearse`: ONE cycle with the real wallet and `DRY_RUN=true`. It screens, picks, builds

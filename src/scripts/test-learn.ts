@@ -526,7 +526,9 @@ async function runLearners(): Promise<void> {
     // points the pass at another checkout's data dirs ("<mainnet>,<paper>").
     const named = (process.env.LEARN_SMOKE_DIRS ?? "").split(",").map((d) => d.trim()).filter(Boolean);
     const repo = process.cwd();
-    const mainnet = named[0] ?? path.join(repo, "data-mainnet");
+    // the 17-19 Sep run was archived to data-mainnet-2026-09-17 when the second live run began in data-mainnet (25 Sep 2026)
+    const archived = path.join(repo, "data-mainnet-2026-09-17");
+    const mainnet = named[0] ?? (fs.existsSync(path.join(archived, LESSONS_FILE)) ? archived : path.join(repo, "data-mainnet"));
     const paper = named[1] ?? path.join(repo, "data-live");
     if (!fs.existsSync(path.join(mainnet, LESSONS_FILE))) {
       console.log("      (no data-mainnet on this machine: skipped)");
