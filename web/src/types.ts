@@ -195,6 +195,13 @@ export interface EquityHistoryPoint {
   pools: number;
   /** fees claimed to the wallet since the run began, SOL */
   feesClaimedSol: number;
+  /**
+   * money moved into the wallet since the run began by transfers that are not the desk's own (a treasury
+   * sweep in; a withdrawal as a negative), the SOL legs and the USDC legs; absent on points from before
+   * 25 Sep 2026, read as 0
+   */
+  flowSol?: number;
+  flowUsdc?: number;
   solPriceUsd: number | null;
 }
 

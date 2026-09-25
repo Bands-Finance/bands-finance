@@ -64,7 +64,7 @@ import { evaluate, EngineGuardContext } from "./risk/guards";
 import { describeLimits } from "./risk/limits";
 import { killSwitchActive, loadState, saveState, RiskState, todayUtc } from "./risk/state";
 import { execute, executeSkim, ExecutionResult, toOpenPlan } from "./executor";
-import { appendEquity, appendJournal, JournalEngine, JournalEntry, readRecent, toJournalPool } from "./journal";
+import { appendEquity, appendJournal, JournalEngine, JournalEntry, readFlows, readRecent, sumFlows, toJournalPool } from "./journal";
 import { loadScreen, runScreen, tradableVenue } from "./screener";
 import { loadWatchlist, watchlistDenial, watchlistRefusal } from "./screener/watchlist";
 import { launchEnv, launchSeats, launchVerdict, type LaunchCandidate, type LaunchEnv } from "./screener/launch";
@@ -2263,6 +2263,8 @@ function markBook(
     // fees realised to the wallet: claims plus the fee leg of every close, from the ledger in both
     // modes (the paper book's feesClaimedSol counts claims only; the backfill and this must agree)
     const feesClaimedSol = rowsOf(rows, mode).reduce((s, r) => s + ((r.mech === "collect" || r.mech === "close") && typeof r.feeSol === "number" ? r.feeSol : 0), 0);
+    // money moved in or out by hand (flows.jsonl: a treasury sweep in, a withdrawal out), so the site's "net" is the desk's own result
+    const flows = sumFlows(readFlows(), now);
     try {
       appendEquity({
         t: now,
@@ -2279,6 +2281,8 @@ function markBook(
         bands: openBands.length,
         pools: decided.length,
         feesClaimedSol,
+        flowSol: flows.sol,
+        flowUsdc: flows.usdc,
         solPriceUsd: solPriceOf(app),
       });
     } catch (err) {

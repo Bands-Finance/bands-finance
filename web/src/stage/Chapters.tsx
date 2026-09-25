@@ -166,7 +166,10 @@ export function MadeBlock({ record, solPriceUsd, now, chart }: { record: AgentRe
                   <td>{dayLabel(d.date)}</td>
                   <td className="chap__good">+{num(d.fees)}</td>
                   <td>
-                    {same ? d.open.toFixed(2) : num(d.open)} → {same ? d.close.toFixed(2) : num(d.close)} <span className={d.close - d.open >= 0 ? "chap__good" : "chap__bad"}>({signed(d.close - d.open)})</span>
+                    {same ? d.open.toFixed(2) : num(d.open)} → {same ? d.close.toFixed(2) : num(d.close)}{" "}
+                    <span className={d.close - d.open - d.flow >= 0 ? "chap__good" : "chap__bad"}>
+                      ({signed(d.close - d.open - d.flow)}{Math.abs(d.flow) >= 0.005 ? `, ${num(Math.abs(d.flow))} ${d.flow > 0 ? "added" : "taken out"}` : ""})
+                    </span>
                   </td>
                   <td>{d.moves}</td>
                   <td>{d.claims}</td>

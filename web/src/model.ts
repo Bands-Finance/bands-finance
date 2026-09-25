@@ -451,12 +451,19 @@ export interface DayRow {
   overrides: number;
   holds: number;
   decisions: number;
+  /** money moved into the wallet between the day's first and last mark by transfers that are not the desk's own (a sweep in; a withdrawal negative), SOL; not part of the day's result */
+  flow: number;
 }
 
 export interface AgentRecord {
   startTs: number;
   startEquity: number;
   equityNow: number;
+  /**
+   * money moved into the wallet between startTs and now by transfers that are not the desk's own (a treasury
+   * sweep in; a withdrawal negative), SOL, USDC legs at the mark's price; 0 without history. Taken out of net.
+   */
+  flows: number;
   /** the hedge desk's equity inside equityNow, SOL; null when the record has no history to read it from */
   hedge: number | null;
   /** true when start and now come from the desk's own equity history (the whole run), not the journal window */
@@ -496,6 +503,10 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
   const hist = (history ?? []).filter((p) => (p.agent ?? "mr-bands") === agentId && p.mode === latest.mode).sort((a, b) => a.t - b.t);
   const h0 = hist[0];
   const hN = hist[hist.length - 1];
+  // Money moved in or out by hand (a treasury sweep in, a withdrawal out) is not the desk's result: each mark
+  // carries the running total (flowSol, flowUsdc from the desk's flows.jsonl), USDC legs at that mark's SOL price.
+  // On 25 Sep 2026 a 3.703 SOL sweep of the token's fees read as "Mr Bands is up 3.7 SOL today" (+244.6%).
+  const flowOf = (p: EquityHistoryPoint): number => (p.flowSol ?? 0) + (p.solPriceUsd && p.solPriceUsd > 0 ? (p.flowUsdc ?? 0) / p.solPriceUsd : 0);
 
   // Book split, from the newest cycle across pools: what he holds this moment, nothing stale
   const tokens = new Map<string, { symbol: string; amount: number; inSol: number }>();
@@ -534,6 +545,7 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
   const equityNow = fromHistory ? hN.equitySol : cycleEquity(newest);
   const startEquity = fromHistory ? h0.equitySol : complete.length ? cycleEquity(complete[0]) : equityOf(first);
   const startTs = fromHistory ? h0.t : complete.length ? complete[0].t : new Date(first.ts).getTime();
+  const flows = fromHistory ? flowOf(hN) - flowOf(h0) : 0;
 
   // Fee points: each executed claim/close/move realises the fees waiting on its target bands
   const feePoints: FeePoint[] = [];
@@ -550,7 +562,7 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
     if (v === "blocked") counts.vetoed += 1;
     if (v === "override") counts.overrides += 1;
     const date = e.ts.slice(0, 10);
-    const row = days.get(date) ?? { date, fees: 0, open: NaN, close: NaN, moves: 0, claims: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 };
+    const row = days.get(date) ?? { date, fees: 0, open: NaN, close: NaN, moves: 0, claims: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0, flow: 0 };
     row.decisions += 1;
     if (v === "hold") row.holds += 1;
     if (v === "blocked") row.vetoed += 1;
@@ -588,9 +600,10 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
     }
     let prevClaimed = h0.feesClaimedSol;
     for (const [date, pts] of [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      const row = days.get(date) ?? { date, fees: 0, open: NaN, close: NaN, moves: 0, claims: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 };
+      const row = days.get(date) ?? { date, fees: 0, open: NaN, close: NaN, moves: 0, claims: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0, flow: 0 };
       row.open = pts[0].equitySol;
       row.close = pts[pts.length - 1].equitySol;
+      row.flow = flowOf(pts[pts.length - 1]) - flowOf(pts[0]);
       row.fees = Math.max(0, pts[pts.length - 1].feesClaimedSol - prevClaimed);
       prevClaimed = pts[pts.length - 1].feesClaimedSol;
       days.set(date, row);
@@ -607,8 +620,10 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
     equityNow,
     hedge: fromHistory ? hN.hedgeSol : null,
     sinceStart: fromHistory,
-    net: equityNow - startEquity,
-    netPct: startEquity > 0 ? ((equityNow - startEquity) / startEquity) * 100 : 0,
+    flows,
+    net: equityNow - startEquity - flows,
+    // on the money he had to work with: what he started with plus what came in (a withdrawal does not shrink the base)
+    netPct: startEquity + Math.max(0, flows) > 0 ? ((equityNow - startEquity - flows) / (startEquity + Math.max(0, flows))) * 100 : 0,
     wallet,
     quote,
     atWork,

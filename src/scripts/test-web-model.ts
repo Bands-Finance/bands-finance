@@ -299,6 +299,53 @@ async function main() {
     assert.equal(stale.sinceStart, false);
   });
 
+  await test("recordOf with history: money moved in or out by hand (flowSol, flowUsdc) is not the desk's result: net, the percent and the day rows leave it out", () => {
+    const pt = (o: Partial<EquityHistoryPoint>): EquityHistoryPoint => ({
+      t: T0,
+      cycle: 1,
+      agent: "mr-bands",
+      mode: "paper",
+      equitySol: 100,
+      walletSol: 5,
+      quoteSol: 10,
+      quoteUsdc: 1000,
+      bandsSol: 85,
+      tokensSol: 0,
+      hedgeSol: 0,
+      bands: 2,
+      pools: 2,
+      feesClaimedSol: 0,
+      solPriceUsd: 100,
+      ...o,
+    });
+    // 25 Sep 2026: funded with 1.4951 before the first mark, a 3.703 SOL sweep of the token's fees landed mid-run,
+    // the book marks 5.1523: the site said "up 3.7 SOL today (+244.6%)" for a desk that was 0.046 down
+    const history = [
+      pt({ t: T0 + 1 * 60_000, cycle: 1, equitySol: 1.4951, flowSol: 1.4951 }),
+      pt({ t: T0 + 2 * 60_000, cycle: 2, equitySol: 1.492, flowSol: 1.4951 }),
+      pt({ t: T0 + 3 * 60_000, cycle: 3, equitySol: 5.195, flowSol: 5.1981 }),
+      pt({ t: T0 + 31 * 60_000, cycle: 4, equitySol: 5.1523, flowSol: 5.1981 }),
+    ];
+    const r = recordOf(fixture(), history)!;
+    assert.ok(Math.abs(r.flows - 3.703) < 1e-9, "the sweep after the first mark, not the funding before it");
+    assert.ok(Math.abs(r.net - (5.1523 - 1.4951 - 3.703)) < 1e-9, "net is the desk's own result");
+    assert.ok(Math.abs(r.netPct - ((5.1523 - 1.4951 - 3.703) / 5.1981) * 100) < 1e-9, "the percent is on what he had to work with");
+    const last = r.days[r.days.length - 1];
+    assert.ok(Math.abs(last.flow - 3.703) < 1e-9, "the day row carries the flow");
+    assert.ok(Math.abs(last.close - last.open - last.flow - (5.1523 - 1.4951 - 3.703)) < 1e-9);
+    // points from before the field read as 0; a USDC leg is valued at the mark's SOL price
+    const usdc = recordOf(fixture(), [pt({ t: T0 + 60_000, cycle: 1, equitySol: 10 }), pt({ t: T0 + 31 * 60_000, cycle: 2, equitySol: 12, flowUsdc: 100, solPriceUsd: 100 })])!;
+    assert.ok(Math.abs(usdc.flows - 1) < 1e-9);
+    assert.ok(Math.abs(usdc.net - 1) < 1e-9);
+    // a withdrawal: net stays the desk's result and the percent base does not shrink
+    const out = recordOf(fixture(), [pt({ t: T0 + 60_000, cycle: 1, equitySol: 10, flowSol: 0 }), pt({ t: T0 + 31 * 60_000, cycle: 2, equitySol: 6, flowSol: -4 })])!;
+    assert.ok(Math.abs(out.flows + 4) < 1e-9);
+    assert.ok(Math.abs(out.net) < 1e-9);
+    assert.equal(out.netPct, 0);
+    // without history there is nothing to read flows from
+    assert.equal(recordOf(fixture())!.flows, 0);
+  });
+
   console.log("actions");
   await test("actionsOf: executed moves only, newest first, with the numbers from the decision and the band; holds and vetoes are not actions", () => {
     const chrono = [...fixture()].reverse();

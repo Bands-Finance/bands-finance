@@ -28,4 +28,12 @@ const out = execFileSync("node", [path.join(here, "clawpump-call.mjs"), "wallet_
 const m = /"txHash":\s*"([^"]+)"/.exec(out);
 note({ balance, moved: amount, tx: m?.[1] ?? null, ok: !!m });
 console.log(m ? `sent ${amount} SOL, tx ${m[1]}` : `no tx hash in the reply:\n${out.slice(0, 500)}`);
+// A landed sweep is money moved into the desk's wallet by hand, not the desk's result: one line in the live
+// book's flows.jsonl (src/journal FlowRow) so the site's "net" leaves it out. A transfer made any other way
+// (ops/clawpump-call.mjs by hand) gets its line by hand: {"ts":<ms>,"sig":"<tx>","sol":<amount>,"note":"..."}.
+if (m) {
+  const flows = path.join(here, "..", process.env.DATA_DIR ?? "data-mainnet", "flows.jsonl");
+  fs.appendFileSync(flows, JSON.stringify({ ts: Date.now(), sig: m[1], sol: amount, note: "treasury sweep to the desk wallet (ops/treasury-sweep.mjs)" }) + "\n");
+  console.log(`noted in ${flows}`);
+}
 process.exit(m ? 0 : 1);

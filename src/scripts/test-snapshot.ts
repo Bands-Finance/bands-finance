@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { limitsFrom, parseEnvFile, REAL_BOOK_MAX_AGE_MS, snapshotBook, writeSnapshot } from "../publish/snapshot";
 import { riskLimits } from "../config";
+import { sumFlows } from "../journal";
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -174,6 +175,25 @@ async function main(): Promise<void> {
     assert.deepEqual(read(w.out, "limits.json"), riskLimits);
     assert.equal(read(w.out, "learned.json").lessons.total, 0);
     fs.rmSync(w.root, { recursive: true, force: true });
+  });
+
+  await test("sumFlows: the SOL and USDC moved by hand on or before a mark, signed; a malformed or later row is not counted", () => {
+    const rows = [
+      { ts: 1000, sig: "a", sol: 1.115 },
+      { ts: 2000, sol: 0.3801, note: "second sweep" },
+      { ts: 3000, sol: 3.703 },
+      { ts: 3500, usdc: 100 },
+      { ts: 4000, sol: -2 },
+      { ts: "soon" as unknown as number, sol: 99 },
+      { ts: 2500, sol: Number.NaN },
+      null as unknown as { ts: number },
+    ];
+    assert.deepEqual(sumFlows(rows, 999), { sol: 0, usdc: 0 });
+    assert.ok(Math.abs(sumFlows(rows, 2000).sol - 1.4951) < 1e-9, "cumulative to the mark");
+    assert.ok(Math.abs(sumFlows(rows, 3000).sol - 5.1981) < 1e-9);
+    assert.deepEqual(sumFlows(rows, 3500).usdc, 100, "a USDC leg on its own");
+    assert.ok(Math.abs(sumFlows(rows, 5000).sol - 3.1981) < 1e-9, "a withdrawal counts against");
+    assert.deepEqual(sumFlows([], 5000), { sol: 0, usdc: 0 });
   });
 
   console.log(`\n${passed} passed${process.exitCode ? ", some FAILED" : ""}`);

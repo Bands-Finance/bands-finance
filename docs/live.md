@@ -38,6 +38,13 @@ window over `DATA_DIR`, and a restart on `data-mainnet` would print that run a s
 
 1. The wallet is funded: 20 SOL sent by Zach, or (25 Sep) 5 SOL of the token's fee share moved from the treasury
    agent with Zach's approval of each transfer; `ops/live.env` is sized to the book (5 SOL: 3.5 exposure, 0.8 gas).
+   Every transfer into or out of the wallet that is not the desk's own transaction gets one line in
+   `data-mainnet/flows.jsonl` (`{"ts":<ms>,"sig":"<tx>","sol":3.703,"note":"..."}`, signed, into the wallet positive):
+   `ops/treasury-sweep.mjs` writes it on a landed sweep, a hand transfer gets it by hand. The desk stamps the running
+   total on every equity point (`flowSol`, `flowUsdc`) and the sites take it out of "net", "started with" and the day
+   rows: on 25 Sep a 3.703 SOL sweep read as "Mr Bands is up 3.7 SOL today" until it was noted. A swap inside the
+   wallet (SOL to USDC for a USDC-quoted seat) is not a flow. Known gap: the drawdown guard's day high still reads a
+   sweep as equity, so a withdrawal would read as a loss to it; halt around one.
 2. `npm run live:preflight`: every FAIL except the kill switch must be clear before the rehearsal (the SOL balance
    line turns PASS once funded). The kill switch row FAILs by design: it names `KILL_SWITCH=true` until step 4.
 3. `npm run live:rehearse`: ONE cycle with the real wallet and `DRY_RUN=true`. It screens, picks, builds

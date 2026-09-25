@@ -127,6 +127,8 @@ for (const c of cycles) {
     bands,
     pools: c.length,
     feesClaimedSol,
+    flowSol: 0,
+    flowUsdc: 0,
     solPriceUsd: null,
   });
 }
@@ -135,7 +137,7 @@ if (book && points.some((p) => p.mode === "paper")) {
   const firstQuoted = entries.find((e) => (e.wallet as { quoteSymbol?: string }).quoteSymbol === "USDC" && typeof (e.pool as { quotePriceInSol?: number }).quotePriceInSol === "number");
   const usdcSol = firstQuoted ? (firstQuoted.pool as { quotePriceInSol?: number }).quotePriceInSol! : 0;
   const t0 = new Date(book.startedAt).getTime();
-  const p0: EquityPoint = { t: t0, cycle: 0, agent: points[0].agent, mode: "paper", equitySol: book.startSol + book.startUsdc * usdcSol, walletSol: book.startSol, quoteSol: book.startUsdc * usdcSol, quoteUsdc: book.startUsdc, bandsSol: 0, tokensSol: 0, hedgeSol: 0, bands: 0, pools: 0, feesClaimedSol: 0, solPriceUsd: usdcSol > 0 ? 1 / usdcSol : null };
+  const p0: EquityPoint = { t: t0, cycle: 0, agent: points[0].agent, mode: "paper", equitySol: book.startSol + book.startUsdc * usdcSol, walletSol: book.startSol, quoteSol: book.startUsdc * usdcSol, quoteUsdc: book.startUsdc, bandsSol: 0, tokensSol: 0, hedgeSol: 0, bands: 0, pools: 0, feesClaimedSol: 0, flowSol: 0, flowUsdc: 0, solPriceUsd: usdcSol > 0 ? 1 / usdcSol : null };
   const i = points.findIndex((p) => p.t >= t0);
   points.splice(i < 0 ? points.length : i, 0, p0);
 }

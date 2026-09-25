@@ -94,7 +94,8 @@ export function liveRunOf(file: LiveRunFile): LiveRun | null {
   const lastTs = Date.parse(file.lastTs);
   const settled = file.settled && typeof file.settled.equitySol === "number" && typeof file.settled.feesSol === "number" ? file.settled : null;
   const endEquity = settled ? settled.equitySol : record.equityNow;
-  const change = endEquity - record.startEquity;
+  // the run's own result: money moved in or out by hand (record.flows) is not the desk's doing
+  const change = endEquity - record.startEquity - record.flows;
   const pools: string[] = [];
   for (const e of entries) if (!pools.includes(e.pool.label)) pools.push(e.pool.label);
   return {
@@ -106,7 +107,7 @@ export function liveRunOf(file: LiveRunFile): LiveRun | null {
     startEquity: record.startEquity,
     endEquity,
     change,
-    changePct: settled ? (record.startEquity > 0 ? (change / record.startEquity) * 100 : 0) : record.netPct,
+    changePct: settled ? (record.startEquity + Math.max(0, record.flows) > 0 ? (change / (record.startEquity + Math.max(0, record.flows))) * 100 : 0) : record.netPct,
     peakEquity: typeof file.peakEquitySol === "number" ? file.peakEquitySol : Math.max(record.startEquity, record.equityNow),
     lowEquity: typeof file.lowEquitySol === "number" ? file.lowEquitySol : Math.min(record.startEquity, record.equityNow),
     feesClaimed: settled ? settled.feesSol : record.feesRealized,

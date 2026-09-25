@@ -138,7 +138,7 @@ export function Record({ record, solPriceUsd, status, agentName, compact = false
           {solPriceUsd !== null && <span className="pnl__value-usd">{usdShadow(record.net, solPriceUsd).trim()}</span>}
         </span>
         <span className="pnl__sub">
-          Started with {solFmt(record.startEquity)} on {startDate(record.startTs)}. The book is {solFmt(record.equityNow)}
+          Started with {solFmt(record.startEquity)} on {startDate(record.startTs)}{Math.abs(record.flows) >= 0.00005 ? `, ${solFmt(Math.abs(record.flows))} ${record.flows > 0 ? "added" : "taken out"} since` : ""}. The book is {solFmt(record.equityNow)}
           {usdShadow(record.equityNow, solPriceUsd)}. {solFmt(record.wallet)}{record.quote ? ` and ${fmtAmount(record.quote.amount)} ${record.quote.symbol} (${solFmt(record.quote.inSol)})` : ""} in the wallet, {solFmt(record.atWork)} at work in{" "}
           <span className="term" title={GLOSS.band}>bands</span>
           {record.tokens.length ? `, ${tokensHeld} from closed bands` : ""}
@@ -489,8 +489,10 @@ function ConsistencyBoard({ days, feesRealized, solPriceUsd }: { days: DayRow[];
   const dayLabel = (d: string) => new Date(d + "T12:00:00Z").toLocaleDateString([], { month: "short", day: "numeric" });
   const shown = days.slice(-14);
   const best = days.reduce((a, d) => (d.fees > a.fees ? d : a), days[0]);
-  const worst = days.reduce((a, d) => (d.close - d.open < a.close - a.open ? d : a), days[0]);
-  const worstMove = worst.close - worst.open;
+  // a day's move is its own result: money moved in or out by hand (d.flow) is not the desk's doing
+  const moveOf = (d: DayRow) => d.close - d.open - d.flow;
+  const worst = days.reduce((a, d) => (moveOf(d) < moveOf(a) ? d : a), days[0]);
+  const worstMove = moveOf(worst);
   return (
     <div className="pnl__board">
       <div className="pnl__chart-head">
@@ -516,7 +518,7 @@ function ConsistencyBoard({ days, feesRealized, solPriceUsd }: { days: DayRow[];
           </thead>
           <tbody>
             {shown.map((d) => {
-              const delta = d.close - d.open;
+              const delta = moveOf(d);
               return (
                 <tr key={d.date}>
                   <td>{dayLabel(d.date)}</td>

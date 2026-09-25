@@ -93,7 +93,8 @@ export function narrativeOf(o: { record: AgentRecord | null; status: Status; age
 
 
   const days: DayRow[] = record.days.filter((d) => Number.isFinite(d.open) && Number.isFinite(d.close));
-  const change = (d: DayRow) => d.close - d.open;
+  // the day's own result: money moved in or out by hand (d.flow) is not the desk's doing
+  const change = (d: DayRow) => d.close - d.open - d.flow;
   const worst = days.length ? days.reduce((w, d) => (change(d) < change(w) ? d : w)) : null;
   const today = days.find((d) => daysBetween(d.date, now) <= 0) ?? null;
   if (worst && change(worst) <= -1) {

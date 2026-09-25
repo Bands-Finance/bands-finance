@@ -144,7 +144,7 @@ export function statementRows({ record, summary, solPriceUsd, status, now, stamp
     { label: "The book", value: record ? <>{num(record.equityNow)} SOL{usd(record.equityNow, solPriceUsd) ? <span className="dash-ledger__aside"> ≈ {usd(record.equityNow, solPriceUsd)}</span> : null}</> : "·" },
     { label: "At work", value: record ? `${num(record.atWork)} SOL` : "·" },
     { label: "Fees earned", value: fees !== null ? `${num(fees)} SOL` : "·" },
-    { label: "Started with", value: record ? `${num(record.startEquity)} SOL, ${dateWord(record.startTs)}` : "·" },
+    { label: "Started with", value: record ? `${num(record.startEquity)} SOL, ${dateWord(record.startTs)}${Math.abs(record.flows) >= 0.005 ? `, ${num(Math.abs(record.flows))} ${record.flows > 0 ? "added" : "taken out"} since` : ""}` : "·" },
     { label: "Bands", value: summary ? `${summary.bandsOpen} open, ${summary.bandsInRange} in range` : "·" },
     { label: "Decisions", value: record ? `${record.counts.decisions.toLocaleString()}, ${record.counts.holds.toLocaleString()} holds` : "·" },
     { label: "Last decision", value: status.lastTs ? ago(status.lastTs, now) : "none yet" },

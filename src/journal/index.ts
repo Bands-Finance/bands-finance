@@ -226,7 +226,62 @@ export interface EquityPoint {
   pools: number;
   /** fees claimed to the wallet since the run began, SOL */
   feesClaimedSol: number;
+  /**
+   * Money moved into the wallet since the run began by transfers that are not the desk's own transactions
+   * (a treasury sweep in; a withdrawal as a negative), the SOL legs and the USDC legs, summed from
+   * flows.jsonl at each mark. The site takes them out of "net": on 25 Sep 2026 a 3.703 SOL sweep of the
+   * token's fees read as "Mr Bands is up 3.7 SOL today". Missing on points written before that day: 0.
+   */
+  flowSol: number;
+  flowUsdc: number;
   solPriceUsd: number | null;
+}
+
+/**
+ * One transfer into or out of the desk's wallet that is not the desk's own doing: a treasury sweep in, a
+ * withdrawal out. One JSON line each in flows.jsonl in the data dir, written by ops/treasury-sweep.mjs on a
+ * landed sweep or by hand for any other transfer Zach orders: {"ts":<ms>,"sig":"<tx>","sol":3.703,"note":"..."}.
+ * sol and usdc are signed, into the wallet positive. The desk never writes it on its own.
+ */
+export interface FlowRow {
+  ts: number;
+  sig?: string;
+  sol?: number;
+  usdc?: number;
+  note?: string;
+}
+
+const FLOWS_JSONL = () => path.join(dataDir(), "flows.jsonl");
+
+/** Every flow row on file, in file order. Missing file = []. A malformed line is skipped, not fatal to a mark. */
+export function readFlows(): FlowRow[] {
+  try {
+    return fs
+      .readFileSync(FLOWS_JSONL(), "utf8")
+      .split("\n")
+      .filter((l) => l.trim())
+      .flatMap((l) => {
+        try {
+          return [JSON.parse(l) as FlowRow];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+/** PURE. The SOL and USDC moved by the rows stamped on or before t. */
+export function sumFlows(rows: readonly FlowRow[], t: number): { sol: number; usdc: number } {
+  let sol = 0;
+  let usdc = 0;
+  for (const r of rows) {
+    if (!r || typeof r.ts !== "number" || !(r.ts <= t)) continue;
+    if (typeof r.sol === "number" && Number.isFinite(r.sol)) sol += r.sol;
+    if (typeof r.usdc === "number" && Number.isFinite(r.usdc)) usdc += r.usdc;
+  }
+  return { sol, usdc };
 }
 
 export function appendEquity(point: EquityPoint): void {
