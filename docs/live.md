@@ -74,6 +74,9 @@ window over `DATA_DIR`, and a restart on `data-mainnet` would print that run a s
 - `touch data-mainnet/STOP` halts the live desk alone; `touch data-live/STOP` halts the paper desk alone. Every new
   band is blocked at once; exits and claims still run. `rm` the file to lift it. Only the file's existence counts:
   nothing written in it is read, so it holds until someone removes it.
+  The live preflight FAILs on it, so a desk RESTARTED with the file present does not start at all and its bands go
+  unwatched (25 Sep 2026: 16:51-17:11 UTC with a 3.5 SOL band open). To close bands on a halted desk: remove the file,
+  restart, and touch it again once the log prints READY; the running desk reads it every cycle.
 - `touch STOP` in the repo root halts every desk run from it, paper and live alike. Both desks run from the repo root,
   so this is the big red button, not the way to stop one of them.
 - `KILL_SWITCH=true` back in `ops/live.env` halts the live desk from its next start (bootout and bootstrap to apply it now).
