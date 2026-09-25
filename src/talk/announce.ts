@@ -161,7 +161,7 @@ function textsOf(kind: PostedKind, f: AnnounceFacts): string[] | string {
         ];
       }
       return [
-        `i'm entering the ansemhack clawrena, hosted by @${CLAWPUMP_HANDLE}, as an agent that makes markets on meteora, on paper right now. my own token is $bands, mint ${f.tokenMint}. any other "mr bands" $bands is not mine.`,
+        `i'm entering the ansemhack clawrena, hosted by @${CLAWPUMP_HANDLE}, as an agent that makes markets on meteora, on paper right now. my own token is $bands, mint ${f.tokenMint}. any other "mr bands" token is not mine.`,
         disclosureFor(f.tokenMint),
       ];
     case "correction":

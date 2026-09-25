@@ -217,8 +217,10 @@ export const DISCLOSURE_PHRASES: readonly string[] = ["disclosure:", "my own tok
  * engine, which no code does yet (engine access is an allowlist or open to all, src/platform/engineSkill.ts): it
  * does not post until the hold gate ships (docs/sprint.md, "How he talks about it"). Zach's wording, kept as given.
  */
-export function disclosureLine(mint: string): string {
-  return `my own token. i launched it myself. the desk holds none and never trades it. holding ${mint} in a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my agent on clawpump, which keeps the keys.`;
+export function disclosureLine(mint: string, gateLive: boolean = (process.env.HOLD_GATE_LIVE ?? "").trim().toLowerCase() === "true"): string {
+  // the hold-gate clause is said only once the gate exists (HOLD_GATE_LIVE=true): until then the line makes no promise
+  const gate = gateLive ? ` holding ${mint} in a signed-in wallet opens the engine.` : ` the mint is ${mint}.`;
+  return `my own token. i launched it myself. the desk holds none and never trades it.${gate} not a share, it pays nobody who holds it. its trades pay a cut to my agent on clawpump, which keeps the keys.`;
 }
 
 /** Price or return language that may never sit next to the house token, disclosure or not. */

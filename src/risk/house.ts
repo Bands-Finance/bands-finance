@@ -2,8 +2,10 @@
  * H1: the desk keeps its hands off its own token (docs/sprint.md, "What the desk does with it: nothing").
  * PURE, apart from reading the environment the way the other guards do.
  *
- *   - The house mint is $BANDS: TOKEN_MINT once it is launched, plus anything on PAIR_HOUSE_MINTS (which stays
- *     unset through 8 Oct by decision, but if someone sets it, those mints are the house too).
+ *   - The house mint is $BANDS: TOKEN_MINT once the talk layer may name it, HOUSE_MINT_GUARD for the guards alone
+ *     (a mint the desk must refuse while nothing about it is said: the talk layer never reads it, and the sites
+ *     cut it out of what they publish), plus anything on PAIR_HOUSE_MINTS (which stays unset through 8 Oct by
+ *     decision, but if someone sets it, those mints are the house too).
  *   - The desk never swaps a house mint: no Jupiter leg (acquire, shortfall, liquidate, surplus, residue, sweep)
  *     whose input or output is one. The check sits in JupiterClient.quote, the one door every leg goes through.
  *   - The desk never opens a band in a pool that holds a house mint on either side (src/risk/guards.ts).
@@ -23,9 +25,14 @@ export const COPYCAT_MINTS: readonly string[] = ["JAARLUawF9DTauc9pHUyYpga8mDU31
 
 const mintList = (raw: string | undefined): string[] => (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 
-/** The house mints: TOKEN_MINT and PAIR_HOUSE_MINTS, de-duplicated. Empty until the token exists. */
+/** The house mints: TOKEN_MINT, HOUSE_MINT_GUARD and PAIR_HOUSE_MINTS, de-duplicated. Empty until one is set. */
 export function houseMintsOf(env: NodeJS.ProcessEnv = process.env): string[] {
-  return [...new Set([...mintList(env.TOKEN_MINT), ...mintList(env.PAIR_HOUSE_MINTS)])];
+  return [...new Set([...mintList(env.TOKEN_MINT), ...mintList(env.HOUSE_MINT_GUARD), ...mintList(env.PAIR_HOUSE_MINTS)])];
+}
+
+/** The house mints nothing public may print: HOUSE_MINT_GUARD alone (TOKEN_MINT is the one the talk layer names). */
+export function quietHouseMintsOf(env: NodeJS.ProcessEnv = process.env): string[] {
+  return mintList(env.HOUSE_MINT_GUARD);
 }
 
 /** Every mint the desk may never touch: the house mints and the copycat's. */
@@ -49,7 +56,8 @@ function whose(mint: string, m: UntouchableMints): "house" | "copycat" | null {
 export function houseSwapViolation(inputMint: string, outputMint: string, m: UntouchableMints = untouchableMints()): string | null {
   for (const [side, mint] of [["input", inputMint], ["output", outputMint]] as const) {
     const who = whose(mint, m);
-    if (who === "house") return `house token: the swap's ${side} is the house mint ${mint}; the desk never swaps its own token (H1)`;
+    // the house mint is never printed: a veto's text can reach the journal the sites publish
+    if (who === "house") return `house token: the swap's ${side} is the house mint; the desk never swaps its own token (H1)`;
     if (who === "copycat") return `copycat token: the swap's ${side} is ${mint}, the "Mr Bands" $BANDS that is not his; the desk never touches it (H1)`;
   }
   return null;
@@ -60,7 +68,7 @@ export function housePoolViolation(pool: { address: string; label?: string; mint
   for (const mint of pool.mints) {
     const who = whose(mint, m);
     const name = pool.label ? `${pool.label} (${pool.address})` : pool.address;
-    if (who === "house") return `house token: ${name} holds the house mint ${mint}; the desk never opens a band in its own token's pool (H1)`;
+    if (who === "house") return `house token: ${name} holds the house mint; the desk never opens a band in its own token's pool (H1)`;
     if (who === "copycat") return `copycat token: ${name} holds ${mint}, the "Mr Bands" $BANDS that is not his; the desk never seats it (H1)`;
   }
   return null;

@@ -139,8 +139,8 @@ async function main(): Promise<void> {
     ["what apy does this do", "price"],
     ["how much can i make lping with you", "howMuch"],
     [`is ${COPYCAT} yours?`, "copycat"],
-    ["is this your coin", "copycat"],
-    ["saw your token on pump, legit?", "copycat"],
+    ["is this your coin", "tokenPrelaunch"],
+    ["saw your token on pump, legit?", "tokenPrelaunch"],
     // a bare $bands names no mint: the copycat's address is not pasted into a thread that never named it
     ["$BANDS is live?", "tokenPrelaunch"],
     ["ca?", "tokenPrelaunch"],
@@ -161,10 +161,11 @@ async function main(): Promise<void> {
       assert.equal(d.kind === "reply" && d.template, name, text);
     }
   });
-  await test("after launch, token questions skip until zach approves a line; the copycat mint still gets its denial", () => {
+  await test("after launch, token questions get the disclosure line (the mint, his own, pays nobody); the copycat mint still gets its denial", () => {
     for (const text of ["ca?", "$bands", "is this your coin", "your token on pump"]) {
       const d = fixedAnswer(mention(text), ENV_LAUNCHED);
-      assert.deepEqual(d, { kind: "skip", why: "token line awaits zach", source: "template" }, text);
+      assert.ok(d && d.kind === "reply" && d.template === "tokenLive", text);
+      assert.ok(d.kind === "reply" && d.text.includes("my own token") && d.text.includes("pays nobody who holds it") && d.text.length <= 280, text);
     }
     const c = fixedAnswer(mention(`is ${COPYCAT} yours`), ENV_LAUNCHED);
     assert.equal(c && c.kind === "reply" && c.template, "copycat");
@@ -236,7 +237,7 @@ async function main(): Promise<void> {
     assert.ok(p.includes('"mention":"2099911112222333444"'));
     assert.ok(!p.includes(COPYCAT.slice(0, 5)) && !p.includes(COPYCAT.slice(-5)) && /not yours/.test(p), "another token as not his, and never its mint");
     assert.match(p, /paper/);
-    assert.match(p, /your official token is not live yet/);
+    assert.match(p, /you have not announced a token/);
     // no book figures: outside the mention id, the prompt holds no number
     const stripped = p.replace(/2099911112222333444/g, "").replace(/\\u003c/g, "<");
     assert.deepEqual(stripped.match(/\d+(\.\d+)?/g) ?? [], []);
@@ -436,7 +437,7 @@ async function main(): Promise<void> {
     }
     assert.equal(ask.calls.length, 0, "never asked");
     // after launch they wait for zach, the copycat's denial aside
-    for (const [q, name] of HIS) assert.equal(tpl(q, {}, ENV_LAUNCHED), name === "copycat" ? "copycat" : "skip: token line awaits zach", q);
+    for (const [q, name] of HIS) assert.equal(tpl(q, {}, ENV_LAUNCHED), name === "copycat" ? "copycat" : "tokenLive", q);
   });
   await test("the narrowing keeps the other token asks: launch, dev, mint, rug and a generic plural", () => {
     for (const q of ["are you launching anything?", "launch date?", "wen launch", "did u launch bands?", "r u the dev of bands", "the dev of bands, is that you?", "whats your mint", "mint address?", "mint?", "is bands a rug?", "are you going to rug us?", "did you deploy a contract for it?"]) assert.equal(tpl(q), "tokenPrelaunch", q);

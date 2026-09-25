@@ -34,7 +34,8 @@ import { lintText } from "../talk/lint";
 import { approveProposal, readPersonality, recordUse, vetoProposal } from "../talk/personality";
 import { driftCheck, reflect } from "../talk/reflect";
 import { strapOf, windowLabel, fmtAge } from "../talk/strap";
-import { getEngagement, postTweet, readPosts, verifyCredentials } from "../talk/x";
+import { getEngagement, postTweet, readPosts, verifyCredentials, xCredentials, xGateProblem } from "../talk/x";
+import { uploadMedia } from "../talk/media";
 import { FORCE_KINDS, runTick, type ForceKind } from "../talk/tick";
 import { runAnnounce } from "../talk/announce-cli";
 import { appendBuildRow, readBuildLedger } from "../talk/buildLedger";
@@ -123,6 +124,23 @@ async function main(): Promise<number> {
       const r = await postTweet(d.text, { type: d.type }, { env: process.env, now });
       out("");
       out(r.posted ? `posted: ${r.id}` : `not posted: ${r.reason}\n(the draft was appended to ${t.statePath}/x-drafts.jsonl)`);
+      return r.posted ? 0 : 2;
+    }
+    case "post-video": {
+      // talk post-video <file.mp4> <text...>: lint, the live gate, the upload, then one original post with the video
+      const [file, ...words] = args;
+      const text = words.join(" ");
+      if (!file || !text) { out("usage: talk post-video <file.mp4> <text>"); return 2; }
+      const lint = lintText(text, lintContextOf(t));
+      if (!lint.ok) { out(`fails the lint (${lint.length} of 280):`); for (const v of lint.violations) out(`  ${v.rule}: ${v.detail}`); return 2; }
+      const gate = xGateProblem(t);
+      if (gate) { out(`not live: ${gate}`); return 2; }
+      const creds = xCredentials(process.env);
+      if (!creds) { out("not live: the four X keys are not all set"); return 2; }
+      const up = await uploadMedia(file, creds, { log: (l: string) => out(`  ${l}`) });
+      if (!up.ok) { out(`upload failed: ${up.reason}`); return 2; }
+      const r = await postTweet(text, { type: "announce", mediaIds: [up.mediaId] }, { env: process.env, now });
+      out(r.posted ? `posted: ${r.id} (video ${up.mediaId} via ${up.endpoint})` : `not posted: ${r.reason}`);
       return r.posted ? 0 : 2;
     }
     case "proposals": {

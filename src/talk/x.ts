@@ -184,7 +184,7 @@ export function oauthHeader(i: { method: string; url: string; creds: OAuthCreden
 }
 
 /** The four credentials, or null. Read from the env object only; the values never leave this module except in the signature. */
-function xCredentials(env: NodeJS.ProcessEnv): OAuthCredentials | null {
+export function xCredentials(env: NodeJS.ProcessEnv): OAuthCredentials | null {
   const get = (k: (typeof X_CREDENTIAL_KEYS)[number]) => (env[k] ?? "").trim();
   const [consumerKey, consumerSecret, token, tokenSecret] = X_CREDENTIAL_KEYS.map(get);
   return consumerKey && consumerSecret && token && tokenSecret ? { consumerKey, consumerSecret, token, tokenSecret } : null;
@@ -303,6 +303,8 @@ export interface PostOptions {
   bits?: string[];
   /** the posting loop's stable event key, carried into the post or draft record */
   key?: string;
+  /** media already uploaded (src/talk/media.ts uploadMedia): attached to an original post, never to a reply */
+  mediaIds?: readonly string[];
   /**
    * Write an intent row (INTENTS_FILE) before the POST and resolve it on X's answer; needs `key`. The builder voice
    * sets it: its wording changes from ask to ask, so X's duplicate refusal cannot catch a second post of one moment.
@@ -378,7 +380,11 @@ export async function postTweet(text: string, opts: PostOptions, deps: XDeps = {
     const inReplyTo = opts.replyTo?.tweetId ?? threadOf;
     // only when there is someone to leave out: a plain reply keeps its plain body
     const exclude = [...new Set((opts.replyTo?.excludeUserIds ?? []).filter((id) => /^\d{1,20}$/.test(id)))];
-    const body = { text, ...(inReplyTo ? { reply: { in_reply_to_tweet_id: inReplyTo, ...(exclude.length ? { exclude_reply_user_ids: exclude } : {}) } } : {}) };
+    const body = {
+      text,
+      ...(inReplyTo ? { reply: { in_reply_to_tweet_id: inReplyTo, ...(exclude.length ? { exclude_reply_user_ids: exclude } : {}) } } : {}),
+      ...(!inReplyTo && opts.mediaIds?.length ? { media: { media_ids: [...opts.mediaIds] } } : {}),
+    };
     const intent = opts.intent && opts.key ? opts.key : null;
     const resolve = (resolved: "posted" | "refused", id?: string) => {
       if (!intent) return;

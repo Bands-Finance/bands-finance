@@ -22,7 +22,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { riskLimits as processLimits } from "../config";
 import type { RiskLimits } from "../risk/limits";
-import { redactCopycatDeep } from "../risk/house";
+import { COPYCAT_MINTS, quietHouseMintsOf, redactCopycatDeep } from "../risk/house";
 import { readEquity, readRecent, tailLines, type EquityPoint, type JournalEntry } from "../journal";
 import { readLearnedView } from "../status";
 import type { LearnedView } from "../learn/surface";
@@ -191,14 +191,16 @@ export function writeSnapshot(o: SnapshotOptions): SnapshotResult {
       book = "none";
     }
   }
-  put("journal.json", JSON.stringify({ entries: redactCopycatDeep(entries), generatedAt }));
+  put("journal.json", JSON.stringify({ entries: redactCopycatDeep(entries, [...COPYCAT_MINTS, ...quietHouseMintsOf()]), generatedAt }));
   put("equity.json", JSON.stringify({ points, generatedAt }));
   const limits = o.book === "paper" ? processLimits : limitsFrom(liveEnv, processLimits);
   put("limits.json", JSON.stringify(limits, null, 2));
 
   // Market data, not his trades.
-  if (o.screen) put("screen.json", JSON.stringify(o.screen));
-  if (o.hot) put("hot.json", JSON.stringify(o.hot));
+  // the board files carry mints: the copycat's and the quiet house mint are cut out of them like the journal
+  const quiet = [...COPYCAT_MINTS, ...quietHouseMintsOf()];
+  if (o.screen) put("screen.json", JSON.stringify(redactCopycatDeep(o.screen, quiet)));
+  if (o.hot) put("hot.json", JSON.stringify(redactCopycatDeep(o.hot, quiet)));
 
   // What he learned: the real seats, read as the live book, under the real desk's own learning switches.
   // The SAME builder as /api/status (src/status.ts readLearnedView), so the panel and the API agree on a dir.

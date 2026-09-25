@@ -9,12 +9,15 @@
  * model that proposes hype; the drift check; the X client's dormancy, draft log, rate limits, mention screen and
  * its OAuth 1.0a signature against X's documented test vector; and that nothing in src/talk can reach a trade path.
  */
+// the tests pin the post-gate wording of the disclosure line; the pre-gate variant is checked at the end
+process.env.HOLD_GATE_LIVE = "true";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { JournalEntry } from "../journal";
 import type { LedgerRow } from "../engine/ledger";
+import { disclosureLine } from "../talk/lint";
 
 // Everything that reads src/config.ts is imported after the environment is pinned.
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mr-bands-talk-"));
@@ -872,3 +875,12 @@ main().catch((err) => {
   fs.rmSync(tmp, { recursive: true, force: true });
   process.exit(1);
 });
+
+// the pre-gate disclosure: no promise about the engine until HOLD_GATE_LIVE=true
+{
+  const pre = disclosureLine("HWyMjL72dikK2bSU2JqS2FjyBG2GLo8mq3Q5EBzTVeN8", false);
+  if (pre.includes("opens the engine")) throw new Error("the pre-gate disclosure still promises the engine");
+  if (!pre.includes("the mint is HWyMjL72")) throw new Error("the pre-gate disclosure does not name the mint");
+  if (pre.length > 280) throw new Error(`the pre-gate disclosure is ${pre.length} characters`);
+  console.log("ok  the pre-gate disclosure names the mint and promises nothing about the engine");
+}

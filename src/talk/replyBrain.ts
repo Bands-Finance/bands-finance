@@ -24,6 +24,7 @@
  * brainProblem says why the brain cannot be asked (no token, a placeholder token) without ever echoing the
  * token. The loop stays dormant while it returns a reason. This file never reads the gateway's own .env.
  */
+import { disclosureLine } from "./lint";
 import { createHash } from "node:crypto";
 import { askSession, AskOptions, OpenHermitError, OpenHermitFailure, OpenHermitReply, openHermitSettings, OpenHermitSettings, SessionMessage, balancedEnd } from "../agent/openhermit";
 import { COPYCAT_MINTS } from "../risk/house";
@@ -94,9 +95,10 @@ export const REPLY_TEMPLATES = {
   price: "I don't tell anyone what to do with a token, and I don't call prices. I provide liquidity on a paper book, and the lessons are free.",
   howMuch: "No fixed number. Fees depend on volume and time in range, and impermanent loss eats into them. My book is paper.",
   copycat: `That one is not mine. I didn't launch it and I hold none of it.`,
-  // 24 Sep: tokens named for him went live on pump.fun from his ClawPump account on 22-23 Sep, none of them the
-  // official one (Zach): the line says the official token is not live, never that no token exists or that they are not his
-  tokenPrelaunch: "My official token isn't live yet, and none of the ones trading now is it. When it is, I'll name its mint here myself, and I won't tell anyone what to do with it.",
+  // The one fixed token answer until the announcement: it says only that nothing is announced, never whether a token
+  // exists or is live, and never which of the tokens trading under his name is what (25 Sep; the 24 Sep line said
+  // "isn't live yet", a claim the talk loop cannot keep true on its own).
+  tokenPrelaunch: "I haven't announced a token. If I ever do, I'll name its mint here myself, and I won't tell anyone what to do with it.",
   // "are you a bot?" is answered yes, "are you real?" no: the same fact, and neither answer reads as a denial. Each
   // only for the whole question: "are you a bot that trades with real money?" is not answered "yes".
   // No @ of his architect: the manager disclosure lives on the account's "Automated by" label (docs/sprint.md).
@@ -200,12 +202,16 @@ export function fixedAnswer(input: ReplyInput, env: NodeJS.ProcessEnv = process.
   const tokenLive = (env.TOKEN_MINT ?? "").trim() !== "";
 
   if (namesCopycat(raw)) return template("copycat");
-  if (!tokenLive && COPYCAT_ASK_RE.test(topic)) return template("copycat");
+  // a generic "is this yours?" names no mint: it gets the announcement line below, never a denial (25 Sep)
   const tokenNoun = TOKEN_NOUN_RE.test(topic) || HOUSE_CASHTAG_RE.test(topic);
   if (!tokenNoun && ARCHITECT_ASK_RE.test(norm)) return template("architect");
   if (COPYCAT_ASK_RE.test(topic) || HOUSE_CASHTAG_RE.test(topic) || OWN_TOKEN_RE.test(topic) || TOKEN_ASK_RE.test(topic)) {
-    // after launch the reply line is disclosureLine(mint), 280 characters that promise the hold gate: it waits for Zach
-    if (tokenLive) return skipT("token line awaits zach");
+    // after launch the fixed reply is the disclosure line itself (pre-gate wording until HOLD_GATE_LIVE=true): the mint,
+    // his own, pays nobody, the desk never trades it. TALK_TOKEN_LINE=off silences it.
+    if (tokenLive) {
+      if ((env.TALK_TOKEN_LINE ?? "").trim() === "off") return skipT("the token line is off (TALK_TOKEN_LINE=off)");
+      return { kind: "reply", text: disclosureLine((env.TOKEN_MINT ?? "").trim()), source: "template", template: "tokenLive" };
+    }
     // TALK_TOKEN_LINE=off: no token answer at all (24 Sep: three BANDS mints went live on pump.fun from his ClawPump
     // account on 22-23 Sep while this line still said "no token of mine is live"; off until the official mint is named)
     if ((env.TALK_TOKEN_LINE ?? "").trim() === "off") return skipT("the token line is off (TALK_TOKEN_LINE=off)");
@@ -269,7 +275,7 @@ export function factsText(f: ReplyFacts): string {
     "- you have no book figures in front of you here, so you state none.",
     "- a human architect builds what you need and holds the keys. you are labelled automated on x.",
     `- another "mr bands" token exists that is not yours: you did not launch it and hold none of it. never write its mint or any piece of it.`,
-    f.tokenMint ? "- your own token is live. token questions get a fixed line from the talk loop, never from you: skip them." : "- your official token is not live yet, and the tokens already trading under your name are not it. token questions get a fixed line from the talk loop, never from you: skip them.",
+    f.tokenMint ? "- your own token is live. token questions get a fixed line from the talk loop, never from you: skip them." : "- you have not announced a token, and you never say whether one is live. token questions get a fixed line from the talk loop, never from you: skip them.",
     ...(f.opinions?.length ? [`- your standing views (yours; give one plainly when it fits, in fresh words, never quoted):\n${f.opinions.map((v) => `  - ${v}`).join("\n")}`] : []),
   ].join("\n");
 }

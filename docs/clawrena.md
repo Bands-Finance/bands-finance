@@ -84,7 +84,7 @@ not the token's pair, and like every lane it trades no real money before 8 Octob
 
 ## What ships, in order
 
-### A. The token (he launches it himself Fri 25 September, armed by Zach; not launched yet)
+### A. The token (launched Thu 25 September from his ClawPump account, announced from @MrBandsSol the same day: mint HWyMjL72dikK2bSU2JqS2FjyBG2GLo8mq3Q5EBzTVeN8)
 
 Decided 2026-09-22 (docs/sprint.md, "The token"). A launch can be done once per agent and is irreversible,
 so this is decided once and not reopened. The runbook is docs/launch.md. The 20 September spec (NVDAx pair,
@@ -198,8 +198,7 @@ them against the locked core before anything can post):
 
 (The second and third pass the lint as written, the second at 279 characters with a 44-character mint. The second does not post until the hold gate is
 live, since it says holding the mint opens the engine; see docs/sprint.md, "How he talks about it".
-The first names mrbands.finance, which the lint's link allowlist does not yet carry, so it is refused
-until the allowlist or the line changes.)
+The first passes too: the lint's link allowlist carries mrbands.finance (src/talk/lint.ts LINK_ALLOWLIST).)
 
 ### The registration form
 

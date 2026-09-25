@@ -726,11 +726,13 @@ test("H1: the house mint is TOKEN_MINT plus PAIR_HOUSE_MINTS, de-duplicated; emp
   assert.deepEqual(houseMintsOf({}), []);
   assert.deepEqual(houseMintsOf({ TOKEN_MINT: ` ${HOUSE} ` }), [HOUSE]);
   assert.deepEqual(houseMintsOf({ TOKEN_MINT: HOUSE, PAIR_HOUSE_MINTS: `b, ${HOUSE}` }), [HOUSE, "b"]);
+  assert.deepEqual(houseMintsOf({ HOUSE_MINT_GUARD: HOUSE }), [HOUSE], "the guard-only switch counts as the house");
+  assert.ok(!houseSwapViolation("So11111111111111111111111111111111111111112", HOUSE, { house: [HOUSE], copycat: [] })!.includes(HOUSE), "a house veto never prints the mint");
   assert.deepEqual([...COPYCAT_MINTS], [COPYCAT]);
 });
 
 test("H1: any swap leg with the house mint in or out is refused, and the copycat's too; other legs pass", () => {
-  assert.match(houseSwapViolation("So11111111111111111111111111111111111111112", HOUSE, h1)!, /output is the house mint .*never swaps its own token/);
+  assert.match(houseSwapViolation("So11111111111111111111111111111111111111112", HOUSE, h1)!, /output is the house mint.*never swaps its own token/);
   assert.match(houseSwapViolation(HOUSE, "So11111111111111111111111111111111111111112", h1)!, /input is the house mint/);
   assert.match(houseSwapViolation(COPYCAT, "So11111111111111111111111111111111111111112", h1)!, /copycat token: .*not his/);
   assert.match(houseSwapViolation("So11111111111111111111111111111111111111112", COPYCAT, { house: [], copycat: COPYCAT_MINTS })!, /copycat/, "the copycat is refused before our token exists");
