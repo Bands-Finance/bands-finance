@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { limitsFrom, parseEnvFile, REAL_BOOK_MAX_AGE_MS, snapshotBook, writeSnapshot } from "../publish/snapshot";
+import { freshest, limitsFrom, parseEnvFile, plainShellRefusal, REAL_BOOK_MAX_AGE_MS, realBookNewestTs, snapshotBook, writeSnapshot } from "../publish/snapshot";
 import { riskLimits } from "../config";
 import { sumFlows } from "../journal";
 
@@ -132,6 +132,49 @@ async function main(): Promise<void> {
     fs.rmSync(w.root, { recursive: true, force: true });
   });
 
+  await test("real: a rehearsal's rows in the live directory are not the book; journal.json and equity.json carry the newest row's mode only", () => {
+    // 25 Sep 2026: `npm run live:rehearse` wrote its 13:08 dry-run read into data-mainnet and both sites counted it as live
+    const w = world();
+    const dry = { id: "r0", ts: new Date(T0).toISOString(), cycle: 1, mode: "dry-run" };
+    fs.writeFileSync(path.join(w.real, "decisions.jsonl"), jsonl([dry]) + fs.readFileSync(path.join(w.real, "decisions.jsonl"), "utf8"));
+    fs.writeFileSync(path.join(w.real, "equity.jsonl"), jsonl([{ t: T0, mode: "dry-run", equitySol: 19.7 }, { t: T0 + 60_000, mode: "live", equitySol: 19.71 }, { t: T0 + 120_000, mode: "live", equitySol: 19.72 }]));
+    const r = writeSnapshot({ out: w.out, book: "real", realDir: w.real, learnedDir: w.real, liveEnvFile: w.liveEnv, now: T0 + 3_600_000 });
+    assert.equal(r.entries, 3);
+    assert.deepEqual(read(w.out, "journal.json").entries.map((e: { id: string }) => e.id), ["r3", "r2", "r1"]);
+    assert.deepEqual(read(w.out, "equity.json").points.map((p: { mode: string }) => p.mode), ["live", "live"]);
+    assert.equal(realBookNewestTs(w.real), T0 + 180_000, "the newest decision, for the plain-shell guard");
+    assert.equal(realBookNewestTs(path.join(w.root, "nope")), null);
+    fs.rmSync(w.root, { recursive: true, force: true });
+  });
+
+  await test("a plain shell is refused while the real desk trades: SNAPSHOT_BOOK unset and a real decision inside 2 h; an explicit book, a stale book or none at all runs", () => {
+    // 25 Sep 2026, 13:52Z and 13:58Z: two hand-run dash:deploy from a shell that sourced nothing shipped journal.json empty and
+    // the 14 Sep board from data/ while a CATE/USDC band was open
+    const now = T0 + 3_600_000;
+    const refused = plainShellRefusal({}, T0, now);
+    assert.ok(refused && /refused/.test(refused) && /ops\/live\.env/.test(refused) && /SNAPSHOT_BOOK=none/.test(refused), refused ?? "no refusal");
+    assert.match(refused!, /60 min old/);
+    assert.equal(plainShellRefusal({ DATA_DIR: "data", DRY_RUN: "true" }, T0, now)?.slice(0, 18), "snapshot: refused.", "the repo .env is a plain shell");
+    assert.equal(plainShellRefusal({ SNAPSHOT_BOOK: "real" }, T0, now), null, "the live desk's env");
+    assert.equal(plainShellRefusal({ SNAPSHOT_BOOK: "none" }, T0, now), null, "the paper plist, or a blank on purpose");
+    assert.equal(plainShellRefusal({}, T0, T0 + REAL_BOOK_MAX_AGE_MS + 60_000), null, "a finished run is not a desk trading");
+    assert.equal(plainShellRefusal({}, null, now), null, "no real book at all");
+    assert.equal(plainShellRefusal({ SNAPSHOT_BOOK: "  " }, T0, now)?.slice(0, 18), "snapshot: refused.", "blank is unset");
+  });
+
+  await test("the board is the freshest copy by generatedAt: a shell's 11-day-old data/ never replaces the real desk's; an unstamped copy loses to a stamped one", () => {
+    type Board = { generatedAt?: string; rows: number };
+    const old: Board = { generatedAt: "2026-09-14T18:02:03.910Z", rows: 1 };
+    const fresh: Board = { generatedAt: "2026-09-25T13:43:18.754Z", rows: 2 };
+    const bare: Board = { rows: 3 };
+    assert.deepEqual(freshest<Board>([{ dir: "data", file: old }, { dir: "data-mainnet", file: fresh }]), { dir: "data-mainnet", file: fresh, at: Date.parse(fresh.generatedAt!) });
+    assert.equal(freshest<Board>([{ dir: "data-mainnet", file: fresh }, { dir: "data", file: old }])!.dir, "data-mainnet", "order does not matter");
+    assert.equal(freshest<Board>([{ dir: "data", file: bare }, { dir: "data-mainnet", file: old }])!.dir, "data-mainnet", "a stamp beats none");
+    assert.deepEqual(freshest<Board>([{ dir: "data", file: bare }]), { dir: "data", file: bare, at: null }, "unstamped alone still serves");
+    assert.equal(freshest<Board>([{ dir: "data", file: null }, { dir: "data-mainnet", file: null }]), null);
+    assert.equal(freshest<Board>([]), null);
+  });
+
   await test("real but finished: a book with no decision in the last 2 h ships as none (a settled run is not now)", () => {
     const w = world();
     // newest decision at T0+3m; 2 h after it is the edge, a minute past it is stale
@@ -156,6 +199,7 @@ async function main(): Promise<void> {
     const l = read(w.out, "learned.json");
     assert.equal(l.mode, "live");
     assert.equal(l.lessons.total, 3);
+    assert.equal(l.since, T0 - 2 * 3_600_000, "dated from the first seat this desk's casebook rests on, so a fresh DATA_DIR's count is not read as the run's");
     // pointed at a paper book by mistake it still reads only live seats: the paper rows are refused
     writeSnapshot({ out: w.out, book: "none", realDir: w.real, learnedDir: w.paper, liveEnvFile: w.liveEnv, now: T0 + 3_600_000 });
     const p = read(w.out, "learned.json");
@@ -174,6 +218,7 @@ async function main(): Promise<void> {
     assert.equal(r.staleReal, "empty");
     assert.deepEqual(read(w.out, "limits.json"), riskLimits);
     assert.equal(read(w.out, "learned.json").lessons.total, 0);
+    assert.equal(read(w.out, "learned.json").since, null);
     fs.rmSync(w.root, { recursive: true, force: true });
   });
 

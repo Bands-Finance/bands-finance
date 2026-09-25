@@ -394,9 +394,17 @@ export async function runLearnSurfaceTests(test: Runner): Promise<void> {
     // snapshot.ts writes JSON.stringify of exactly this object; the panel parses it back
     const onDisk = JSON.parse(JSON.stringify(api)) as LearnedView;
     assert.deepEqual(onDisk, JSON.parse(JSON.stringify(readLearnedView({ dir, mode: "paper", now: T0 + H }))));
-    for (const key of ["mode", "frozen", "modelOn", "factors", "changes", "lessons", "refused", "neverTouched"]) {
+    for (const key of ["mode", "frozen", "modelOn", "factors", "changes", "lessons", "since", "refused", "neverTouched"]) {
       assert.ok(key in onDisk, `learned.json is missing ${key}`);
     }
+    // the casebook is dated from its first seat: a fresh DATA_DIR starts at 0 and the panel must say since when
+    // (25 Sep 2026: "How his 1 seats ended" beside the record chapter of a 55-seat run)
+    assert.equal(onDisk.since, T0 - 23 * H, "the earliest close when no row carries openedAt");
+    const dated = fixture([lesson({ at: T0, openedAt: T0 - 2 * H }), lesson({ at: T0 - 5 * H, openedAt: T0 - 6 * H, position: "paper-D5ozar-1" }), lesson({ at: T0 - 9 * H, openedAt: T0 - 9.5 * H, mode: "live", position: "live-1" })], []);
+    assert.equal(readLearnedView({ dir: dated, mode: "paper", now: T0 + H }).since, T0 - 6 * H, "the earliest open of this book's own seats; a foreign book's row does not date it");
+    assert.equal(readLearnedView({ dir: dated, mode: "live", now: T0 + H }).since, T0 - 9.5 * H);
+    assert.equal(emptyLearnedView("paper").since, null);
+    fs.rmSync(dated, { recursive: true, force: true });
     assert.ok(onDisk.neverTouched.includes("MAX_POSITION_SOL"), "the page names what learning may never touch");
     assert.ok(onDisk.neverTouched.includes("the kill switch"));
     fs.rmSync(dir, { recursive: true, force: true });

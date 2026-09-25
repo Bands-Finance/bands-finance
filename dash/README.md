@@ -9,7 +9,8 @@ Link it once:
 
     cd dash && vercel link --yes --project mr-bands-live
 
-Deploy (the desk does this itself, with its own DATA_DIR, after every snapshot when the link exists).
-By hand, point the snapshot at the desk's data or it publishes whatever `data/` holds:
+Deploy (the desk does this itself, with its own env, after every snapshot when the link exists).
+By hand, run it as the live desk does, or the snapshot ships an empty book (SNAPSHOT_BOOK unset is "none"); while
+the real book is being traded a plain shell is refused outright (src/publish/snapshot.ts plainShellRefusal):
 
-    DATA_DIR=data-live npm run dash:deploy
+    set -a; . ops/live.env; set +a; npm run dash:deploy

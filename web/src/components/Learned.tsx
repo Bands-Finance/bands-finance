@@ -64,6 +64,8 @@ export interface LearnedFile {
   factors: LearnedFactor[];
   changes: LearnedChange[];
   lessons: { total: number; byEndReason: Record<string, number>; ratio: LearnedRatio | null };
+  /** when the first seat in this casebook was opened, ms; null with no seat; absent on a file from before the field */
+  since?: number | null;
   refused?: { lessons: Record<string, number>; changes: number };
   neverTouched: string[];
 }
@@ -132,19 +134,23 @@ export function Learned({ view }: LearnedProps = {}) {
   const ratio = v.lessons.ratio;
   const ends = Object.entries(v.lessons.byEndReason).sort((a, b) => b[1] - a[1]);
   const refused = Object.entries(v.refused?.lessons ?? {}).filter(([, n]) => n > 0);
+  // The casebook is this desk's alone: a fresh DATA_DIR starts it at 0 while the record chapter on the same page
+  // tells of a 55-seat run (25 Sep 2026: "How his 1 seats ended"). So every count here is dated from its first seat.
+  const since = typeof v.since === "number" ? ` since ${day(v.since)}` : "";
+  const seats = (n: number) => `${n} seat${n === 1 ? "" : "s"}`;
 
   return (
     <section className="learned reveal" ref={ref} aria-label="What he learned">
       <div className="learned__head r-item">
         <span className="eyebrow learned__eyebrow">What he learned</span>
         <div className="learned__badges">
-          <span className="learned__badge learned__badge--book">real-money run</span>
+          <span className="learned__badge learned__badge--book">real-money desk</span>
           {v.frozen.all && <span className="learned__badge learned__badge--frozen">learning frozen</span>}
           {!v.modelOn && <span className="learned__badge">model off</span>}
         </div>
         <h2 className="learned__title">He keeps the receipts, then moves one knob.</h2>
         <p className="learned__sub">
-          These seats are from his real-money run.{" "}
+          {typeof v.since === "number" ? `These seats are from his real-money desk${since}.` : "No seat has closed on this desk yet."} His first run's seats are in the record chapter, not in this sample.{" "}
           Every seat he closes is written down: how long it sat, how wide, how it ended, what it earned against what he expected. A handful of his own settings move off that record, one
           bounded step at a time, never without a minimum sample, and every move is journalled with the evidence you can read below.{" "}
           {v.modelOn ? "His model is answering." : "His model is off today, so these knobs are his rulebook's, not his model's."}
@@ -156,11 +162,11 @@ export function Learned({ view }: LearnedProps = {}) {
         <div className="learned__stat-w">
           {ratio ? (
             <>
-              what his entry forecast has come in at, against what the seats realised, over <strong>{ratio.n}</strong> closed seats. It was too high on <strong>{ratio.tooHigh}</strong>{" "}
+              what his entry forecast has come in at, against what the seats realised, over <strong>{ratio.n}</strong> closed seat{ratio.n === 1 ? "" : "s"}{since}. It was too high on <strong>{ratio.tooHigh}</strong>{" "}
               of them. He recomputes this number from the casebook; nobody types it in.
             </>
           ) : (
-            <>no closed seat has scored an entry forecast yet, so there is nothing to calibrate against. {v.lessons.total} seats on the book.</>
+            <>no closed seat has scored an entry forecast yet, so there is nothing to calibrate against. {v.lessons.total > 0 ? `${seats(v.lessons.total)} on this desk${since}.` : "No seat has closed on this desk yet."}</>
           )}
         </div>
       </div>
@@ -229,7 +235,7 @@ export function Learned({ view }: LearnedProps = {}) {
 
       {ends.length > 0 && (
         <div className="learned__ends r-item">
-          <h3 className="learned__h3">How his {v.lessons.total} seats ended</h3>
+          <h3 className="learned__h3">How his {seats(v.lessons.total)} ended{since}</h3>
           <ul className="learned__endlist">
             {ends.map(([reason, n]) => (
               <li key={reason}>

@@ -137,6 +137,13 @@ export interface LearnedView {
   /** how the book's seats ended, and the forecast record behind the calibration */
   lessons: { total: number; byEndReason: Record<string, number>; ratio: LearnedRatio | null };
   /**
+   * When the first seat this learner rests on was opened, ms since epoch; null with no seat. A desk starts its
+   * casebook with its DATA_DIR (docs/live.md step 0 moves the old one aside), so the panel said "How his 1 seats
+   * ended" beside a record chapter of a 55-seat run (25 Sep 2026): the count is true of this desk and the
+   * caption must say since when.
+   */
+  since: number | null;
+  /**
    * What this desk REFUSED to read because it was learned on another book: rows per mode, and the
    * count of journalled changes turned away. Never silent: a surface that shows a small sample says
    * here why it is small, so a misconfigured DATA_DIR reads as a misconfiguration, not as no evidence.
@@ -174,6 +181,7 @@ export function emptyLearnedView(mode: LearnMode, generatedAt = Date.now()): Lea
     factors: [],
     changes: [],
     lessons: { total: 0, byEndReason: {}, ratio: null },
+    since: null,
     refused: { lessons: {}, changes: 0 },
     pool: null,
     seats: [],

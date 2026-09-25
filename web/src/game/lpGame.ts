@@ -300,6 +300,17 @@ export function simulate(pool: PoolParams, seed: number, choice: Choice, market?
  *                   else feePct / 100
  *   baseMint      = baseMint, when a string
  */
+/**
+ * The Pools Board's heading: the tick it shows, never a cadence. The page re-reads /hot.json every two minutes but
+ * the file changes only when the desk deploys (AUTO_DEPLOY_MIN_MINUTES, 30), so "EVERY TWO MINUTES" stood over a
+ * board 34 minutes old whose top row dealt twice the fee rate the desk was reading (25 Sep 2026). `asOf` is the
+ * file's generatedAt, an ISO stamp in UTC; without one the board says only where its rows came from.
+ */
+export function boardHeading(asOf: unknown): string {
+  const m = typeof asOf === "string" ? /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})/.exec(asOf) : null;
+  return m ? `HOT NOW · AS OF ${m[1]}:${m[2]} UTC` : "HOT NOW · THE DESK'S LAST READ";
+}
+
 export function poolParamsFromHot(row: unknown): PoolParams | null {
   if (typeof row !== "object" || row === null || Array.isArray(row)) return null;
   const r = row as Record<string, unknown>;

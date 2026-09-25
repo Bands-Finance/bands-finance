@@ -26,6 +26,7 @@ import { COPYCAT_MINTS, quietHouseMintsOf, redactCopycatDeep } from "../risk/hou
 import { readEquity, readRecent, tailLines, type EquityPoint, type JournalEntry } from "../journal";
 import { readLearnedView } from "../status";
 import type { LearnedView } from "../learn/surface";
+import { oneBook } from "./live";
 
 export type SnapshotBook = "none" | "real" | "paper";
 export const SNAPSHOT_BOOKS: readonly SnapshotBook[] = ["none", "real", "paper"];
@@ -41,6 +42,46 @@ export function snapshotBook(env: NodeJS.ProcessEnv): SnapshotBook {
     return raw as SnapshotBook;
   }
   return "none";
+}
+
+/**
+ * PURE. Why a snapshot from a plain shell must not run while the real desk is trading, or null when it may. A shell
+ * with SNAPSHOT_BOOK unset sourced neither ops/live.env (real) nor the paper plist (none): on 25 Sep 2026 two hand-run
+ * `npm run dash:deploy` from such a shell shipped journal.json empty and the 14 Sep board from data/ while a CATE/USDC
+ * band was open. A real book with a decision inside REAL_BOOK_MAX_AGE_MS is a desk trading now.
+ */
+export function plainShellRefusal(env: NodeJS.ProcessEnv, realNewestTs: number | null, now: number, realDir = "data-mainnet"): string | null {
+  if ((env.SNAPSHOT_BOOK ?? "").trim()) return null;
+  if (realNewestTs === null || !Number.isFinite(realNewestTs) || now - realNewestTs > REAL_BOOK_MAX_AGE_MS) return null;
+  const ago = Math.max(0, Math.round((now - realNewestTs) / 60_000));
+  return (
+    `snapshot: refused. SNAPSHOT_BOOK is not set and ${realDir} has a real decision ${ago} min old: from this shell the snapshot would ` +
+    `publish an empty book and this shell's DATA_DIR board over a desk that is trading. Run it as the live desk does: ` +
+    `set -a; . ops/live.env; set +a; npm run dash:deploy (or SNAPSHOT_BOOK=none to blank the book on purpose).`
+  );
+}
+
+/** The newest decision's time in a real book's journal, or null when it has none readable. */
+export function realBookNewestTs(realDir: string): number | null {
+  const tail = readJsonlFile<{ ts?: string }>(path.join(realDir, "decisions.jsonl"), 5);
+  const times = tail.map((e) => Date.parse(e?.ts ?? "")).filter((t) => Number.isFinite(t));
+  return times.length ? Math.max(...times) : null;
+}
+
+/**
+ * PURE. Of several copies of a market file (screen.json, hot.json: one per DATA_DIR), the newest by generatedAt. The
+ * board is market data, the same screener on every desk, so the freshest copy is the true one whichever shell asks;
+ * a copy with no stamp loses to one with.
+ */
+export function freshest<T extends { generatedAt?: unknown }>(candidates: readonly { dir: string; file: T | null }[]): { dir: string; file: T; at: number | null } | null {
+  let best: { dir: string; file: T; at: number | null } | null = null;
+  for (const c of candidates) {
+    if (!c.file) continue;
+    const parsed = Date.parse(String(c.file.generatedAt ?? ""));
+    const at = Number.isFinite(parsed) ? parsed : null;
+    if (!best || (at ?? -Infinity) > (best.at ?? -Infinity)) best = { dir: c.dir, file: c.file, at };
+  }
+  return best;
 }
 
 /** PURE. KEY=VALUE lines of an env file (comments and blanks skipped, surrounding quotes dropped). */
@@ -180,8 +221,11 @@ export function writeSnapshot(o: SnapshotOptions): SnapshotResult {
   let book = o.book;
   let staleReal: string | undefined;
   if (o.book === "real") {
-    entries = readJsonlFile<JournalEntry>(path.join(o.realDir, "decisions.jsonl"), 600).reverse();
-    points = readJsonlFile<EquityPoint>(path.join(o.realDir, "equity.jsonl"), 20_000);
+    // one book: a rehearsal's rows in the live desk's directory are not its record (live.ts oneBook)
+    const rows = readJsonlFile<JournalEntry>(path.join(o.realDir, "decisions.jsonl"), 600).reverse();
+    entries = oneBook(rows, rows[0]);
+    const marks = readJsonlFile<EquityPoint>(path.join(o.realDir, "equity.jsonl"), 20_000);
+    points = oneBook(marks, marks[marks.length - 1]);
     // A finished run is the record, not "now": a real book with no decision in the last 2 h ships as none.
     const newestTs = Date.parse((entries[0] as { ts?: string } | undefined)?.ts ?? "");
     if (!Number.isFinite(newestTs) || (o.now ?? Date.now()) - newestTs > REAL_BOOK_MAX_AGE_MS) {

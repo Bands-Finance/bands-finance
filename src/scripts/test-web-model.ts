@@ -7,11 +7,11 @@
  *   npx tsx src/scripts/test-web-model.ts
  */
 import assert from "node:assert/strict";
-import { actionsOf, bookOf, deskBlocks, flowOf, flowTotalsOf, realEntries, realPoints, recordOf, statusOf, verdictOf } from "../../web/src/model";
-import { bookCycle, completeCycles, cycleEquity, cyclesOf, equityOf, equitySeriesOf, LIVE_POSITION_RENT_SOL, POSITION_RENT_SOL, rentOf, summarize } from "../../web/src/derive";
+import { actionsOf, binsOf, bookOf, deskBlocks, flowOf, flowTotalsOf, realEntries, realPoints, recordOf, statusOf, verdictOf } from "../../web/src/model";
+import { bookCycle, completeCycles, cycleEquity, cycleEquitySeries, cyclesOf, equityOf, equitySeriesOf, heldAfter, LIVE_POSITION_RENT_SOL, POSITION_RENT_SOL, rentOf, summarize } from "../../web/src/derive";
 import type { EquityHistoryPoint, JournalEntry, Position } from "../../web/src/types";
-import { dayWord, narrativeOf, noBookNarrative, num, sinceWord } from "../../web/src/narrative";
-import { trimEntries } from "../publish/live";
+import { dayWord, FEE_SHOWN_MIN, feesClaimedYet, narrativeOf, noBookNarrative, num, sinceWord } from "../../web/src/narrative";
+import { oneBook, trimEntries } from "../publish/live";
 import { liveRunOf, runDays, type LiveRunFile } from "../../web/src/liveRun";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -219,6 +219,119 @@ async function main() {
     assert.deepEqual(bookCycle(chrono.slice(0, 5).reverse())!.entries.map((e) => e.pool.address).sort(), ["AAA", "CCC"]);
   });
 
+  await test("the book after a move, the same cycle: a closed band is off it and its money in the wallet; the band a re-lay laid is on it, in range, worth what went in; a claim's fees are in the wallet, not counted banked and waiting both; the cycle's equity holds", () => {
+    // 25 Sep 2026: the entry's positions are the read BEFORE the move, so the site showed "Flat" for three minutes after the
+    // first live band opened, the closed band "out by 2 bins" for five after the re-lay, and the re-lay's fees twice
+    const RENT_LIVE = LIVE_POSITION_RENT_SOL;
+    const open = (o: Partial<NonNullable<JournalEntry["decision"]["open"]>>) => ({ side: "SOL_ONLY", amountSol: 10, amountToken: 0, binsBelowActive: 4, binsAboveActive: 0, strategy: "Spot", ...o });
+    const withExec = (e: JournalEntry, exec: Record<string, unknown>, dec: Record<string, unknown> = {}) => ({ ...e, decision: { ...e.decision, ...dec }, execution: { ...e.execution, ...exec } }) as JournalEntry;
+    // what one entry's book is worth, before and after its move: the same money on the other side of it
+    const worth = (e: JournalEntry) => cycleEquity({ cycle: e.cycle, t: 0, entries: [e] });
+    const holds = (e: JournalEntry, why: string) => assert.ok(Math.abs(worth(heldAfter(e)) - worth(e)) < 1e-9, `${why}: ${worth(heldAfter(e))} vs ${worth(e)}`);
+    // SOL-quoted AAA: cycle 1 holds a1 (20 SOL), cycle 2 closes it, cycle 3 opens a2 (10 SOL under the price), cycle 4 claims a2's fees
+    const c1 = entry({ cycle: 1, min: 1, pool: "AAA", sol: 5, positions: [band("a1", 20)] });
+    const c2 = entry({ cycle: 2, min: 10, pool: "AAA", sol: 5, positions: [band("a1", 20)], action: "CLOSE_POSITION", closed: "a1" });
+    const c3 = withExec(entry({ cycle: 3, min: 20, pool: "AAA", sol: 5 + 20 + RENT, positions: [], action: "OPEN_POSITION" }), { opened: { address: "a2", entryValueSol: 10 } }, { open: open({}) });
+    const c4 = entry({ cycle: 4, min: 30, pool: "AAA", sol: 15, positions: [band("a2", 10, { feeY: 0.05 })], action: "CLAIM_FEES" });
+
+    // the close: off the book the same cycle, the 20 SOL and the rent back in the wallet, equity unchanged
+    const atClose = [c1, c2].reverse();
+    assert.deepEqual(bookOf(atClose).bands, [], "the band the entry closed is not on the book");
+    const closeHeld = bookCycle(atClose)!.entries[0];
+    assert.equal(closeHeld.positions.length, 0);
+    assert.ok(Math.abs(closeHeld.wallet.sol - (5 + 20 + RENT)) < 1e-9, "what the band held, with its rent, is in the wallet");
+    holds(c2, "the close does not change what the book is worth");
+    const rc = recordOf(atClose)!;
+    assert.equal(rc.atWork, 0);
+    assert.equal(rc.feesUnclaimed, 0);
+    assert.ok(Math.abs(rc.wallet - (5 + 20 + RENT)) < 1e-9, "the record's wallet is the wallet after the move");
+    assert.equal(c2.positions.length, 1, "the entry itself still lists the band it closed: the move's own readers need it");
+
+    // the open: the band is laid as the decision asked, in range at the price it was laid, no fees, worth what went in; the wallet paid it
+    const atOpen = [c1, c2, c3].reverse();
+    const a2 = bookOf(atOpen).bands.find((b) => b.address === "a2");
+    assert.ok(a2, "the band the entry opened is on the book the same cycle");
+    assert.deepEqual([a2!.lowerBinId, a2!.upperBinId, a2!.widthBins, a2!.inRange, a2!.binsFromRange], [96, 100, 5, true, 0], "four bins under the active bin and the active bin itself (a Meteora band includes it)");
+    assert.ok(Math.abs(a2!.upperPrice - 1) < 1e-12 && Math.abs(a2!.lowerPrice - Math.pow(1.002, -4)) < 1e-12, "priced off the active bin by the bin step");
+    assert.equal(a2!.putIn, 10);
+    assert.equal(a2!.worthNow, 10);
+    assert.equal(a2!.fees, 0);
+    assert.equal(a2!.marketMove, 0);
+    assert.equal(a2!.side, "SOL just under the price");
+    assert.equal(a2!.openedAt, new Date(c3.ts).getTime());
+    const openHeld = bookCycle(atOpen)!.entries[0];
+    assert.ok(Math.abs(openHeld.wallet.sol - 15) < 1e-9, "the 10 SOL and the rent left the wallet");
+    holds(c3, "equity holds across the open");
+    assert.ok(Math.abs(recordOf(atOpen)!.atWork - 10) < 1e-9);
+    assert.equal(summarize("mr-bands", "Mr Bands", atOpen).bandsOpen, 1);
+
+    // the claim's own cycle: the fees are banked once, not banked and still waiting
+    const atClaim = [c1, c2, c3, c4].reverse();
+    const rk = recordOf(atClaim)!;
+    assert.ok(Math.abs(rk.feesRealized - 0.05) < 1e-9);
+    assert.equal(rk.feesUnclaimed, 0, "the claim's own cycle does not count the fees it took as still waiting");
+    const a2c = bookOf(atClaim).bands.find((b) => b.address === "a2")!;
+    assert.ok(Math.abs(a2c.fees - 0.05) < 1e-9, "the band card counts the claim once");
+    assert.ok(Math.abs(a2c.worthNow - 9.95) < 1e-9, "the fees left the band");
+    assert.ok(Math.abs(bookCycle(atClaim)!.entries[0].wallet.sol - 15.05) < 1e-9, "and landed in the wallet");
+    holds(c4, "equity holds across the claim");
+
+    // a USDC re-lay, the legs consistent (1,002 USDC at 0.01 = 10.02 SOL): the closed band's USDC comes back, the new band's USDC goes out
+    const c1b = band("c1", 10.02, { amountY: 1000, feeY: 2, entryValueSol: 10 });
+    const relay = withExec(
+      entry({ cycle: 5, min: 40, pool: "CCC", sol: 15.05, usdc: 5000, positions: [c1b], action: "REBALANCE" }),
+      { closed: "c1", opened: { address: "c2", entryValueSol: 10.02 } },
+      { positionAddress: "c1", open: open({ amountSol: 1002, binsBelowActive: 9 }) },
+    );
+    const atRelay = [c1, c2, c3, c4, relay].reverse();
+    assert.deepEqual(bookOf(atRelay).bands.map((b) => b.address).sort(), ["a2", "c2"], "the re-laid band, not the one it closed");
+    const c2b = bookOf(atRelay).bands.find((b) => b.address === "c2")!;
+    assert.deepEqual([c2b.lowerBinId, c2b.upperBinId, c2b.widthBins, c2b.inRange], [91, 100, 10, true]);
+    assert.ok(Math.abs(c2b.putIn! - 10.02) < 1e-9);
+    const relayHeld = bookCycle(atRelay)!.entries.find((e) => e.pool.address === "CCC")!;
+    assert.ok(Math.abs((relayHeld.wallet as { quote: number }).quote - 5000) < 1e-9, "1,002 USDC back from the close, 1,002 into the open");
+    assert.ok(Math.abs(relayHeld.wallet.sol - 15.05) < 1e-9, "rent back, rent out");
+    holds(relay, "equity holds across the re-lay");
+    assert.ok(Math.abs(cycleEquity(bookCycle(atRelay)!) - (worth(relay) + 9.95 + RENT)) < 1e-9, "the book: the re-laid band and AAA's carried a2, once each");
+    const rr = recordOf(atRelay)!;
+    assert.ok(Math.abs(rr.feesRealized - (0.05 + 0.02)) < 1e-9, "cycle 4's claim and the 2 USDC the re-lay's close realised, once each");
+    assert.equal(rr.feesUnclaimed, 0, "and they are not still waiting");
+    assert.ok(Math.abs(rr.quote!.amount - 5000) < 1e-9, "the record's USDC is the wallet after the move");
+
+    // the entry's own positions are untouched: the closed band's exit value and the fees it banked are read from them
+    assert.equal(summarize("mr-bands", "Mr Bands", atRelay).closed.find((c) => c.address === "c1")!.exitValueSol, 10.02);
+    assert.equal(actionsOf(atRelay)[0].action, "REBALANCE");
+
+    // a dry run sends nothing: the book is as it was, nothing is laid
+    const dry = { ...c3, mode: "dry-run", execution: { ...c3.execution, mode: "dry-run" } } as JournalEntry;
+    assert.equal(heldAfter(dry), dry);
+    assert.deepEqual(bookOf([c1, c2, dry].reverse()).bands, []);
+    // a live re-lay's card links the open, not the close it signed first
+    const live = { ...relay, mode: "live", execution: { ...relay.execution, mode: "live", txs: [{ label: "close band c1 1/1", ok: true, signature: "sigClose" }, { label: "open SOL_ONLY band bins [91, 100]", ok: true, signature: "sigOpen" }] } } as JournalEntry;
+    assert.equal(bookOf([c1, c2, c3, c4, live].reverse()).bands.find((b) => b.address === "c2")!.openTx, "sigOpen");
+  });
+
+  await test("the USDC leg is carried across cycles that do not journal it: a cycle worked in SOL pools alone does not mark the wallet's USDC as nothing", () => {
+    // 25 Sep 2026: a SOL-quoted entry's wallet says quote SOL and nothing of the USDC; a cycle of ANTHROPIC/SOL alone read 71 USDC as 0
+    const chrono = [...fixture()].reverse();
+    const solOnly = [...chrono, entry({ cycle: 5, min: 40, pool: "AAA", sol: 5, positions: [band("a1", 20)] })].reverse();
+    const cycles = cyclesOf(solOnly);
+    assert.ok(Math.abs(cycleEquity(cycles[4]) - (5 + 20 + RENT)) < 1e-9, "read alone the cycle has no USDC leg");
+    const eq = cycleEquitySeries(cycles);
+    assert.ok(Math.abs(eq[4] - (5 + 50 + 20 + RENT)) < 1e-9, "carried: the 5,000 USDC of the cycle before");
+    assert.ok(Math.abs(eq[3] - cycleEquity(cycles[3])) < 1e-9, "a cycle with its own leg reads its own");
+    const series = equitySeriesOf(solOnly);
+    assert.ok(Math.abs(series[series.length - 1].equity - (5 + 50 + 20 + 10 + 2 * RENT)) < 1e-9, "the book's point: CCC's band carried one cycle and the USDC with it");
+    const r = recordOf(solOnly)!;
+    assert.ok(Math.abs(r.equityNow - (5 + 50 + 20 + 10 + 2 * RENT)) < 1e-9);
+    assert.equal(r.quote?.symbol, "USDC");
+    assert.ok(Math.abs(r.quote!.inSol - 50) < 1e-9, "the record still names the USDC");
+    // a cut oldest cycle that carried the leg still hands it on
+    const cut = [entry({ cycle: 1, min: 1, pool: "BBB", sol: 5, usdc: 1000, positions: [] }), entry({ cycle: 2, min: 10, pool: "AAA", sol: 5, positions: [band("a1", 20)] }), entry({ cycle: 2, min: 11, pool: "DDD", sol: 5, positions: [] })].reverse();
+    assert.equal(equitySeriesOf(cut).length, 1, "cycle 1 is cut");
+    assert.ok(Math.abs(equitySeriesOf(cut)[0].equity - (5 + 10 + 20 + RENT)) < 1e-9, "1,000 USDC from the cut cycle 1");
+  });
+
   await test("summarize: bands open / in range count the newest cycle's bands", () => {
     const s = summarize("mr-bands", "Mr Bands", fixture());
     assert.equal(s.bandsOpen, 2);
@@ -377,6 +490,61 @@ async function main() {
     assert.equal(actionsOf(fixture(), 1).length, 1);
   });
 
+  await test("actionsOf: a one-sided Meteora band includes the active bin (49 bins for 48 under it), a CLMM's does not; both sides always did", () => {
+    // 25 Sep 2026: "67.91 USDC across 48 bins" under his own "67.91 usdc across 49 bins" and a tx labelled bins [-1189, -1141]
+    const chrono = [...fixture()].reverse();
+    const laid = (o: Record<string, unknown>, venue?: string) => {
+      const e = entry({ cycle: 6, min: 50, pool: "CCC", sol: 5, usdc: 5000, positions: [], action: "OPEN_POSITION" });
+      (e.decision as { open: unknown }).open = { side: "SOL_ONLY", amountSol: 67.91, amountToken: 0, binsBelowActive: 48, binsAboveActive: 0, strategy: "Spot", ...o };
+      if (venue) (e.pool as { venue: string }).venue = venue;
+      return actionsOf([...chrono, e].reverse())[0].what;
+    };
+    assert.equal(laid({}), "67.91 USDC across 49 bins, USDC just under the price");
+    assert.equal(laid({ side: "TOKEN_ONLY", amountSol: 0, amountToken: 12, binsBelowActive: 0, binsAboveActive: 3 }), "12 CCC across 4 bins, token just over the price");
+    assert.equal(laid({ side: "BOTH", amountToken: 5, binsBelowActive: 10, binsAboveActive: 10 }), "67.91 USDC + 5 CCC across 21 bins, both sides of the price");
+    assert.equal(laid({}, "raydium-clmm"), "67.91 USDC across 48 bins, USDC just under the price", "a CLMM's one-sided band sits strictly under the price");
+    assert.equal(binsOf({ side: "SOL_ONLY", amountSol: 1, amountToken: 0, binsBelowActive: 48, binsAboveActive: 0, strategy: "Spot" }, {}), 49);
+    assert.equal(binsOf({ side: "BOTH", amountSol: 1, amountToken: 1, binsBelowActive: 10, binsAboveActive: 10, strategy: "Spot" }, { venue: "orca-whirlpool" }), 21);
+  });
+
+  await test("actionsOf: a close or re-lay says the split the band card says: from the market, plus the fees, is vs entry; the fees are never added on after", () => {
+    // 25 Sep 2026: "4.9801 SOL back, −0.0199 SOL vs entry, 0.0355 SOL of fees with it" read as 4.9801 + 0.0355 back and a market loss of 0.02;
+    // the 0.0355 was inside both figures and the market's share was −0.0554
+    const chrono = [...fixture()].reverse();
+    const closed = { ...entry({ cycle: 7, min: 60, pool: "AAA", sol: 5, positions: [band("a1", 4.9801, { feeY: 0.0355, entryValueSol: 5 })], action: "CLOSE_POSITION", closed: "a1" }), emergency: true } as JournalEntry;
+    const row = actionsOf([...chrono, closed].reverse())[0];
+    assert.equal(row.what, "4.9801 SOL back, −0.0554 SOL from the market and +0.0355 SOL of fees, −0.0199 SOL vs entry");
+    assert.equal(row.sentence, "The guards closed his band in AAA/SOL: 4.9801 SOL back, −0.0554 SOL from the market and +0.0355 SOL of fees, −0.0199 SOL vs entry.");
+    assert.ok(Math.abs(row.resultSol! - -0.0199) < 1e-9, "the column is still what the move realised against entry");
+    const won = entry({ cycle: 7, min: 61, pool: "AAA", sol: 5, positions: [band("a1", 5.0075, { feeY: 0.0124, entryValueSol: 5 })], action: "CLOSE_POSITION", closed: "a1" });
+    assert.equal(actionsOf([...chrono, won].reverse())[0].what, "5.0075 SOL back, −0.0049 SOL from the market and +0.0124 SOL of fees, +0.0075 SOL vs entry", "a small win that was all fees says so");
+    const relay = entry({ cycle: 7, min: 62, pool: "AAA", sol: 5, positions: [band("a1", 0.5674, { feeY: 0.00032, entryValueSol: 0.5671 })], action: "REBALANCE", closed: "a1" });
+    (relay.decision as { open: unknown }).open = { side: "SOL_ONLY", amountSol: 0.5674, amountToken: 0, binsBelowActive: 48, binsAboveActive: 0, strategy: "Spot" };
+    assert.equal(actionsOf([...chrono, relay].reverse())[0].what, "0.5674 SOL out (+0 market, +0.0003 fees, +0.0003 vs entry), back in as 0.5674 SOL across 49 bins, SOL just under the price", "the live CATE/USDC re-lay: a gain that was all fees says so");
+    // no fees inside: the old shape, no fee clause; no entry value on record: what came back and how much of it was fees
+    const plain = entry({ cycle: 7, min: 63, pool: "AAA", sol: 5, positions: [band("a1", 18, { entryValueSol: 20 })], action: "CLOSE_POSITION", closed: "a1" });
+    assert.equal(actionsOf([...chrono, plain].reverse())[0].what, "18 SOL back, −2 SOL vs entry");
+    const noEntry = entry({ cycle: 7, min: 64, pool: "AAA", sol: 5, positions: [band("a1", 18, { feeY: 0.5, entryValueSol: undefined })], action: "CLOSE_POSITION", closed: "a1" });
+    assert.equal(actionsOf([...chrono, noEntry].reverse())[0].what, "18 SOL back, 0.5 SOL of it fees");
+    // the live 14:59 CATE/USDC close: each figure rounded on its own printed −0.0027 + 0.002 beside −0.0006; the market share
+    // is now the difference of the two printed figures, so the sentence adds up
+    const cate = entry({ cycle: 7, min: 65, pool: "AAA", sol: 5, positions: [band("a1", 1.7493140884, { feeY: 0.002036363, entryValueSol: 1.7499352349 })], action: "CLOSE_POSITION", closed: "a1" });
+    assert.equal(actionsOf([...chrono, cate].reverse())[0].what, "1.7493 SOL back, −0.0026 SOL from the market and +0.002 SOL of fees, −0.0006 SOL vs entry");
+  });
+
+  await test("recordOf: the wallet's USDC after a USDC-pool close is carried as it stood AFTER the close through later SOL-pool cycles", () => {
+    // 25 Sep 2026: the 14:59 CATE/USDC close was followed by BP/SOL cycles, and the record printed the USDC read before the
+    // close (287.82) for the wallet's leg, 209 USDC short, on the page and in the no-history equity
+    const close = entry({ cycle: 1, min: 1, pool: "CCC", sol: 5, usdc: 100, positions: [band("c1", 2, { amountY: 200, quoteInPosition: 200, solInPosition: 2, feeY: 1 })], action: "CLOSE_POSITION", closed: "c1" });
+    const after = heldAfter(close);
+    assert.equal((after.wallet as { quote?: number }).quote, 301, "the band's 200 USDC and its 1 USDC of fees are back in the wallet");
+    const solCycle = entry({ cycle: 2, min: 5, pool: "AAA", sol: 5 });
+    const r = recordOf([solCycle, close])!;
+    assert.ok(r.quote, "the USDC leg is carried");
+    assert.equal(r.quote!.amount, 301);
+    assert.ok(Math.abs(r.quote!.inSol - 3.01) < 1e-9);
+  });
+
   console.log("the note");
   await test("num, dayWord, sinceWord: numbers and days the way a person says them", () => {
     assert.deepEqual([num(35.01), num(246.9), num(6.42), num(0.4321), num(-12.04), num(10.0)], ["35", "247", "6.4", "0.43", "12", "10"]);
@@ -436,11 +604,12 @@ async function main() {
       netPct: -14.2,
       feesRealized: 21.85,
       feesUnclaimed: 0.82,
+      // a day row carries its hand flow (DayRow.flow, 0 here): the note takes it out of the day's result
       days: [
-        { date: "2026-09-14", fees: 1.24, open: 246.9, close: 244.88, moves: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 },
-        { date: "2026-09-15", fees: 17.22, open: 245.14, close: 214.76, moves: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0 },
-        { date: "2026-09-16", fees: 1.31, open: 214.77, close: 211.6, moves: 10, vetoed: 0, overrides: 6, holds: 374, decisions: 400 },
-        { date: "2026-09-17", fees: 2.07, open: 211.65, close: 211.9, moves: 35, vetoed: 0, overrides: 3, holds: 172, decisions: 200 },
+        { date: "2026-09-14", fees: 1.24, open: 246.9, close: 244.88, moves: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0, flow: 0 },
+        { date: "2026-09-15", fees: 17.22, open: 245.14, close: 214.76, moves: 0, vetoed: 0, overrides: 0, holds: 0, decisions: 0, flow: 0 },
+        { date: "2026-09-16", fees: 1.31, open: 214.77, close: 211.6, moves: 10, vetoed: 0, overrides: 6, holds: 374, decisions: 400, flow: 0 },
+        { date: "2026-09-17", fees: 2.07, open: 211.65, close: 211.9, moves: 35, vetoed: 0, overrides: 3, holds: 172, decisions: 200, flow: 0 },
       ],
     } as unknown as Parameters<typeof narrativeOf>[0]["record"];
     const n = narrativeOf({ record: rec, status: status as never, agentName: "Mr Bands", now });
@@ -473,6 +642,63 @@ async function main() {
     assert.deepEqual(empty, { headline: "No book open right now.", story: ["His real-money run, 17 to 19 Sep, is below."] });
     assert.deepEqual(noBookNarrative(null).story, ["He has no money at work right now."]);
     assert.equal(narrativeOf({ record: null, status: idle, agentName: "Mr Bands", now, loading: true }).headline, "Reading the journal.");
+  });
+
+  await test("one rule for every fee caption: 'not earned a fee yet' only where the figures print 0, and 'unclaimed' / 'still in the bands' only while nothing has reached the wallet", () => {
+    // 25 Sep 2026: the story said "He has not earned a fee yet." beside "Fees earned 0.0005 SOL", and the made chapter
+    // "He has earned 0.0008 SOL, unclaimed." over its own "Claimed +0.0003 SOL": three thresholds for one fact
+    const now = Date.parse("2026-09-25T14:12:00Z");
+    const status = { mode: "live", lastTs: now, ageMs: 0, sentence: "s", short: "live" } as const;
+    const rec = (o: Record<string, unknown>) => ({ startTs: now - 3600e3, startEquity: 5.2, equityNow: 5.15, net: -0.05, netPct: -1, atWork: 0.57, days: [], feePoints: [], ...o }) as never;
+    const story = (o: Record<string, unknown>) => narrativeOf({ record: rec(o), status: status as never, agentName: "Mr Bands", now }).story;
+    // 0.00035 claimed by a re-lay, 0.00014 waiting: the figure prints 0.0005, so the sentence says it, and it is not "still in the bands"
+    assert.deepEqual(story({ feesRealized: 0.00035, feesUnclaimed: 0.00014, feePoints: [{ t: now, amount: 0.00035, cumulative: 0.00035, href: null, simulated: false }] }), ["He has earned 0.0005 SOL in fees since he started.", "This is his own wallet on Solana."]);
+    // a claim the desk's tally carries but the window's points do not: still claimed
+    assert.deepEqual(story({ feesRealized: 0.0004, feesUnclaimed: 0.0031 })[0], "He has earned 0.0035 SOL in fees since he started.");
+    // nothing claimed, fees waiting: still in the bands
+    assert.deepEqual(story({ feesRealized: 0, feesUnclaimed: 0.0031 })[0], "He has earned 0.0031 SOL in fees since he started, still in the bands.");
+    // under what num() prints: not a fee yet, and the statement row beside it prints 0
+    assert.deepEqual(story({ feesRealized: 0, feesUnclaimed: 0.00003 })[0], "He has not earned a fee yet.");
+    assert.equal(num(0.00003), "0");
+    assert.equal(num(FEE_SHOWN_MIN), "0.0001");
+    assert.equal(feesClaimedYet({ feesRealized: 0, feePoints: [] }), false);
+    assert.equal(feesClaimedYet({ feesRealized: 0.00035, feePoints: [] }), true);
+    assert.equal(feesClaimedYet({ feesRealized: 0, feePoints: [{ t: 1, amount: 0.00001, cumulative: 0.00001, href: null, simulated: false }] }), true, "a claim on record is a claim, whatever its size");
+    // the made chapter and the abacus use the same gate and the same words for the same count
+    const dash = readFileSync(path.resolve(__dirname, "../../web/src/DashboardApp.tsx"), "utf8");
+    assert.ok(dash.includes("feesClaimedYet(record)") && !dash.includes("feesRealized < 0.0005"), "the made chapter keys 'unclaimed' on whether anything was claimed, not its size");
+    const chapters = readFileSync(path.resolve(__dirname, "../../web/src/stage/Chapters.tsx"), "utf8");
+    assert.ok(chapters.includes('label: "Payouts"') && !chapters.includes('label: "Claims"'), "the fee-points figure is not called Claims beside a table that counts CLAIM_FEES");
+    assert.ok(chapters.includes("<th>Fee claims</th>"), "the table's column says which claims it counts");
+    assert.ok(chapters.includes("of fees paid out") && !chapters.includes("of claims,"), "the abacus caption counts what the figure counts");
+  });
+
+  await test("realEntries and realPoints: one book, the newest entry's mode; a rehearsal older than the live run is not a live decision; the feed and the snapshot drop it at the source (oneBook)", () => {
+    // 25 Sep 2026: the 13:08 dry-run read in data-mainnet counted as a twelfth decision and a tenth hold under "Live: his own wallet"
+    const live = (min: number) => ({ ...entry({ cycle: 2, min, pool: "AAA", sol: 5 }), mode: "live", execution: { mode: "none", ok: true, txs: [], notes: [] } }) as JournalEntry;
+    const dry = { ...live(0), id: "dry", mode: "dry-run" } as JournalEntry;
+    const book = [live(20), live(10), dry];
+    assert.deepEqual(realEntries(book).map((e) => e.id), [live(20).id, live(10).id]);
+    assert.deepEqual(realEntries([...book].reverse()).map((e) => e.id), [live(10).id, live(20).id], "newest by time, whichever end it sits at");
+    const r = recordOf(realEntries(book))!;
+    assert.deepEqual([r.counts.decisions, r.counts.holds], [2, 2]);
+    assert.equal(deskBlocks(realEntries(book))[0].first.ts, live(10).ts, "the terminal's first block is the first live read");
+    assert.equal(statusOf(book, Date.parse(live(20).ts) + 1000, false).mode, "live");
+    assert.deepEqual(realEntries([dry]), [dry], "a rehearsal alone is still a rehearsal");
+    assert.equal(statusOf([dry], Date.parse(dry.ts) + 1000, false).mode, "dry-run");
+    const pts = [{ t: 1, mode: "dry-run" }, { t: 2, mode: "live" }, { t: 3, mode: "paper" }, { t: 4, mode: "live" }] as unknown as EquityHistoryPoint[];
+    assert.deepEqual(realPoints(pts).map((p) => p.t), [2, 4]);
+    assert.deepEqual(oneBook(book, book[0]).map((e) => e.id), [live(20).id, live(10).id]);
+    assert.deepEqual(oneBook(pts, pts[pts.length - 1]).map((p) => p.t), [2, 4]);
+    assert.deepEqual(oneBook([], undefined), []);
+    // live wins: a rehearsal run after the live desk stopped must not become the whole book (25 Sep 2026 review)
+    const lateDry = { ...live(30), id: "late-dry", mode: "dry-run" } as JournalEntry;
+    const afterStop = [lateDry, live(20), live(10)];
+    assert.deepEqual(realEntries(afterStop).map((e) => e.id), [live(20).id, live(10).id]);
+    assert.deepEqual(oneBook(afterStop, afterStop[0]).map((e) => e.id), [live(20).id, live(10).id]);
+    const lateDryPts = [{ t: 2, mode: "live" }, { t: 4, mode: "live" }, { t: 5, mode: "dry-run" }] as unknown as EquityHistoryPoint[];
+    assert.deepEqual(realPoints(lateDryPts).map((p) => p.t), [2, 4]);
+    assert.deepEqual(oneBook(lateDryPts, lateDryPts[lateDryPts.length - 1]).map((p) => p.t), [2, 4]);
   });
 
   await test("no book open: an empty journal, or one of practice entries only, is status none and never 'paper'; the feed drops practice rows", () => {

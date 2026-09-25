@@ -59,15 +59,29 @@ export function trimEntries(entries: readonly unknown[]): unknown[] {
   });
 }
 
+/**
+ * PURE. One book: the live rows when there are any, else the rows in the newest row's mode. A rehearsal (`npm run live:rehearse`, DRY_RUN=true) writes into
+ * the live desk's own DATA_DIR, so its 13:08 read went out in the live feed and was counted as a live decision and a
+ * live hold on both sites (25 Sep 2026). A file of rehearsals alone is still a rehearsal. `newest` is the caller's:
+ * the journal is newest first, the equity history oldest first.
+ */
+export function oneBook<T extends { mode?: unknown }>(rows: readonly T[], newest: T | undefined): T[] {
+  // live wins: a rehearsal run after the live desk stopped must not replace the live record
+  const mode = rows.some((r) => r.mode === "live") ? "live" : newest?.mode;
+  return mode === undefined ? [...rows] : rows.filter((r) => r.mode === mode);
+}
+
 export function buildLiveFeed(o: { cycle?: number | null; entriesLimit?: number } = {}): LiveFeed {
-  const entries = redactCopycatDeep(trimEntries(readRecent(o.entriesLimit ?? 300)));
+  const recent = readRecent(o.entriesLimit ?? 300);
+  const entries = redactCopycatDeep(trimEntries(oneBook(recent, recent[0])));
   const newest = entries[0] as { mode?: string } | undefined;
+  const history = readEquity(20_000);
   return {
     generatedAt: new Date().toISOString(),
     cycle: o.cycle ?? null,
     mode: newest?.mode ?? null,
     entries,
-    points: readEquity(20_000),
+    points: oneBook(history, history[history.length - 1]),
     limits: riskLimits,
     solPriceUsd: loadScreen()?.solPriceUsd ?? null,
   };

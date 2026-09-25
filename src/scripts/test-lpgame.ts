@@ -64,6 +64,7 @@ interface LpGame {
   validateChoice(c: unknown): string | null;
   simulate(pool: PoolParams, seed: number, choice: Choice, market?: Market | null): SimResult;
   poolParamsFromHot(row: unknown): PoolParams | null;
+  boardHeading(asOf: unknown): string;
   MARKET_HOURS: number;
   hourlySeries(candles: unknown, volumeUsd?: unknown): Hour[];
   seriesOf(history: unknown): Hour[];
@@ -114,7 +115,7 @@ function mulberry32Ref(a: number) {
 async function main() {
   const lp = (await import(MODULE)) as LpGame;
   const { pricePath, poolParamsFromHot, rng, simulate, TICKS, validateChoice, WIDTH_MAX, WIDTH_MIN, FEES_CAP_PCT } = lp;
-  const { MARKET_HOURS, hourlySeries, seriesOf, marketWindow, historyUrls, candlesOf } = lp;
+  const { MARKET_HOURS, hourlySeries, seriesOf, marketWindow, historyUrls, candlesOf, boardHeading } = lp;
 
   const CARDS = poolParamsFromHot(CARDS_ROW)!;
   const pool = (over: Partial<PoolParams> = {}): PoolParams => ({ ...CARDS, ...over });
@@ -132,7 +133,7 @@ async function main() {
   test("the module exports exactly the agreed API", () => {
     const names = Object.keys(lp).filter((k) => k !== "default" && k !== "__esModule");
     assert.deepEqual(names.sort(), [
-      "FEES_CAP_PCT", "MARKET_HOURS", "TICKS", "WIDTH_MAX", "WIDTH_MIN", "candlesOf", "historyUrls", "hourlySeries", "marketWindow",
+      "FEES_CAP_PCT", "MARKET_HOURS", "TICKS", "WIDTH_MAX", "WIDTH_MIN", "boardHeading", "candlesOf", "historyUrls", "hourlySeries", "marketWindow",
       "poolParamsFromHot", "pricePath", "rng", "seriesOf", "simulate", "validateChoice",
     ]);
     assert.equal(MARKET_HOURS, 49);
@@ -151,6 +152,7 @@ async function main() {
       [marketWindow, 3],
       [historyUrls, 1],
       [candlesOf, 1],
+      [boardHeading, 1],
     ];
     for (const [fn, n] of arity) {
       assert.equal(typeof fn, "function");
@@ -652,6 +654,18 @@ async function main() {
     const list = [[T0, 1, 1, 1, 1, 1]];
     assert.deepEqual(candlesOf({ data: { attributes: { ohlcv_list: list } } }), list);
     for (const b of [null, {}, { data: null }, { data: { attributes: { ohlcv_list: "x" } } }]) assert.equal(candlesOf(b), null);
+  });
+
+  test("the Pools Board says which tick it shows, never a cadence: hot.json changes only when the desk deploys", () => {
+    // 25 Sep 2026: "HOT NOW · EVERY TWO MINUTES" over a board 34 minutes old whose top row dealt twice the desk's read
+    assert.equal(boardHeading("2026-09-25T13:46:04.284Z"), "HOT NOW · AS OF 13:46 UTC");
+    assert.equal(boardHeading("2026-09-14T18:02:04.460Z"), "HOT NOW · AS OF 18:02 UTC");
+    for (const none of [undefined, null, "", "soon", 1790344302248, "13:46"]) assert.equal(boardHeading(none), "HOT NOW · THE DESK'S LAST READ", String(none));
+    const world = fs.readFileSync(path.join(__dirname, "../../web/src/game/World.ts"), "utf8");
+    assert.doesNotMatch(world, /EVERY TWO MINUTES/, "the board paints boardHeading, not a cadence");
+    assert.match(world, /boardHeading\(asOf\)/);
+    const page = fs.readFileSync(path.join(__dirname, "../../web/src/game/PlayPage.tsx"), "utf8");
+    assert.match(page, /setBoard\(board, asOf\)/, "the page hands the board the file's stamp");
   });
 
   test("the module is pure: no Math.random, no Date, no imports, no host globals", () => {

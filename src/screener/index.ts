@@ -21,7 +21,7 @@ export { ISSUER_LABEL, parseStockMints, stockOf, verifiedStock } from "./stocks"
 export type { FeesSource, ScreenedPool, ScreenResult, StockIssuer, StockTag, Venue, VenueCount, VenuePool } from "./types";
 
 const short = (m: string) => `${m.slice(0, 4)}…${m.slice(-4)}`;
-export const SCREEN_FILE = () => path.resolve(process.cwd(), config.dataDir, "screen.json");
+export const SCREEN_FILE = (dir: string = config.dataDir) => path.resolve(process.cwd(), dir, "screen.json");
 
 type Partial = Omit<ScreenedPool, "score" | "flags" | "rank">;
 
@@ -48,9 +48,10 @@ export function normalizeScreen(raw: LegacyScreen): ScreenResult {
   return { ...raw, pools, venues, stocks };
 }
 
-export function loadScreen(): ScreenResult | null {
+/** The last screen on disk: this process's DATA_DIR unless another desk's is asked for (the snapshot compares boards). */
+export function loadScreen(dir: string = config.dataDir): ScreenResult | null {
   try {
-    return normalizeScreen(JSON.parse(fs.readFileSync(SCREEN_FILE(), "utf8")) as LegacyScreen);
+    return normalizeScreen(JSON.parse(fs.readFileSync(SCREEN_FILE(dir), "utf8")) as LegacyScreen);
   } catch {
     return null;
   }

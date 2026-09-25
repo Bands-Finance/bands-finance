@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 import { isDemoJournal } from "./api";
 import { groupAgents } from "./derive";
 import { actionsOf, bookOf, flowOf, flowTotalsOf, recordOf, statusOf } from "./model";
-import { narrativeOf, num } from "./narrative";
+import { feesClaimedYet, narrativeOf, num } from "./narrative";
 import { useJournalFeed } from "./hooks/useJournalFeed";
 import { DashNav, TickerTape, statementRows } from "./components/Dash";
 import { EngraveDefs } from "./brand/Engrave";
@@ -167,9 +167,9 @@ export default function DashboardApp() {
       },
       ...(record && chart
         ? [{
-            // "paid" only once something has been claimed; until then the fees are earned and still in the bands, and the
-            // headline says so rather than sit over a "Claimed +0"
-            id: "made", station: "chart", side: "left", wide: true, eyebrow: "What he made", line1: "He has earned", line2: record.feesRealized < 0.0005 ? `${num(feesAll)} SOL, unclaimed.` : `${num(feesAll)} SOL in fees.`,
+            // "unclaimed" only while nothing has reached the wallet (narrative.ts feesClaimedYet, the same gate as the story's
+            // "still in the bands"), so the headline never sits over a "Claimed +0.0003" saying nothing was claimed
+            id: "made", station: "chart", side: "left", wide: true, eyebrow: "What he made", line1: "He has earned", line2: feesClaimedYet(record) ? `${num(feesAll)} SOL in fees.` : `${num(feesAll)} SOL, unclaimed.`,
             content: <MadeBlock record={record} solPriceUsd={solPriceUsd} now={now} chart={chart} />,
           } satisfies Beat]
         : idle

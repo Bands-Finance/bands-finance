@@ -174,16 +174,18 @@ export default function PlayPage() {
   }, []);
 
   // the live data: the board's pools for the stalls (read again every two minutes, as the room reads it, so a stall
-  // never offers a pool the room has dropped), his notes, his rules
+  // never offers a pool the room has dropped; the file itself changes only when the desk deploys, and the board
+  // paints its stamp rather than claim a cadence), his notes, his rules
   useEffect(() => {
     let live = true;
     let seen = "";
     const readBoard = () =>
       fetch("/hot.json", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : null))
-        .then((j: { rows?: unknown[] } | null) => {
+        .then((j: { rows?: unknown[]; generatedAt?: unknown } | null) => {
           if (!live || !Array.isArray(j?.rows)) return;
           const rows = j!.rows as HotRow[];
+          const asOf = typeof j!.generatedAt === "string" ? j!.generatedAt : undefined;
           const params: PoolParams[] = [];
           const board: BoardRow[] = [];
           for (const r of rows) {
@@ -193,12 +195,13 @@ export default function PlayPage() {
             board.push({ label: p.label, feePct: p.feePctPerHour, venue: (r.venue ?? "").replace(/-.*$/, "") || "pool" });
             if (params.length >= 8) break;
           }
-          const sig = JSON.stringify(board);
+          // a new tick repaints the board even when its eight rows match: the stamp on it moved
+          const sig = `${asOf ?? ""}|${JSON.stringify(board)}`;
           if (sig === seen) return;
           seen = sig;
           setPools(params);
           setBoardRows(board);
-          world.current?.setBoard(board);
+          world.current?.setBoard(board, asOf);
         })
         .catch(() => undefined);
     readBoard();

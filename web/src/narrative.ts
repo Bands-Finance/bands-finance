@@ -44,6 +44,16 @@ export function sinceWord(t: number, now: number): string {
   return w === "today" ? "today" : `since ${w}`;
 }
 
+/** Under this a fee prints as "0" (num): the one gate for "not earned a fee yet", so the sentence never contradicts the figure beside it. */
+export const FEE_SHOWN_MIN = 0.00005;
+/**
+ * Whether a fee has reached his wallet: a claim, a close or a re-lay realised one (the record's fee points), or the
+ * desk's own tally says so. The one gate for "unclaimed" and "still in the bands" on every surface. The made chapter
+ * keyed on the SIZE of what was claimed (under 0.0005) and said "He has earned 0.0008 SOL, unclaimed." over its own
+ * "Claimed +0.0003 SOL" (25 Sep 2026).
+ */
+export const feesClaimedYet = (record: Pick<AgentRecord, "feesRealized" | "feePoints">): boolean => (record.feePoints?.length ?? 0) > 0 || record.feesRealized >= FEE_SHOWN_MIN;
+
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const upDown = (x: number, flatBelow = 0.05) => (x >= flatBelow ? "up" : x <= -flatBelow ? "down" : "flat");
 
@@ -76,9 +86,10 @@ export function narrativeOf(o: { record: AgentRecord | null; status: Status; age
   const bands = o.bandsOpen ?? 0;
   const atWork = o.atWorkSol ?? record.atWork;
   if (bands > 0 && atWork > 0) story.push(`He has ${num(atWork)} SOL at work in ${bands} band${bands === 1 ? "" : "s"}.`);
-  if (fees >= 0.0005) {
+  // the same cutoff the statement, the dish and the made chapter print at: "not earned a fee yet" only where they print "0"
+  if (fees >= FEE_SHOWN_MIN) {
     const span = elapsedDays < 1.5 ? "since he started" : `over ${Math.round(elapsedDays)} days`;
-    const where = record.feesRealized < 0.0005 && record.feesUnclaimed >= 0.0005 ? ", still in the bands" : "";
+    const where = !feesClaimedYet(record) && record.feesUnclaimed >= FEE_SHOWN_MIN ? ", still in the bands" : "";
     story.push(`He has earned ${num(fees)} SOL in fees ${span}${where}.`);
   } else {
     story.push("He has not earned a fee yet.");

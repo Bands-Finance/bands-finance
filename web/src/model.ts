@@ -2,7 +2,7 @@
  * One place that turns journal entries into what the page says.
  * Every component reads from here so the words and the numbers cannot disagree.
  */
-import { bookCycle, completeCycles, cycleEquity, cyclesOf, equityOf, feesInSol, rentOf } from "./derive";
+import { bookCycle, completeCycles, cycleEquitySeries, cyclesOf, equityOf, feesInSol, heldAfter, rentOf } from "./derive";
 import type { Action, Decision, EquityHistoryPoint, FlowContext, JournalEntry, Position, StockTag } from "./types";
 
 /* ---------- words ---------- */
@@ -125,10 +125,20 @@ const fmtPrice = (n: number) => (n >= 1 ? n.toPrecision(5) : n.toPrecision(4));
 const fmtSol = (n: number, d = 4) => `${n.toFixed(d)} SOL`;
 const usd = (n: number | null | undefined) => (n === null || n === undefined ? "n/a" : n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(0)}K` : `$${n.toFixed(0)}`);
 
+/**
+ * How many bins a decision's band covers. A Meteora band includes the active bin on every side (src/executor.ts
+ * toOpenPlan: [active - below, active + above]); a CLMM's one-sided band sits strictly beside it (src/tools/bins.ts).
+ * The ledger said "across 48 bins" of a 49-bin SOL_ONLY band, one short on every one-sided open (25 Sep 2026).
+ */
+export function binsOf(o: NonNullable<Decision["open"]>, pool: Pick<JournalEntry["pool"], "venue">): number {
+  const clmm = pool.venue === "raydium-clmm" || pool.venue === "orca-whirlpool";
+  return o.binsBelowActive + o.binsAboveActive + (o.side === "BOTH" || !clmm ? 1 : 0);
+}
+
 function intentOf(e: JournalEntry, d: JournalEntry["decision"]): string {
   const o = d.open;
   if ((d.action === "OPEN_POSITION" || d.action === "REBALANCE") && o) {
-    const width = o.binsBelowActive + o.binsAboveActive + 1;
+    const width = binsOf(o, e.pool);
     const pct = (width * e.pool.binStep) / 100;
     const q = quoteOf(e.pool);
     const amount = o.amountSol > 0 ? (q.symbol === "SOL" ? fmtSol(o.amountSol, 2) : `${o.amountSol.toFixed(2)} ${q.symbol}`) : `${o.amountToken} ${e.wallet.tokenSymbol}`;
@@ -415,7 +425,8 @@ export function bookOf(newestFirst: JournalEntry[]): Book {
           : `${p.amountX.toFixed(quoteOf(e.pool).symbol === "SOL" ? 4 : 2)} ${e.pool.tokenX.symbol} + ${p.amountY.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${e.pool.tokenY.symbol}`,
         side: opened?.decision.open ? sideWords(opened.decision.open.side, quoteOf(e.pool)) : p.amountX > 0 && p.amountY > 0 ? SIDE_WORDS.BOTH : solY ? sideWords(p.amountY > 0 ? "SOL_ONLY" : "TOKEN_ONLY", quoteOf(e.pool)) : "",
         strategy: opened?.decision.open?.strategy ?? null,
-        openTx: opened?.execution.txs.find((t) => t.signature)?.signature ?? null,
+        // a re-lay's entry signs a close and then an open: the band's own transaction is the open, not the first signed one
+        openTx: (opened?.execution.txs.find((t) => t.signature && /^open\b/i.test(t.label)) ?? opened?.execution.txs.find((t) => t.signature))?.signature ?? null,
         stock: (e.pool as JournalEntry["pool"] & { stock?: StockTag | null }).stock ?? null,
       });
     }
@@ -508,7 +519,10 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
   // On 25 Sep 2026 a 3.703 SOL sweep of the token's fees read as "Mr Bands is up 3.7 SOL today" (+244.6%).
   const flowOf = (p: EquityHistoryPoint): number => (p.flowSol ?? 0) + (p.solPriceUsd && p.solPriceUsd > 0 ? (p.flowUsdc ?? 0) / p.solPriceUsd : 0);
 
-  // Book split, from the newest cycle across pools: what he holds this moment, nothing stale
+  // Book split, from the newest cycle across pools: what he holds this moment, nothing stale. Each entry is the
+  // book as it stood after its move (derive.ts heldAfter): a band closed this cycle is not still "waiting", the
+  // one that replaced it is at work, and a claim's fees are in the wallet, not counted banked and waiting both.
+  const held = new Map(newest.entries.map((e) => [e.id, e] as const));
   const tokens = new Map<string, { symbol: string; amount: number; inSol: number }>();
   let atWork = 0;
   let rent = 0;
@@ -522,28 +536,32 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
       feesUnclaimed += feesInSol(p, e);
     }
   }
-  const wallet = latest.wallet.sol;
-  // The USDC leg, when the desk holds one: the same wallet in every entry of the cycle, so the newest
-  // USDC-quoted entry has it. startEquity (equityOf) counts it; the book must too, or a USDC desk shows
-  // a hole the size of its stablecoin balance.
+  const wallet = (held.get(latest.id) ?? latest).wallet.sol;
+  // The USDC leg, when the desk holds one: the newest entry that journals it, as the book stood after its move.
+  // A SOL-quoted entry says nothing of the USDC (the desk reads the wallet for the pool's own quote), so a cycle
+  // worked in SOL pools alone reads it from the cycle before rather than show a hole the size of the balance.
   const quote = (() => {
     for (const e of newestFirst) {
-      const w = e.wallet as JournalEntry["wallet"] & { quote?: number; quoteSymbol?: string; };
+      // an entry outside the book cycle is read after its own move too: a USDC close followed by SOL-pool cycles printed the
+      // wallet's USDC as it stood BEFORE the close, 209 USDC short (25 Sep 2026)
+      const w = (held.get(e.id) ?? heldAfter(e)).wallet as JournalEntry["wallet"] & { quote?: number; quoteSymbol?: string; };
       const q = e.pool as JournalEntry["pool"] & { quotePriceInSol?: number };
       if (typeof w.quote === "number" && w.quoteSymbol && w.quoteSymbol !== "SOL") {
         return { symbol: w.quoteSymbol, amount: w.quote, inSol: w.quote * (typeof q.quotePriceInSol === "number" && q.quotePriceInSol > 0 ? q.quotePriceInSol : 0) };
       }
-      if (e.cycle !== latest.cycle) break;
     }
     return null;
   })();
   // With history: start and now from the same arithmetic (the desk's marks, rent not counted, hedge
-  // counted), so net is exact over the run. Without: the window's first complete cycle to its newest.
+  // counted), so net is exact over the run. Without: the window's first complete cycle to its newest,
+  // the USDC leg carried across cycles that do not journal it (derive.ts cycleEquitySeries).
   const fromHistory = !!h0 && !!hN && hN.t >= newest.t - 3600e3;
   const complete = completeCycles(cycles);
   const first = chrono[0];
-  const equityNow = fromHistory ? hN.equitySol : cycleEquity(newest);
-  const startEquity = fromHistory ? h0.equitySol : complete.length ? cycleEquity(complete[0]) : equityOf(first);
+  const equities = cycleEquitySeries(cycles, newest);
+  const equityAt = (c: (typeof cycles)[number]) => equities[cycles.indexOf(c)];
+  const equityNow = fromHistory ? hN.equitySol : equities[equities.length - 1];
+  const startEquity = fromHistory ? h0.equitySol : complete.length ? equityAt(complete[0]) : equityOf(first);
   const startTs = fromHistory ? h0.t : complete.length ? complete[0].t : new Date(first.ts).getTime();
   const flows = fromHistory ? flowOf(hN) - flowOf(h0) : 0;
 
@@ -588,7 +606,7 @@ export function recordOf(newestFirst: JournalEntry[], history: EquityHistoryPoin
     const date = new Date(c.t).toISOString().slice(0, 10);
     const row = days.get(date);
     if (!row) continue;
-    const eq = cycleEquity(c);
+    const eq = equityAt(c);
     if (!Number.isFinite(row.open)) row.open = eq;
     row.close = eq;
   }
@@ -657,10 +675,27 @@ export interface Status {
  * journal of them reads as no book at all (statusOf "none").
  */
 export const isPractice = (e: JournalEntry): boolean => e.mode === "paper" || e.execution?.mode === "paper";
-/** The journal with every practice entry dropped. */
-export const realEntries = (entries: JournalEntry[]): JournalEntry[] => (entries.some(isPractice) ? entries.filter((e) => !isPractice(e)) : entries);
-/** The equity history with every practice point dropped. */
-export const realPoints = (points: EquityHistoryPoint[]): EquityHistoryPoint[] => points.filter((p) => p.mode !== "paper");
+/** The newest of the rows by time: the journal is newest first and the history oldest first, so neither end is trusted. */
+const newestOf = <T>(rows: T[], at: (r: T) => number | string): T | undefined => rows.reduce<T | undefined>((m, r) => (m === undefined || at(r) > at(m) ? r : m), undefined);
+/**
+ * The journal with every practice entry dropped, and then one book only: the entries in the newest entry's mode.
+ * A rehearsal (`npm run live:rehearse`, a dry run) writes into the live desk's own directory, and its read sat in
+ * the live book as a twelfth decision and a tenth hold under "Live: his own wallet" (25 Sep 2026). The equity
+ * history was already read this way (recordOf); the tally, the desk terminal and the book now are too. A journal
+ * of rehearsals alone still reads as a rehearsal (statusOf "dry-run").
+ */
+export const realEntries = (entries: JournalEntry[]): JournalEntry[] => {
+  const real = entries.some(isPractice) ? entries.filter((e) => !isPractice(e)) : entries;
+  // live wins: a rehearsal run after the live desk stopped would otherwise have become the whole book
+  const mode = real.some((e) => e.mode === "live") ? "live" : newestOf(real, (e) => e.ts)?.mode;
+  return mode && real.some((e) => e.mode !== mode) ? real.filter((e) => e.mode === mode) : real;
+};
+/** The equity history with every practice point dropped, then the newest point's book only (the same rule as realEntries). */
+export const realPoints = (points: EquityHistoryPoint[]): EquityHistoryPoint[] => {
+  const real = points.filter((p) => p.mode !== "paper");
+  const mode = real.some((p) => p.mode === "live") ? "live" : newestOf(real, (p) => p.t)?.mode;
+  return mode && real.some((p) => p.mode !== mode) ? real.filter((p) => p.mode === mode) : real;
+};
 
 /** What the page says when no book is open: the snapshot publishes an empty journal (SNAPSHOT_BOOK=none). */
 export const NO_BOOK = { short: "no book open", sentence: "No book open right now." } as const;
@@ -707,12 +742,28 @@ export interface ActionRow {
 }
 
 const r4 = (n: number, d = 4) => Number(n.toFixed(d)).toString();
+/** "+0.0075", "−2", and "+0" for anything that rounds to nothing either way */
+const sgn = (n: number) => {
+  const s = r4(Math.abs(n));
+  return `${n < 0 && s !== "0" ? "−" : "+"}${s}`;
+};
+/**
+ * The market's share as the difference of the rounded vs-entry and fees the row prints, so "market + fees = vs entry"
+ * holds in print (25 Sep 2026 CATE/USDC close: vs −0.000621 and fees 0.002036 printed −0.0027 + 0.002 beside −0.0006).
+ */
+const marketWord = (vs: number, fees: number) => sgn(Number(vs.toFixed(4)) - Number(fees.toFixed(4)));
 
 /**
  * Every executed move, newest first: opens, closes, moves and claims that were sent (or simulated),
  * including the ones the guards forced. Holds, vetoes and failures are not actions. The numbers come
  * from the decision (what he asked for) and the entry's own positions (what the band held when he
  * acted); nothing is read from the narrative.
+ *
+ * A close's "vs entry" is everything the band handed back against what went in, and that includes the
+ * fees still inside it (the desk's valueInSol counts feeX/feeY: src/tools/dlmm.ts, src/paper/mark.ts).
+ * The row used to add "0.0355 SOL of fees with it" after "−0.0199 vs entry", so a reader took the fees
+ * as extra and the market's share as −0.02 when it was −0.055. Now the row says the split the band card
+ * says (bookOf marketMove): from the market, plus the fees, is vs entry.
  */
 export function actionsOf(newestFirst: JournalEntry[], limit = 200): ActionRow[] {
   const out: ActionRow[] = [];
@@ -729,10 +780,12 @@ export function actionsOf(newestFirst: JournalEntry[], limit = 200): ActionRow[]
     const held = targets.reduce((s, p) => s + p.valueInSol, 0);
     const entry = targets.reduce((s, p) => s + (p.entryValueSol ?? NaN), 0);
     const openWords = (o: NonNullable<Decision["open"]>) => {
-      const bins = o.binsBelowActive + o.binsAboveActive + (o.side === "BOTH" ? 1 : 0);
+      const bins = binsOf(o, e.pool);
       const legs = [o.amountSol > 0 ? `${r4(o.amountSol, q.symbol === "SOL" ? 4 : 2)} ${q.symbol}` : null, o.amountToken > 0 ? `${r4(o.amountToken)} ${sym}` : null].filter(Boolean).join(" + ");
       return `${legs} across ${bins} bins, ${sideWords(o.side, q)}`;
     };
+    // the fees inside a band are named only when they would print as something
+    const withFees = fees > 0.00005;
     let what = "";
     let resultSol: number | null = null;
     if (a === "OPEN_POSITION" && e.decision.open) what = openWords(e.decision.open);
@@ -741,11 +794,17 @@ export function actionsOf(newestFirst: JournalEntry[], limit = 200): ActionRow[]
       resultSol = fees;
     } else if (a === "CLOSE_POSITION") {
       const vs = Number.isFinite(entry) && entry > 0 ? held - entry : null;
-      what = `${r4(held)} SOL back${vs !== null ? `, ${vs >= 0 ? "+" : "−"}${r4(Math.abs(vs))} SOL vs entry` : ""}${fees > 0.00005 ? `, ${r4(fees)} SOL of fees with it` : ""}`;
+      what =
+        vs === null
+          ? `${r4(held)} SOL back${withFees ? `, ${r4(fees)} SOL of it fees` : ""}`
+          : withFees
+            ? `${r4(held)} SOL back, ${marketWord(vs, fees)} SOL from the market and +${r4(fees)} SOL of fees, ${sgn(vs)} SOL vs entry`
+            : `${r4(held)} SOL back, ${sgn(vs)} SOL vs entry`;
       resultSol = vs;
     } else if (a === "REBALANCE") {
       const vs = Number.isFinite(entry) && entry > 0 ? held - entry : null;
-      what = `${r4(held)} SOL out${vs !== null ? ` (${vs >= 0 ? "+" : "−"}${r4(Math.abs(vs))} vs entry)` : ""}${e.decision.open ? `, back in as ${openWords(e.decision.open)}` : ""}`;
+      const out = vs === null ? `${r4(held)} SOL out${withFees ? ` (${r4(fees)} SOL of it fees)` : ""}` : withFees ? `${r4(held)} SOL out (${marketWord(vs, fees)} market, +${r4(fees)} fees, ${sgn(vs)} vs entry)` : `${r4(held)} SOL out (${sgn(vs)} vs entry)`;
+      what = `${out}${e.decision.open ? `, back in as ${openWords(e.decision.open)}` : ""}`;
       resultSol = vs;
     }
     const pool = e.pool.label;

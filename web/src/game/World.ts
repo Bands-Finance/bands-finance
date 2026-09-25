@@ -33,6 +33,7 @@ import { buildCity, type City, type Seg } from "./city";
 import { makeFigure, type Figure, type Gesture } from "./figure";
 import { buildLife, type Life } from "./life";
 import { mountLight, type TownLight } from "./light";
+import { boardHeading } from "./lpGame";
 import { bands } from "./money";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { DESK_SPOT, DOOR_REACH_M, GUARD_SPOT, PLACE_IDS, STRAPS, WORLD_RADIUS, type Kit } from "./protocol";
@@ -554,11 +555,12 @@ export class ExchangeWorld {
     this.walls.push({ x0: -7.9, z0: -20.5, x1: 7.9, z1: -19.5 });
   }
 
-  private boardTexture(rows: BoardRow[]): THREE.CanvasTexture {
+  /** the board as of the tick it shows (asOf: hot.json's generatedAt), never a cadence it cannot keep (lpGame.ts boardHeading) */
+  private boardTexture(rows: BoardRow[], asOf?: string): THREE.CanvasTexture {
     return signTexture(1600, 745, (g, w, h) => {
       g.fillStyle = "#c9560a";
       g.font = `700 34px ${CAPS}`;
-      g.fillText("HOT NOW · EVERY TWO MINUTES", 70, 92);
+      g.fillText(boardHeading(asOf), 70, 92);
       g.fillStyle = INK;
       g.font = `600 72px ${SERIF}`;
       g.fillText("Where the fees are this hour.", 70, 172);
@@ -881,11 +883,11 @@ export class ExchangeWorld {
 
   // ---------------------------------------------------------------- live data
 
-  setBoard(rows: BoardRow[]) {
+  setBoard(rows: BoardRow[], asOf?: string) {
     if (this.boardMesh) {
       const m = this.boardMesh.material as THREE.MeshBasicMaterial;
       m.map?.dispose();
-      m.map = this.boardTexture(rows);
+      m.map = this.boardTexture(rows, asOf);
       m.needsUpdate = true;
     }
     this.stallSigns.forEach((sign, i) => {

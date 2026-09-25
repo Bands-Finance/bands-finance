@@ -220,6 +220,8 @@ export const poolMinSample = (env: NodeJS.ProcessEnv = process.env): number => l
  */
 interface LessonRow {
   at?: number;
+  /** when the seat was opened, as lessonOf writes it; `at` is its close */
+  openedAt?: number;
   mode?: string;
   pool?: string;
   label?: string;
@@ -402,6 +404,9 @@ export function readLearnedView(opts: LearnedViewOptions): LearnedView {
   const byEndReason: Record<string, number> = {};
   for (const r of lessons) byEndReason[r.endReason ?? "unknown"] = (byEndReason[r.endReason ?? "unknown"] ?? 0) + 1;
   view.lessons = { total: lessons.length, byEndReason, ratio: forecastRatio(lessons) };
+  // the first seat this casebook rests on, so a surface can date the count (a fresh DATA_DIR starts at 0)
+  const opens = lessons.map((r) => r.openedAt ?? r.at).filter((t): t is number => typeof t === "number" && Number.isFinite(t));
+  view.since = opens.length ? Math.min(...opens) : null;
   view.changes = changes.slice(0, opts.changes ?? 5);
 
   // the calibration, per lane: the newest journalled value in force, and the sample it rests on

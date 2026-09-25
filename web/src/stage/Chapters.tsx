@@ -131,17 +131,19 @@ export function MadeBlock({ record, solPriceUsd, now, chart }: { record: AgentRe
   const days = [...record.days].reverse().slice(0, 10);
   return (
     <>
+      {/* a fee point is every move that put fees in the wallet (a claim, a close, a re-lay: model.ts feePoints); the table's
+          "Fee claims" column counts CLAIM_FEES alone. One word for two counts read "Claims 1" over "Claims 0" (25 Sep 2026). */}
       <Figures
         items={[
           { label: "Claimed", value: <>{`+${num(record.feesRealized)}`}<small> SOL</small></>, tone: "good", note: usd(record.feesRealized, solPriceUsd) ? `about ${usd(record.feesRealized, solPriceUsd)}` : undefined },
           { label: "Waiting in his bands", value: <>{num(record.feesUnclaimed)}<small> SOL</small></>, note: "earned, not yet claimed" },
-          { label: "Claims", value: record.feePoints.length.toLocaleString(), note: last ? `last ${ago(last.t, now)}` : undefined },
+          { label: "Payouts", value: record.feePoints.length.toLocaleString(), note: last ? `fees reached his wallet, last ${ago(last.t, now)}` : "none yet" },
         ]}
       />
       <p className="chap__p">
         {chart.coins.some((c) => c > 0)
-          ? `On the desk each column of coins is one ${chart.bucket} of claims, each coin ${chart.unit} SOL.`
-          : "No claim yet; the abacus is empty."}
+          ? `On the desk each column of coins is one ${chart.bucket} of fees paid out, each coin ${chart.unit} SOL.`
+          : "No fee has reached his wallet yet; the abacus is empty."}
       </p>
       {days.length > 0 && (
         <div className="chap__scroll">
@@ -152,7 +154,7 @@ export function MadeBlock({ record, solPriceUsd, now, chart }: { record: AgentRe
                 <th>Fees claimed</th>
                 <th>The book, open to close</th>
                 <th>Moves</th>
-                <th>Claims</th>
+                <th>Fee claims</th>
                 <th>Holds</th>
               </tr>
             </thead>
