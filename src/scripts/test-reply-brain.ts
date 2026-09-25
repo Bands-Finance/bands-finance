@@ -161,11 +161,11 @@ async function main(): Promise<void> {
       assert.equal(d.kind === "reply" && d.template, name, text);
     }
   });
-  await test("after launch, token questions get the disclosure line (the mint, his own, pays nobody); the copycat mint still gets its denial", () => {
+  await test("after launch, token questions get the disclosure line (the mint, his own, a key not a share); the copycat mint still gets its denial", () => {
     for (const text of ["ca?", "$bands", "is this your coin", "your token on pump"]) {
       const d = fixedAnswer(mention(text), ENV_LAUNCHED);
       assert.ok(d && d.kind === "reply" && d.template === "tokenLive", text);
-      assert.ok(d.kind === "reply" && d.text.includes("my own token") && d.text.includes("pays nobody who holds it") && d.text.length <= 280, text);
+      assert.ok(d.kind === "reply" && d.text.includes("my own token") && d.text.includes("not a share of my desk") && d.text.length <= 280, text);
     }
     const c = fixedAnswer(mention(`is ${COPYCAT} yours`), ENV_LAUNCHED);
     assert.equal(c && c.kind === "reply" && c.template, "copycat");

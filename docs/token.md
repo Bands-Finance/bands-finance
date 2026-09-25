@@ -75,8 +75,8 @@ never offered to a desk cycle or an X mention. docs/launch.md has every step.
 
 Every mention carries the disclosure (the lint enforces it). Until it launches, everything about it is in future
 tense. Once he has launched it, the line is `disclosureLine(mint)` in src/talk/lint.ts: "my own token. i launched
-it myself. the desk holds none and never trades it. holding <mint> in a signed-in wallet opens the engine. not a
-share, it pays nobody who holds it. its trades pay a cut to my agent on clawpump, which keeps the keys." (Until 22
+it myself. the desk holds none and never trades it. holding <mint> in a signed-in wallet opens the engine. a key,
+not a share of my desk. its trades pay a cut to my agent on clawpump, which keeps the keys." (Until 22
 Sep it ended "to my own wallet, which pays for what i run on", which the MCP launch made untrue.) It does not post
 until the hold gate is live, because it says holding the mint opens the engine (docs/sprint.md, "How he talks
 about it"). He names the mint, never a bare ticker, names the copycat by its mint as not his, and never calls a

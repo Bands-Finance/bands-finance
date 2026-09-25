@@ -126,6 +126,21 @@ async function main(): Promise<number> {
       out(r.posted ? `posted: ${r.id}` : `not posted: ${r.reason}\n(the draft was appended to ${t.statePath}/x-drafts.jsonl)`);
       return r.posted ? 0 : 2;
     }
+    case "say": {
+      // talk say [--thread <his post id>] <text...>: lint, then ONE original post in his voice (type announce); --thread
+      // continues his own earlier post as a self-thread. For the lines Zach words by hand that no draft kind covers.
+      let thread: string | null = null;
+      const rest = [...args];
+      const ti = rest.indexOf("--thread");
+      if (ti >= 0) { thread = rest[ti + 1] ?? null; rest.splice(ti, 2); }
+      const text = rest.join(" ");
+      if (!text) { out("usage: talk say [--thread <post id>] <text>"); return 2; }
+      const lint = lintText(text, lintContextOf(t));
+      if (!lint.ok) { out(`fails the lint (${lint.length} of 280):`); for (const v of lint.violations) out(`  ${v.rule}: ${v.detail}`); return 2; }
+      const r = await postTweet(text, { type: "announce", inThreadOf: thread }, { env: process.env, now });
+      out(r.posted ? `posted: ${r.id}${thread ? ` (in thread of ${thread})` : ""}` : `not posted: ${r.reason}`);
+      return r.posted ? 0 : 2;
+    }
     case "post-video": {
       // talk post-video <file.mp4> <text...>: lint, the live gate, the upload, then one original post with the video
       const [file, ...words] = args;

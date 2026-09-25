@@ -125,7 +125,7 @@ so this is decided once and not reopened. The runbook is docs/launch.md. The 20 
   in one owner turn Zach arms; it holds the spec, and the ClawPump key never reaches the gateway.
 - **How he talks about it.** Future tense until it launches. Once live, every mention carries the
   disclosure: "my own token. i launched it myself. the desk holds none and never trades it. holding <mint> in
-  a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut
+  a signed-in wallet opens the engine. a key, not a share of my desk. its trades pay a cut
   to my agent on clawpump, which keeps the keys." It posts only once the hold gate is live. He names the mint, never a bare ticker. The copycat
   shares the ticker, so he names it by its mint as not his, never "other $bands tokens". Never a price,
   chart, cap, holders, volume, fee, % or $ next to it, never buy, sell or early, never linked to the
@@ -135,7 +135,9 @@ so this is decided once and not reopened. The runbook is docs/launch.md. The 20 
 
 ### B. The desk: halted live, trading in public on paper
 
-Decided 2026-09-22: **no live money through 8 October.** The live desk stays halted (`KILL_SWITCH=true`
+Decided 2026-09-22: no live money through 8 October; **lifted by Zach on 25 September**: the live desk switches on
+as soon as the desk wallet holds 5 SOL of the token's fee share (the treasury pays it out; Zach approves each transfer),
+at a 5 SOL size (3.5 SOL exposure, one band, 0.8 SOL gas reserve). Until then it stays halted (`KILL_SWITCH=true`
 and data-mainnet/STOP). The scored trader record is the real-money run of 17-19 September: 39 hours on
 Meteora from the hot wallet 9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW, every decision journalled, 0
 guard violations. It claimed 7.91 SOL of fees (3.27 of it paid in tokens, valued when claimed) in 111
@@ -180,7 +182,7 @@ The project account (the entry step: tag @clawpumptech):
 > Meteora DLMM, with tokenized stocks one part of his book: he lays bands of liquidity around the price
 > in the pools his screener ranks, proposes every move, lets his guards decide, and publishes every
 > decision and every guard veto at mrbands.finance. His book is on paper for now. His own token is
-> <mint> on ClawPump: a key that will open his engine on your own wallet. It pays holders nothing, its
+> <mint> on ClawPump: a key that will open his engine on your own wallet. A key to his engine, not a share of his desk; its
 > creator-fee share is held by ClawPump for his agent there, and the desk never trades it.
 
 Mr Bands, from his own account (drafts; `npm run talk -- draft` builds them from live data and lints
@@ -190,7 +192,7 @@ them against the locked core before anything can post):
 > mrbands.finance, the red ones too
 
 > my own token. i launched it myself. the desk holds none and never trades it. holding <mint> in a
-> signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my agent
+> signed-in wallet opens the engine. a key, not a share of my desk. its trades pay a cut to my agent
 > on clawpump, which keeps the keys.
 
 > the "mr bands" token at JAARLUawF9DTauc9pHUyYpga8mDU3172cY7NzLfhpJ6m is not mine. it borrows my name, my

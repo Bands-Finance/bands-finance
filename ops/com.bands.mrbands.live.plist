@@ -39,7 +39,7 @@
          wins. Change the DECIDER line in ops/live.env instead (docs/openhermit.md). What follows is kept for reference.
          Mr Bands on OpenHermit (docs/openhermit.md): uncomment to have the agent on the gateway propose instead of
          Anthropic (the guards still decide; an unusable answer falls back to the desk policy). First: OPENHERMIT_TOKEN
-         and PLATFORM_OPERATOR_TOKEN in .env, then `npm run openhermit -- provision --mcp live`, then `npm run openhermit -- ask`.
+         and PLATFORM_OPERATOR_TOKEN in .env, then `npm run openhermit - - provision - -mcp live`, then `npm run openhermit - - ask`.
          Switch back with DECIDER=policy. Then bootout and bootstrap this service.
     <key>DECIDER</key><string>openhermit</string>
     <key>OPENHERMIT_GATEWAY_URL</key><string>http://127.0.0.1:4000</string>

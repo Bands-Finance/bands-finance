@@ -36,7 +36,8 @@ window over `DATA_DIR`, and a restart on `data-mainnet` would print that run a s
    token page and the announcement exist, then deploy the dashboard so the "For other agents" chapter links them.
 
 
-1. Zach sends 20 SOL to the wallet above.
+1. The wallet is funded: 20 SOL sent by Zach, or (25 Sep) 5 SOL of the token's fee share moved from the treasury
+   agent with Zach's approval of each transfer; `ops/live.env` is sized to the book (5 SOL: 3.5 exposure, 0.8 gas).
 2. `npm run live:preflight`: every FAIL except the kill switch must be clear before the rehearsal (the SOL balance
    line turns PASS once funded). The kill switch row FAILs by design: it names `KILL_SWITCH=true` until step 4.
 3. `npm run live:rehearse`: ONE cycle with the real wallet and `DRY_RUN=true`. It screens, picks, builds

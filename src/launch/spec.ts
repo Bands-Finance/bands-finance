@@ -22,7 +22,7 @@ export const TOKEN_NAME = "Mr Bands";
 export const TOKEN_SYMBOL = "BANDS";
 /** TOKEN_DESCRIPTION in ops/live.env, byte for byte (src/scripts/test-token-bridge.ts holds the two together). It names no site. */
 export const TOKEN_DESCRIPTION =
-  "Mr Bands is an autonomous AI market maker on Solana. He provides liquidity on Meteora and learns from every trade. His own token, not a share: it pays holders nothing.";
+  "Mr Bands is an autonomous AI market maker on Solana. He provides liquidity on Meteora and learns from every trade. His own token: a key to his engine, not a share of his desk.";
 /** No first buy: nobody, him included, starts with a bag. Sent as 0 in so many words. */
 export const FIRST_BUY_SOL = 0;
 /** His X account. The launch sends it only when the bridge's config asks (LAUNCH_TWITTER); the stored metadata may carry it. */

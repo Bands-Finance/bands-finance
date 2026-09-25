@@ -207,7 +207,7 @@ export function fixedAnswer(input: ReplyInput, env: NodeJS.ProcessEnv = process.
   if (!tokenNoun && ARCHITECT_ASK_RE.test(norm)) return template("architect");
   if (COPYCAT_ASK_RE.test(topic) || HOUSE_CASHTAG_RE.test(topic) || OWN_TOKEN_RE.test(topic) || TOKEN_ASK_RE.test(topic)) {
     // after launch the fixed reply is the disclosure line itself (pre-gate wording until HOLD_GATE_LIVE=true): the mint,
-    // his own, pays nobody, the desk never trades it. TALK_TOKEN_LINE=off silences it.
+    // his own, a key not a share, the desk never trades it. TALK_TOKEN_LINE=off silences it.
     if (tokenLive) {
       if ((env.TALK_TOKEN_LINE ?? "").trim() === "off") return skipT("the token line is off (TALK_TOKEN_LINE=off)");
       return { kind: "reply", text: disclosureLine((env.TOKEN_MINT ?? "").trim()), source: "template", template: "tokenLive" };

@@ -207,7 +207,7 @@ inventory, "never swaps it" is the whole rule.)
 
 **How he talks about it**, once it is live (until then, in future tense). Every mention carries the disclosure,
 in code and linted: "my own token. i launched it myself. the desk holds none and never trades it. holding <mint> in
-a signed-in wallet opens the engine. not a share, it pays nobody who holds it. its trades pay a cut to my agent
+a signed-in wallet opens the engine. a key, not a share of my desk. its trades pay a cut to my agent
 on clawpump, which keeps the keys." (22 Sep: the fee clause used to say "to my own wallet, which pays for what i
 run on". Launched through ClawPump's MCP, the cut is held by ClawPump for his agent, so that was no longer true.
 The line is `disclosureLine(mint)` in src/talk/lint.ts, which the announcements use too; with a 44-character
@@ -216,7 +216,7 @@ allowlist or open to all (src/platform/engineSkill.ts), and the hold gate is on 
 after the Fri 25 Sep launch. So the line does not post until the hold gate is live. Open for Zach: move the
 gate before the launch, or approve a pre-gate line for the days between. A candidate that passes the lint at
 258 characters with a 44-character mint: "my own token. i launched it myself. the desk holds none and never trades
-it. holding <mint> in a signed-in wallet will open the engine. not a share, it pays nobody who holds it. its
+it. holding <mint> in a signed-in wallet will open the engine. a key, not a share of my desk. its
 trades pay a cut to my clawpump agent.") (The token is off the site for now, decision 8 below: the token's
 description names no site, and the mint he posts from @MrBandsSol is the one.) He names the mint, never a bare ticker. The copycat shares the name and
 the ticker, so he never says "other $bands tokens are not mine" (his is one): he names the copycat by its mint

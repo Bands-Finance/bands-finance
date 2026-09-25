@@ -219,8 +219,9 @@ export const DISCLOSURE_PHRASES: readonly string[] = ["disclosure:", "my own tok
  */
 export function disclosureLine(mint: string, gateLive: boolean = (process.env.HOLD_GATE_LIVE ?? "").trim().toLowerCase() === "true"): string {
   // the hold-gate clause is said only once the gate exists (HOLD_GATE_LIVE=true): until then the line makes no promise
-  const gate = gateLive ? ` holding ${mint} in a signed-in wallet opens the engine.` : ` the mint is ${mint}.`;
-  return `my own token. i launched it myself. the desk holds none and never trades it.${gate} not a share, it pays nobody who holds it. its trades pay a cut to my agent on clawpump, which keeps the keys.`;
+  // what it IS, never a warning label (Zach, 25 Sep: "pays nobody who holds it" is bearish): a key, not a share
+  const gate = gateLive ? ` holding ${mint} in a signed-in wallet opens the engine. a key, not a share of my desk.` : ` the mint is ${mint}. a key to my engine once it opens, not a share of my desk.`;
+  return `my own token. i launched it myself. the desk holds none and never trades it.${gate} its trades pay a cut to my agent on clawpump, which keeps the keys.`;
 }
 
 /** Price or return language that may never sit next to the house token, disclosure or not. */

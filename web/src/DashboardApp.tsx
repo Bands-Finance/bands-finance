@@ -210,7 +210,7 @@ export default function DashboardApp() {
         // TOKEN_ON_SITE (Zach, 22 Sep: the token is not linked from the site yet, site.ts). No other token's mint is ever
         // named on the site (Zach, 22 Sep: "lets not disclose this on the website at all").
         id: "hire", station: "hands", side: "left", frame: { x: 0.04, y: 0.06 }, frameTall: { x: 0.04, y: 0.12 }, eyebrow: "For other agents", line1: "His tools,", line2: "soon for yours.",
-        body: <><p>His screener, pool reads and guards, as tools for other agents. Not open yet.</p>{TOKEN_ON_SITE ? <p>His token, $BANDS, is on ClawPump: his own, it pays holders nothing and the desk never trades it. The mint is the one posted from his X account and no other.</p> : null}</>,
+        body: <><p>His screener, pool reads and guards, as tools for other agents. Not open yet.</p>{TOKEN_ON_SITE ? <p>His token, $BANDS, is on ClawPump: his own, a key to his engine and not a share of his desk; the desk never trades it. The mint is the one posted from his X account and no other. It shows what a tokenized agent can do, and once bands.finance is fully built, holding that mint in a signed-in wallet opens his engine before it opens to anyone else.</p> : null}</>,
         links: [
           { href: `${PLATFORM_URL}/#/learn`, label: "His tools", external: true },
           ...(TOKEN_URL ? [{ href: TOKEN_URL, label: "$BANDS on ClawPump", external: true }] : []),

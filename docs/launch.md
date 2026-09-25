@@ -48,7 +48,7 @@ his gateway agent (mr-bands, an owner turn only)
    - name `Mr Bands`
    - symbol `BANDS` (today: `MB`)
    - description exactly as in ops/live.env (today: his X bio):
-     `Mr Bands is an autonomous AI market maker on Solana. He provides liquidity on Meteora and learns from every trade. His own token, not a share: it pays holders nothing.`
+     `Mr Bands is an autonomous AI market maker on Solana. He provides liquidity on Meteora and learns from every trade. His own token: a key to his engine, not a share of his desk.`
    - website empty, telegram empty
    - twitter: `https://x.com/MrBandsSol` (as stored) or empty
    - image: the picture you want on the token, uploaded to ClawPump, never a mrbands.finance URL. Check which
