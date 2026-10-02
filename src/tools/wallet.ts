@@ -99,6 +99,13 @@ export interface SimulationReport {
  * `signAndSend` refuses to run while DRY_RUN is on, regardless of what any
  * upstream code decided. Defense in depth on top of the risk guards.
  */
+/**
+ * Keys someone else holds. The desk wallet 9q3V... signed a 10 SOL transfer out on 25 Sep 2026, and on 30 Sep 0.746 SOL
+ * sent into it was swept to an unknown address 24 seconds later, leaving exactly the rent minimum: an automated sweeper.
+ * Nothing is signed with a key on this list in live mode, so a restart on the old .env cannot hand money to it.
+ */
+export const COMPROMISED_WALLETS: ReadonlySet<string> = new Set(["9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW"]);
+
 export class Wallet {
   /** how a lost confirmation is looked up (signatureOutcome): attempts, and the wait between them */
   lostConfirmationCheck: { attempts: number; waitMs: number } = { attempts: 3, waitMs: 2000 };
@@ -130,6 +137,10 @@ export class Wallet {
       const msg = `${wallet.ephemeral ? "the ephemeral wallet" : "WALLET_SECRET_KEY"} derives to ${wallet.publicKey.toBase58()}, but ${pin.name} is ${expected}`;
       if (!config.dryRun) throw new Error(`${msg}. Refusing to start live: a key rotation must update ${pin.name} in the same change.`);
       console.warn(`[wallet] warning: ${msg} (dry-run continues)`);
+    }
+    const address = wallet.publicKey.toBase58();
+    if (!wallet.ephemeral && COMPROMISED_WALLETS.has(address) && !config.dryRun) {
+      throw new Error(`${address} is a compromised wallet (its funds were swept by someone else on 30 Sep 2026). Refusing to sign with it: rotate to a new key.`);
     }
     return wallet;
   }

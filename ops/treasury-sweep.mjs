@@ -12,6 +12,14 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) =>
 const AGENT = "c77a9f8e-d1da-45e9-adb0-e5e668dad04d";
 const FROM = "DwT8xTNchU67T4CJbWE89pM9qNZdjTLhTocheoSUQ2j6";
 const TO = "9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW";
+// COMPROMISED, 2 Oct 2026: on 30 Sep 11:20 UTC 0.746 SOL sent into this wallet was swept out 24 seconds later to an
+// unknown address, leaving exactly the rent minimum: something else holds its key. Nothing is sent here again. A new
+// desk wallet, its treasury whitelist entry and this constant change together, on Zach's word.
+const COMPROMISED = new Set(["9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW"]);
+if (COMPROMISED.has(TO)) {
+  console.error(`refused: ${TO.slice(0, 8)}… is a compromised wallet (swept 30 Sep). Point TO at the new desk wallet first.`);
+  process.exit(2);
+}
 const KEEP = Number(args.keep ?? 0.05);
 const MIN = Number(args.min ?? 0.02);
 const log = path.join(os.homedir(), ".mrbands", "treasury-sweep.jsonl");
