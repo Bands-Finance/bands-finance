@@ -95,8 +95,14 @@ async function main(): Promise<void> {
     try {
       sol = (await connection.getBalance(pubkey, "confirmed")) / LAMPORTS_PER_SOL;
       const need = riskLimits.maxTotalExposureSol + riskLimits.gasReserveSol + config.maxActivePools * OPEN_COST_ESTIMATE_SOL;
-      const level: Level = paperOn ? "PASS" : sol === 0 ? (config.dryRun ? "WARN" : "FAIL") : sol < need ? "WARN" : "PASS";
-      add("SOL balance", level, `${sol.toFixed(4)} SOL${paperOn ? " on chain (the paper book spends its own virtual SOL)" : ""}; the limits assume ${need.toFixed(2)} SOL (exposure ${riskLimits.maxTotalExposureSol} + gas reserve ${riskLimits.gasReserveSol} + rent for ${config.maxActivePools} bands)`);
+      // LIVE_MIN_START_SOL: the live desk does not start below this. Zach, 5 Oct 2026, funding a new wallet with 50 SOL: a
+      // test transfer must not start the run on cents (its "started with" would be the test, and the deposit would read as
+      // profit). launchd retries a failed preflight every ThrottleInterval, so the desk starts on its own once funded.
+      const minStartRaw = (process.env.LIVE_MIN_START_SOL ?? "").trim();
+      const minStart = minStartRaw === "" ? 0 : Number(minStartRaw);
+      const underStart = !paperOn && !config.dryRun && Number.isFinite(minStart) && minStart > 0 && sol < minStart;
+      const level: Level = paperOn ? "PASS" : sol === 0 ? (config.dryRun ? "WARN" : "FAIL") : underStart ? "FAIL" : sol < need ? "WARN" : "PASS";
+      add("SOL balance", level, `${sol.toFixed(4)} SOL${paperOn ? " on chain (the paper book spends its own virtual SOL)" : ""}; the limits assume ${need.toFixed(2)} SOL (exposure ${riskLimits.maxTotalExposureSol} + gas reserve ${riskLimits.gasReserveSol} + rent for ${config.maxActivePools} bands)${underStart ? `; waiting for ${minStart} SOL before the first start (LIVE_MIN_START_SOL)` : ""}`);
     } catch (err) {
       add("SOL balance", "FAIL", `could not read: ${(err as Error).message.slice(0, 80)}`);
     }

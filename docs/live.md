@@ -1,7 +1,9 @@
 # Going live: the first 20 SOL
 
-Mr Bands' live desk trades real money from the hot wallet in `.env` (`9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW`,
-pinned by `EXPECTED_WALLET`) when it runs. It is halted through 8 Oct 2026 by decision (docs/sprint.md): his book
+Mr Bands' live desk trades real money from the hot wallet in `.env` (`2BuKB7qdfUR2ADTqAgoJMxpNnfitRmydEaMqFv3gRCbR` since
+5 Oct 2026, pinned by `EXPECTED_WALLET`; the old `9q3V...` was drained on 30 Sep and the code refuses it) when it runs.
+Its key never leaves this machine: never paste it into a chat, a site or an app. A backup sits owner-only in `~/.mrbands`.
+The desk waits for `LIVE_MIN_START_SOL` before its first start, so fund it in one transfer. It is halted through 8 Oct 2026 by decision (docs/sprint.md): his book
 is paper until then, and his one real-money run is 17-19 Sep. The live configuration is `ops/live.env` (non-secret, committed) and the
 service is `ops/com.bands.mrbands.live.plist`, the only place `DRY_RUN=false` is written. Installing that
 service is the act of going live. It is done on Zach's word, in words, and never with the paper desk running.

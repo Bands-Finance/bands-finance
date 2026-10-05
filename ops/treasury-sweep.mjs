@@ -11,7 +11,8 @@ import path from "node:path";
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) => { if (a.startsWith("--")) acc.push([a.slice(2), all[i + 1] && !all[i + 1].startsWith("--") ? all[i + 1] : "true"]); return acc; }, []));
 const AGENT = "c77a9f8e-d1da-45e9-adb0-e5e668dad04d";
 const FROM = "DwT8xTNchU67T4CJbWE89pM9qNZdjTLhTocheoSUQ2j6";
-const TO = "9q3VKDrHBusoxsWEBwkzNmRe51AV5kGEMA2Yic5EPkVW";
+// the new desk wallet from 5 Oct 2026; ClawPump only sends to it once Zach has it whitelisted on the treasury agent
+const TO = "2BuKB7qdfUR2ADTqAgoJMxpNnfitRmydEaMqFv3gRCbR";
 // COMPROMISED, 2 Oct 2026: on 30 Sep 11:20 UTC 0.746 SOL sent into this wallet was swept out 24 seconds later to an
 // unknown address, leaving exactly the rent minimum: something else holds its key. Nothing is sent here again. A new
 // desk wallet, its treasury whitelist entry and this constant change together, on Zach's word.
